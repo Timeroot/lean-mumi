@@ -296,6 +296,23 @@ private def fieldsClean (auxFVars : Array Expr) (cty : Expr) : MetaM Bool :=
       if mentionsAny auxFVars (← inferType f) then return false
     return true
 
+/--
+Copy the first `n` binder annotations of `model` onto `e`.
+
+Rewriting a constructor means taking its parameters apart and putting them back,
+and `mkForallFVars` annotates each binder the way its local declaration is
+annotated.  The parameters here come from the type former, where they are
+explicit; in a constructor they are implicit -- or strict-implicit, or instance
+-- so what the block was declared with has to be read back off a constructor
+that still has it.  Getting this wrong is not cosmetic: it decides whether
+`P.ghost h` or `P.ghost α h` is the way to write the constructor.
+-/
+private def withLeadingBinderInfo : Nat → Expr → Expr → Expr
+  | 0, _, e => e
+  | n + 1, .forallE _ _ mb mbi, .forallE nm ty b _ =>
+    .forallE nm ty (withLeadingBinderInfo n mb b) mbi
+  | _, _, e => e
+
 /-- An auxiliary member, and the original type it is a copy of. -/
 private structure Bridge where
   spec : AuxSpec
@@ -336,7 +353,47 @@ private def bridgeMotives (b : Bridge) (j : Nat) (mtypes : Array Expr) : MetaM (
   return vals
 
 /--
-Prove `A ps xs idxs = I params idxs` and add it as `A.eq_orig`.
+The coercion out of an auxiliary member and into the type it copies.
+
+Its presence is what marks a member as identified with its original, and its
+type is where `Mumi.Bridge` reads that original back from, so the name is
+declared once rather than written out on both sides.  Keying the display off a
+declaration denesting adds anyway -- rather than off the equality, whose name a
+user might reasonably pick for something of their own -- is what keeps it from
+changing how unrelated types print.
+-/
+def origCoeName (aux : Name) : Name := aux ++ `coeToOrig
+
+/--
+Register a coercion from one side of the identification to the other.
+
+The equality alone would still leave the copy's name to be written out at every
+use.  The pair of coercions is what removes it: one lets the original be passed
+to a constructor that asks for the copy, the other lets a field bound by a
+pattern match be used as the original.
+
+Like any coercion, one is inserted only where the type it has to reach is
+known; a consumer whose own type argument is still a metavariable needs the
+field ascribed, and the ascription names the original rather than the copy.
+-/
+private def mkCoe (name : Name) (levelParams : List Name) (binders : Array Expr)
+    (src tgt eq : Expr) : MetaM Unit :=
+  withLocalDeclD `h src fun h => do
+    let f     ← mkLambdaFVars #[h] (← mkAppM ``cast #[eq, h])
+    let type  ← mkForallFVars binders (← mkAppM ``CoeOut #[src, tgt])
+    let value ← mkLambdaFVars binders (← mkAppM ``CoeOut.mk #[f])
+    check value
+    unless ← isDefEq (← inferType value) type do return
+    addDecl (.defnDecl
+      { name, levelParams, type, value, hints := .abbrev, safety := .safe })
+    setReducibleAttribute name
+    Meta.addInstance name .global 1000
+
+/--
+Prove `A ps xs idxs = I params idxs` and add it as `A.eq_orig`, then make the
+identification usable without naming `A`, by registering a coercion in each
+direction.  The forward one doubles as the marker `Mumi.Bridge` reads to display
+`A` as the type it copies.
 
 Nothing here can make the block worse: it runs after the block has been
 declared, and reads only what is already in the environment.
@@ -419,6 +476,10 @@ private def mkBridge (inp : Input) (ps : Array Expr) (ctorNames : Array (Array N
       check value
       unless ← isDefEq (← inferType value) type do return
       addDecl (.thmDecl { name := s.name ++ `eq_orig, levelParams := inp.levelParams, type, value })
+      let bs := ps ++ xs ++ idxs
+      let eqApp := mkAppN (.const (s.name ++ `eq_orig) ownLevels) bs
+      mkCoe (origCoeName s.name) inp.levelParams bs lhs rhs eqApp
+      mkCoe (s.name ++ `coeOfOrig) inp.levelParams bs rhs lhs (← mkEqSymm eqApp)
 
 /--
 Add one member per distinct nested application, rewrite the constructors to
@@ -455,10 +516,15 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       let mut ctorNames   := inp.ctorNames
       let mut ctorTypes   := inp.ctorTypes
       let mut bridgeOk    : Array Bool := #[]
+      -- any of the block's own constructors will do: they all carry the same
+      -- parameters, and an auxiliary member only exists because one of them
+      -- nests something, so there is always at least one
+      let model? := inp.ctorTypes.findSome? (·[0]?)
       for i in *...ctorTypes.size do
         let mut cts : Array Expr := #[]
         for ct in ctorTypes[i]! do
-          cts := cts.push (← mkForallFVars ps (← c.pi (← instantiateForall ct ps)))
+          cts := cts.push (withLeadingBinderInfo inp.numParams ct
+            (← mkForallFVars ps (← c.pi (← instantiateForall ct ps))))
         ctorTypes := ctorTypes.set! i cts
       for j in *...st.specs.size do
         let s := st.specs[j]!
@@ -475,7 +541,10 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
               (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
             let rw ← c.pi cty
             unless ← fieldsClean auxFVars rw do ok := false
-            cts := cts.push (← mkForallFVars (ps ++ xs) rw)
+            let full ← mkForallFVars (ps ++ xs) rw
+            cts := cts.push (match model? with
+              | some m => withLeadingBinderInfo inp.numParams m full
+              | none   => full)
           return (cts, ok)
         ctorNames := ctorNames.push (s.ctors.map (reroot s.indName s.name))
         ctorTypes := ctorTypes.push cts

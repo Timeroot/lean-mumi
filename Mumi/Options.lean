@@ -16,3 +16,9 @@ register_option mumi.enabled : Bool := {
   descr := "allow the members of a `mutual` inductive block to live in different universes, \
     by lowering the block to declarations the kernel accepts"
 }
+
+register_option mumi.pp.nested : Bool := {
+  defValue := true
+  descr := "display a rescued nested inductive's auxiliary member as the type it is a copy \
+    of, rather than under its internal name"
+}

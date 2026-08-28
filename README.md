@@ -156,25 +156,38 @@ error: (kernel) mutually inductive types must live in the same universe
 
 `Nonempty T` is a `Prop` and `T` is a `Type`, so the block the kernel builds is
 heterogeneous, and this is exactly the restriction being lifted. With `Mumi`
-imported it goes through. The nesting becomes an auxiliary member of the block:
+imported it goes through, and reads the way it was written:
 
 ```lean
-#check @T.mkT                     -- T.nested_Nonempty_1 → T
-#check @T.nested_Nonempty_1       -- Prop
-#check @T.nested_Nonempty_1.intro -- ∀ (val : T), T.nested_Nonempty_1
+#check @T.mkT   -- Nonempty T → T
+
+example (h : Nonempty T) : T := T.mkT h
 ```
 
-and the rescued type is an ordinary inductive: it pattern-matches, it recurses
+The rescued type is an ordinary inductive: it pattern-matches, it recurses
 structurally, and it runs.
 
-The copy is not the original, though, and the constructor now asks for the copy.
-When the copy is a `Prop` the two are not merely isomorphic but *equal*, and
-saying so once lets the original type back in:
+Underneath, the nesting becomes a *copy* of `Nonempty` specialised to `T`, an
+auxiliary member of the block, and the constructor really takes that:
 
 ```lean
-#check @T.nested_Nonempty_1.eq_orig  -- T.nested_Nonempty_1 = Nonempty T
+set_option mumi.pp.nested false in
+#check @T.mkT   -- T.nested_Nonempty_1 → T
+```
 
-example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
+The copy cannot be avoided. A nested inductive whose denesting is
+universe-heterogeneous is precisely the declaration the kernel refuses, so
+`T.mkT : Nonempty T → T` can never be a kernel constructor here — the field's
+type has to be something other than `Nonempty T`, or there is nothing to
+declare. What *can* be arranged is that the copy's name is never needed, and
+that is what the rest of this section is about.
+
+When the copy is a `Prop` it is not merely isomorphic to the original but
+*equal*, and saying so once is what makes it disappear:
+
+```lean
+set_option mumi.pp.nested false in
+#check @T.nested_Nonempty_1.eq_orig  -- T.nested_Nonempty_1 = Nonempty T
 ```
 
 `propext` is the only axiom involved. Both directions are one recursor call per
@@ -183,6 +196,34 @@ occurrences rewritten — so when no field mentions an auxiliary member, the two
 constructors take the same arguments. That proviso rules out a wrapper that
 recurses through the nesting and a nesting inside a nesting; those get no
 `eq_orig`, and are otherwise unaffected.
+
+From that equality the block gets a coercion each way and, keyed off the
+coercion, a delaborator. Together they mean the copy is neither written nor
+read: the original can be handed to the constructor, a field bound by a pattern
+match can be handed to anything that wants the original, and signatures, goals
+and error messages all show the original.
+
+```lean
+def T.witnessed (_ : Nonempty T) : Prop := True
+
+def T.probe : T → Prop
+  | .mk1 => False
+  | .mkT h => T.witnessed h   -- `h` is the copy; the coercion is inserted
+```
+
+A coercion needs somewhere to go, so a consumer whose type argument is still
+open does not get one — `Nonempty.elim h fun _ => trivial` needs the field
+ascribed, as `Nonempty.elim (h : Nonempty T) fun _ => trivial`. The copy's name
+is still not what gets written.
+
+A member with no `eq_orig` keeps its own name in both respects. A data copy is
+only isomorphic to what it copies, so displaying the original would be a lie,
+and `N.nested_List_2` stays `N.nested_List_2`.
+
+`set_option mumi.pp.nested false` turns the display off, which is what to reach
+for when a mismatch between a copy and its original has to be seen. It is off
+automatically under `pp.explicit`, so a type error whose two sides would
+otherwise both print as `Nonempty T` exposes the copy by itself.
 
 **Nested inductives that already work are not touched.** Denesting is the
 kernel's own feature and there is no reason to reimplement it, so
@@ -212,10 +253,10 @@ become. We abstract the field and make it an *index* of the auxiliary member —
 line up. Occurrences that differ only in which local they mention share one
 member.
 
-`MumiTests/Nested.lean` covers the classic case, the bridges, structural
-recursion and `#eval` on a rescued type, other `Prop` wrappers, parameters,
-indices, nesting inside a hand-written heterogeneous block, and nesting inside
-nesting.
+`MumiTests/Nested.lean` covers the classic case, the bridges, the coercions and
+the display, structural recursion and `#eval` on a rescued type, other `Prop`
+wrappers, parameters, indices, nesting inside a hand-written heterogeneous
+block, and nesting inside nesting.
 
 ### Turning it off
 
@@ -238,10 +279,16 @@ Stock behaviour returns immediately, including the stock error message.
   rejects the block before we see it.
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
-* A rescued nested inductive's constructor takes the auxiliary member, not the
-  original: `T.mkT : T.nested_Nonempty_1 → T`, not `Nonempty T → T`. When the
-  auxiliary member is a `Prop` you get `T.nested_Nonempty_1.eq_orig` to bridge
-  the two; otherwise you are on your own.
+* A rescued nested inductive's constructor really takes a copy of the nested
+  type, and only a copy that is a `Prop` gets the equality, the coercions and
+  the display that hide it. A *data* copy — `N.nested_List_2` for
+  `Nonempty (List N)`, or a `List` nested inside a hand-written heterogeneous
+  block — is merely isomorphic to what it copies, and you are on your own.
+* Anonymous constructor notation reaches past the copy into the block the
+  lowering builds: `T.mkT ⟨T.mk1⟩` reports a mismatch against a `T._shadow`.
+  Write `T.mkT (⟨T.mk1⟩ : Nonempty T)` or `T.mkT (Nonempty.intro T.mk1)`. Both
+  the copy and its shadow are `Prop`s here, so nothing observable depends on
+  which one a proof was built in.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This predates the nested support and affects
   declarations the library never touches; `set_option mumi.enabled false` does

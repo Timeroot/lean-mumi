@@ -25,15 +25,22 @@ inductive T : Type where
 #guard_msgs in
 #check @T.mk1
 
-/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+/-- info: T.mkT : Nonempty T → T -/
 #guard_msgs in
 #check @T.mkT
 
-/-- info: T.nested_Nonempty_1 : Prop -/
+-- the copy is displayed as the type it copies, so the constructor reads the way
+-- it was written; `mumi.pp.nested` is what shows the block as it is built
+/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+#guard_msgs in
+set_option mumi.pp.nested false in
+#check @T.mkT
+
+/-- info: Nonempty T : Prop -/
 #guard_msgs in
 #check @T.nested_Nonempty_1
 
-/-- info: T.nested_Nonempty_1.intro : ∀ (val : T), T.nested_Nonempty_1 -/
+/-- info: T.nested_Nonempty_1.intro : ∀ (val : T), Nonempty T -/
 #guard_msgs in
 #check @T.nested_Nonempty_1.intro
 
@@ -42,25 +49,121 @@ inductive T : Type where
 -- lined up
 /--
 info: @T.mutualRec : {motive_1 : T → Sort u_1} →
-  {motive_2 : T.nested_Nonempty_1 → Prop} →
+  {motive_2 : Nonempty T → Prop} →
     motive_1 T.mk1 →
-      ((a : T.nested_Nonempty_1) → motive_2 a → motive_1 (T.mkT a)) →
+      ((a : Nonempty T) → motive_2 a → motive_1 (T.mkT a)) →
         (∀ (val : T) (ih_1 : motive_1 val), motive_2 ⋯) → (t : T) → motive_1 t
 -/
 #guard_msgs in
 #check @T.mutualRec
 
 -- the copy is a `Prop` with the same constructors as the original, so the two
--- are equal, and saying so lets the original type back into the user's code
+-- are equal, and saying so lets the original type back into the user's code.
+-- It reads as a triviality precisely because it holds: both sides display as
+-- the original.
+/-- info: T.nested_Nonempty_1.eq_orig : Nonempty T = Nonempty T -/
+#guard_msgs in
+#check @T.nested_Nonempty_1.eq_orig
+
 /-- info: T.nested_Nonempty_1.eq_orig : T.nested_Nonempty_1 = Nonempty T -/
 #guard_msgs in
+set_option mumi.pp.nested false in
 #check @T.nested_Nonempty_1.eq_orig
 
 /-- info: 'T.nested_Nonempty_1.eq_orig' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms T.nested_Nonempty_1.eq_orig
 
+/-! ## The copy's name is never needed
+
+The equality is what makes the copy usable, but rewriting along it by hand would
+still mean naming the copy at every use.  A coercion in each direction removes
+that: the original can be handed to a constructor that asks for the copy, and a
+field bound by a pattern match can be handed to anything that asks for the
+original.
+-/
+
+example (h : Nonempty T) : T := T.mkT h
+example : T := T.mkT (Nonempty.intro T.mk1)
+
+def T.witnessed (_ : Nonempty T) : Prop := True
+
+def T.probe : T → Prop
+  | .mk1 => False
+  | .mkT h => T.witnessed h
+
+-- a coercion needs somewhere to go, so a consumer whose type argument is still
+-- open does not get one; ascribing the field is enough, and the copy's name is
+-- still not what gets written
+example (x : T) : True :=
+  match x with
+  | .mk1 => trivial
+  | .mkT h => Nonempty.elim (h : Nonempty T) fun _ => trivial
+
+/--
+error: Application type mismatch: The argument
+  h
+has type
+  Nonempty T
+but is expected to have type
+  Nonempty (?m.6 h)
+in the application
+  Nonempty.elim h
+-/
+#guard_msgs in
+example (x : T) : True :=
+  match x with
+  | .mk1 => trivial
+  | .mkT h => Nonempty.elim h fun _ => trivial
+
+-- rewriting along the equality still works, for anyone who wants it
 example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
+
+-- a genuine mismatch is still reported against the original, not the copy
+/--
+error: Application type mismatch: The argument
+  h
+has type
+  Nonempty Nat
+but is expected to have type
+  Nonempty T
+in the application
+  T.mkT h
+-/
+#guard_msgs in
+example (h : Nonempty Nat) : T := T.mkT h
+
+-- `pp.explicit` asks for the term as it is, so the copy is not dressed up: that
+-- is what keeps a mismatch whose two sides would both read `Nonempty T` from
+-- being reported as one against itself, since Lean turns the option on for
+-- exactly that case
+/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+#guard_msgs in
+set_option pp.explicit true in
+#check @T.mkT
+
+/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+#guard_msgs in
+set_option pp.all true in
+#check @T.mkT
+
+-- anonymous constructor notation reaches past the copy into the block the
+-- lowering builds; ascribing the original is the way through.  Both are `Prop`s,
+-- so nothing observable depends on which one a proof was built in.
+/--
+error: Application type mismatch: The argument
+  T.mk1
+has type
+  T
+of sort `Type` but is expected to have type
+  T._shadow
+of sort `Prop` in the application
+  T.nested_Nonempty_1._shadow.intro T.mk1
+-/
+#guard_msgs in
+example : T := T.mkT ⟨T.mk1⟩
+
+example : T := T.mkT (⟨T.mk1⟩ : Nonempty T)
 
 /-! ## Recursion and computation
 
@@ -94,7 +197,7 @@ inductive V : Type where
   | mk0 : V
   | mkE : (∃ _ : V, True) → V
 
-/-- info: V.mkE : V.nested_Exists_1 → V -/
+/-- info: V.mkE : (∃ x, True) → V -/
 #guard_msgs in
 #check @V.mkE
 
@@ -105,19 +208,19 @@ inductive W : Type where
   | mk0 : Nat → W
   | mkB : Box W → W
 
-/-- info: W.mkB : W.nested_Box_1 → W -/
+/-- info: W.mkB : Box W → W -/
 #guard_msgs in
 #check @W.mkB
 
-/-- info: W.nested_Box_1.intro : ∀ (a : W), W.nested_Box_1 -/
+/-- info: W.nested_Box_1.intro : ∀ (a : W), Box W -/
 #guard_msgs in
 #check @W.nested_Box_1.intro
 
-/-- info: V.nested_Exists_1.eq_orig : V.nested_Exists_1 = ∃ x, True -/
+/-- info: V.nested_Exists_1.eq_orig : (∃ x, True) = ∃ x, True -/
 #guard_msgs in
 #check @V.nested_Exists_1.eq_orig
 
-/-- info: W.nested_Box_1.eq_orig : W.nested_Box_1 = Box W -/
+/-- info: W.nested_Box_1.eq_orig : Box W = Box W -/
 #guard_msgs in
 #check @W.nested_Box_1.eq_orig
 
@@ -130,29 +233,60 @@ inductive X2 : Type where
   | mk0 : X2
   | mkT : Two X2 → X2
 
-/-- info: X2.nested_Two_1.eq_orig : X2.nested_Two_1 = Two X2 -/
+/-- info: X2.nested_Two_1.eq_orig : Two X2 = Two X2 -/
 #guard_msgs in
 #check @X2.nested_Two_1.eq_orig
 
 example (h : Two X2) : X2 := X2.mkT (X2.nested_Two_1.eq_orig ▸ h)
 
-/-! ## Parameters -/
+/-! ## Parameters
+
+A parameter is implicit in a constructor and explicit in the type former, and
+rescuing the block has to leave it that way -- it decides whether the
+constructor is written `P.ghost h` or `P.ghost α h`.
+-/
 
 inductive P (α : Type) : Type where
   | leaf : α → P α
   | ghost : Nonempty (P α) → P α
 
-/-- info: P.ghost : (α : Type) → P.nested_Nonempty_1 α → P α -/
+/-- info: @P.ghost : {α : Type} → Nonempty (P α) → P α -/
 #guard_msgs in
 #check @P.ghost
+
+/-- info: P.ghost {α : Type} : Nonempty (P α) → P α -/
+#guard_msgs in
+#check P.ghost
+
+-- the constructor that was not touched keeps the same annotations
+/-- info: P.leaf {α : Type} : α → P α -/
+#guard_msgs in
+#check P.leaf
+
+example (α : Type) (h : Nonempty (P α)) : P α := P.ghost h
 
 /-- info: P.nested_Nonempty_1 : Type → Prop -/
 #guard_msgs in
 #check @P.nested_Nonempty_1
 
-/-- info: P.nested_Nonempty_1.eq_orig : ∀ (α : Type), P.nested_Nonempty_1 α = Nonempty (P α) -/
+-- a partially applied copy is shown under its own name: its original's
+-- parameters may mention the arguments it has not been given
+/-- info: @P.nested_Nonempty_1.intro : ∀ {α : Type} (val : P α), Nonempty (P α) -/
+#guard_msgs in
+#check @P.nested_Nonempty_1.intro
+
+/-- info: P.nested_Nonempty_1.eq_orig : ∀ (α : Type), Nonempty (P α) = Nonempty (P α) -/
 #guard_msgs in
 #check @P.nested_Nonempty_1.eq_orig
+
+/-- An instance parameter is an instance parameter on the other side too. -/
+inductive PI (α : Type) [Inhabited α] : Type where
+  | leaf : α → PI α
+  | ghost : Nonempty (PI α) → PI α
+
+/-- info: PI.ghost {α : Type} [Inhabited α] : Nonempty (PI α) → PI α -/
+#guard_msgs in
+#check PI.ghost
 
 /-! ## Indices
 
@@ -167,7 +301,7 @@ inductive Ix : Nat → Type where
   | base : Ix 0
   | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
 
-/-- info: Ix.step : (n : Nat) → Ix.nested_Nonempty_1 n → Ix (n + 1) -/
+/-- info: Ix.step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1) -/
 #guard_msgs in
 #check @Ix.step
 
@@ -175,12 +309,12 @@ inductive Ix : Nat → Type where
 #guard_msgs in
 #check @Ix.nested_Nonempty_1
 
-/-- info: Ix.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Ix n), Ix.nested_Nonempty_1 n -/
+/-- info: Ix.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Ix n), Nonempty (Ix n) -/
 #guard_msgs in
 #check @Ix.nested_Nonempty_1.intro
 
 -- the generalised index is quantified in the bridge too
-/-- info: Ix.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Ix.nested_Nonempty_1 n = Nonempty (Ix n) -/
+/-- info: Ix.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Nonempty (Ix n) = Nonempty (Ix n) -/
 #guard_msgs in
 #check @Ix.nested_Nonempty_1.eq_orig
 
@@ -193,7 +327,7 @@ inductive Iy : Nat → Type where
   | l : (n : Nat) → Nonempty (Iy n) → Iy (n + 1)
   | r : (m : Nat) → Nonempty (Iy m) → Iy (m + 2)
 
-/-- info: Iy.r : (m : Nat) → Iy.nested_Nonempty_1 m → Iy (m + 2) -/
+/-- info: Iy.r : (m : Nat) → Nonempty (Iy m) → Iy (m + 2) -/
 #guard_msgs in
 #check @Iy.r
 
@@ -258,7 +392,16 @@ inductive N : Type where
 A bridge needs the copy and the original to take the same constructor
 arguments.  `N.nested_List_2` is a data member -- only isomorphic to `List N`,
 not equal to it -- and `N.nested_Nonempty_1`'s field is that copy rather than a
-`List N`, so neither gets one.  The types themselves are unaffected. -/
+`List N`, so neither gets one.  The types themselves are unaffected.
+
+A member with no bridge keeps its own name, in the coercion that is not there
+and in what is displayed: showing `List N` for something merely isomorphic to it
+would be a lie, and the `#check`s above say `N.nested_List_2`. -/
+
+/-- error: Unknown constant `N.nested_List_2.coeToOrig` -/
+#guard_msgs in
+#check @N.nested_List_2.coeToOrig
+
 
 /-- error: Unknown constant `N.nested_List_2.eq_orig` -/
 #guard_msgs in
