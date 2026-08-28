@@ -53,7 +53,7 @@ them into a mutual block. Those are rescued too:
 ```lean
 inductive T : Type where
   | mk1 : T
-  | mkT : Nonempty T → T   -- (kernel) mutually inductive types must live in the same universe
+  | mkT : Nonempty T → T   -- without Mumi: "(kernel) mutually inductive types must live in the same universe"
 ```
 
 ## Installing
