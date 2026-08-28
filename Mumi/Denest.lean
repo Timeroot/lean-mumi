@@ -275,12 +275,16 @@ original type back into the user's code:
 example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
 ```
 
-`propext` is the only axiom involved.  Both directions are the copy's recursor
-against the original's, which is possible exactly because the two have the same
-constructors: `A.cᵢ`'s fields are `I.cᵢ`'s with the nested occurrences
-rewritten, so when no field mentions an auxiliary member the two constructors
-take *the same* arguments and each direction is one recursor call per
-constructor.
+Both directions are the copy's recursor against the original's, which is
+possible exactly because the two have the same constructors: `A.cᵢ`'s fields are
+`I.cᵢ`'s with the nested occurrences rewritten, so when no field mentions an
+auxiliary member the two constructors take *the same* arguments and each
+direction is one recursor call per constructor.
+
+`propext` turns the two implications into an equality and is the only axiom the
+equality needs.  It is not needed to *use* the identification: the coercions
+below are the implications themselves, so a term that moves a value between a
+copy and its original depends on no axioms and still reduces.
 
 That proviso is the whole restriction.  It rules out a wrapper that is
 recursive through the nesting (`A`'s own field would be an `A`) and a nesting
@@ -365,29 +369,34 @@ changing how unrelated types print.
 def origCoeName (aux : Name) : Name := aux ++ `coeToOrig
 
 /--
-Register a coercion from one side of the identification to the other.
+Register a coercion from one side of the identification to the other, given `f`
+taking the one to the other.
 
 The equality alone would still leave the copy's name to be written out at every
 use.  The pair of coercions is what removes it: one lets the original be passed
 to a constructor that asks for the copy, the other lets a field bound by a
 pattern match be used as the original.
 
+`f` is one half of the `Iff` the equality was built from rather than a `cast`
+along the equality, so a coerced term neither depends on `propext` nor gets
+stuck on it.
+
 Like any coercion, one is inserted only where the type it has to reach is
 known; a consumer whose own type argument is still a metavariable needs the
 field ascribed, and the ascription names the original rather than the copy.
+`⟨...⟩` reads the expected type instead of being coerced afterwards, and is
+handled separately in `Mumi.Bridge`.
 -/
 private def mkCoe (name : Name) (levelParams : List Name) (binders : Array Expr)
-    (src tgt eq : Expr) : MetaM Unit :=
-  withLocalDeclD `h src fun h => do
-    let f     ← mkLambdaFVars #[h] (← mkAppM ``cast #[eq, h])
-    let type  ← mkForallFVars binders (← mkAppM ``CoeOut #[src, tgt])
-    let value ← mkLambdaFVars binders (← mkAppM ``CoeOut.mk #[f])
-    check value
-    unless ← isDefEq (← inferType value) type do return
-    addDecl (.defnDecl
-      { name, levelParams, type, value, hints := .abbrev, safety := .safe })
-    setReducibleAttribute name
-    Meta.addInstance name .global 1000
+    (src tgt f : Expr) : MetaM Unit := do
+  let type  ← mkForallFVars binders (← mkAppM ``CoeOut #[src, tgt])
+  let value ← mkLambdaFVars binders (← mkAppM ``CoeOut.mk #[f])
+  check value
+  unless ← isDefEq (← inferType value) type do return
+  addDecl (.defnDecl
+    { name, levelParams, type, value, hints := .abbrev, safety := .safe })
+  setReducibleAttribute name
+  Meta.addInstance name .global 1000
 
 /--
 Prove `A ps xs idxs = I params idxs` and add it as `A.eq_orig`, then make the
@@ -476,10 +485,12 @@ private def mkBridge (inp : Input) (ps : Array Expr) (ctorNames : Array (Array N
       check value
       unless ← isDefEq (← inferType value) type do return
       addDecl (.thmDecl { name := s.name ++ `eq_orig, levelParams := inp.levelParams, type, value })
+      -- the coercions are the two halves of the `Iff`, not a `cast` along the
+      -- equality: `propext` is what makes the two *types* equal, and nothing
+      -- that merely moves a value between them should have to depend on it
       let bs := ps ++ xs ++ idxs
-      let eqApp := mkAppN (.const (s.name ++ `eq_orig) ownLevels) bs
-      mkCoe (origCoeName s.name) inp.levelParams bs lhs rhs eqApp
-      mkCoe (s.name ++ `coeOfOrig) inp.levelParams bs rhs lhs (← mkEqSymm eqApp)
+      mkCoe (origCoeName s.name) inp.levelParams bs lhs rhs fwd
+      mkCoe (s.name ++ `coeOfOrig) inp.levelParams bs rhs lhs bwd
 
 /--
 Add one member per distinct nested application, rewrite the constructors to

@@ -86,6 +86,15 @@ original.
 example (h : Nonempty T) : T := T.mkT h
 example : T := T.mkT (Nonempty.intro T.mk1)
 
+-- `propext` is what makes the two *types* equal, but moving a value between
+-- them does not need it: each coercion is one half of the `Iff`, a recursor
+-- call, rather than a `cast` along `eq_orig`
+def T.coerced : T := T.mkT (Nonempty.intro T.mk1)
+
+/-- info: 'T.coerced' does not depend on any axioms -/
+#guard_msgs in
+#print axioms T.coerced
+
 def T.witnessed (_ : Nonempty T) : Prop := True
 
 def T.probe : T → Prop
@@ -147,9 +156,31 @@ set_option pp.explicit true in
 set_option pp.all true in
 #check @T.mkT
 
--- anonymous constructor notation reaches past the copy into the block the
--- lowering builds; ascribing the original is the way through.  Both are `Prop`s,
--- so nothing observable depends on which one a proof was built in.
+-- anonymous constructor notation reads the expected type instead of being
+-- coerced afterwards, so it needs its own detour: without one it reaches past
+-- the copy into the block the lowering builds and asks for a `T._shadow`
+example : T := T.mkT ⟨T.mk1⟩
+
+example : T := T.mkT (⟨T.mk1⟩ : Nonempty T)
+
+example : T := by
+  apply T.mkT
+  exact ⟨T.mk1⟩
+
+-- the detour is only for a copy: everything else is Lean's
+/--
+error: Invalid `⟨...⟩` notation: The expected type `T` has more than one constructor
+
+Note: This notation can only be used when the expected type is an inductive type with a single constructor
+-/
+#guard_msgs in
+example : T := ⟨⟨T.mk1⟩⟩
+
+/-- error: Invalid `⟨...⟩` notation: The expected type of this term could not be determined -/
+#guard_msgs in
+example := (⟨T.mk1⟩)
+
+-- and it is off with the rest of the library
 /--
 error: Application type mismatch: The argument
   T.mk1
@@ -161,9 +192,8 @@ of sort `Prop` in the application
   T.nested_Nonempty_1._shadow.intro T.mk1
 -/
 #guard_msgs in
+set_option mumi.enabled false in
 example : T := T.mkT ⟨T.mk1⟩
-
-example : T := T.mkT (⟨T.mk1⟩ : Nonempty T)
 
 /-! ## Recursion and computation
 
@@ -181,9 +211,18 @@ def U.size : U → Nat
   | .node a b => a.size + b.size
   | .ghost _ => 0
 
+def U.big : U := .node (.leaf 3) (.node (.leaf 4) (.ghost ⟨.leaf 0⟩))
+
 /-- info: 7 -/
 #guard_msgs in
-#eval U.size (.node (.leaf 3) (.node (.leaf 4) (.ghost ⟨.leaf 0⟩)))
+#eval U.size U.big
+
+-- and a value that went through the coercion still reduces in the kernel
+example : U.size U.big = 7 := rfl
+
+/-- info: 'U.big' does not depend on any axioms -/
+#guard_msgs in
+#print axioms U.big
 
 example : U.size (.node (.leaf 1) (.leaf 2)) = 3 := rfl
 
@@ -320,6 +359,10 @@ inductive Ix : Nat → Type where
 
 example (n : Nat) (h : Nonempty (Ix n)) : Ix (n + 1) :=
   Ix.step n (Ix.nested_Nonempty_1.eq_orig n ▸ h)
+
+-- an indexed copy is passed the index before it is looked up, so `⟨...⟩` finds
+-- its original the same way
+example : Ix 1 := Ix.step 0 ⟨Ix.base⟩
 
 /-- Two occurrences that differ only in which local they mention share a member. -/
 inductive Iy : Nat → Type where

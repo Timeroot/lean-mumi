@@ -263,3 +263,42 @@ inductive OffA : Prop where
 inductive OffB : Type where
   | mk : OffA → OffB
 end
+
+/-! ## Anonymous constructor notation
+
+Rescuing a nested inductive means intercepting `⟨...⟩`, since that notation
+reads the expected type rather than being coerced afterwards.  The interception
+is keyed on the expected type being an auxiliary member with an original
+recorded, so ordinary uses -- and Lean's messages for the ways they go wrong --
+are untouched. -/
+
+structure NiPt where
+  x : Nat
+  y : Nat
+
+example : NiPt := ⟨1, 2⟩
+example : Nat × Nat × Nat := ⟨1, 2, 3⟩
+example : {n : Nat // n > 0} := ⟨1, Nat.zero_lt_one⟩
+example : ∃ n : Nat, n = n := ⟨0, rfl⟩
+
+/--
+error: Insufficient number of fields for `⟨...⟩` constructor: Constructor `NiPt.mk` has 2 explicit field, but only 1 was provided
+-/
+#guard_msgs in
+example : NiPt := ⟨1⟩
+
+/--
+error: Invalid `⟨...⟩` notation: The expected type `Nat` has more than one constructor
+
+Note: This notation can only be used when the expected type is an inductive type with a single constructor
+-/
+#guard_msgs in
+example : Nat := ⟨⟩
+
+/-- error: Invalid `⟨...⟩` notation: The expected type of this term could not be determined -/
+#guard_msgs in
+example := (⟨1, 2⟩)
+
+/-- error: Invalid `⟨...⟩` notation: The expected type `Empty` has no constructors -/
+#guard_msgs in
+example : Empty := ⟨⟩

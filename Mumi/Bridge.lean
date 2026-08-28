@@ -8,6 +8,7 @@ module
 public meta import Mumi.Options
 public meta import Mumi.Denest
 public meta import Lean.Meta.Basic
+public meta import Lean.Elab.Term
 public meta import Lean.PrettyPrinter.Delaborator.Basic
 public meta import Lean.PrettyPrinter.Delaborator.Builtins
 
@@ -24,11 +25,17 @@ universe-heterogeneous is exactly the declaration the kernel refuses, so
 `T.mkT : Nonempty T → T` can never be a kernel constructor here: the field's
 type has to be something other than `Nonempty T`, or there is nothing to
 declare.  What *can* be arranged is that nobody has to write the copy's name or
-read it, and `Mumi.Denest` arranges both.  It proves the copy equal to the
+read it, and `Mumi.Denest` arranges most of it.  It proves the copy equal to the
 original and registers a coercion each way, so the original type can be passed
 to the constructor and a field bound by a pattern match can be used as the
 original; the delaborator below then displays the copy as the original, so
 signatures, goals and error messages read the way the declaration was written.
+Between them, `#check @T.mkT`, `#print T`, `@T.rec`, a `match`, and the equation
+lemmas of a function defined by one all read `Nonempty T`.
+
+One notation escapes the coercions and so is handled here too: `⟨...⟩` reads the
+expected type rather than being elaborated and then adjusted, so it has to be
+sent to the original itself.
 
 Only a member carrying that coercion is displayed this way.  A copy that is
 merely *isomorphic* to what it copies -- any data member -- keeps its own name,
@@ -62,6 +69,31 @@ meta def origType? (n : Name) (lvls : List Level) (args : Array Expr) :
     unless src.getAppFn.constName? == some n && src.getAppArgs == ys do return none
     let abs ← mkLambdaFVars ys tgt
     return some ((abs.instantiateLevelParams ci.levelParams lvls).beta args)
+
+open Elab Term in
+/--
+Elaborate `⟨...⟩` at an identified auxiliary member as if it had been written at
+the type that member copies.
+
+A coercion cannot help here: `⟨...⟩` reads the expected type rather than being
+elaborated and then adjusted, and what it reads is the copy, whose constructors
+belong to the shadow block the lowering built.  So `T.mkT ⟨T.mk1⟩` would
+otherwise ask for a `T._shadow` -- a name from two translations down, for a
+field whose type reads `Nonempty T`.
+
+Anything else is left to Lean: an unknown expected type, a type that is not a
+copy, or a copy with no original recorded all fall through untouched.
+-/
+@[term_elab Lean.Parser.Term.anonymousCtor]
+meta def elabAnonymousCtorNested : TermElab := fun stx expectedType? => do
+  unless mumi.enabled.get (← getOptions) do throwUnsupportedSyntax
+  let some expectedType := expectedType? | throwUnsupportedSyntax
+  let expectedType ← instantiateMVars expectedType
+  let .const n lvls := expectedType.getAppFn | throwUnsupportedSyntax
+  let some orig ← origType? n lvls expectedType.getAppArgs | throwUnsupportedSyntax
+  -- elaborating at `orig` re-enters this elaborator, which then falls through:
+  -- the original is not a copy of anything
+  ensureHasType expectedType (← elabTerm stx orig)
 
 open PrettyPrinter Delaborator SubExpr in
 /--

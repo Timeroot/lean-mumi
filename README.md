@@ -190,15 +190,15 @@ set_option mumi.pp.nested false in
 #check @T.nested_Nonempty_1.eq_orig  -- T.nested_Nonempty_1 = Nonempty T
 ```
 
-`propext` is the only axiom involved. Both directions are one recursor call per
-constructor, which works because `A.cᵢ`'s fields are `I.cᵢ`'s with the nested
-occurrences rewritten — so when no field mentions an auxiliary member, the two
-constructors take the same arguments. That proviso rules out a wrapper that
-recurses through the nesting and a nesting inside a nesting; those get no
-`eq_orig`, and are otherwise unaffected.
+Both directions are one recursor call per constructor, which works because
+`A.cᵢ`'s fields are `I.cᵢ`'s with the nested occurrences rewritten — so when no
+field mentions an auxiliary member, the two constructors take the same
+arguments. That proviso rules out a wrapper that recurses through the nesting
+and a nesting inside a nesting; those get no `eq_orig`, and are otherwise
+unaffected.
 
-From that equality the block gets a coercion each way and, keyed off the
-coercion, a delaborator. Together they mean the copy is neither written nor
+From those two implications the block gets a coercion each way and, keyed off
+the coercion, a delaborator. Together they mean the copy is neither written nor
 read: the original can be handed to the constructor, a field bound by a pattern
 match can be handed to anything that wants the original, and signatures, goals
 and error messages all show the original.
@@ -209,6 +209,25 @@ def T.witnessed (_ : Nonempty T) : Prop := True
 def T.probe : T → Prop
   | .mk1 => False
   | .mkT h => T.witnessed h   -- `h` is the copy; the coercion is inserted
+```
+
+`propext` is what makes the two *types* equal, and `eq_orig` needs it. Moving a
+value between them does not: each coercion is one half of the `Iff` rather than
+a `cast` along the equality, so a rescued value depends on no axioms and still
+reduces.
+
+```lean
+def T.coerced : T := T.mkT (Nonempty.intro T.mk1)
+#print axioms T.coerced   -- 'T.coerced' does not depend on any axioms
+```
+
+`⟨...⟩` gets its own treatment, because it reads the expected type rather than
+being elaborated and then coerced; left alone it would reach past the copy into
+the shadow block the lowering builds and ask for a `T._shadow`. Instead it is
+elaborated at the original:
+
+```lean
+example : T := T.mkT ⟨T.mk1⟩
 ```
 
 A coercion needs somewhere to go, so a consumer whose type argument is still
@@ -284,11 +303,11 @@ Stock behaviour returns immediately, including the stock error message.
   the display that hide it. A *data* copy — `N.nested_List_2` for
   `Nonempty (List N)`, or a `List` nested inside a hand-written heterogeneous
   block — is merely isomorphic to what it copies, and you are on your own.
-* Anonymous constructor notation reaches past the copy into the block the
-  lowering builds: `T.mkT ⟨T.mk1⟩` reports a mismatch against a `T._shadow`.
-  Write `T.mkT (⟨T.mk1⟩ : Nonempty T)` or `T.mkT (Nonempty.intro T.mk1)`. Both
-  the copy and its shadow are `Prop`s here, so nothing observable depends on
-  which one a proof was built in.
+* A coercion is inserted only where the type it has to reach is known, so a
+  consumer whose own type argument is still a metavariable does not get one:
+  `Nonempty.elim h fun _ => …` on a field bound by a pattern match needs `h`
+  ascribed, or the argument given as `Nonempty.elim (α := T)`. The ascription
+  names the original, not the copy.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This predates the nested support and affects
   declarations the library never touches; `set_option mumi.enabled false` does
