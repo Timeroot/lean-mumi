@@ -11,6 +11,7 @@ released under the same license.
 module
 
 public import Mumi.Lowering
+public import Mumi.Denest
 import all Lean.Elab.MutualInductive
 
 /-!
@@ -235,7 +236,7 @@ it as one mutual inductive declaration.
 `lower` makes the auxiliary constructions itself as it emits each declaration,
 so there is nothing left to do for them here.
 -/
-private def elabHeterogeneousInductiveViews (vars : Array Expr)
+private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars : Array Expr)
     (elabs : Array InductiveElabStep1) : TermElabM FinalizeContext := do
   let view0 := elabs[0]!.view
   Term.withDeclName view0.declName do withRef view0.ref do
@@ -243,7 +244,7 @@ private def elabHeterogeneousInductiveViews (vars : Array Expr)
     let res ← withElaboratedHeadersHet vars elabs fun vars elabs rs scopeLevelNames =>
       mkInductiveDeclCoreHet (callback := fun context => do
           let indTypes := context.indTypes.toArray
-          MultiuniverseInductive.lower {
+          let inp : MultiuniverseInductive.Input := {
             levelParams := context.levelParams
             numVars     := context.numVars
             numParams   := context.numParams
@@ -254,6 +255,11 @@ private def elabHeterogeneousInductiveViews (vars : Array Expr)
             ctorTypes   := indTypes.map (·.ctors.toArray.map (·.type))
             isClass     := view0.isClass
           }
+          -- a block with no nested occurrence comes back from `denest` unchanged
+          MultiuniverseInductive.denest inp fun inp => do
+            if requireHeterogeneous && !(← inp.isHeterogeneous) then
+              throwError "This block is homogeneous once denested, so it is Lean's to elaborate"
+            MultiuniverseInductive.lower inp
           buildFinalizeContext context.elabs' context.levelParams context.vars context.params
             context.views context.indFVars context.rs)
         vars elabs rs scopeLevelNames
@@ -269,8 +275,15 @@ of the `mutual` block (`stx[1].getArgs`).
 
 The caller is responsible for having established that every element is an
 `inductive` declaration.
+
+With `requireHeterogeneous`, the block is only lowered if it really is
+heterogeneous once denested, and an error is thrown otherwise.  A caller that
+has not already checked -- the nested-inductive rescue, which cannot know
+without denesting -- uses this to be sure it is not taking over a block Lean
+handles itself.
 -/
-def elabHeterogeneousInductive (elems : Array Syntax) : CommandElabM Unit := do
+def elabHeterogeneousInductive (elems : Array Syntax) (requireHeterogeneous := false) :
+    CommandElabM Unit := do
   let inductives ← elems.mapM fun stx => do
     let modifiers ← elabModifiers ⟨stx[0]⟩
     pure (modifiers, stx[1])
@@ -283,7 +296,8 @@ def elabHeterogeneousInductive (elems : Array Syntax) : CommandElabM Unit := do
   elabs.forM fun e => checkValidInductiveModifier e.view.modifiers
   liftTermElabM <| elabs.forM fun e => withRef e.view.ref do
     Term.applyAttributesAt e.view.declName e.view.modifiers.attrs .beforeElaboration
-  let res ← runTermElabM fun vars => elabHeterogeneousInductiveViews vars elabs
+  let res ← runTermElabM fun vars =>
+    elabHeterogeneousInductiveViews requireHeterogeneous vars elabs
   elabInductiveViewsFinalize (elabs.map (·.view)) res
   elabInductiveViewsPostprocessing (elabs.map (·.view))
 

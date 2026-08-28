@@ -118,10 +118,15 @@ inductive Solo : Type where
   | leaf : Nat → Solo
   | node : Solo → Solo → Solo
 
-/-! ## A nested inductive
+/-! ## Nested inductives that work
 
-Denesting happens inside the inductive elaborator, not through the `mutual`
-command, so it never reaches us. -/
+Denesting happens in the *kernel*, which specialises the nesting type to the
+block and checks the enlarged block instead.  `Mumi.Declaration` watches for
+that check failing, so a nested inductive the kernel accepts is elaborated
+entirely by Lean, and is exactly the declaration it always was.
+
+The clearest evidence is `Tree.rec_1`, the auxiliary recursor the kernel adds
+for the specialised `List`: nothing in this library produces one. -/
 
 inductive Tree : Type where
   | node : List Tree → Tree
@@ -134,6 +139,87 @@ where
     | t :: rest => treeSize t + go rest
 
 example : treeSize (.node [.node [], .node []]) = 3 := rfl
+
+/--
+info: @Tree.rec_1 : {motive_1 : Tree → Sort u_1} →
+  {motive_2 : List Tree → Sort u_1} →
+    ((a : List Tree) → motive_2 a → motive_1 (Tree.node a)) →
+      motive_2 [] →
+        ((head : Tree) → (tail : List Tree) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
+          (t : List Tree) → motive_2 t
+-/
+#guard_msgs in
+#check @Tree.rec_1
+
+/-- error: Unknown constant `Tree.mutualRec` -/
+#guard_msgs in
+#check @Tree.mutualRec
+
+/-- error: Unknown constant `Tree.nested_List_1` -/
+#guard_msgs in
+#check @Tree.nested_List_1
+
+inductive ATree : Type where
+  | node : Array ATree → ATree
+
+/-- error: Unknown constant `ATree.mutualRec` -/
+#guard_msgs in
+#check @ATree.mutualRec
+
+inductive ETree : Type where
+  | node : Except String ETree → ETree
+
+/-- error: Unknown constant `ETree.mutualRec` -/
+#guard_msgs in
+#check @ETree.mutualRec
+
+/-! ## Nested inductives that fail for other reasons
+
+Failing is not enough to be rescued: denesting has to be what turns the block
+heterogeneous.  These four fail for reasons of their own, and get Lean's own
+message, once. -/
+
+-- the wrapper is a universe up, so the field does not fit its own member;
+-- this is a genuine error and the elaborator catches it before the kernel
+inductive HBox (α : Type) : Type 1 where
+  | intro : α → HBox α
+
+/--
+error: Invalid universe level in constructor `Bad1.mk`: Parameter has type
+  HBox Bad1
+at universe level
+  2
+which is not less than or equal to the inductive type's resulting universe level
+  1
+-/
+#guard_msgs in
+inductive Bad1 : Type where
+  | mk : HBox Bad1 → Bad1
+
+-- `Squash` is a quotient, not an inductive, so there is nothing to specialise
+/--
+error: (kernel) arg #1 of 'Bad2.mk' contains a non valid occurrence of the datatypes being declared
+-/
+#guard_msgs in
+inductive Bad2 : Type where
+  | mk : Squash Bad2 → Bad2
+
+/--
+error: (kernel) arg #1 of 'Bad3.mk' has a non positive occurrence of the datatypes being declared
+-/
+#guard_msgs in
+inductive Bad3 : Type where
+  | mk : (Bad3 → Bad3) → Bad3
+
+/--
+error: Constructor field `NoSuchType` of `Bad4.mk` contains universe level metavariables at the expression
+  Sort ?u.4
+in its type
+  Sort ?u.4
+-/
+#guard_msgs in
+inductive Bad4 : Type where
+  | mk : NoSuchType → Bad4
 
 /-! ## Errors are still Lean's
 

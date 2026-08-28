@@ -47,6 +47,15 @@ example : bTag (B.leaf 7) = 7 := rfl   -- iota, in the kernel
 
 No changes to Lean and no new syntax: you write `mutual` and it works.
 
+The same restriction reaches *nested* inductives, because the kernel denests
+them into a mutual block. Those are rescued too:
+
+```lean
+inductive T : Type where
+  | mk1 : T
+  | mkT : Nonempty T → T   -- (kernel) mutually inductive types must live in the same universe
+```
+
 ## Installing
 
 ```toml
@@ -116,15 +125,77 @@ takes over exactly when that throws. Any other outcome — a syntax error, a
 own words. The probe's state is discarded either way.
 
 `MumiTests/NonInterference.lean` pins this down: `mutual def`, `mutual theorem`,
-`structure`, `deriving`, homogeneous inductive blocks, nested inductives and
-single inductives all still go through Lean, and error messages are unchanged
-down to the byte.
+`structure`, `deriving`, homogeneous inductive blocks, working nested inductives
+and single inductives all still go through Lean, and error messages are
+unchanged down to the byte.
 
 Reaching Lean's `private` elaboration functions from downstream is done with
 `import all Lean.Elab.MutualInductive`. Five of them sit on the path between
 `mutual` and the kernel and two enforce the restriction being lifted, so those
 five are reproduced in `Mumi/Elab.lean` with the check dropped; everything else
 is called unmodified.
+
+### Rescuing nested inductives
+
+A *nested* inductive mentions itself under another type constructor. The kernel
+handles these by specialising the nesting type to the block and checking the
+enlarged block instead — so a nested inductive is really a mutual block in
+disguise, and it inherits the same-universe restriction:
+
+```lean
+inductive T : Type where
+  | mk1 : T
+  | mkT : Nonempty T → T
+```
+
+```
+error: (kernel) mutually inductive types must live in the same universe
+```
+
+`Nonempty T` is a `Prop` and `T` is a `Type`, so the block the kernel builds is
+heterogeneous, and this is exactly the restriction being lifted. With `Mumi`
+imported it goes through. The nesting becomes an auxiliary member of the block:
+
+```lean
+#check @T.mkT                     -- T.nested_Nonempty_1 → T
+#check @T.nested_Nonempty_1       -- Prop
+#check @T.nested_Nonempty_1.intro -- ∀ (val : T), T.nested_Nonempty_1
+```
+
+and the rescued type is an ordinary inductive: it pattern-matches, it recurses
+structurally, and it runs.
+
+**Nested inductives that already work are not touched.** Denesting is the
+kernel's own feature and there is no reason to reimplement it, so
+`Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates the declaration
+first, and only if that fails do we denest it ourselves — and then only if
+denesting is what made the block heterogeneous. Anything else is rolled back and
+Lean's error is rethrown verbatim. So the second elaboration only ever happens to
+a declaration that was going to be an error anyway, and a working nested
+inductive still gets the kernel's `T.rec_1` and no `mutualRec`.
+
+Denesting at the elaborator instead of the kernel also lifts a second
+restriction. The kernel requires a nested application's parameters to be closed:
+
+```lean
+inductive Ix : Nat → Type where
+  | base : Ix 0
+  | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
+```
+
+```
+error: (kernel) nested inductive datatypes parameters cannot contain local variables
+```
+
+Here `Ix n` mentions a constructor field, so there is no single member it could
+become. We abstract the field and make it an *index* of the auxiliary member —
+`Ix.nested_Nonempty_1 : Nat → Prop` — which works whether or not the universes
+line up. Occurrences that differ only in which local they mention share one
+member.
+
+`MumiTests/Nested.lean` covers the classic case, structural recursion and
+`#eval` on a rescued type, other `Prop` wrappers, parameters, indices, nesting
+inside a hand-written heterogeneous block, and nesting inside nesting.
 
 ### Turning it off
 
@@ -147,6 +218,14 @@ Stock behaviour returns immediately, including the stock error message.
   rejects the block before we see it.
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
+* A rescued nested inductive's constructor takes the auxiliary member, not the
+  original: `T.mkT : T.nested_Nonempty_1 → T`, not `Nonempty T → T`. The two are
+  isomorphic — and for a `Prop` auxiliary member, equal by `propext` — but that
+  bridge is not generated for you yet.
+* Importing this library changes the formatting of a few kernel error messages
+  (some gain a `(kernel)` prefix). This predates the nested support and affects
+  declarations the library never touches; `set_option mumi.enabled false` does
+  not suppress it.
 
 ## Status
 

@@ -39,7 +39,7 @@ end
 
 is rejected, even though it denotes something perfectly sensible.
 
-This module implements the lowering used by `mutual_multiuniverse`, which
+This module implements the lowering behind this library's `mutual`, which
 accepts such a block by translating it into ordinary declarations.  Everything
 it adds to the environment is an ordinary inductive type, definition or
 theorem, so no part of it asks anything new of the kernel and the worst it can
@@ -114,7 +114,7 @@ private def rep {α : Type _} (n : Nat) (a : α) : Array α := (List.replicate n
 /-! ## Input -/
 
 /--
-The elaborated block, as `mutual_multiuniverse` hands it to the lowering.  This
+The elaborated block, as the elaborator hands it to the lowering.  This
 is exactly the information `Lean.Elab.Command.mkInductiveDeclCore` has already
 computed, with the members still represented by free variables.
 -/
@@ -451,12 +451,12 @@ private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) 
   forallTelescope fieldTy fun ys body => do
     for y in ys do
       if mentionsMember inp.memberFVars (← inferType y) then
-        throwError m!"Unsupported constructor field in `mutual_multiuniverse` block: field \
+        throwError m!"Unsupported constructor field in a multiuniverse block: field \
           {k + 1} of `{ctor}` takes an argument whose type mentions a member of the block"
           ++ .note "This is not a strictly positive occurrence, so the lowering has nothing \
             to translate it to"
     let some j := inp.memberFVars.findIdx? (· == body.getAppFn)
-      | throwError m!"Unsupported constructor field in `mutual_multiuniverse` block: field \
+      | throwError m!"Unsupported constructor field in a multiuniverse block: field \
           {k + 1} of `{ctor}` mentions a member of the block in a nested position, in the \
           type{indentExpr fieldTy}"
           ++ .note "Nested occurrences are not supported: the shadow of a data member carries \
@@ -464,7 +464,7 @@ private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) 
             surrounding type as well"
     for a in body.getAppArgs do
       if mentionsMember inp.memberFVars a then
-        throwError m!"Unsupported constructor field in `mutual_multiuniverse` block: field \
+        throwError m!"Unsupported constructor field in a multiuniverse block: field \
           {k + 1} of `{ctor}` has a type that applies a member of the block to an argument \
           mentioning another one, in the type{indentExpr fieldTy}"
           ++ .note "Nested occurrences are not supported"
@@ -496,7 +496,7 @@ private def checkIndices (isProp : Array Bool) (c : CtorInfo)
   for idx in idxs do
     for f in bad do
       if idx.containsFVar f.fvarId! then
-        throwError m!"Unsupported constructor in `mutual_multiuniverse` block: `{c.name}` \
+        throwError m!"Unsupported constructor in a multiuniverse block: `{c.name}` \
           computes a result index from a field whose type is a non-`Prop` member of the block"
           ++ .note "The lowering cannot keep the shadow block and the real one in step across \
             such an index, since the shadow's data fields carry no data"
@@ -584,7 +584,7 @@ private def buildArgs (ty : Expr) (n : Nat) (mk : Nat → Expr → MetaM Expr) :
   for i in *...n do
     let ty' ← whnf ty
     let .forallE _ d body _ := ty'
-      | throwError "(internal) `mutual_multiuniverse`: expected {n} arguments in\
+      | throwError "(internal) multiuniverse lowering: expected {n} arguments in\
           {indentExpr ty}"
     let a ← mk i d
     args := args.push a
@@ -612,7 +612,7 @@ private def aliasNativeRecs (b : Block) : MetaM Unit := do
       (mkConst rn (info.levelParams.map Level.param)) (compile := false)
 
 /-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so
-that `mutual_multiuniverse` is a strict superset of `mutual`. -/
+that this library's `mutual` is a strict superset of Lean's. -/
 private def emitNative (b : Block) : MetaM Unit := do
   let mut indTypes : Array InductiveType := #[]
   for i in *...b.size do
@@ -940,7 +940,7 @@ private def mkPropRecBody (b : Block) (i : Nat)
 private def mkDataRecBody (b : Block) (i : Nat)
     (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
   let some s := b.sccOf[i]!
-    | throwError "(internal) `mutual_multiuniverse`: data member without an SCC"
+    | throwError "(internal) multiuniverse lowering: data member without an SCC"
   let mut nmotives := #[]
   for j in b.sccs[s]! do
     let aj ← instantiateForall b.members[j]!.type params
@@ -1108,7 +1108,7 @@ private def withMutualRecTelescope {α} [Inhabited α] (b : Block) (i : Nat)
   forallTelescope info.type fun xs _ => do
     let nfront := b.numParams + b.size + b.allCtors.size
     if xs.size ≤ nfront then
-      throwError "(internal) `mutual_multiuniverse`: unexpected signature for \
+      throwError "(internal) multiuniverse lowering: unexpected signature for \
         `{b.recName i}`:{indentExpr info.type}"
     k xs (xs.extract 0 b.numParams)
       (xs.extract b.numParams (b.numParams + b.size))
@@ -1176,7 +1176,7 @@ private def mkImplEqBody (b : Block) (implGroup motiveGroup : Array Nat) (levels
     let c := b.allCtors[gq]!
     forallTelescope minorTy fun args target => do
       let some (_, lhs, _) := (← whnf target).eq?
-        | throwError "(internal) `mutual_multiuniverse`: the induction motive for \
+        | throwError "(internal) multiuniverse lowering: the induction motive for \
             `{b.members[c.owner]!.name}` is not an equation"
       if !implGroup.contains c.owner then
         return ← mkLambdaFVars args (← mkEqRefl lhs)
@@ -1274,10 +1274,10 @@ private def emitNativeImpls (b : Block) : TermElabM Unit := do
     emitImplGroup b b.sccs[s]! (Array.range b.size)
 
 /--
-Lower an elaborated `mutual_multiuniverse` block to ordinary declarations.
+Lower an elaborated multiuniverse block to ordinary declarations.
 
-A homogeneous block is emitted natively, so `mutual_multiuniverse` accepts
-everything `mutual` does and means the same thing by it.
+A homogeneous block is emitted natively, so this library's `mutual` accepts
+everything Lean's does and means the same thing by it.
 -/
 def lower (inp : Input) : TermElabM Unit := do
   let b ← analyze inp
