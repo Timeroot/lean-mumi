@@ -50,6 +50,18 @@ info: @T.mutualRec : {motive_1 : T → Sort u_1} →
 #guard_msgs in
 #check @T.mutualRec
 
+-- the copy is a `Prop` with the same constructors as the original, so the two
+-- are equal, and saying so lets the original type back into the user's code
+/-- info: T.nested_Nonempty_1.eq_orig : T.nested_Nonempty_1 = Nonempty T -/
+#guard_msgs in
+#check @T.nested_Nonempty_1.eq_orig
+
+/-- info: 'T.nested_Nonempty_1.eq_orig' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms T.nested_Nonempty_1.eq_orig
+
+example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
+
 /-! ## Recursion and computation
 
 The rescued type is an ordinary inductive: it pattern-matches, it recurses
@@ -101,6 +113,29 @@ inductive W : Type where
 #guard_msgs in
 #check @W.nested_Box_1.intro
 
+/-- info: V.nested_Exists_1.eq_orig : V.nested_Exists_1 = ∃ x, True -/
+#guard_msgs in
+#check @V.nested_Exists_1.eq_orig
+
+/-- info: W.nested_Box_1.eq_orig : W.nested_Box_1 = Box W -/
+#guard_msgs in
+#check @W.nested_Box_1.eq_orig
+
+-- more than one constructor, so the bridge has to pair them up in order
+inductive Two (α : Type) : Prop where
+  | l : α → Two α
+  | r : Nat → α → Two α
+
+inductive X2 : Type where
+  | mk0 : X2
+  | mkT : Two X2 → X2
+
+/-- info: X2.nested_Two_1.eq_orig : X2.nested_Two_1 = Two X2 -/
+#guard_msgs in
+#check @X2.nested_Two_1.eq_orig
+
+example (h : Two X2) : X2 := X2.mkT (X2.nested_Two_1.eq_orig ▸ h)
+
 /-! ## Parameters -/
 
 inductive P (α : Type) : Type where
@@ -114,6 +149,10 @@ inductive P (α : Type) : Type where
 /-- info: P.nested_Nonempty_1 : Type → Prop -/
 #guard_msgs in
 #check @P.nested_Nonempty_1
+
+/-- info: P.nested_Nonempty_1.eq_orig : ∀ (α : Type), P.nested_Nonempty_1 α = Nonempty (P α) -/
+#guard_msgs in
+#check @P.nested_Nonempty_1.eq_orig
 
 /-! ## Indices
 
@@ -139,6 +178,14 @@ inductive Ix : Nat → Type where
 /-- info: Ix.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Ix n), Ix.nested_Nonempty_1 n -/
 #guard_msgs in
 #check @Ix.nested_Nonempty_1.intro
+
+-- the generalised index is quantified in the bridge too
+/-- info: Ix.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Ix.nested_Nonempty_1 n = Nonempty (Ix n) -/
+#guard_msgs in
+#check @Ix.nested_Nonempty_1.eq_orig
+
+example (n : Nat) (h : Nonempty (Ix n)) : Ix (n + 1) :=
+  Ix.step n (Ix.nested_Nonempty_1.eq_orig n ▸ h)
 
 /-- Two occurrences that differ only in which local they mention share a member. -/
 inductive Iy : Nat → Type where
@@ -205,6 +252,25 @@ inductive N : Type where
 /-- info: N.nested_List_2.cons : N → N.nested_List_2 → N.nested_List_2 -/
 #guard_msgs in
 #check @N.nested_List_2.cons
+
+/-! ## Where there is no bridge
+
+A bridge needs the copy and the original to take the same constructor
+arguments.  `N.nested_List_2` is a data member -- only isomorphic to `List N`,
+not equal to it -- and `N.nested_Nonempty_1`'s field is that copy rather than a
+`List N`, so neither gets one.  The types themselves are unaffected. -/
+
+/-- error: Unknown constant `N.nested_List_2.eq_orig` -/
+#guard_msgs in
+#check @N.nested_List_2.eq_orig
+
+/-- error: Unknown constant `N.nested_Nonempty_1.eq_orig` -/
+#guard_msgs in
+#check @N.nested_Nonempty_1.eq_orig
+
+/-- error: Unknown constant `D5A.nested_List_1.eq_orig` -/
+#guard_msgs in
+#check @D5A.nested_List_1.eq_orig
 
 /-! ## The off switch -/
 

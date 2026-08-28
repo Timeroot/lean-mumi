@@ -167,6 +167,23 @@ imported it goes through. The nesting becomes an auxiliary member of the block:
 and the rescued type is an ordinary inductive: it pattern-matches, it recurses
 structurally, and it runs.
 
+The copy is not the original, though, and the constructor now asks for the copy.
+When the copy is a `Prop` the two are not merely isomorphic but *equal*, and
+saying so once lets the original type back in:
+
+```lean
+#check @T.nested_Nonempty_1.eq_orig  -- T.nested_Nonempty_1 = Nonempty T
+
+example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
+```
+
+`propext` is the only axiom involved. Both directions are one recursor call per
+constructor, which works because `A.cᵢ`'s fields are `I.cᵢ`'s with the nested
+occurrences rewritten — so when no field mentions an auxiliary member, the two
+constructors take the same arguments. That proviso rules out a wrapper that
+recurses through the nesting and a nesting inside a nesting; those get no
+`eq_orig`, and are otherwise unaffected.
+
 **Nested inductives that already work are not touched.** Denesting is the
 kernel's own feature and there is no reason to reimplement it, so
 `Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates the declaration
@@ -195,9 +212,10 @@ become. We abstract the field and make it an *index* of the auxiliary member —
 line up. Occurrences that differ only in which local they mention share one
 member.
 
-`MumiTests/Nested.lean` covers the classic case, structural recursion and
-`#eval` on a rescued type, other `Prop` wrappers, parameters, indices, nesting
-inside a hand-written heterogeneous block, and nesting inside nesting.
+`MumiTests/Nested.lean` covers the classic case, the bridges, structural
+recursion and `#eval` on a rescued type, other `Prop` wrappers, parameters,
+indices, nesting inside a hand-written heterogeneous block, and nesting inside
+nesting.
 
 ### Turning it off
 
@@ -221,9 +239,9 @@ Stock behaviour returns immediately, including the stock error message.
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
 * A rescued nested inductive's constructor takes the auxiliary member, not the
-  original: `T.mkT : T.nested_Nonempty_1 → T`, not `Nonempty T → T`. The two are
-  isomorphic — and for a `Prop` auxiliary member, equal by `propext` — but that
-  bridge is not generated for you yet.
+  original: `T.mkT : T.nested_Nonempty_1 → T`, not `Nonempty T → T`. When the
+  auxiliary member is a `Prop` you get `T.nested_Nonempty_1.eq_orig` to bridge
+  the two; otherwise you are on your own.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This predates the nested support and affects
   declarations the library never touches; `set_option mumi.enabled false` does
