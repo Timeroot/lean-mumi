@@ -100,9 +100,11 @@ The block is lowered to declarations Lean's kernel already accepts:
    in topological order;
 3. the **user-facing** names, constructors and recursors on top.
 
-`Mumi/Lowering.lean` does that. The derivation, with worked examples and the
-argument that the result is conservative, is written up separately in
-`docs/heterogeneous-mutual-lowering.md`.
+`Mumi/Lowering.lean` does that, and its module docstring carries the argument:
+what each stage is for, why every SCC of data members is necessarily
+homogeneous, why the derived recursors have exactly the elimination strength
+they should, and why each iota rule holds — by proof irrelevance for the `Prop`
+members, by delta plus native iota for the data ones.
 
 Each data member's recursor gets a `Xᵢ.mutualRec.impl` — a `casesOn` recursion
 put through Lean's own `Structural.structuralRecursion` — plus a kernel-checked
