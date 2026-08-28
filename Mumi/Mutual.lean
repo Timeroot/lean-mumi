@@ -43,10 +43,14 @@ and defers to Lean's own elaborator for every other block.
 meta def elabMutualHeterogeneous : CommandElab := fun stx => do
   unless mumi.enabled.get (← getOptions) do
     throwUnsupportedSyntax
-  unless (← blockNeedsLowering stx[1].getArgs) do
+  let elems := stx[1].getArgs
+  let route ← classifyBlock elems
+  if route == .stock then
     throwUnsupportedSyntax
   withExporting (isExporting := (← getScope).isPublic) do
   withoutCommandIncrementality true do
-    elabHeterogeneousInductive stx[1].getArgs
+    match route with
+    | .indind => IndInd.elabInductionInductive elems
+    | _ => elabHeterogeneousInductive elems
 
 end Mumi

@@ -12,6 +12,7 @@ module
 
 public import Mumi.Lowering
 public import Mumi.Denest
+public import Mumi.IndInd
 import all Lean.Elab.MutualInductive
 
 /-!
@@ -354,6 +355,61 @@ def blockNeedsLowering (elems : Array Syntax) : CommandElabM Bool := do
         headersAreHeterogeneous elabs
     catch _ =>
       pure false
+  set saved
+  return res
+
+/-- Which of the three elaborators a `mutual` block should go to. -/
+inductive Route where
+  /-- Lean's own; we step aside. -/
+  | stock
+  /-- `elabHeterogeneousInductive`: the members are not all in one universe. -/
+  | heterogeneous
+  /-- `IndInd.elabInductionInductive`: a member's arity mentions a sibling. -/
+  | indind
+  deriving Inhabited, DecidableEq, Repr
+
+/-- `classifyBlock`, once the views are in hand. -/
+private def routeFromHeaders (elabs : Array InductiveElabStep1) : TermElabM Route := do
+  if elabs.any (·.view.isCoinductive) then
+    return .stock
+  try
+    if ← headersAreHeterogeneous elabs then return .heterogeneous else return .stock
+  catch _ =>
+    if IndInd.viewsAreInductionInductive (elabs.map (·.view)) then
+      return .indind
+    else
+      return .stock
+
+/--
+Which elaborator this block belongs to.
+
+`heterogeneous` is decided exactly as `blockNeedsLowering` decides it, by asking
+`Lean.Elab.Command.checkHeaders` about headers that did elaborate.
+
+`indind` needs the headers to have *failed*, since that is what
+induction-induction does to them -- Lean elaborates every arity before any
+member is in scope -- together with a member's arity mentioning a sibling by
+name.  Requiring the failure is what keeps a legal block that names a global of
+the same name out of our hands: that one elaborates, and goes to `stock`.
+
+Anything else that goes wrong while finding out answers `stock`, so that Lean's
+elaborator runs and reports it.  All state touched here is rolled back.
+-/
+def classifyBlock (elems : Array Syntax) : CommandElabM Route := do
+  unless elems.all (·[1].getKind == ``Lean.Parser.Command.«inductive») do
+    return .stock
+  if elems.size ≤ 1 then
+    return .stock
+  let saved ← get
+  let res ←
+    try
+      let inductives ← elems.mapM fun stx => do
+        let modifiers ← elabModifiers ⟨stx[0]⟩
+        pure (modifiers, stx[1])
+      runTermElabM fun _ => do
+        routeFromHeaders (← inductives.mapM fun (modifiers, stx) => mkInductiveView modifiers stx)
+    catch _ =>
+      pure .stock
   set saved
   return res
 

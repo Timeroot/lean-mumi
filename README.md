@@ -56,6 +56,25 @@ inductive T : Type where
   | mkT : Nonempty T → T   -- (kernel) mutually inductive types must live in the same universe
 ```
 
+And a third restriction, unrelated to universes: a member's *arity* may not
+mention a sibling. When that dependency runs only through proofs, the block is
+lowered too:
+
+```lean
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | snoc : (Γ : Ctx) → (x : String) → Fresh x Γ → Ctx   -- unknown identifier 'Fresh'
+inductive Fresh : String → Ctx → Prop where             -- unknown identifier 'Ctx'
+  | nil : (x : String) → Fresh x .nil
+  | snoc : (x y : String) → (Γ : Ctx) → (h : Fresh y Γ) → x ≠ y → Fresh x Γ →
+    Fresh x (.snoc Γ y h)
+end
+
+def Ctx.length (Γ : Ctx) : Nat :=
+  Ctx.recursor (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
+```
+
 ## Installing
 
 ```toml
@@ -277,6 +296,55 @@ the display, structural recursion and `#eval` on a rescued type, other `Prop`
 wrappers, parameters, indices, nesting inside a hand-written heterogeneous
 block, and nesting inside nesting.
 
+### Induction-induction through `Prop`
+
+A block is *induction-inductive* when one member's arity mentions another. This
+is a different obstruction: the block does not elaborate at all, because Lean
+elaborates every arity before any member is in scope, so the sibling is an
+unknown identifier. Collapsing the block to one universe would not help.
+
+`Mumi/IndInd.lean` handles the case where the dependency runs **only through
+proofs** — every field of a data constructor whose type mentions a `Prop` member
+is itself a proof. Then that field can be erased, and what is left is ordinary:
+
+```lean
+inductive Ctx._pre : Type where
+  | nil  : Ctx._pre
+  | snoc : Ctx._pre → String → Ctx._pre
+
+inductive Fresh._pre : String → Ctx._pre → Prop where ...
+```
+
+`Ctx._pre` has forgotten which of its elements are real contexts, so a predicate
+puts that back — as a *function*, not an inductive:
+
+```lean
+def Ctx._wf : Ctx._pre → Prop :=
+  Ctx._pre.rec (motive := fun _ => Prop) True (fun Γ x ih => ih ∧ Fresh._pre x Γ)
+
+def Ctx := { Γ : Ctx._pre // Ctx._wf Γ }
+def Fresh (x : String) (Γ : Ctx) : Prop := Fresh._pre x Γ.val
+```
+
+Being a function is what makes this cheap. `Ctx._wf (.snoc Γ x)` *is*
+`Ctx._wf Γ ∧ Fresh._pre x Γ`, definitionally, so "inversion" is `And.left` and
+`And.right` and no inversion lemmas have to be generated. One conjunct per
+recursive field, one per erased proof.
+
+The constructors become definitions, and `Ctx.recursor` is written by structural
+recursion on the pre-type with the well-formedness proof threaded through, so it
+is computable for the same reason the heterogeneous recursors are. Both iota
+rules hold by `rfl` and nothing depends on any axiom — resting on the same two
+things the heterogeneous lowering rests on: definitional proof irrelevance,
+which collapses the `_wf` proofs, and definitional eta for structures, which
+gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
+
+We only claim a block whose headers Lean has *already* failed to elaborate and
+one of whose arities names a sibling. A legal block whose arity happens to name
+a same-named global is elaborated by Lean, untouched — `MumiTests/IndInd.lean`
+pins that alongside the motivating block, several `Prop` members, `Prop`-first
+ordering, and the two rejections.
+
 ### Turning it off
 
 ```lean
@@ -308,6 +376,18 @@ Stock behaviour returns immediately, including the stock error message.
   `Nonempty.elim h fun _ => …` on a field bound by a pattern match needs `h`
   ascribed, or the argument given as `Nonempty.elim (α := T)`. The ascription
   names the original, not the copy.
+* An induction-inductive block gets a much narrower deal than a heterogeneous
+  one. Exactly one member may be data, and it may not be indexed; there are no
+  parameters, no section `variable`s and no universe parameters; and a data
+  constructor's field that mentions a `Prop` member must be a proof, so a block
+  whose data genuinely depends on data — `Ctx` indexed by its own length — is
+  out of scope.
+* An induction-inductive block's constructors are `def`s rather than
+  constructors, so `match` does not work and there is no `injEq` or
+  `noConfusion`. `induction Γ using Ctx.recursor with | nil => … | snoc Γ x h ih
+  => …` is the way in; a bare `induction`/`cases` destructs the underlying
+  subtype and leaks `Ctx._pre` into the goal, and `cases` on the `Prop` member
+  fails outright, pending a derived `Fresh.rec`.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This predates the nested support and affects
   declarations the library never touches; `set_option mumi.enabled false` does
