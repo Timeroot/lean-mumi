@@ -1,0 +1,11 @@
+name = "lean-mumi"
+version = "0.1.0"
+defaultTargets = ["Mumi"]
+testDriver = "MumiTests"
+
+[[lean_lib]]
+name = "Mumi"
+
+[[lean_lib]]
+name = "MumiTests"
+globs = ["MumiTests.+"]
