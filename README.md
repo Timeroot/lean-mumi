@@ -72,7 +72,7 @@ inductive Fresh : String → Ctx → Prop where             -- unknown identifie
 end
 
 def Ctx.length (Γ : Ctx) : Nat :=
-  Ctx.recursor (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
+  Ctx.rec (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
 ```
 
 ## Installing
@@ -331,7 +331,7 @@ Being a function is what makes this cheap. `Ctx._wf (.snoc Γ x)` *is*
 `And.right` and no inversion lemmas have to be generated. One conjunct per
 recursive field, one per erased proof.
 
-The constructors become definitions, and `Ctx.recursor` is written by structural
+The constructors become definitions, and `Ctx.rec` is written by structural
 recursion on the pre-type with the well-formedness proof threaded through, so it
 is computable for the same reason the heterogeneous recursors are. Both iota
 rules hold by `rfl` and nothing depends on any axiom — resting on the same two
@@ -402,7 +402,7 @@ RecWFTree.nested_WFWith_4        : RecWFTree.nested_Tree_2 → List Nat → Prop
 
 which is exactly narrow-class induction-induction — only the `Prop` members'
 arities mention the block. So it is lowered, and `RecWFTree` gets a three-motive
-`RecWFTree.recursor` whose iota rules hold by `rfl`, computes under `#eval`, and
+`RecWFTree.rec` whose iota rules hold by `rfl`, computes under `#eval`, and
 depends on no axioms. `MumiTests/NestedIndInd.lean` pins that, along with
 parameters and indices carried into the copies.
 
@@ -460,7 +460,7 @@ Stock behaviour returns immediately, including the stock error message.
   Section `variable`s are not supported.
 * An induction-inductive block's constructors are `def`s rather than
   constructors, so `match` does not work and there is no `injEq` or
-  `noConfusion`. `induction Γ using Ctx.recursor with | nil => … | snoc Γ x h ih
+  `noConfusion`. `induction Γ using Ctx.rec with | nil => … | snoc Γ x h ih
   => …` is the way in; a bare `induction`/`cases` destructs the underlying
   subtype and leaks `Ctx._pre` into the goal, and `cases` on the `Prop` member
   works only where the motive does not depend on the indices, pending a derived

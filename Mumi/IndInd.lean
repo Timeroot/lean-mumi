@@ -79,7 +79,7 @@ def Ctx.recAux {C : Ctx → Sort u} (nil : C Ctx.nil)
   | .nil,          _ => nil
   | .snoc Γ₀ x,    w => snoc ⟨Γ₀, w.1⟩ x w.2 (Ctx.recAux nil snoc Γ₀ w.1)
 
-def Ctx.recursor {C : Ctx → Sort u} .. (Γ : Ctx) : C Γ :=
+def Ctx.rec {C : Ctx → Sort u} .. (Γ : Ctx) : C Γ :=
   Ctx.recAux nil snoc Γ.val Γ.property
 ```
 
@@ -185,7 +185,7 @@ structural.  Both differences are small and both are load-bearing.
   the "narrow" in narrow class.
 * The data members' constructors are `def`s, so `match` on them does not work
   and there is no `injEq` or `noConfusion`.  Reason with
-  `induction Γ using Ctx.recursor with | nil => .. | snoc Γ x h ih => ..`; a
+  `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`; a
   bare `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into
   the goal.
 * `cases` on a `Prop` member works only where the motive does not depend on the
@@ -677,6 +677,8 @@ structure Plan where
   prePropInds : Array InductiveType
   /-- `X._wf`, per data member: its name, type and `X._pre.rec` body. -/
   wfDecls : Array (Name × Expr × Expr)
+  /-- The members denesting added, and the original application each copies. -/
+  copies : Array (Name × Expr) := #[]
   deriving Inhabited
 
 /-- The elaborated block, with no syntax left in it. -/
@@ -692,6 +694,13 @@ structure Raw where
   scopeLevelNames : List Name
   /-- The level names the block itself declares. -/
   declLevelNames  : List Name
+  /--
+  The members `denestRaw` added, and what each one is a copy of: a lambda over
+  the block's parameters giving the original application `I ps'` that the copy
+  stands for, with the copy's own indices still to come.  Empty for a block
+  somebody wrote.
+  -/
+  copies : Array (Name × Expr) := #[]
   deriving Inhabited
 
 /-- The block's own names: its members and their constructors. -/
@@ -886,7 +895,8 @@ def prepareCore (r : Raw) : TermElabM Plan := do
             (ps ++ motives ++ wfMinors)
         wfDecls := wfDecls.push (wfName m.name, type, value)
       return wfDecls
-    return { block := b, preDataInds, prePropInds, wfDecls }
+    return { block := b, preDataInds, prePropInds, wfDecls
+             copies := r.copies.map fun (n, e) => (n, normLevels blockNames lvls e) }
 where
   /-- Every field of a data constructor is `plain`, `recur` or `erased`. -/
   classifyDataCtor (b : Block) (i : Nat) (c : CtorSpec) : TermElabM (Array FieldKind) :=
@@ -1362,12 +1372,18 @@ def denestRaw (r : Raw) : TermElabM Raw := do
     stubInOrder <| (Array.range specs.size).flatMap fun k =>
       (Array.range auxCtorTypes[k]!.size).map fun j =>
         (reroot specs[k]!.indName specs[k]!.name specs[k]!.ctors[j]!, auxCtorTypes[k]![j]!)
+    -- what each copy stands for, kept for the bridge back to it
+    let mut copies : Array (Name × Expr) := #[]
+    for s in specs do
+      copies := copies.push
+        (s.name, ← instantiateMVars (← mkLambdaFVars ps (mkAppN (.const s.indName s.levels) s.params)))
     return { r with
       names := r.names ++ auxNames
       ctorNames := r.ctorNames ++ specs.map fun s => s.ctors.map (reroot s.indName s.name)
       arities := (← arities.mapM instantiateMVars) ++ (← auxArities.mapM instantiateMVars)
       ctorTypes := (← ctorTypes.mapM (·.mapM instantiateMVars)) ++
-        (← auxCtorTypes.mapM (·.mapM instantiateMVars)) }
+        (← auxCtorTypes.mapM (·.mapM instantiateMVars))
+      copies := r.copies ++ copies }
 
 /-! ## Emitting the declarations -/
 
@@ -1464,7 +1480,13 @@ def emit (p : Plan) : TermElabM Unit := do
     return c
   let lvl := Level.param lp
   let recAuxName (i : Nat) : Name := b.members[i]!.name ++ `recAux
-  let recName (i : Nat) : Name := b.members[i]!.name ++ `recursor
+  -- a member of an induction-inductive block is a `def`, so Lean generates no
+  -- `X.rec` for it and the name is free -- which is the one users reach for.
+  -- It is still checked, in case a member is named under something that has one
+  let env ← getEnv
+  let recName (i : Nat) : Name :=
+    let n := b.members[i]!.name ++ `rec
+    if (env.find? n).isNone then n else b.members[i]!.name ++ `recursor
   -- one motive is `C`; several are `C_Ctx`, `C_Ty`, .. so they can be named
   let motiveName (i : Nat) : Name :=
     if dIdxs.size == 1 then `C else Name.mkSimple ("C_" ++ b.members[i]!.name.getString!)

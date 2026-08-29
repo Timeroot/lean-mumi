@@ -102,7 +102,7 @@ info: @RecWFTree.nested_WFWith_4.node : ∀ {llist rlist : List Nat} (key : Nat)
 
 -- one motive per data member, and the erased proof back in its minor
 /--
-info: @RecWFTree.recursor : {C_RecWFTree : RecWFTree → Sort u_1} →
+info: @RecWFTree.rec : {C_RecWFTree : RecWFTree → Sort u_1} →
   {C_nested_WFTree_1 : RecWFTree.nested_WFTree_1 → Sort u_1} →
     {C_nested_Tree_2 : RecWFTree.nested_Tree_2 → Sort u_1} →
       ((x : RecWFTree.nested_WFTree_1) → C_nested_WFTree_1 x → C_RecWFTree (RecWFTree.mk x)) →
@@ -118,7 +118,7 @@ info: @RecWFTree.recursor : {C_RecWFTree : RecWFTree → Sort u_1} →
               (t : RecWFTree) → C_RecWFTree t
 -/
 #guard_msgs in
-#check @RecWFTree.recursor
+#check @RecWFTree.rec
 
 namespace RecWFTree
 
@@ -135,7 +135,7 @@ def wrap (v : RecWFTree) : RecWFTree := .mk (.mk (leaf v) (leafWF v))
 
 /-- How many `RecWFTree`s are nested inside. -/
 def depth (t : RecWFTree) : Nat :=
-  RecWFTree.recursor (C_RecWFTree := fun _ => Nat) (C_nested_WFTree_1 := fun _ => Nat)
+  RecWFTree.rec (C_RecWFTree := fun _ => Nat) (C_nested_WFTree_1 := fun _ => Nat)
     (C_nested_Tree_2 := fun _ => Nat)
     (fun _ ih => ih + 1) (fun _ _ ih => ih) 0 (fun _ _ _ _ ihv ihl ihr => ihv + ihl + ihr) t
 

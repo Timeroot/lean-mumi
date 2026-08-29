@@ -56,25 +56,25 @@ info: Fresh.snoc : ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ), x ≠ y → F
 #check @Fresh.snoc
 
 /--
-info: @Ctx.recursor : {C : Ctx → Sort u_1} →
+info: @Ctx.rec : {C : Ctx → Sort u_1} →
   C Ctx.nil → ((Γ : Ctx) → (x : String) → (a : Fresh x Γ) → C Γ → C (Γ.snoc x a)) → (t : Ctx) → C t
 -/
 #guard_msgs in
-#check @Ctx.recursor
+#check @Ctx.rec
 
 /-! ### The recursor computes, and both iota rules are definitional -/
 
 def Ctx.length (Γ : Ctx) : Nat :=
-  Ctx.recursor (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
+  Ctx.rec (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
 
 example {C : Ctx → Sort u} (n : C .nil)
     (s : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → C Γ → C (.snoc Γ x h)) :
-    Ctx.recursor n s .nil = n := rfl
+    Ctx.rec n s .nil = n := rfl
 
 example {C : Ctx → Sort u} (n : C .nil)
     (s : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → C Γ → C (.snoc Γ x h))
     (Γ : Ctx) (x : String) (h : Fresh x Γ) :
-    Ctx.recursor n s (.snoc Γ x h) = s Γ x h (Ctx.recursor n s Γ) := rfl
+    Ctx.rec n s (.snoc Γ x h) = s Γ x h (Ctx.rec n s Γ) := rfl
 
 /-- A closed term, built through the `Fresh` obligations. -/
 def ex : Ctx :=
@@ -87,9 +87,9 @@ def ex : Ctx :=
 
 example : ex.length = 2 := rfl
 
-/-- info: 'Ctx.recursor' does not depend on any axioms -/
+/-- info: 'Ctx.rec' does not depend on any axioms -/
 #guard_msgs in
-#print axioms Ctx.recursor
+#print axioms Ctx.rec
 
 /-- info: 'ex' does not depend on any axioms -/
 #guard_msgs in
@@ -107,7 +107,7 @@ reads the way it would for a real inductive.
 -/
 
 example (Γ : Ctx) : 0 ≤ Γ.length := by
-  induction Γ using Ctx.recursor with
+  induction Γ using Ctx.rec with
   | nil => simp [Ctx.length]
   | snoc Γ x h ih => simp
 
@@ -142,7 +142,7 @@ end
 #check @Closed.lam
 
 def Tm.size (t : Tm) : Nat :=
-  Tm.recursor (C := fun _ => Nat) (fun _ => 1) (fun _ _ _ _ i j => i + j + 1)
+  Tm.rec (C := fun _ => Nat) (fun _ => 1) (fun _ _ _ _ i j => i + j + 1)
     (fun _ _ i => i + 1) t
 
 example : Tm.size (.var 3) = 1 := rfl
@@ -173,7 +173,7 @@ end
 #check @Vec3.cons
 
 def Vec3.size (v : Vec3) : Nat :=
-  Vec3.recursor (C := fun _ => Nat) 0 (fun _ _ ih => ih + 1) v
+  Vec3.rec (C := fun _ => Nat) 0 (fun _ _ ih => ih + 1) v
 
 /-- info: 1 -/
 #guard_msgs in
@@ -209,16 +209,16 @@ info: IFresh.cons : ∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v),
 #check @IFresh.cons
 
 /--
-info: @IVec.recursor : {C : (a : Nat) → IVec a → Sort u_1} →
+info: @IVec.rec : {C : (a : Nat) → IVec a → Sort u_1} →
   C 0 IVec.nil →
     ((n : Nat) → (v : IVec n) → (x : Nat) → (a : IFresh x n v) → C n v → C (n + 1) (IVec.cons n v x a)) →
       (a : Nat) → (t : IVec a) → C a t
 -/
 #guard_msgs in
-#check @IVec.recursor
+#check @IVec.rec
 
 def IVec.sum : (n : Nat) → IVec n → Nat :=
-  fun n v => IVec.recursor (C := fun _ _ => Nat) 0 (fun _ _ x _ ih => ih + x) n v
+  fun n v => IVec.rec (C := fun _ _ => Nat) 0 (fun _ _ x _ ih => ih + x) n v
 
 def exVec : IVec 1 := .cons 0 .nil 5 (.nil 5)
 
@@ -231,8 +231,8 @@ example : IVec.sum 1 exVec = 5 := rfl
 example {C : (n : Nat) → IVec n → Sort u} (nil : C 0 .nil)
     (cons : (n : Nat) → (v : IVec n) → (x : Nat) → (h : IFresh x n v) → C n v →
       C (n + 1) (.cons n v x h)) (n : Nat) (v : IVec n) (x : Nat) (h : IFresh x n v) :
-    IVec.recursor nil cons (n + 1) (.cons n v x h)
-      = cons n v x h (IVec.recursor nil cons n v) := rfl
+    IVec.rec nil cons (n + 1) (.cons n v x h)
+      = cons n v x h (IVec.rec nil cons n v) := rfl
 
 /-- info: 'IVec.sum' does not depend on any axioms -/
 #guard_msgs in
@@ -240,7 +240,7 @@ example {C : (n : Nat) → IVec n → Sort u} (nil : C 0 .nil)
 
 -- the indices are generalised along with the major premise
 example (n : Nat) (v : IVec n) : 0 ≤ IVec.sum n v := by
-  induction n, v using IVec.recursor with
+  induction n, v using IVec.rec with
   | nil => simp [IVec.sum]
   | cons n v x h ih => simp
 
@@ -262,31 +262,31 @@ inductive Wf : Ctx2 → Ty → Prop where
 end
 
 /--
-info: @Ctx2.recursor : {C_Ctx2 : Ctx2 → Sort u_1} →
+info: @Ctx2.rec : {C_Ctx2 : Ctx2 → Sort u_1} →
   {C_Ty : Ty → Sort u_1} →
     C_Ctx2 Ctx2.nil →
       ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → C_Ctx2 Γ → C_Ty t → C_Ctx2 (Γ.snoc t a)) →
         C_Ty Ty.base → ((a b : Ty) → C_Ty a → C_Ty b → C_Ty (a.arr b)) → (t : Ctx2) → C_Ctx2 t
 -/
 #guard_msgs in
-#check @Ctx2.recursor
+#check @Ctx2.rec
 
 /--
-info: @Ty.recursor : {C_Ctx2 : Ctx2 → Sort u_1} →
+info: @Ty.rec : {C_Ctx2 : Ctx2 → Sort u_1} →
   {C_Ty : Ty → Sort u_1} →
     C_Ctx2 Ctx2.nil →
       ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → C_Ctx2 Γ → C_Ty t → C_Ctx2 (Γ.snoc t a)) →
         C_Ty Ty.base → ((a b : Ty) → C_Ty a → C_Ty b → C_Ty (a.arr b)) → (t : Ty) → C_Ty t
 -/
 #guard_msgs in
-#check @Ty.recursor
+#check @Ty.rec
 
 def Ctx2.length (Γ : Ctx2) : Nat :=
-  Ctx2.recursor (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
+  Ctx2.rec (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
     0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) Γ
 
 def Ty.size (t : Ty) : Nat :=
-  Ty.recursor (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
+  Ty.rec (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
     0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) t
 
 def exCtx2 : Ctx2 := .snoc .nil .base (.base .nil)
@@ -323,14 +323,14 @@ end
 #check @Tree.node
 
 /--
-info: @Tree.recursor : {C : Tree → Sort u_1} →
+info: @Tree.rec : {C : Tree → Sort u_1} →
   C Tree.leaf → ((f : Nat → Tree) → (a : Good f) → ((a : Nat) → C (f a)) → C (Tree.node f a)) → (t : Tree) → C t
 -/
 #guard_msgs in
-#check @Tree.recursor
+#check @Tree.rec
 
 def Tree.depthAt (t : Tree) (k : Nat) : Nat :=
-  Tree.recursor (C := fun _ => Nat → Nat) (fun _ => 0)
+  Tree.rec (C := fun _ => Nat → Nat) (fun _ => 0)
     (fun _ _ ih k => ih k k + 1) t k
 
 /-- info: 1 -/
@@ -376,7 +376,7 @@ info: @Bag.cons : {α : Type u_1} →
 #check @OkB.nil
 
 /--
-info: @Bag.recursor : {α : Type u_2} →
+info: @Bag.rec : {α : Type u_2} →
   {β : Type u_3} →
     {C_Bag : (a : Nat) → Bag α β a → Sort u_1} →
       {C_Tag2 : Tag2 α β → Sort u_1} →
@@ -387,10 +387,10 @@ info: @Bag.recursor : {α : Type u_2} →
             ((a : α) → (a_1 : β) → C_Tag2 (Tag2.mk a a_1)) → (a : Nat) → (t : Bag α β a) → C_Bag a t
 -/
 #guard_msgs in
-#check @Bag.recursor
+#check @Bag.rec
 
 def Bag.count {α : Type u} {β : Type v} : (n : Nat) → Bag α β n → Nat :=
-  fun n b => Bag.recursor (C_Bag := fun _ _ => Nat) (C_Tag2 := fun _ => Nat)
+  fun n b => Bag.rec (C_Bag := fun _ _ => Nat) (C_Tag2 := fun _ => Nat)
     0 (fun _ _ _ _ ih _ => ih + 1) (fun _ _ => 0) n b
 
 def exBag : Bag String Nat 1 := .cons 0 .nil (.mk "a" 3) (.nil (.mk "a" 3))
@@ -453,7 +453,7 @@ end
 #check @WFTreeNested.mk
 
 /--
-info: @TreeNested.recursor : {C_TreeNested : TreeNested → Sort u_1} →
+info: @TreeNested.rec : {C_TreeNested : TreeNested → Sort u_1} →
   {C_WFTreeNested : WFTreeNested → Sort u_1} →
     {C_RecWFTree : RecWFTree → Sort u_1} →
       C_TreeNested TreeNested.empty →
@@ -465,7 +465,7 @@ info: @TreeNested.recursor : {C_TreeNested : TreeNested → Sort u_1} →
             ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) → (t : TreeNested) → C_TreeNested t
 -/
 #guard_msgs in
-#check @TreeNested.recursor
+#check @TreeNested.rec
 
 theorem leafWF : TreeNested.WF .empty := .intro [] _ .empty
 
@@ -481,7 +481,7 @@ theorem oneWF : TreeNested.WF one := .intro _ _ oneWFWith
 def oneR : RecWFTree := .mk (.mk one oneWF)
 
 def TreeNested.size : TreeNested → Nat :=
-  TreeNested.recursor (C_TreeNested := fun _ => Nat) (C_WFTreeNested := fun _ => Nat)
+  TreeNested.rec (C_TreeNested := fun _ => Nat) (C_WFTreeNested := fun _ => Nat)
     (C_RecWFTree := fun _ => Nat)
     0 (fun _ _ _ _ v l r => v + l + r + 1) (fun _ _ n => n) (fun _ n => n)
 
