@@ -417,6 +417,64 @@ example : Bag.count 1 exBag = 1 := rfl
 #guard_msgs in
 #print axioms Bag.count
 
+/-! ## The level list the scratch axioms are declared over
+
+A member is stubbed as a scratch axiom the moment its arity is known, and the
+only level list available then is every universe name in scope.  That is not
+the list the block ends up with, and the two shapes below are the ways it can
+differ: a `universe` line the rest of the file needs is in scope whether the
+block uses it or not, and a name can be auto-bound *after* an earlier member
+has already been stubbed.  Either way `restub` moves the axioms once the real
+list is known; without it neither block typechecks.
+-/
+
+section
+universe u₀ v₀ w₀
+
+mutual
+inductive UCtx : Type where
+  | nil : UCtx
+  | snoc : (Γ : UCtx) → (x : String) → UFresh x Γ → UCtx
+inductive UFresh : String → UCtx → Prop where
+  | nil : (x : String) → UFresh x .nil
+  | snoc : (x y : String) → (Γ : UCtx) → (h : UFresh y Γ) → x ≠ y → UFresh x Γ →
+    UFresh x (.snoc Γ y h)
+end
+
+/-- info: UCtx : Type -/
+#guard_msgs in
+#check @UCtx
+
+/-- info: UFresh : String → UCtx → Prop -/
+#guard_msgs in
+#check @UFresh
+
+example : UCtx := .snoc .nil "x" (.nil "x")
+
+end
+
+-- `u` is auto-bound by a field of `VOk`'s second constructor, long after `VBag`
+-- was stubbed over the empty list; the block's own list is `[u]`
+mutual
+inductive VBag : Type where
+  | nil : VBag
+  | cons : (Γ : VBag) → VOk Γ → VBag
+inductive VOk : VBag → Prop where
+  | nil : VOk .nil
+  | cons : (Γ : VBag) → (h : VOk Γ) → (α : Type u) → (a : α) → VOk (.cons Γ h)
+end
+
+/-- info: VBag.{u_1} : Type -/
+#guard_msgs in
+set_option pp.universes true in
+#check @VBag
+
+/-- info: VOk.cons : ∀ (Γ : VBag) (h : VOk Γ) (α : Type u_1) (a : α), VOk (Γ.cons h) -/
+#guard_msgs in
+#check @VOk.cons
+
+example : VBag := .cons (.cons .nil .nil) (.cons .nil .nil Nat 3)
+
 /-! ## Resulting types left out, and members named under one another
 
 A member that gives no resulting type at all is read as `Type`, which is what

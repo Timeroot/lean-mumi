@@ -395,13 +395,17 @@ reference to it elaborates to `Ctx.{?u, ?v}` with one metavariable per name and
 only those the reference actually constrains are assigned.  But the block is
 uniformly polymorphic in its parameters, so the right level list is always the
 same one -- which also disposes of the metavariables nothing constrained.
+
+`lvls` being empty is not a reason to skip this.  A block that uses no universe
+parameters written under a `universe u v w` the rest of the file needs is still
+stubbed over `u`, `v` and `w`, and every reference to a member still comes back
+carrying three metavariables that nothing will ever assign.
 -/
 def normLevels (names : Array Name) (lvls : List Level) (e : Expr) : Expr :=
-  if lvls.isEmpty then e else
-    e.replace fun s =>
-      match s with
-      | .const n _ => if names.contains n then some (.const n lvls) else none
-      | _ => none
+  e.replace fun s =>
+    match s with
+    | .const n _ => if names.contains n then some (.const n lvls) else none
+    | _ => none
 
 /-! ## Members applied to their indices
 
@@ -575,13 +579,58 @@ Elaborating the arities needs an order, and the writer is under no obligation to
 supply one, so they are elaborated by a worklist: go round the members, keep
 whichever succeed, and stop when a round adds nothing.  A genuine circularity --
 `A`'s arity mentioning `B` and `B`'s mentioning `A` -- fails every round, and is
-reported with the error of the last attempt. -/
+reported with the error of the last attempt.
+
+Which universe parameters the block ends up with is not known until every
+constructor has been read, so a stub is declared over every universe name in
+scope at the time and `restub` moves the whole batch once the real list is
+settled. -/
+
+private def stubAxiomAt (levelParams : List Name) (name : Name) (type : Expr) :
+    TermElabM Unit := do
+  -- A scratch axiom is never part of the environment anybody sees: `withRaw`
+  -- elaborates the whole block inside `withoutModifyingEnv`, and every real
+  -- declaration made afterwards is kernel-checked on its own.  So the kernel is
+  -- told to stand aside here, which is not merely an economy.  A stub is added
+  -- as soon as its type is elaborated, before the block's universe parameters
+  -- are known, so its type still carries a level metavariable for every
+  -- universe name in scope that nothing has constrained -- and `Elab.async`
+  -- checks in a background task, which `restub`'s rewind cannot call off, so
+  -- the complaint would surface as an error about a name that no longer exists.
+  withOptions (debug.skipKernelTC.set · true) do
+    addDecl (.axiomDecl { name, levelParams, type := ← instantiateMVars type, isUnsafe := false })
 
 private def stubAxiom (name : Name) (type : Expr) : TermElabM Unit := do
   -- every universe name in scope, so the stub is well-formed whichever ones its
-  -- type turns out to use; `normLevels` puts the references straight afterwards
-  let levelParams := (← Term.getLevelNames).reverse
-  addDecl (.axiomDecl { name, levelParams, type, isUnsafe := false })
+  -- type turns out to use; `normLevels` puts the references straight afterwards,
+  -- and `restub` moves the axioms themselves once the block's own list is known
+  stubAxiomAt (← Term.getLevelNames).reverse name type
+
+/--
+Add a batch of scratch axioms, each after whatever else in the batch it mentions.
+
+The order the names were first stubbed in is not one their types respect: a
+copy's arity may name a copy interned after it, and re-stubbing starts from an
+environment where none of the batch exists.  So they go in by worklist, as the
+arities themselves do.
+-/
+private def stubBatch (levelParams : List Name) (todo : Array (Name × Expr))
+    (what : String := "scratch axioms") : TermElabM Unit := do
+  let batch := todo.map (·.1)
+  let mut todo := todo
+  while !todo.isEmpty do
+    let env ← getEnv
+    let mut next : Array (Name × Expr) := #[]
+    let mut progress := false
+    for (n, t) in todo do
+      if t.getUsedConstants.any fun c => batch.contains c && (env.find? c).isNone then
+        next := next.push (n, t)
+      else
+        stubAxiomAt levelParams n t
+        progress := true
+    unless progress do
+      throwError "The {what} `{next.map (·.1)}` depend on one another circularly"
+    todo := next
 
 /--
 Auto-binding, as Lean's own header elaboration does it: universe names such as
@@ -711,6 +760,12 @@ structure Raw where
   somebody wrote.
   -/
   copies : Array (Name × Expr) := #[]
+  /--
+  The environment as it stood before the first scratch axiom was added, so that
+  they can be re-declared once the block's universe parameters are known.  See
+  `restub`.
+  -/
+  stubEnv : Option Environment := none
   deriving Inhabited
 
 /-- The block's own names: its members and their constructors. -/
@@ -773,6 +828,39 @@ def checkDataArities (names : Array Name) (arities : Array Expr) (blockNames : A
         than `Sort v`"
 
 /--
+Re-declare the scratch axioms at the block's own universe parameters.
+
+A member is stubbed as soon as its arity is known, and the only level list
+available then is every universe name in scope.  That is the wrong list twice
+over.  It can be too long -- a `universe u v w` the rest of the file needs is in
+scope whether or not the block uses any of it -- and it can be *different* from
+one member to the next, since a later member's `Type u` auto-binds `u` after an
+earlier member has already been stubbed.  Either way it is not `us`, which is
+what `normLevels` has just rewritten every reference to.
+
+So the scratch environment is wound back to before the first stub and the whole
+batch is declared again at `us`, from the normalized types.  Nothing else is
+lost by the rewind: `withRaw` elaborates the block inside `withoutModifyingEnv`,
+so anything else the elaboration happened to add was going to be discarded on
+the way out regardless.
+-/
+private def restub (r : Raw) (us : List Name) (arities : Array Expr)
+    (ctorTypes : Array (Array Expr)) : TermElabM Unit := do
+  let some env0 := r.stubEnv | return
+  let env ← getEnv
+  let mut todo : Array (Name × Expr) := #[]
+  for i in *...r.names.size do
+    -- only what really was stubbed: `withRaw` leaves the `Prop` members'
+    -- constructors out, since nothing is elaborated against them
+    if env.contains r.names[i]! then
+      todo := todo.push (r.names[i]!, arities[i]!)
+    for j in *...r.ctorNames[i]!.size do
+      if env.contains r.ctorNames[i]![j]! then
+        todo := todo.push (r.ctorNames[i]![j]!, ctorTypes[i]![j]!)
+  setEnv env0
+  stubBatch us todo
+
+/--
 Everything between the elaborated block and the `Plan`.
 
 The block reaching here need not be one anybody wrote: `denest` adds members of
@@ -802,6 +890,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     let lvls := us.map Level.param
     arities := arities.map (normLevels blockNames lvls)
     ctorTypes := ctorTypes.map (·.map (normLevels blockNames lvls))
+    restub r us arities ctorTypes
     -- a skeleton is enough for `Block.mentions`, `Block.preOf` and `Block.memberIdx?`
     let skeleton : Block :=
       { numParams, us
@@ -838,7 +927,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     let b : Block := { members, numParams, us }
     -- the pre-world, still against scratch axioms
     for i in b.dataIdxs do
-      stubAxiom (preName b.members[i]!.name) b.members[i]!.type
+      stubAxiomAt us (preName b.members[i]!.name) b.members[i]!.type
     let mut preDataInds : Array InductiveType := #[]
     for i in b.dataIdxs do
       let m := b.members[i]!
@@ -847,12 +936,12 @@ def prepareCore (r : Raw) : TermElabM Plan := do
         let type ← forallTelescope c.type fun xs concl =>
           withPreFields b c.kinds xs fun olds news _ _ =>
             mkForallFVars news (b.tr (concl.replaceFVars olds news))
-        stubAxiom (b.preOf c.name) type
+        stubAxiomAt us (b.preOf c.name) type
         cs := cs.push { name := b.preOf c.name, type }
       preDataInds := preDataInds.push
         { name := preName m.name, type := m.type, ctors := cs.toList }
     for j in b.propIdxs do
-      stubAxiom (preName b.members[j]!.name) (b.tr b.members[j]!.type)
+      stubAxiomAt us (preName b.members[j]!.name) (b.tr b.members[j]!.type)
     let mut prePropInds : Array InductiveType := #[]
     for j in b.propIdxs do
       let m := b.members[j]!
@@ -1001,6 +1090,9 @@ def withRaw {α} (views : Array InductiveView) (k : Raw → TermElabM α) : Term
   checkSupported views
   let scopeLevelNames ← Term.getLevelNames
   withoutModifyingEnv <| Term.withLevelNames views[0]!.levelNames do
+    -- everything added from here on is a scratch axiom, and `restub` rewinds to
+    -- this point to re-declare them at the block's own universe parameters
+    let env0 ← getEnv
     let n := views.size
     let names := views.map (·.declName)
     -- the block's own names; inside the scratch environment that is everything
@@ -1099,7 +1191,7 @@ def withRaw {α} (views : Array InductiveView) (k : Raw → TermElabM α) : Term
                     out: `inductive {views[i]!.declName} : {want}`"
     k { names, ctorNames := views.map (·.ctors.map (·.declName))
         arities := arities', ctorTypes, numParams, scopeLevelNames
-        declLevelNames := views[0]!.levelNames }
+        declLevelNames := views[0]!.levelNames, stubEnv := some env0 }
 
 /-- The block, elaborated and checked, ready for `emit`. -/
 def prepare (views : Array InductiveView) : TermElabM Plan :=
@@ -1333,8 +1425,6 @@ def denestRaw (r : Raw) : TermElabM Raw := do
     -- per universe name in scope, which `normLevels` replaces with the block's
     let auxLvls ← (← Term.getLevelNames).mapM fun _ => mkFreshLevelMVar
     let auxNames := specs.map (·.name)
-    let allNames := names ++ auxNames ++
-      specs.flatMap fun s => s.ctors.map (reroot s.indName s.name)
     let rw (e : Expr) : MetaM Expr := rwExpr names specs ps auxLvls e
     -- rewrite in place, keeping the original expression where nothing changed
     let rwTop (model : Expr) : MetaM Expr := do
@@ -1362,26 +1452,13 @@ def denestRaw (r : Raw) : TermElabM Raw := do
       auxCtorTypes := auxCtorTypes.push cts
     -- stub the copies, arities before constructors and each after whatever it
     -- mentions: a copy's arity may name a copy interned after it
-    let stubInOrder (todo : Array (Name × Expr)) : TermElabM Unit := do
-      let mut todo := todo
-      while !todo.isEmpty do
-        let env ← getEnv
-        let mut next : Array (Name × Expr) := #[]
-        let mut progress := false
-        for (n, t) in todo do
-          if t.getUsedConstants.any fun c => allNames.contains c && (env.find? c).isNone then
-            next := next.push (n, t)
-          else
-            stubAxiom n (← instantiateMVars t)
-            progress := true
-        unless progress do
-          throwError "The copies `{next.map (·.1)}` this nested inductive denests into \
-            depend on one another circularly"
-        todo := next
-    stubInOrder ((Array.range specs.size).map fun k => (auxNames[k]!, auxArities[k]!))
-    stubInOrder <| (Array.range specs.size).flatMap fun k =>
+    let scopeLvls := (← Term.getLevelNames).reverse
+    let what := "copies this nested inductive denests into"
+    stubBatch scopeLvls
+      ((Array.range specs.size).map fun k => (auxNames[k]!, auxArities[k]!)) what
+    stubBatch scopeLvls ((Array.range specs.size).flatMap fun k =>
       (Array.range auxCtorTypes[k]!.size).map fun j =>
-        (reroot specs[k]!.indName specs[k]!.name specs[k]!.ctors[j]!, auxCtorTypes[k]![j]!)
+        (reroot specs[k]!.indName specs[k]!.name specs[k]!.ctors[j]!, auxCtorTypes[k]![j]!)) what
     -- what each copy stands for, kept for the bridge back to it
     let mut copies : Array (Name × Expr) := #[]
     for s in specs do
