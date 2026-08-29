@@ -341,8 +341,10 @@ gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
 
 Any number of data members and any number of `Prop` members are allowed, with
 parameters, universe parameters, indices on either kind, and infinitary
-recursive fields such as `(f : (n : Nat) → Vec n)`. What erasure cannot reach is
-rejected with an explanation rather than lowered wrongly:
+recursive fields such as `(f : (n : Nat) → Vec n)`. Members may be named under
+one another — `TreeNested.WF` beside `TreeNested` — and a member that leaves its
+resulting type out, `inductive Tree where`, is read as `Type`. What erasure
+cannot reach is rejected with an explanation rather than lowered wrongly:
 
 * a *data* member's arity mentioning the block — data-on-data
   induction-induction, where there is nothing to erase;
@@ -354,7 +356,10 @@ rejected with an explanation rather than lowered wrongly:
 * data members at different universes, or at a bare `Sort u`, since the data
   members share one pre-block and each is encoded as a `Subtype`;
 * a `Prop` member's index that merely *contains* a member, `List Ctx`, which has
-  no image on the erased types.
+  no image on the erased types;
+* a member with no resulting type whose fields do not fit in `Type` — the guess
+  has to be fixed before the siblings' fields are elaborated against it, so the
+  answer is the type to write rather than a widened guess.
 
 We only claim a block whose headers Lean has *already* failed to elaborate and
 one of whose arities names a sibling. A legal block whose arity happens to name
@@ -405,7 +410,8 @@ Stock behaviour returns immediately, including the stock error message.
   `noConfusion`. `induction Γ using Ctx.recursor with | nil => … | snoc Γ x h ih
   => …` is the way in; a bare `induction`/`cases` destructs the underlying
   subtype and leaks `Ctx._pre` into the goal, and `cases` on the `Prop` member
-  fails outright, pending a derived `Fresh.rec`.
+  works only where the motive does not depend on the indices, pending a derived
+  `Fresh.rec`.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This predates the nested support and affects
   declarations the library never touches; `set_option mumi.enabled false` does

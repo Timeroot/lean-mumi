@@ -409,6 +409,99 @@ example : Bag.count 1 exBag = 1 := rfl
 #guard_msgs in
 #print axioms Bag.count
 
+/-! ## Resulting types left out, and members named under one another
+
+A member that gives no resulting type at all is read as `Type`, which is what
+`inductive Tree where` means.  This block also names two of its `Prop` members
+*under* a data member -- `TreeNested.WF` beside `TreeNested` -- so "this type
+mentions a data member" has to be decided by exact name and not by prefix; and
+its three data members form a cycle that runs through both `Prop` members.
+-/
+
+mutual
+inductive TreeNested where
+  | empty
+  | node (key : Nat) (value : RecWFTree) (l r : TreeNested)
+inductive TreeNested.WFWith : TreeNested → List Nat → Prop where
+  | empty : TreeNested.WFWith .empty []
+  | node {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested)
+    (hl : TreeNested.WFWith l llist) (hr : TreeNested.WFWith r rlist)
+    (hl' : ∀ a ∈ llist, a < key) (hr' : ∀ a ∈ rlist, key < a) :
+    TreeNested.WFWith (.node key value l r) (llist ++ key :: rlist)
+inductive TreeNested.WF : TreeNested → Prop where
+  | intro (l : List Nat) (t : TreeNested) (h : TreeNested.WFWith t l) : TreeNested.WF t
+inductive WFTreeNested where
+  | mk (x : TreeNested) (h : TreeNested.WF x) : WFTreeNested
+inductive RecWFTree where
+  | mk (x : WFTreeNested)
+end
+
+/-- info: TreeNested : Type -/
+#guard_msgs in
+#check @TreeNested
+
+/-- info: TreeNested.node : Nat → RecWFTree → TreeNested → TreeNested → TreeNested -/
+#guard_msgs in
+#check @TreeNested.node
+
+/-- info: TreeNested.WFWith : TreeNested → List Nat → Prop -/
+#guard_msgs in
+#check @TreeNested.WFWith
+
+/-- info: WFTreeNested.mk : (x : TreeNested) → x.WF → WFTreeNested -/
+#guard_msgs in
+#check @WFTreeNested.mk
+
+/--
+info: @TreeNested.recursor : {C_TreeNested : TreeNested → Sort u_1} →
+  {C_WFTreeNested : WFTreeNested → Sort u_1} →
+    {C_RecWFTree : RecWFTree → Sort u_1} →
+      C_TreeNested TreeNested.empty →
+        ((key : Nat) →
+            (value : RecWFTree) →
+              (l r : TreeNested) →
+                C_RecWFTree value → C_TreeNested l → C_TreeNested r → C_TreeNested (TreeNested.node key value l r)) →
+          ((x : TreeNested) → (h : x.WF) → C_TreeNested x → C_WFTreeNested (WFTreeNested.mk x h)) →
+            ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) → (t : TreeNested) → C_TreeNested t
+-/
+#guard_msgs in
+#check @TreeNested.recursor
+
+theorem leafWF : TreeNested.WF .empty := .intro [] _ .empty
+
+def leaf : RecWFTree := .mk (.mk .empty leafWF)
+
+def one : TreeNested := .node 3 leaf .empty .empty
+
+theorem oneWFWith : TreeNested.WFWith one [3] :=
+  .node 3 leaf .empty .empty .empty .empty (by simp) (by simp)
+
+theorem oneWF : TreeNested.WF one := .intro _ _ oneWFWith
+
+def oneR : RecWFTree := .mk (.mk one oneWF)
+
+def TreeNested.size : TreeNested → Nat :=
+  TreeNested.recursor (C_TreeNested := fun _ => Nat) (C_WFTreeNested := fun _ => Nat)
+    (C_RecWFTree := fun _ => Nat)
+    0 (fun _ _ _ _ v l r => v + l + r + 1) (fun _ _ n => n) (fun _ n => n)
+
+example : TreeNested.size .empty = 0 := rfl
+example : TreeNested.size one = 1 := rfl
+
+/-- info: 3 -/
+#guard_msgs in
+#eval TreeNested.size (.node 1 oneR one .empty)
+
+/-- info: 'TreeNested.size' does not depend on any axioms -/
+#guard_msgs in
+#print axioms TreeNested.size
+
+/-- info: 'leafWF' does not depend on any axioms -/
+#guard_msgs in
+#print axioms leafWF
+
+example (t : TreeNested) (h : t.WF) : True := by cases h; trivial
+
 /-! ## A block we must not claim
 
 An arity mentioning a member's short name is only the *signature* of
@@ -575,4 +668,31 @@ inductive K1.{u} : Type u where
   | mk : (k : K1.{u}) → K2 k → K1
 inductive K2.{u, v} : K1.{u} → Prop where
   | mk : (k : K1.{u}) → K2 k
+end
+
+-- a constructor of an indexed family has to say what its indices are, or the
+-- resulting type would be the unapplied family, which is not a proposition
+/--
+error: Missing resulting type for constructor `Q8.mk`.  It must be given because `Q8` is an inductive family
+-/
+#guard_msgs in
+mutual
+inductive P8 where
+  | nil
+  | mk : (x : P8) → Q8 x → P8
+inductive Q8 : P8 → Prop where
+  | mk
+end
+
+-- a resulting type left out is read as `Type`, and the fields have to fit: the
+-- guess is already in the sibling's elaborated fields by the time we know
+/--
+error: `Cell` gives no resulting type, so it was read as `Type`; but the field `α` of `Cell.mk` lives in `Type 1`, which does not fit.  Write the resulting type out: `inductive Cell : Type 1`
+-/
+#guard_msgs in
+mutual
+inductive Cell where
+  | mk : (α : Type) → (c : Cell) → CellOk c → Cell
+inductive CellOk : Cell → Prop where
+  | mk : (c : Cell) → CellOk c
 end

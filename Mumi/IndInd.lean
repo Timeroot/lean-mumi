@@ -107,6 +107,15 @@ error at the point of the block rather than a silent fallback.
   Lean's own `mutual` requires.  A *data* member may not sit at a bare `Sort u`,
   though: it is encoded as a subtype, and `Subtype` lands in `Sort (max 1 u)`,
   which is `Sort u` again only when `u` is visibly non-zero.
+* A member may leave its resulting type out -- `inductive Tree where` -- and it
+  is read as `Type`.  Lean would put a metavariable there and solve it from the
+  fields, but a metavariable cannot go into the scratch axiom that puts the
+  member in scope for its siblings, and the guess would be baked into their
+  fields before it was known (`List Tree` picks up `List.{0}`).  So the guess is
+  fixed, and a block it is too small for is rejected with the type to write.
+* Members named under one another -- `TreeNested.WF` beside `TreeNested`.  A
+  member's constructors are known by name, so nothing has to be read off a
+  prefix.
 * Indices on any member.  A *data* member's indices may not mention the block:
   that is data-on-data induction-induction, which erasure cannot reach.
 * Recursive fields may be indexed and infinitary -- `(f : (n : Nat) → Vec n)` --
@@ -130,7 +139,8 @@ error at the point of the block rather than a silent fallback.
   `induction Γ using Ctx.recursor with | nil => .. | snoc Γ x h ih => ..`; a
   bare `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into
   the goal.
-* `cases` on a `Prop` member fails ("dependent elimination failed"), because its
+* `cases` on a `Prop` member works only where the motive does not depend on the
+  indices, and otherwise fails ("dependent elimination failed"), because its
   recursor is still `Fresh._pre`'s, stated over the pre-type.  Deriving a real
   `Fresh.rec` from it -- motive `fun x Γ₀ h => ∀ w, motive x ⟨Γ₀, w⟩ h` -- is
   the obvious next step and is not done here.
@@ -278,15 +288,30 @@ partial def Block.tr (b : Block) (e : Expr) : Expr :=
   | .proj s i x       => .proj s i (b.tr x)
   | _ => e
 
+/--
+Whether `n` is a member of the block, or a constructor of one, among those
+members `keep` selects.
+
+The test is by exact name, not by prefix: a member may perfectly well be
+declared *under* another member's name -- `TreeNested` beside `TreeNested.WF` --
+and then a prefix test would read every mention of the predicate as a mention of
+the tree.  Nothing else of the block exists yet to be mentioned, since the whole
+of it is in scope only as the scratch axioms this list names.
+-/
+def Block.named (b : Block) (keep : MemberSpec → Bool) (n : Name) : Bool :=
+  b.members.any fun m => keep m && (n == m.name || m.ctors.any (·.name == n))
+
 /-- Whether `e` mentions any member of the block, or any of their constructors. -/
 def Block.mentions (b : Block) (e : Expr) : Bool :=
-  e.getUsedConstants.any fun c =>
-    b.members.any fun m => c == m.name || m.name.isPrefixOf c
+  e.getUsedConstants.any (b.named (fun _ => true))
 
 /-- Whether `e` mentions any *data* member of the block as a constant. -/
 def Block.mentionsData (b : Block) (e : Expr) : Bool :=
-  e.getUsedConstants.any fun c =>
-    b.members.any fun m => !m.isProp && (c == m.name || m.name.isPrefixOf c)
+  e.getUsedConstants.any (b.named (!·.isProp))
+
+/-- Whether `e` mentions any `Prop` member of the block as a constant. -/
+def Block.mentionsProp (b : Block) (e : Expr) : Bool :=
+  e.getUsedConstants.any (b.named (·.isProp))
 
 /--
 Put the block's own constants at one shared list of levels.
@@ -495,21 +520,31 @@ private def withAuto {α} (views : Array InductiveView) (k : TermElabM α) : Ter
   Term.withAutoBoundImplicitForbiddenPred (fun n => views.any (·.shortDeclName == n)) <|
     Term.withAutoBoundImplicit k
 
-/-- `∀ params idxs, Sort l`, together with how many of those binders are parameters. -/
+/--
+`∀ params idxs, Sort l`, together with how many of those binders are parameters.
+
+A member that gives no resulting type at all -- `inductive Tree where` -- is read
+as `Type`.  Lean would put a universe metavariable there and solve it from the
+constructors' fields, but a metavariable cannot go into the scratch axiom that
+puts this member in scope for its siblings, and a wrong guess there would be
+baked into the siblings' fields (`List Tree` picks up `List.{0}`).  So the guess
+is fixed, and `checkInferredArity` below rejects a block the guess is too small
+for rather than quietly mis-elaborating it.
+-/
 private def elabArity (views : Array InductiveView) (view : InductiveView) :
     TermElabM (Expr × Nat) := do
-  match view.type? with
-  | none => throwError "The type of `{view.declName}` must be given explicitly"
-  | some typeStx =>
-    withRef typeStx <| Term.withoutErrToSorry <| withAuto views do
-      Term.elabBinders view.binders.getArgs fun params => do
-        let type ← withAuto views do
+  withRef (view.type?.getD view.ref) <| Term.withoutErrToSorry <| withAuto views do
+    Term.elabBinders view.binders.getArgs fun params => do
+      let type ← withAuto views do
+        match view.type? with
+        | none => pure (mkSort (mkLevelSucc Level.zero))
+        | some typeStx => do
           let type ← Term.elabType typeStx
           Term.synthesizeSyntheticMVarsNoPostponing
           let idxs ← Term.addAutoBoundImplicits #[] none
           mkForallFVars idxs (← instantiateMVars type)
-        let params ← Term.addAutoBoundImplicits params none
-        return (← instantiateMVars (← mkForallFVars params type), params.size)
+      let params ← Term.addAutoBoundImplicits params none
+      return (← instantiateMVars (← mkForallFVars params type), params.size)
 
 /--
 Make the leading `n` binders implicit.  A constructor's parameters are implicit
@@ -586,6 +621,10 @@ def prepare (views : Array InductiveView) : TermElabM Plan := do
   let scopeLevelNames ← Term.getLevelNames
   withoutModifyingEnv <| Term.withLevelNames views[0]!.levelNames do
     let n := views.size
+    -- the block's own names; inside the scratch environment that is everything
+    -- of the block there is to mention
+    let blockNames : Array Name :=
+      views.flatMap fun v => #[v.declName] ++ v.ctors.map (·.declName)
     -- the arities, by worklist
     let mut arities : Array (Option Expr) := (List.replicate n none).toArray
     let mut paramCounts : Array Nat := (List.replicate n 0).toArray
@@ -645,9 +684,7 @@ def prepare (views : Array InductiveView) : TermElabM Plan := do
     -- a data member indexed by the block is data-on-data induction-induction,
     -- which erasure cannot reach; say so before elaborating any constructor
     for i in dataIdxs do
-      let mentions := arities[i]!.get!.getUsedConstants.any fun c =>
-        views.any fun v => c == v.declName || v.declName.isPrefixOf c
-      if mentions then
+      if arities[i]!.get!.getUsedConstants.any (blockNames.contains ·) then
         throwError "The arity of `{views[i]!.declName}` mentions the block.  Erasure can only \
           reach an induction-induction whose dependency runs through `Prop`, and this one \
           indexes data by data"
@@ -671,6 +708,17 @@ def prepare (views : Array InductiveView) : TermElabM Plan := do
           be `Prop`.  It is encoded as a subtype, and `Subtype` lands one universe up from \
           `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather \
           than `Sort v`"
+    -- a constructor of an indexed family has to say what its indices are; Lean
+    -- refuses this too, and here the fallback would silently make the resulting
+    -- type the unapplied family, which is not even a proposition
+    for i in *...n do
+      let arityBinders ← forallTelescope arities[i]!.get! fun xs _ => pure xs.size
+      if arityBinders > numParams then
+        for c in views[i]!.ctors do
+          if c.type?.isNone then
+            withRef c.ref <| throwError "Missing resulting type for constructor \
+              `{c.declName}`.  It must be given because `{views[i]!.declName}` is an \
+              inductive family"
     -- the constructors: the data members' first, so that their constructors are
     -- in scope for the `Prop` members' -- that is where `.snoc` has to resolve
     let mut ctorTypes : Array (Array Expr) := (List.replicate n (#[] : Array Expr)).toArray
@@ -681,6 +729,27 @@ def prepare (views : Array InductiveView) : TermElabM Plan := do
         stubAxiom views[i]!.ctors[j]!.declName tys[j]!
     for i in propIdxs do
       ctorTypes := ctorTypes.set! i (← views[i]!.ctors.mapM (elabCtorType views views[i]! ·))
+    -- a member whose resulting type was left out was guessed at `Type`.  Now
+    -- that the fields are known, check the guess was big enough: a field the
+    -- guess does not fit would have been elaborated against the wrong universe,
+    -- so the answer is to ask for the type rather than to widen it here
+    for i in *...n do
+      if views[i]!.type?.isNone then
+        for j in *...ctorTypes[i]!.size do
+          forallBoundedTelescope ctorTypes[i]![j]! numParams fun _ t =>
+            forallTelescope t fun xs _ => do
+              for x in xs do
+                let ty ← inferType x
+                if ty.getUsedConstants.any (blockNames.contains ·) then
+                  continue
+                let l ← getLevel ty
+                unless ← isLevelDefEq (mkLevelMax l levels[i]!) levels[i]! do
+                  let at_ := toString (← ppExpr (mkSort l))
+                  let want := toString (← ppExpr (mkSort (mkLevelMax l levels[i]!).normalize))
+                  throwError "`{views[i]!.declName}` gives no resulting type, so it was read \
+                    as `Type`; but the field `{x}` of `{views[i]!.ctors[j]!.declName}` lives \
+                    in `{at_}`, which does not fit.  Write the resulting type \
+                    out: `inductive {views[i]!.declName} : {want}`"
     -- the block's universe parameters: whichever of the declared and auto-bound
     -- ones anything in the block actually uses, in Lean's own order
     let mut cps : CollectLevelParams.State := {}
@@ -691,8 +760,6 @@ def prepare (views : Array InductiveView) : TermElabM Plan := do
     let us ← match sortDeclLevelParams scopeLevelNames views[0]!.levelNames cps.params with
       | .ok us => pure us
       | .error msg => throwError msg
-    let blockNames : Array Name :=
-      views.flatMap fun v => #[v.declName] ++ v.ctors.map (·.declName)
     let lvls := us.map Level.param
     arities := arities.map (·.map (normLevels blockNames lvls))
     ctorTypes := ctorTypes.map (·.map (normLevels blockNames lvls))
@@ -810,9 +877,7 @@ where
       let mut kinds := #[]
       for x in xs do
         let ty ← inferType x
-        let mentionsProp := ty.getUsedConstants.any fun k =>
-          b.propIdxs.any fun j => k == b.members[j]!.name || b.members[j]!.name.isPrefixOf k
-        if mentionsProp && (← isProp ty) then
+        if b.mentionsProp ty && (← isProp ty) then
           -- erasing this field must be definitionally invisible, which it is
           -- exactly when no data member appears in its type: then `P args`
           -- unfolds to `P._pre args'` and the two readings agree
