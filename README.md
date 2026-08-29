@@ -339,11 +339,27 @@ things the heterogeneous lowering rests on: definitional proof irrelevance,
 which collapses the `_wf` proofs, and definitional eta for structures, which
 gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
 
+Any number of data members and any number of `Prop` members are allowed, with
+parameters, universe parameters, indices on either kind, and infinitary
+recursive fields such as `(f : (n : Nat) → Vec n)`. What erasure cannot reach is
+rejected with an explanation rather than lowered wrongly:
+
+* a *data* member's arity mentioning the block — data-on-data
+  induction-induction, where there is nothing to erase;
+* a field mentioning the block that is neither a member's type nor a proof of
+  one of the block's propositions, including `(h : Γ = Γ')`, where erasing would
+  have to transport between `Γ = Γ'` and `Γ.val = Γ'.val`;
+* a recursive field that *binds* a member, `(f : Ctx → Ctx)` — nothing can turn
+  a pre-world value back into a real one without its well-formedness proof;
+* data members at different universes, or at a bare `Sort u`, since the data
+  members share one pre-block and each is encoded as a `Subtype`;
+* a `Prop` member's index that merely *contains* a member, `List Ctx`, which has
+  no image on the erased types.
+
 We only claim a block whose headers Lean has *already* failed to elaborate and
 one of whose arities names a sibling. A legal block whose arity happens to name
 a same-named global is elaborated by Lean, untouched — `MumiTests/IndInd.lean`
-pins that alongside the motivating block, several `Prop` members, `Prop`-first
-ordering, and the two rejections.
+pins that alongside all of the above.
 
 ### Turning it off
 
@@ -361,9 +377,11 @@ Stock behaviour returns immediately, including the stock error message.
   that has to be classifiable.
 * Two data members that hold each other are in one component and must share a
   universe. Universes may differ only across components.
-* Universe parameters have to be declared with `universe` up front. With
-  auto-bound implicits each member gets its own parameter list, and `mutual`
-  rejects the block before we see it.
+* For a heterogeneous block, universe parameters have to be declared with
+  `universe` up front. With auto-bound implicits each member gets its own
+  parameter list, and `mutual` rejects the block before we see it. (An
+  induction-inductive block elaborates its own headers, so there `Type u` works
+  undeclared.)
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
 * A rescued nested inductive's constructor really takes a copy of the nested
@@ -376,12 +394,12 @@ Stock behaviour returns immediately, including the stock error message.
   `Nonempty.elim h fun _ => …` on a field bound by a pattern match needs `h`
   ascribed, or the argument given as `Nonempty.elim (α := T)`. The ascription
   names the original, not the copy.
-* An induction-inductive block gets a much narrower deal than a heterogeneous
-  one. Exactly one member may be data, and it may not be indexed; there are no
-  parameters, no section `variable`s and no universe parameters; and a data
-  constructor's field that mentions a `Prop` member must be a proof, so a block
-  whose data genuinely depends on data — `Ctx` indexed by its own length — is
-  out of scope.
+* An induction-inductive block still has to be *narrow*: a data constructor's
+  field that mentions a `Prop` member must be a proof, and no data member's
+  arity may mention the block, so one whose data genuinely depends on data —
+  `Ctx` indexed by its own length — is out of scope. Its data members all share
+  one erased pre-block, hence one universe, and none may sit at a bare `Sort u`.
+  Section `variable`s are not supported.
 * An induction-inductive block's constructors are `def`s rather than
   constructors, so `match` does not work and there is no `injEq` or
   `noConfusion`. `induction Γ using Ctx.recursor with | nil => … | snoc Γ x h ih

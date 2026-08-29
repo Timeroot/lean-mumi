@@ -113,7 +113,7 @@ example (Γ : Ctx) : 0 ≤ Γ.length := by
 
 /-! ## Several `Prop` members
 
-One data member is the limit; the propositions it depends on may be any number.
+Any number of propositions may hang off one data member.
 -/
 
 mutual
@@ -181,6 +181,234 @@ def Vec3.size (v : Vec3) : Nat :=
 
 example : Vec3.size (.cons .nil .nil) = 1 := rfl
 
+/-! ## Indices
+
+Both members are indexed, and the `Prop` member is indexed by the data member at
+one of its own indices.
+-/
+
+mutual
+inductive IVec : Nat → Type where
+  | nil : IVec 0
+  | cons : (n : Nat) → (v : IVec n) → (x : Nat) → IFresh x n v → IVec (n + 1)
+inductive IFresh : Nat → (n : Nat) → IVec n → Prop where
+  | nil : (x : Nat) → IFresh x 0 .nil
+  | cons : (x y n : Nat) → (v : IVec n) → (h : IFresh y n v) → x ≠ y → IFresh x n v →
+      IFresh x (n + 1) (.cons n v y h)
+end
+
+/-- info: IVec.cons : (n : Nat) → (v : IVec n) → (x : Nat) → IFresh x n v → IVec (n + 1) -/
+#guard_msgs in
+#check @IVec.cons
+
+/--
+info: IFresh.cons : ∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v),
+  x ≠ y → IFresh x n v → IFresh x (n + 1) (IVec.cons n v y h)
+-/
+#guard_msgs in
+#check @IFresh.cons
+
+/--
+info: @IVec.recursor : {C : (a : Nat) → IVec a → Sort u_1} →
+  C 0 IVec.nil →
+    ((n : Nat) → (v : IVec n) → (x : Nat) → (a : IFresh x n v) → C n v → C (n + 1) (IVec.cons n v x a)) →
+      (a : Nat) → (t : IVec a) → C a t
+-/
+#guard_msgs in
+#check @IVec.recursor
+
+def IVec.sum : (n : Nat) → IVec n → Nat :=
+  fun n v => IVec.recursor (C := fun _ _ => Nat) 0 (fun _ _ x _ ih => ih + x) n v
+
+def exVec : IVec 1 := .cons 0 .nil 5 (.nil 5)
+
+/-- info: 5 -/
+#guard_msgs in
+#eval exVec.sum
+
+example : IVec.sum 1 exVec = 5 := rfl
+
+example {C : (n : Nat) → IVec n → Sort u} (nil : C 0 .nil)
+    (cons : (n : Nat) → (v : IVec n) → (x : Nat) → (h : IFresh x n v) → C n v →
+      C (n + 1) (.cons n v x h)) (n : Nat) (v : IVec n) (x : Nat) (h : IFresh x n v) :
+    IVec.recursor nil cons (n + 1) (.cons n v x h)
+      = cons n v x h (IVec.recursor nil cons n v) := rfl
+
+/-- info: 'IVec.sum' does not depend on any axioms -/
+#guard_msgs in
+#print axioms IVec.sum
+
+-- the indices are generalised along with the major premise
+example (n : Nat) (v : IVec n) : 0 ≤ IVec.sum n v := by
+  induction n, v using IVec.recursor with
+  | nil => simp [IVec.sum]
+  | cons n v x h ih => simp
+
+/-! ## Several data members
+
+The data members become one mutual pre-block, so each of their recursors takes
+one motive per data member and one minor premise per constructor of any of them.
+-/
+
+mutual
+inductive Ctx2 : Type where
+  | nil : Ctx2
+  | snoc : (Γ : Ctx2) → (t : Ty) → Wf Γ t → Ctx2
+inductive Ty : Type where
+  | base : Ty
+  | arr : (a b : Ty) → Ty
+inductive Wf : Ctx2 → Ty → Prop where
+  | base : (Γ : Ctx2) → Wf Γ .base
+end
+
+/--
+info: @Ctx2.recursor : {C_Ctx2 : Ctx2 → Sort u_1} →
+  {C_Ty : Ty → Sort u_1} →
+    C_Ctx2 Ctx2.nil →
+      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → C_Ctx2 Γ → C_Ty t → C_Ctx2 (Γ.snoc t a)) →
+        C_Ty Ty.base → ((a b : Ty) → C_Ty a → C_Ty b → C_Ty (a.arr b)) → (t : Ctx2) → C_Ctx2 t
+-/
+#guard_msgs in
+#check @Ctx2.recursor
+
+/--
+info: @Ty.recursor : {C_Ctx2 : Ctx2 → Sort u_1} →
+  {C_Ty : Ty → Sort u_1} →
+    C_Ctx2 Ctx2.nil →
+      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → C_Ctx2 Γ → C_Ty t → C_Ctx2 (Γ.snoc t a)) →
+        C_Ty Ty.base → ((a b : Ty) → C_Ty a → C_Ty b → C_Ty (a.arr b)) → (t : Ty) → C_Ty t
+-/
+#guard_msgs in
+#check @Ty.recursor
+
+def Ctx2.length (Γ : Ctx2) : Nat :=
+  Ctx2.recursor (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
+    0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) Γ
+
+def Ty.size (t : Ty) : Nat :=
+  Ty.recursor (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
+    0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) t
+
+def exCtx2 : Ctx2 := .snoc .nil .base (.base .nil)
+
+/-- info: 1 -/
+#guard_msgs in
+#eval exCtx2.length
+
+/-- info: 3 -/
+#guard_msgs in
+#eval (Ty.arr .base .base).size
+
+example : exCtx2.length = 1 := rfl
+
+/-- info: 'Ctx2.length' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Ctx2.length
+
+/-! ## Infinitary recursive fields
+
+`Nat → Tree` recurses under a binder, and the induction hypothesis follows it.
+-/
+
+mutual
+inductive Tree : Type where
+  | leaf : Tree
+  | node : (f : Nat → Tree) → Good f → Tree
+inductive Good : (Nat → Tree) → Prop where
+  | leaf : Good (fun _ => .leaf)
+end
+
+/-- info: Tree.node : (f : Nat → Tree) → Good f → Tree -/
+#guard_msgs in
+#check @Tree.node
+
+/--
+info: @Tree.recursor : {C : Tree → Sort u_1} →
+  C Tree.leaf → ((f : Nat → Tree) → (a : Good f) → ((a : Nat) → C (f a)) → C (Tree.node f a)) → (t : Tree) → C t
+-/
+#guard_msgs in
+#check @Tree.recursor
+
+def Tree.depthAt (t : Tree) (k : Nat) : Nat :=
+  Tree.recursor (C := fun _ => Nat → Nat) (fun _ => 0)
+    (fun _ _ ih k => ih k k + 1) t k
+
+/-- info: 1 -/
+#guard_msgs in
+#eval Tree.depthAt (.node (fun _ => .leaf) .leaf) 3
+
+example : Tree.depthAt (.node (fun _ => .leaf) .leaf) 3 = 1 := rfl
+
+/-! ## Parameters and universe parameters
+
+The parameters lead every arity, every constructor and the recursor, and are
+implicit on the last two.  The universe parameters are shared by the whole
+block, as they are for a Lean `mutual`.
+-/
+
+mutual
+inductive Bag (α : Type u) (β : Type v) : Nat → Type (max u v) where
+  | nil : Bag α β 0
+  | cons : (n : Nat) → (b : Bag α β n) → (t : Tag2 α β) → OkB α β n b t → Bag α β (n + 1)
+inductive Tag2 (α : Type u) (β : Type v) : Type (max u v) where
+  | mk : α → β → Tag2 α β
+inductive OkB (α : Type u) (β : Type v) : (n : Nat) → Bag α β n → Tag2 α β → Prop where
+  | nil : (t : Tag2 α β) → OkB α β 0 .nil t
+end
+
+/-- info: Bag : Type u_1 → Type u_2 → Nat → Type (max u_1 u_2) -/
+#guard_msgs in
+#check @Bag
+
+/-- info: OkB : (α : Type u_1) → (β : Type u_2) → (n : Nat) → Bag α β n → Tag2 α β → Prop -/
+#guard_msgs in
+#check @OkB
+
+/--
+info: @Bag.cons : {α : Type u_1} →
+  {β : Type u_2} → (n : Nat) → (b : Bag α β n) → (t : Tag2 α β) → OkB α β n b t → Bag α β (n + 1)
+-/
+#guard_msgs in
+#check @Bag.cons
+
+/-- info: @OkB.nil : ∀ {α : Type u_1} {β : Type u_2} (t : Tag2 α β), OkB α β 0 Bag.nil t -/
+#guard_msgs in
+#check @OkB.nil
+
+/--
+info: @Bag.recursor : {α : Type u_2} →
+  {β : Type u_3} →
+    {C_Bag : (a : Nat) → Bag α β a → Sort u_1} →
+      {C_Tag2 : Tag2 α β → Sort u_1} →
+        C_Bag 0 Bag.nil →
+          ((n : Nat) →
+              (b : Bag α β n) →
+                (t : Tag2 α β) → (a : OkB α β n b t) → C_Bag n b → C_Tag2 t → C_Bag (n + 1) (Bag.cons n b t a)) →
+            ((a : α) → (a_1 : β) → C_Tag2 (Tag2.mk a a_1)) → (a : Nat) → (t : Bag α β a) → C_Bag a t
+-/
+#guard_msgs in
+#check @Bag.recursor
+
+def Bag.count {α : Type u} {β : Type v} : (n : Nat) → Bag α β n → Nat :=
+  fun n b => Bag.recursor (C_Bag := fun _ _ => Nat) (C_Tag2 := fun _ => Nat)
+    0 (fun _ _ _ _ ih _ => ih + 1) (fun _ _ => 0) n b
+
+def exBag : Bag String Nat 1 := .cons 0 .nil (.mk "a" 3) (.nil (.mk "a" 3))
+
+/-- info: 1 -/
+#guard_msgs in
+#eval exBag.count
+
+example : Bag.count 1 exBag = 1 := rfl
+
+/-- info: 'exBag' does not depend on any axioms -/
+#guard_msgs in
+#print axioms exBag
+
+/-- info: 'Bag.count' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Bag.count
+
 /-! ## A block we must not claim
 
 An arity mentioning a member's short name is only the *signature* of
@@ -222,26 +450,26 @@ end Inner
 
 /-! ## Outside the narrow class
 
-Both of these are rejected with an explanation rather than lowered wrongly.  The
-first is genuine induction-induction through *data*; the second hides a
-proposition of the block inside a piece of data, so erasing it would change the
-constructor's arity.
+Every one of these is rejected with an explanation of what erasure could not do,
+rather than lowered wrongly.
 -/
 
+-- genuine induction-induction through *data*: erasure has nothing to erase
 /--
-error: This induction-inductive block has 2 members that are not propositions; exactly one is supported
+error: The arity of `Len` mentions the block.  Erasure can only reach an induction-induction whose dependency runs through `Prop`, and this one indexes data by data
 -/
 #guard_msgs in
 mutual
-inductive Vec : Type where
-  | nil : Vec
-  | cons : (v : Vec) → (n : Len v) → Vec
-inductive Len : Vec → Type where
+inductive Vec4 : Type where
+  | nil : Vec4
+  | cons : (v : Vec4) → (n : Len v) → Vec4
+inductive Len : Vec4 → Type where
   | nil : Len .nil
 end
 
+-- a proposition of the block hidden inside a piece of data
 /--
-error: The field `n` of `Vec2.cons` mentions the block, but is neither `Vec2` nor a proof, so this lowering cannot erase it:
+error: The field `n` of `Vec2.cons` mentions the block, but is neither a member's type nor a proof of one of the block's propositions, so this lowering cannot erase it:
   { m // Ok2 v }
 -/
 #guard_msgs in
@@ -251,4 +479,100 @@ inductive Vec2 : Type where
   | cons : (v : Vec2) → (n : { m : Nat // Ok2 v }) → Vec2
 inductive Ok2 : Vec2 → Prop where
   | nil : Ok2 .nil
+end
+
+-- an erased field whose type mentions a *data* member: `a = b` and
+-- `a.val = b.val` are different propositions, so erasing it is visible
+/--
+error: The field `h` of `C1.snoc` mentions the block, but is neither a member's type nor a proof of one of the block's propositions, so this lowering cannot erase it:
+  a = b
+-/
+#guard_msgs in
+mutual
+inductive C1 : Type where
+  | nil : C1
+  | snoc : (a : C1) → (b : C1) → (h : a = b) → P1 a → C1
+inductive P1 : C1 → Prop where
+  | nil : P1 .nil
+end
+
+-- a recursive field that *binds* a member: there is no way back from the
+-- pre-world without a well-formedness proof, so `f` could not be applied
+/--
+error: The field `f` of `T3.node` binds a member of the block before recursing, which erasure cannot follow: a pre-world value cannot be turned back into a real one without its well-formedness proof.
+  T3 → T3
+-/
+#guard_msgs in
+mutual
+inductive T3 : Type where
+  | leaf : T3
+  | node : (f : T3 → T3) → G3 f → T3
+inductive G3 : (T3 → T3) → Prop where
+  | id : G3 id
+end
+
+-- the data members share one pre-block, so the kernel's own rule applies
+/--
+error: The data members `A4` and `B4` of this induction-inductive block live in different universes, `Type` and `Type 1`; the erased pre-block is a single mutual inductive, so they must agree
+-/
+#guard_msgs in
+mutual
+inductive A4 : Type where
+  | mk : (b : B4) → P4 b → A4
+inductive B4 : Type 1 where
+  | mk : B4
+inductive P4 : B4 → Prop where
+  | mk : P4 .mk
+end
+
+-- a `Prop` member's index is rewritten one index at a time, and `List C5` has
+-- no image on the erased types
+/--
+error: The index `a✝` of `P5` mentions the block without being a member's type, so it has no counterpart on the erased types:
+  List C5
+-/
+#guard_msgs in
+mutual
+inductive C5 : Type where
+  | nil : C5
+  | snoc : (a : C5) → P5 [a] → C5
+inductive P5 : List C5 → Prop where
+  | nil : P5 []
+end
+
+-- a data member is encoded as a `Subtype`, which lands in `Sort (max 1 u)`
+/--
+error: The data member `S` lives at `Sort u`, which could still be `Prop`.  It is encoded as a subtype, and `Subtype` lands one universe up from `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather than `Sort v`
+-/
+#guard_msgs in
+mutual
+inductive S (α : Sort u) : Sort u where
+  | mk : (a : S α) → PS α a → S α
+inductive PS (α : Sort u) : S α → Prop where
+  | mk : (a : S α) → PS α a
+end
+
+-- the whole encoding runs under one telescope of parameters
+/--
+error: `P7` takes 1 parameter(s) and `Q7` takes 0; every member of a mutual block must take the same ones
+-/
+#guard_msgs in
+mutual
+inductive P7 (α : Type) : Type where
+  | nil : P7 α
+  | mk : (x : P7 α) → Q7 x → P7 α
+inductive Q7 : P7 Nat → Prop where
+  | nil : Q7 .nil
+end
+
+-- and one list of universe parameters
+/--
+error: `K1` and `K2` declare different universe parameters; every member of a mutual block must declare the same ones
+-/
+#guard_msgs in
+mutual
+inductive K1.{u} : Type u where
+  | mk : (k : K1.{u}) → K2 k → K1
+inductive K2.{u, v} : K1.{u} → Prop where
+  | mk : (k : K1.{u}) → K2 k
 end
