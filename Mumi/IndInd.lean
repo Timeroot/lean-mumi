@@ -615,173 +615,129 @@ structure Plan where
   wfDecls : Array (Name × Expr × Expr)
   deriving Inhabited
 
-/-- The block, elaborated and checked, ready for `emit`. -/
-def prepare (views : Array InductiveView) : TermElabM Plan := do
-  checkSupported views
-  let scopeLevelNames ← Term.getLevelNames
-  withoutModifyingEnv <| Term.withLevelNames views[0]!.levelNames do
-    let n := views.size
-    -- the block's own names; inside the scratch environment that is everything
-    -- of the block there is to mention
-    let blockNames : Array Name :=
-      views.flatMap fun v => #[v.declName] ++ v.ctors.map (·.declName)
-    -- the arities, by worklist
-    let mut arities : Array (Option Expr) := (List.replicate n none).toArray
-    let mut paramCounts : Array Nat := (List.replicate n 0).toArray
-    let mut lastErr : Option Exception := none
-    let mut progress := true
-    while progress do
-      progress := false
-      for i in *...n do
-        if arities[i]!.isSome then
-          continue
-        let s ← Term.saveState
-        try
-          let (ty, np) ← elabArity views views[i]!
-          unless ← isTypeFormerType ty do
-            throwError "The resulting type of `{views[i]!.declName}` is not a sort"
-          stubAxiom views[i]!.declName ty
-          arities := arities.set! i (some ty)
-          paramCounts := paramCounts.set! i np
-          progress := true
-        catch ex =>
-          lastErr := some ex
-          s.restore
-    for i in *...n do
-      if arities[i]!.isNone then
-        match lastErr with
-        | some ex => throw ex
-        | none => throwError "Could not elaborate the arity of `{views[i]!.declName}`"
-    -- `mutual` already demands that the members' parameters agree, but nothing
-    -- has checked it yet, and the whole encoding shares one telescope
-    let numParams := paramCounts[0]!
-    for i in *...n do
-      unless paramCounts[i]! == numParams do
-        throwError "`{views[0]!.declName}` takes {numParams} parameter(s) and \
-          `{views[i]!.declName}` takes {paramCounts[i]!}; every member of a mutual block must \
-          take the same ones"
-    let paramShape (t : Expr) : MetaM Expr :=
-      forallBoundedTelescope t numParams fun ps _ => mkForallFVars ps (mkConst ``Unit)
-    for i in *...n do
-      unless ← isDefEq (← paramShape arities[0]!.get!) (← paramShape arities[i]!.get!) do
-        throwError "The parameters of `{views[0]!.declName}` and `{views[i]!.declName}` differ; \
-          every member of a mutual block must take the same ones"
+/-- The elaborated block, with no syntax left in it. -/
+structure Raw where
+  names     : Array Name
+  ctorNames : Array (Array Name)
+  /-- `∀ params idxs, Sort l`, one per member. -/
+  arities   : Array Expr
+  /-- `∀ {params} fields, M params args`, one per constructor. -/
+  ctorTypes : Array (Array Expr)
+  numParams : Nat
+  /-- The level names in scope where the block was written. -/
+  scopeLevelNames : List Name
+  /-- The level names the block itself declares. -/
+  declLevelNames  : List Name
+  deriving Inhabited
+
+/-- The block's own names: its members and their constructors. -/
+def Raw.blockNames (r : Raw) : Array Name :=
+  (Array.range r.names.size).flatMap fun i => #[r.names[i]!] ++ r.ctorNames[i]!
+
+/-- Whether each member is a proposition, and the `l` of its resulting `Sort l`. -/
+def memberLevels (names : Array Name) (arities : Array Expr) :
+    TermElabM (Array Bool × Array Level) := do
+  let mut isProp : Array Bool := #[]
+  let mut levels : Array Level := #[]
+  for i in *...arities.size do
+    let (p, l) ← forallTelescopeReducing arities[i]! fun _ res => do
+      match ← whnfD res with
+      | .sort u => return (u.normalize == Level.zero, u)
+      | _ => throwError "The resulting type of `{names[i]!}` is not a sort"
+    isProp := isProp.push p
+    levels := levels.push l
+  return (isProp, levels)
+
+/--
+The checks the arities alone settle.
+
+They are made before any constructor is elaborated, so that a block erasure
+cannot reach at all is turned away before its fields are read against members
+that will never exist.
+-/
+def checkDataArities (names : Array Name) (arities : Array Expr) (blockNames : Array Name)
+    (isProp : Array Bool) (levels : Array Level) : TermElabM Unit := do
+  let dataIdxs := (Array.range names.size).filter (!isProp[·]!)
+  if dataIdxs.isEmpty then
+    throwError "Every member of this induction-inductive block is a proposition; there is \
+      nothing for the erasure to keep"
+  -- a data member indexed by the block is data-on-data induction-induction,
+  -- which erasure cannot reach; say so before elaborating any constructor
+  for i in dataIdxs do
+    if arities[i]!.getUsedConstants.any (blockNames.contains ·) then
+      throwError "The arity of `{names[i]!}` mentions the block.  Erasure can only \
+        reach an induction-induction whose dependency runs through `Prop`, and this one \
+        indexes data by data"
+  -- the data members become one mutual pre-block, so the kernel's own
+  -- same-universe rule applies to them
+  for i in dataIdxs do
+    unless levels[i]!.normalize == levels[dataIdxs[0]!]!.normalize do
+      let fst := toString (← ppExpr (mkSort levels[dataIdxs[0]!]!))
+      let snd := toString (← ppExpr (mkSort levels[i]!))
+      throwError "The data members `{names[dataIdxs[0]!]!}` and \
+        `{names[i]!}` of this induction-inductive block live in different \
+        universes, `{fst}` and `{snd}`; the erased pre-block is a single mutual \
+        inductive, so they must agree"
+  -- a data member is encoded as a `Subtype`, which lands in `Sort (max 1 l)`.
+  -- For `Type v` that is `Sort l` again; for a bare `Sort u`, which might yet
+  -- be `Prop`, it is not, and the definition would not typecheck
+  for i in dataIdxs do
+    unless ← isLevelDefEq (mkLevelMax Level.one levels[i]!) levels[i]! do
+      let s := toString (← ppExpr (mkSort levels[i]!))
+      throwError "The data member `{names[i]!}` lives at `{s}`, which could still \
+        be `Prop`.  It is encoded as a subtype, and `Subtype` lands one universe up from \
+        `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather \
+        than `Sort v`"
+
+/--
+Everything between the elaborated block and the `Plan`.
+
+The block reaching here need not be one anybody wrote: `denest` adds members of
+its own, and they go through exactly the same analysis.
+-/
+def prepareCore (r : Raw) : TermElabM Plan := do
+    let n := r.names.size
+    let numParams := r.numParams
+    let blockNames := r.blockNames
+    let mut arities := r.arities
+    let mut ctorTypes := r.ctorTypes
     -- which members are propositions, and at what universe each one lives
-    let mut isProp : Array Bool := #[]
-    let mut levels : Array Level := #[]
-    for i in *...n do
-      let (p, l) ← forallTelescopeReducing arities[i]!.get! fun _ r => do
-        match ← whnfD r with
-        | .sort u => return (u.normalize == Level.zero, u)
-        | _ => throwError "The resulting type of `{views[i]!.declName}` is not a sort"
-      isProp := isProp.push p
-      levels := levels.push l
+    let (isProp, levels) ← memberLevels r.names arities
+    checkDataArities r.names arities blockNames isProp levels
     let dataIdxs := (Array.range n).filter (!isProp[·]!)
     let propIdxs := (Array.range n).filter (isProp[·]!)
-    if dataIdxs.isEmpty then
-      throwError "Every member of this induction-inductive block is a proposition; there is \
-        nothing for the erasure to keep"
-    -- a data member indexed by the block is data-on-data induction-induction,
-    -- which erasure cannot reach; say so before elaborating any constructor
-    for i in dataIdxs do
-      if arities[i]!.get!.getUsedConstants.any (blockNames.contains ·) then
-        throwError "The arity of `{views[i]!.declName}` mentions the block.  Erasure can only \
-          reach an induction-induction whose dependency runs through `Prop`, and this one \
-          indexes data by data"
-    -- the data members become one mutual pre-block, so the kernel's own
-    -- same-universe rule applies to them
-    for i in dataIdxs do
-      unless levels[i]!.normalize == levels[dataIdxs[0]!]!.normalize do
-        let fst := toString (← ppExpr (mkSort levels[dataIdxs[0]!]!))
-        let snd := toString (← ppExpr (mkSort levels[i]!))
-        throwError "The data members `{views[dataIdxs[0]!]!.declName}` and \
-          `{views[i]!.declName}` of this induction-inductive block live in different \
-          universes, `{fst}` and `{snd}`; the erased pre-block is a single mutual \
-          inductive, so they must agree"
-    -- a data member is encoded as a `Subtype`, which lands in `Sort (max 1 l)`.
-    -- For `Type v` that is `Sort l` again; for a bare `Sort u`, which might yet
-    -- be `Prop`, it is not, and the definition would not typecheck
-    for i in dataIdxs do
-      unless ← isLevelDefEq (mkLevelMax Level.one levels[i]!) levels[i]! do
-        let s := toString (← ppExpr (mkSort levels[i]!))
-        throwError "The data member `{views[i]!.declName}` lives at `{s}`, which could still \
-          be `Prop`.  It is encoded as a subtype, and `Subtype` lands one universe up from \
-          `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather \
-          than `Sort v`"
-    -- a constructor of an indexed family has to say what its indices are; Lean
-    -- refuses this too, and here the fallback would silently make the resulting
-    -- type the unapplied family, which is not even a proposition
-    for i in *...n do
-      let arityBinders ← forallTelescope arities[i]!.get! fun xs _ => pure xs.size
-      if arityBinders > numParams then
-        for c in views[i]!.ctors do
-          if c.type?.isNone then
-            withRef c.ref <| throwError "Missing resulting type for constructor \
-              `{c.declName}`.  It must be given because `{views[i]!.declName}` is an \
-              inductive family"
-    -- the constructors: the data members' first, so that their constructors are
-    -- in scope for the `Prop` members' -- that is where `.snoc` has to resolve
-    let mut ctorTypes : Array (Array Expr) := (List.replicate n (#[] : Array Expr)).toArray
-    for i in dataIdxs do
-      let tys ← views[i]!.ctors.mapM (elabCtorType views views[i]! ·)
-      ctorTypes := ctorTypes.set! i tys
-      for j in *...tys.size do
-        stubAxiom views[i]!.ctors[j]!.declName tys[j]!
-    for i in propIdxs do
-      ctorTypes := ctorTypes.set! i (← views[i]!.ctors.mapM (elabCtorType views views[i]! ·))
-    -- a member whose resulting type was left out was guessed at `Type`.  Now
-    -- that the fields are known, check the guess was big enough: a field the
-    -- guess does not fit would have been elaborated against the wrong universe,
-    -- so the answer is to ask for the type rather than to widen it here
-    for i in *...n do
-      if views[i]!.type?.isNone then
-        for j in *...ctorTypes[i]!.size do
-          forallBoundedTelescope ctorTypes[i]![j]! numParams fun _ t =>
-            forallTelescope t fun xs _ => do
-              for x in xs do
-                let ty ← inferType x
-                if ty.getUsedConstants.any (blockNames.contains ·) then
-                  continue
-                let l ← getLevel ty
-                unless ← isLevelDefEq (mkLevelMax l levels[i]!) levels[i]! do
-                  let at_ := toString (← ppExpr (mkSort l))
-                  let want := toString (← ppExpr (mkSort (mkLevelMax l levels[i]!).normalize))
-                  throwError "`{views[i]!.declName}` gives no resulting type, so it was read \
-                    as `Type`; but the field `{x}` of `{views[i]!.ctors[j]!.declName}` lives \
-                    in `{at_}`, which does not fit.  Write the resulting type \
-                    out: `inductive {views[i]!.declName} : {want}`"
     -- the block's universe parameters: whichever of the declared and auto-bound
     -- ones anything in the block actually uses, in Lean's own order
     let mut cps : CollectLevelParams.State := {}
     for i in *...n do
-      cps := collectLevelParams cps arities[i]!.get!
+      cps := collectLevelParams cps arities[i]!
       for t in ctorTypes[i]! do
         cps := collectLevelParams cps t
-    let us ← match sortDeclLevelParams scopeLevelNames views[0]!.levelNames cps.params with
+    let us ← match sortDeclLevelParams r.scopeLevelNames r.declLevelNames cps.params with
       | .ok us => pure us
       | .error msg => throwError msg
     let lvls := us.map Level.param
-    arities := arities.map (·.map (normLevels blockNames lvls))
+    arities := arities.map (normLevels blockNames lvls)
     ctorTypes := ctorTypes.map (·.map (normLevels blockNames lvls))
     -- a skeleton is enough for `Block.mentions`, `Block.preOf` and `Block.memberIdx?`
     let skeleton : Block :=
       { numParams, us
         members := (Array.range n).map fun i =>
-          { name := views[i]!.declName, type := arities[i]!.get!, isProp := isProp[i]!
+          { name := r.names[i]!, type := arities[i]!, isProp := isProp[i]!
             level := levels[i]!
             ctors := (Array.range ctorTypes[i]!.size).map fun j =>
-              { name := views[i]!.ctors[j]!.declName, type := ctorTypes[i]![j]!,
+              { name := r.ctorNames[i]![j]!, type := ctorTypes[i]![j]!,
                 kinds := #[] } } }
     -- a `Prop` member's index is rewritten by taking each argument to the
     -- pre-world, and that is only possible one index at a time: an index whose
     -- type merely *contains* a member, `List Ctx`, has no such image
     for j in propIdxs do
-      forallTelescope arities[j]!.get! fun idxs _ => do
+      forallTelescope arities[j]! fun idxs _ => do
         for y in idxs do
           let ty ← inferType y
           unless (← recTargetOf? skeleton ty).isSome do
             if skeleton.mentions ty then
-              throwError "The index `{y}` of `{views[j]!.declName}` mentions the block \
+              throwError "The index `{y}` of `{r.names[j]!}` mentions the block \
                 without being a member's type, so it has no counterpart on the erased \
                 types:{indentExpr ty}"
     -- classify every constructor's fields
@@ -950,6 +906,120 @@ where
           throwError "{what} of `{c.name}` uses the field \
             `{xs[k]!}` as an index, but erasure has to move or drop \
             it{indentExpr a}"
+
+/--
+Elaborate a written block into a `Raw`, and hand it on.
+
+`k` runs with the scratch axioms still in scope, which is what `prepareCore`
+needs; it is a callback rather than a return value for exactly that reason.
+-/
+def withRaw {α} (views : Array InductiveView) (k : Raw → TermElabM α) : TermElabM α := do
+  checkSupported views
+  let scopeLevelNames ← Term.getLevelNames
+  withoutModifyingEnv <| Term.withLevelNames views[0]!.levelNames do
+    let n := views.size
+    let names := views.map (·.declName)
+    -- the block's own names; inside the scratch environment that is everything
+    -- of the block there is to mention
+    let blockNames : Array Name :=
+      views.flatMap fun v => #[v.declName] ++ v.ctors.map (·.declName)
+    -- the arities, by worklist
+    let mut arities : Array (Option Expr) := (List.replicate n none).toArray
+    let mut paramCounts : Array Nat := (List.replicate n 0).toArray
+    let mut lastErr : Option Exception := none
+    let mut progress := true
+    while progress do
+      progress := false
+      for i in *...n do
+        if arities[i]!.isSome then
+          continue
+        let s ← Term.saveState
+        try
+          let (ty, np) ← elabArity views views[i]!
+          unless ← isTypeFormerType ty do
+            throwError "The resulting type of `{views[i]!.declName}` is not a sort"
+          stubAxiom views[i]!.declName ty
+          arities := arities.set! i (some ty)
+          paramCounts := paramCounts.set! i np
+          progress := true
+        catch ex =>
+          lastErr := some ex
+          s.restore
+    for i in *...n do
+      if arities[i]!.isNone then
+        match lastErr with
+        | some ex => throw ex
+        | none => throwError "Could not elaborate the arity of `{views[i]!.declName}`"
+    let arities' := arities.map (·.get!)
+    -- `mutual` already demands that the members' parameters agree, but nothing
+    -- has checked it yet, and the whole encoding shares one telescope
+    let numParams := paramCounts[0]!
+    for i in *...n do
+      unless paramCounts[i]! == numParams do
+        throwError "`{views[0]!.declName}` takes {numParams} parameter(s) and \
+          `{views[i]!.declName}` takes {paramCounts[i]!}; every member of a mutual block must \
+          take the same ones"
+    let paramShape (t : Expr) : MetaM Expr :=
+      forallBoundedTelescope t numParams fun ps _ => mkForallFVars ps (mkConst ``Unit)
+    for i in *...n do
+      unless ← isDefEq (← paramShape arities'[0]!) (← paramShape arities'[i]!) do
+        throwError "The parameters of `{views[0]!.declName}` and `{views[i]!.declName}` differ; \
+          every member of a mutual block must take the same ones"
+    -- the same checks `prepareCore` makes, made here too so that a block
+    -- erasure cannot reach is turned away before its constructors are read
+    let (isProp, levels) ← memberLevels names arities'
+    checkDataArities names arities' blockNames isProp levels
+    let dataIdxs := (Array.range n).filter (!isProp[·]!)
+    let propIdxs := (Array.range n).filter (isProp[·]!)
+    -- a constructor of an indexed family has to say what its indices are; Lean
+    -- refuses this too, and here the fallback would silently make the resulting
+    -- type the unapplied family, which is not even a proposition
+    for i in *...n do
+      let arityBinders ← forallTelescope arities'[i]! fun xs _ => pure xs.size
+      if arityBinders > numParams then
+        for c in views[i]!.ctors do
+          if c.type?.isNone then
+            withRef c.ref <| throwError "Missing resulting type for constructor \
+              `{c.declName}`.  It must be given because `{views[i]!.declName}` is an \
+              inductive family"
+    -- the constructors: the data members' first, so that their constructors are
+    -- in scope for the `Prop` members' -- that is where `.snoc` has to resolve
+    let mut ctorTypes : Array (Array Expr) := (List.replicate n (#[] : Array Expr)).toArray
+    for i in dataIdxs do
+      let tys ← views[i]!.ctors.mapM (elabCtorType views views[i]! ·)
+      ctorTypes := ctorTypes.set! i tys
+      for j in *...tys.size do
+        stubAxiom views[i]!.ctors[j]!.declName tys[j]!
+    for i in propIdxs do
+      ctorTypes := ctorTypes.set! i (← views[i]!.ctors.mapM (elabCtorType views views[i]! ·))
+    -- a member whose resulting type was left out was guessed at `Type`.  Now
+    -- that the fields are known, check the guess was big enough: a field the
+    -- guess does not fit would have been elaborated against the wrong universe,
+    -- so the answer is to ask for the type rather than to widen it here
+    for i in *...n do
+      if views[i]!.type?.isNone then
+        for j in *...ctorTypes[i]!.size do
+          forallBoundedTelescope ctorTypes[i]![j]! numParams fun _ t =>
+            forallTelescope t fun xs _ => do
+              for x in xs do
+                let ty ← inferType x
+                if ty.getUsedConstants.any (blockNames.contains ·) then
+                  continue
+                let l ← getLevel ty
+                unless ← isLevelDefEq (mkLevelMax l levels[i]!) levels[i]! do
+                  let at_ := toString (← ppExpr (mkSort l))
+                  let want := toString (← ppExpr (mkSort (mkLevelMax l levels[i]!).normalize))
+                  throwError "`{views[i]!.declName}` gives no resulting type, so it was read \
+                    as `Type`; but the field `{x}` of `{views[i]!.ctors[j]!.declName}` lives \
+                    in `{at_}`, which does not fit.  Write the resulting type \
+                    out: `inductive {views[i]!.declName} : {want}`"
+    k { names, ctorNames := views.map (·.ctors.map (·.declName))
+        arities := arities', ctorTypes, numParams, scopeLevelNames
+        declLevelNames := views[0]!.levelNames }
+
+/-- The block, elaborated and checked, ready for `emit`. -/
+def prepare (views : Array InductiveView) : TermElabM Plan :=
+  withRaw views prepareCore
 
 /-! ## Emitting the declarations -/
 
