@@ -45,9 +45,26 @@ inductive RecWFTree where
 #guard_msgs in
 #check @RecWFTree
 
-/-- info: RecWFTree.mk : RecWFTree.nested_WFTree_1 → RecWFTree -/
+-- the constructor has the type it was declared with; the copy is in the
+-- kernel-facing one, under a name nobody has to reach for
+/-- info: RecWFTree.mk : WFTree RecWFTree → RecWFTree -/
 #guard_msgs in
 #check @RecWFTree.mk
+
+/-- info: RecWFTree._nested_mk : RecWFTree.nested_WFTree_1 → RecWFTree -/
+#guard_msgs in
+#check @RecWFTree._nested_mk
+
+/-- info: RecWFTree.nested_WFTree_1.ofOrig : WFTree RecWFTree → RecWFTree.nested_WFTree_1 -/
+#guard_msgs in
+#check @RecWFTree.nested_WFTree_1.ofOrig
+
+/--
+info: @RecWFTree.nested_WF_3.ofOrig : ∀ {a : Tree RecWFTree},
+  Tree.WF RecWFTree a → RecWFTree.nested_WF_3 (RecWFTree.nested_Tree_2.ofOrig a)
+-/
+#guard_msgs in
+#check @RecWFTree.nested_WF_3.ofOrig
 
 /-- info: RecWFTree.nested_WFTree_1 : Type -/
 #guard_msgs in
@@ -105,7 +122,7 @@ info: @RecWFTree.nested_WFWith_4.node : ∀ {llist rlist : List Nat} (key : Nat)
 info: @RecWFTree.rec : {C_RecWFTree : RecWFTree → Sort u_1} →
   {C_nested_WFTree_1 : RecWFTree.nested_WFTree_1 → Sort u_1} →
     {C_nested_Tree_2 : RecWFTree.nested_Tree_2 → Sort u_1} →
-      ((x : RecWFTree.nested_WFTree_1) → C_nested_WFTree_1 x → C_RecWFTree (RecWFTree.mk x)) →
+      ((x : RecWFTree.nested_WFTree_1) → C_nested_WFTree_1 x → C_RecWFTree (RecWFTree._nested_mk x)) →
         ((x : RecWFTree.nested_Tree_2) →
             (h : RecWFTree.nested_WF_3 x) → C_nested_Tree_2 x → C_nested_WFTree_1 (RecWFTree.nested_WFTree_1.mk x h)) →
           C_nested_Tree_2 RecWFTree.nested_Tree_2.empty →
@@ -122,11 +139,11 @@ info: @RecWFTree.rec : {C_RecWFTree : RecWFTree → Sort u_1} →
 
 namespace RecWFTree
 
-theorem emptyWF : nested_WF_3 nested_Tree_2.empty := .intro [] _ .empty
+theorem emptyWF : Tree.WF RecWFTree .empty := .intro [] _ .empty
 
-def leaf (v : RecWFTree) : nested_Tree_2 := .node 0 v .empty .empty
+def leaf (v : RecWFTree) : Tree RecWFTree := .node 0 v .empty .empty
 
-theorem leafWF (v : RecWFTree) : nested_WF_3 (leaf v) :=
+theorem leafWF (v : RecWFTree) : (leaf v).WF :=
   .intro _ _ (.node 0 v .empty .empty .empty .empty (by simp) (by simp))
 
 def bottom : RecWFTree := .mk (.mk .empty emptyWF)
@@ -182,7 +199,7 @@ inductive Rec2 (β : Type) where
 #guard_msgs in
 #check @Rec2
 
-/-- info: @Rec2.mk : {β : Type} → Rec2.nested_OkBag_1 β → Rec2 β -/
+/-- info: @Rec2.mk : {β : Type} → OkBag (Rec2 β) → Rec2 β -/
 #guard_msgs in
 #check @Rec2.mk
 
@@ -213,7 +230,7 @@ inductive OkVec (α : Type) where
 inductive Rec3 where
   | mk (x : OkVec Rec3)
 
-/-- info: Rec3.mk : Rec3.nested_OkVec_1 → Rec3 -/
+/-- info: Rec3.mk : OkVec Rec3 → Rec3 -/
 #guard_msgs in
 #check @Rec3.mk
 

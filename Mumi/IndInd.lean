@@ -1385,6 +1385,303 @@ def denestRaw (r : Raw) : TermElabM Raw := do
         (← auxCtorTypes.mapM (·.mapM instantiateMVars))
       copies := r.copies ++ copies }
 
+/-! ## The bridge back to the originals
+
+Denesting replaces `WFTree RecWFTree` with a copy of `WFTree` specialised at the
+block, and a copy is not the type it copies: `RecWFTree.nested_WFTree_1` and
+`WFTree RecWFTree` have the same constructors, but no term of one is a term of
+the other, and no arrangement of declarations makes them defeq -- the copy has
+to exist before `RecWFTree` does, and `WFTree RecWFTree` cannot be written until
+`RecWFTree` does.  Lean's own nested inductives have no such copy at all: the
+kernel builds the enlarged block internally and states `Rose.rec` over
+`List Rose` directly, which is not something an elaborator can reproduce.
+
+What can be arranged is that the copy never appears in anything the writer has
+to read.  The two types are *isomorphic*, and the isomorphism is definable:
+
+* `X.ofOrig` sends the original to the copy.  It recurses on the original, an
+  ordinary inductive with an ordinary recursor, so this direction is the easy
+  one: a data copy's is compiled by structural recursion, a `Prop` copy's is a
+  theorem built from the original's own `rec`.
+
+With it, the constructor the writer declared can be given the type they wrote.
+The kernel-facing constructor keeps the copy in its type under a hidden name,
+`RecWFTree._nested_mk`, and `RecWFTree.mk` is a wrapper over it:
+
+```lean
+def RecWFTree.mk (x : WFTree RecWFTree) : RecWFTree := RecWFTree._nested_mk (ofOrig x)
+```
+
+Nothing here is load-bearing.  Every step is attempted and, if any of it fails
+-- a copy whose original is nested in another copy needs the two `ofOrig`s in
+one mutual group, which is not done -- the plain names are defined as the raw
+declarations instead, and the block is exactly what it was before.
+-/
+
+/-- A member denesting added, and the type it is a copy of. -/
+structure Copy where
+  /-- Where the copy sits among the block's members. -/
+  idx     : Nat
+  /-- The copy's name. -/
+  name    : Name
+  /-- The inductive being copied. -/
+  indName : Name
+  /-- `I ps'`: that inductive applied to its parameters, under the block's parameters. -/
+  app     : Expr
+  deriving Inhabited
+
+/-- The original's image in the copy: `X.ofOrig : I ps' idxs → X ps idxs'`. -/
+def Copy.ofName (c : Copy) : Name := c.name ++ `ofOrig
+
+/-- The bridge is built under one telescope of the block's parameters. -/
+structure BridgeCtx where
+  b      : Block
+  /-- The block's parameters, as free variables. -/
+  ps     : Array Expr
+  copies : Array Copy
+  deriving Inhabited
+
+namespace BridgeCtx
+
+/-- Which copy's original `e` is an application of, and the indices it carries. -/
+def copyOf? (c : BridgeCtx) (e : Expr) : MetaM (Option (Nat × Array Expr)) := do
+  let some hd := e.getAppFn.constName? | return none
+  let args := e.getAppArgs
+  for k in *...c.copies.size do
+    let app := c.copies[k]!.app
+    let n := app.getAppNumArgs
+    if app.getAppFn.constName? == some hd && args.size ≥ n then
+      if ← isDefEq (mkAppN e.getAppFn (args.extract 0 n)) app then
+        return some (k, args.extract n args.size)
+  return none
+
+/--
+The copy-world image of `x : ty`, where `ty` is stated in the original world.
+
+A field or index whose type has nothing to do with the block comes back as it
+is; one that lands in a copied type is sent through that copy's `ofOrig`.  That
+`ofOrig` is indexed by the *original's* indices -- it is what sends them across
+-- so they are passed on as they stand.
+-/
+def ofImage (c : BridgeCtx) (x ty : Expr) : MetaM Expr :=
+  forallTelescope ty fun ys concl => do
+    let some (k, idxs) ← c.copyOf? concl | return x
+    mkLambdaFVars ys <|
+      mkAppN (mkConst c.copies[k]!.ofName c.b.lvls) (c.ps ++ idxs ++ #[mkAppN x ys])
+
+/-- The original of a copy, or of a copy's constructor, applied to `args`. -/
+def unCopyHead? (c : BridgeCtx) (hd : Name) (args : Array Expr) : MetaM (Option Expr) := do
+  if args.size < c.ps.size then return none
+  let rest := args.extract c.ps.size args.size
+  for cp in c.copies do
+    if hd == cp.name then
+      return some (mkAppN cp.app rest)
+    for orig in (← getConstInfoInduct cp.indName).ctors do
+      if hd == reroot cp.indName cp.name orig then
+        return some (mkAppN (mkConst orig cp.app.getAppFn.constLevels!)
+          (cp.app.getAppArgs ++ rest))
+  return none
+
+/-- `e` with every copy, and every copy's constructor, put back as the original. -/
+partial def unCopy (c : BridgeCtx) (e : Expr) : MetaM Expr := do
+  match e with
+  | .app .. =>
+    let args ← e.getAppArgs.mapM c.unCopy
+    if let some hd := e.getAppFn.constName? then
+      if let some r ← c.unCopyHead? hd args then return r
+    return mkAppN (← c.unCopy e.getAppFn) args
+  | .const n _ => return (← c.unCopyHead? n #[]).getD e
+  | .forallE n d b bi => return .forallE n (← c.unCopy d) (← c.unCopy b) bi
+  | .lam n d b bi => return .lam n (← c.unCopy d) (← c.unCopy b) bi
+  | .letE n t v b nd => return .letE n (← c.unCopy t) (← c.unCopy v) (← c.unCopy b) nd
+  | .mdata m b => return .mdata m (← c.unCopy b)
+  | .proj s i b => return .proj s i (← c.unCopy b)
+  | _ => return e
+
+/--
+The copies, ordered so that each comes after every copy its original mentions.
+
+The originals are looked at *instantiated at their parameters*, which is what
+makes a copy of `List` at a copied `Tree` come out after the `Tree`: plain
+`List` mentions nothing of the block.  Two copies that need each other -- an
+original nested inside another original -- have no such order, and that is
+reported rather than worked around.
+-/
+def order (c : BridgeCtx) : MetaM (Array Nat) := do
+  let mut uses : Array (Array Name) := #[]
+  for cp in c.copies do
+    let lvls := cp.app.getAppFn.constLevels!
+    let params := cp.app.getAppArgs
+    let info ← getConstInfoInduct cp.indName
+    let mut ns := (← instantiateForall (info.instantiateTypeLevelParams lvls) params)
+      |>.getUsedConstants
+    for cn in info.ctors do
+      let ci ← getConstInfoCtor cn
+      ns := ns ++ (← instantiateForall
+        (ci.type.instantiateLevelParams ci.levelParams lvls) params).getUsedConstants
+    uses := uses.push ns
+  let mut done : Array Nat := #[]
+  let mut todo := Array.range c.copies.size
+  while !todo.isEmpty do
+    let mut next : Array Nat := #[]
+    let mut progress := false
+    for k in todo do
+      let ready := (Array.range c.copies.size).all fun j =>
+        c.copies[j]!.indName == c.copies[k]!.indName || done.contains j ||
+          !(uses[k]!.contains c.copies[j]!.indName)
+      if ready then
+        done := done.push k
+        progress := true
+      else
+        next := next.push k
+    unless progress do
+      throwError "The types denesting copies are nested in one another"
+    todo := next
+  return done
+
+/-- `X.ofOrig`'s type: the original at its indices, sent to the copy at theirs. -/
+def ofType (c : BridgeCtx) (k : Nat) : MetaM Expr := do
+  let cp := c.copies[k]!
+  forallTelescope (← inferType cp.app) fun jdxs _ => do
+    let mut imgs : Array Expr := #[]
+    for y in jdxs do
+      imgs := imgs.push (← c.ofImage y (← inferType y))
+    withLocalDeclD `x (mkAppN cp.app jdxs) fun x =>
+      return implicitPrefix (c.ps.size + jdxs.size) (←
+        mkForallFVars (c.ps ++ jdxs ++ #[x]) (mkAppN (c.b.cst cp.name) (c.ps ++ imgs)))
+
+/--
+`X.ofOrig` for a data copy: a `casesOn` on the original, with the fields sent
+across one by one.  A field of the original's own type becomes a recursive call,
+which is what `Structural.structuralRecursion` is handed afterwards.
+-/
+def ofValueData (c : BridgeCtx) (k : Nat) : MetaM Expr := do
+  let cp := c.copies[k]!
+  let info ← getConstInfoInduct cp.indName
+  let params := cp.app.getAppArgs
+  let lvls := cp.app.getAppFn.constLevels!
+  forallTelescope (← inferType cp.app) fun jdxs _ => do
+    let mut imgs : Array Expr := #[]
+    for y in jdxs do
+      imgs := imgs.push (← c.ofImage y (← inferType y))
+    let resTy := mkAppN (c.b.cst cp.name) (c.ps ++ imgs)
+    withLocalDeclD `x (mkAppN cp.app jdxs) fun x => do
+      let motive ← mkLambdaFVars (jdxs ++ #[x]) resTy
+      let elim ← getLevel resTy
+      let mut alts : Array Expr := #[]
+      for cn in info.ctors do
+        let ci ← getConstInfoCtor cn
+        let cty ← instantiateForall (ci.type.instantiateLevelParams ci.levelParams lvls) params
+        alts := alts.push <| ← forallTelescope cty fun xs _ => do
+          let mut fimgs : Array Expr := #[]
+          for y in xs do
+            fimgs := fimgs.push (← c.ofImage y (← inferType y))
+          mkLambdaFVars xs <|
+            mkAppN (mkConst (reroot cp.indName cp.name cn) c.b.lvls) (c.ps ++ fimgs)
+      let body := mkAppN (mkConst (mkCasesOnName cp.indName) (elim :: lvls))
+        (params ++ #[motive] ++ jdxs ++ #[x] ++ alts)
+      return implicitPrefix (c.ps.size + jdxs.size) (← mkLambdaFVars (c.ps ++ jdxs ++ #[x]) body)
+
+/--
+`X.ofOrig` for a `Prop` copy: the original's own recursor.  A theorem cannot
+call itself, so a field of the original's type takes the hypothesis the
+recursor supplies for it rather than a recursive call.
+-/
+def ofValueProp (c : BridgeCtx) (k : Nat) : MetaM Expr := do
+  let cp := c.copies[k]!
+  let info ← getConstInfoInduct cp.indName
+  let recInfo ← getConstInfoRec (mkRecName cp.indName)
+  unless recInfo.numMotives == 1 do
+    throwError "`{cp.indName}` is itself a nested inductive"
+  let params := cp.app.getAppArgs
+  let lvls := cp.app.getAppFn.constLevels!
+  forallTelescope (← inferType cp.app) fun jdxs _ => do
+    let mut imgs : Array Expr := #[]
+    for y in jdxs do
+      imgs := imgs.push (← c.ofImage y (← inferType y))
+    let resTy := mkAppN (c.b.cst cp.name) (c.ps ++ imgs)
+    withLocalDeclD `x (mkAppN cp.app jdxs) fun x => do
+      let motive ← mkLambdaFVars (jdxs ++ #[x]) resTy
+      let elim ← getLevel resTy
+      let recLvls := if recInfo.levelParams.length == info.levelParams.length then lvls
+        else elim :: lvls
+      let recTy ← instantiateForall
+        (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) (params ++ #[motive])
+      let minors ← forallBoundedTelescope recTy recInfo.numMinors fun ms _ => do
+        let mut out : Array Expr := #[]
+        for q in *...ms.size do
+          let rule := recInfo.rules[q]!
+          out := out.push <| ← forallTelescope (← inferType ms[q]!) fun args _ => do
+            let fields := args.extract 0 rule.nfields
+            let ihs := args.extract rule.nfields args.size
+            let mut fimgs : Array Expr := #[]
+            let mut nih := 0
+            for y in fields do
+              let ty ← inferType y
+              let selfRec ← forallTelescope ty fun _ concl => do
+                match ← c.copyOf? concl with
+                | some (k', _) => return k' == k
+                | none         => return false
+              if selfRec && nih < ihs.size then
+                fimgs := fimgs.push ihs[nih]!
+                nih := nih + 1
+              else
+                fimgs := fimgs.push (← c.ofImage y ty)
+            mkLambdaFVars args <|
+              mkAppN (mkConst (reroot cp.indName cp.name rule.ctor) c.b.lvls) (c.ps ++ fimgs)
+        return out
+      let body := mkAppN (mkConst recInfo.name recLvls)
+        (params ++ #[motive] ++ minors ++ jdxs ++ #[x])
+      return implicitPrefix (c.ps.size + jdxs.size) (← mkLambdaFVars (c.ps ++ jdxs ++ #[x]) body)
+
+/-- Add `X.ofOrig` for every copy, each after the ones its own body calls. -/
+def addOfOrig (c : BridgeCtx) (docCtx : LocalContext × LocalInstances) : TermElabM Unit := do
+  for k in ← c.order do
+    let cp := c.copies[k]!
+    let type ← instantiateMVars (← c.ofType k)
+    if c.b.members[cp.idx]!.isProp then
+      let value ← instantiateMVars (← c.ofValueProp k)
+      addDecl (.thmDecl { name := cp.ofName, levelParams := c.b.us, type, value })
+    else
+      let value ← instantiateMVars (← c.ofValueData k)
+      let preDef : PreDefinition :=
+        { ref := .missing, kind := .def, levelParams := c.b.us, modifiers := {},
+          declName := cp.ofName, binders := .missing, type, value,
+          termination := TerminationHints.none }
+      if value.getUsedConstants.contains cp.ofName then
+        Structural.structuralRecursion docCtx #[preDef] #[none]
+      else
+        addAndCompileNonRec docCtx preDef
+
+/--
+Give every renamed constructor the type it was declared with.
+
+`rawOf` is the name the constructor was actually emitted under; a constructor
+that kept its own name has nothing to do here.
+-/
+def niceCtors (c : BridgeCtx) (rawOf : Name → Name) : TermElabM Unit := do
+  for i in *...c.b.size do
+    let m := c.b.members[i]!
+    for ctor in m.ctors do
+      let raw := rawOf ctor.name
+      if raw == ctor.name then continue
+      let niceBody ← c.unCopy (← instantiateForall ctor.type c.ps)
+      let type := implicitPrefix c.ps.size (← mkForallFVars c.ps niceBody)
+      let inner ← forallTelescope niceBody fun xs _ => do
+        let mut imgs : Array Expr := #[]
+        for x in xs do
+          imgs := imgs.push (← c.ofImage x (← inferType x))
+        mkLambdaFVars xs (mkAppN (mkConst raw c.b.lvls) (c.ps ++ imgs))
+      let value := implicitPrefix c.ps.size (← mkLambdaFVars c.ps inner)
+      let type ← instantiateMVars type
+      let value ← instantiateMVars value
+      if m.isProp then
+        addDecl (.thmDecl { name := ctor.name, levelParams := c.b.us, type, value })
+      else
+        addDef ctor.name c.b.us type value
+
+end BridgeCtx
+
 /-! ## Emitting the declarations -/
 
 /--
@@ -1400,6 +1697,17 @@ def emit (p : Plan) : TermElabM Unit := do
   let b := p.block
   let docCtx := (← getLCtx, ← getLocalInstances)
   let dIdxs := b.dataIdxs
+  -- a constructor of a member the writer declared, whose type mentions a copy,
+  -- is emitted under a hidden name; the bridge at the end gives the plain name
+  -- the type that was written, and if it cannot, the plain name is an alias
+  let copyNames := p.copies.map (·.1)
+  let rawCtorName : Name → Name := fun n => Id.run do
+    for m in b.members do
+      if copyNames.contains m.name then continue
+      for c in m.ctors do
+        if c.name == n && c.type.getUsedConstants.any (copyNames.contains ·) then
+          return Name.mkStr m.name ("_nested_" ++ n.getString!)
+    return n
   -- position of a data member among the motives
   let dpos : Array Nat := Id.run do
     let mut out := (List.replicate b.size 0).toArray
@@ -1457,7 +1765,7 @@ def emit (p : Plan) : TermElabM Unit := do
         let kept := (keptPositions c.kinds).map (imgs[·]!)
         mkLambdaFVars xs <| b.sMk i concl.getAppArgs
           (mkAppN (b.cst (b.preOf c.name)) kept) (introConj conjs proofs 0)
-      addDef c.name b.us c.type value
+      addDef (rawCtorName c.name) b.us c.type value
 
   -- 7. the `Prop` constructors
   for j in b.propIdxs do
@@ -1467,7 +1775,8 @@ def emit (p : Plan) : TermElabM Unit := do
         for x in xs do
           imgs := imgs.push (← b.preImage x (← inferType x))
         mkLambdaFVars xs (mkAppN (b.cst (b.preOf c.name)) imgs)
-      addDecl (.thmDecl { name := c.name, levelParams := b.us, type := c.type, value })
+      addDecl (.thmDecl
+        { name := rawCtorName c.name, levelParams := b.us, type := c.type, value })
 
   -- 8. the recursors, one mutual group by structural recursion on the pre-types
   -- the motive's universe, under a name the writer cannot have taken
@@ -1519,7 +1828,7 @@ def emit (p : Plan) : TermElabM Unit := do
                 mkForallFVars (xs ++ ihs)
                   (mkAppN motives[dpos[i]!]!
                     (b.idxArgs concl.getAppArgs ++
-                      #[mkAppN (b.cst c.name) (ps ++ xs)])))
+                      #[mkAppN (b.cst (rawCtorName c.name)) (ps ++ xs)])))
       withLocalDeclsD minorDecls fun minors => do
         let mut out : Array (Expr × Expr × Expr × Expr) := #[]
         for i in dIdxs do
@@ -1623,6 +1932,33 @@ def emit (p : Plan) : TermElabM Unit := do
   for q in *...dIdxs.size do
     let (_, _, recType, recValue) := results[q]!
     addDef (recName dIdxs[q]!) (lp :: b.us) recType recValue
+
+  -- 9. the bridge back to the originals
+  unless p.copies.isEmpty do
+    let built ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
+      let copies : Array Copy := p.copies.filterMap fun (n, e) => do
+        let idx ← b.memberIdx? n
+        let app := e.beta ps
+        let indName ← app.getAppFn.constName?
+        some { idx, name := n, indName, app }
+      let c : BridgeCtx := { b, ps, copies }
+      try
+        c.addOfOrig docCtx
+        c.niceCtors rawCtorName
+        return true
+      catch _ =>
+        return false
+    unless built do
+      -- the copies stay visible, and the plain names are the raw declarations
+      for m in b.members do
+        for c in m.ctors do
+          let raw := rawCtorName c.name
+          if raw == c.name then continue
+          if m.isProp then
+            addDecl (.thmDecl
+              { name := c.name, levelParams := b.us, type := c.type, value := b.cst raw })
+          else
+            addDef c.name b.us c.type (b.cst raw)
 
 /-! ## The entry point -/
 
