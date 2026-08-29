@@ -339,6 +339,21 @@ things the heterogeneous lowering rests on: definitional proof irrelevance,
 which collapses the `_wf` proofs, and definitional eta for structures, which
 gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
 
+The `Prop` members get a `.rec` too, and it is *not* `Fresh._pre.rec` renamed:
+that one eliminates a `Fresh._pre x Γ₀` for a bare `Γ₀ : Ctx._pre`, so its
+motive and minor premises talk about the pre-world. What is derived instead runs
+`Fresh._pre.rec` at the transported motive `fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h` — a
+statement about *every* way of making `Γ₀` well-formed — and applies the result
+to the major premise's own indices, where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it.
+Each minor then has to supply, for a data field it was handed in the pre-world,
+the proof that puts it back at its subtype; those proofs are read off the
+conclusion's `_wf`, which is a conjunction containing the well-formedness of
+everything the constructor was built from. So `@Fresh.rec` mentions `Ctx`,
+`Fresh` and their constructors and nothing else. A `Prop` member whose
+constructor takes a data field the conclusion's indices do not reach has no such
+proof to find; that group of recursors is then dropped whole rather than
+half-emitted, and the block is otherwise unaffected.
+
 Any number of data members and any number of `Prop` members are allowed, with
 parameters, universe parameters, indices on either kind, and infinitary
 recursive fields such as `(f : (n : Nat) → Vec n)`. Members may be named under
@@ -484,9 +499,10 @@ Stock behaviour returns immediately, including the stock error message.
   constructors, so `match` does not work and there is no `injEq` or
   `noConfusion`. `induction Γ using Ctx.rec with | nil => … | snoc Γ x h ih
   => …` is the way in; a bare `induction`/`cases` destructs the underlying
-  subtype and leaks `Ctx._pre` into the goal, and `cases` on the `Prop` member
-  works only where the motive does not depend on the indices, pending a derived
-  `Fresh.rec`.
+  subtype and leaks `Ctx._pre` into the goal. The `Prop` members get a `.rec`
+  over the originals too — `induction x, Γ, h using Fresh.rec`, with the indices
+  listed as targets — but a bare `cases` on one still reaches for the pre-type's
+  `casesOn` and so works only where the motive does not depend on the indices.
 * A nested inductive whose denesting is induction-inductive is rescued only from
   a standalone `inductive`, not from a member of a `mutual` block, and only when
   the nesting type is not itself part of a mutual family. A nesting whose

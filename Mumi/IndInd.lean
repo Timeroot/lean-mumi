@@ -95,6 +95,17 @@ and so would everything downstream.  Lean's own `Structural.structuralRecursion`
 does the work; if it cannot see that the definition terminates, that is an
 error at the point of the block rather than a silent fallback.
 
+A `Prop` member's recursor needs none of that machinery, because `Fresh` *is*
+`Fresh._pre` at the `.val`s of its indices.  What is wrong with `Fresh._pre.rec`
+is only the world its motive and minors are stated in, so it is run at the
+transported motive `fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h` -- a statement about every way
+of making `Γ₀` well-formed -- and the result applied to the major premise's own
+indices, where `⟨Γ.val, Γ.property⟩ ≡ Γ` again closes it.  A minor that was
+handed a data field in the pre-world has to put it back at its subtype, and the
+proof for that is read off the conclusion's `_wf`: being a conjunction over the
+constructor's recursive and erased fields, it contains the well-formedness of
+everything the constructor was built from.  See `addPropRecs`.
+
 ## What is allowed
 
 * Any number of data members and any number of `Prop` members.  The data
@@ -188,11 +199,12 @@ structural.  Both differences are small and both are load-bearing.
   `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`; a
   bare `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into
   the goal.
-* `cases` on a `Prop` member works only where the motive does not depend on the
-  indices, and otherwise fails ("dependent elimination failed"), because its
-  recursor is still `Fresh._pre`'s, stated over the pre-type.  Deriving a real
-  `Fresh.rec` from it -- motive `fun x Γ₀ h => ∀ w, motive x ⟨Γ₀, w⟩ h` -- is
-  the obvious next step and is not done here.
+* A bare `cases` on a `Prop` member works only where the motive does not depend
+  on the indices, and otherwise fails ("dependent elimination failed"), because
+  what it reaches for is `Fresh._pre`'s `casesOn`, stated over the pre-type.
+  `Fresh.rec` itself is derived and is stated over the originals, so
+  `induction x, Γ, h using Fresh.rec with | nil .. | snoc ..` is the way in; its
+  indices are listed as targets, as they would be for any indexed family.
 * Two copies that need each other -- an original nested inside another
   original -- have no order to build the bridge in.  That is reported rather
   than worked around, and the bridge is dropped as a whole, as it is whenever
@@ -2283,6 +2295,174 @@ def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
             return (ty, val)
       addDef niceName (lp :: b.us) (← instantiateMVars type) (← instantiateMVars value)
 
+/-- The positions of the fields a `Prop` member's recursor gets a hypothesis for. -/
+def propRecPositions (b : Block) (kinds : Array FieldKind) : Array Nat :=
+  (recPositions kinds).filter fun z =>
+    match kinds[z]! with
+    | .recur m => b.members[m]!.isProp
+    | _        => false
+
+/--
+`X.rec` for a `Prop` member, stated over the block rather than the pre-types.
+
+A `Prop` member is *defined* as its pre-form at the `.val`s of its indices, so
+`X._pre.rec` is nearly the recursor already; what it has wrong is the world its
+motive and minors are stated in.  The motive is transported the way
+`toOrigPre`'s is -- `fun pres h => ∀ ws, C (pres rebuilt with ws) h` -- and the
+major premise's own indices supply the `ws` at the very end, where
+`⟨t.val, t.property⟩ ≡ t` closes it.
+
+A minor then arrives with its fields in the pre-world, and a field of a *data*
+member's type has to be put back at the subtype.  The proof that lets it be is
+in the conclusion: `X._wf` at a constructor is the conjunction of the `_wf`s of
+its recursive fields, so the well-formedness of the conclusion's indices
+contains the well-formedness of everything the constructor was built from.  A
+field the conclusion does not reach that way is not rebuildable -- `X._pre` is
+then genuinely larger than `X`'s image in it -- and the group is dropped rather
+than half-emitted.
+
+A field of a `Prop` member's type needs nothing done to it, since `P args` *is*
+`P._pre args'`; only its induction hypothesis does, and that is the raw one at
+the same well-formedness proofs the fields were rebuilt with, so the two line up
+definitionally.
+
+The motives cover every `Prop` member of the block and the minors every
+constructor of one, which is what the pre-block's own recursor does.  The data
+members are a separate block with a recursor of their own, so a `Prop`
+constructor's data field arrives without a hypothesis -- correctly, since
+nothing recurses into it.
+-/
+def addPropRecs (c : BridgeCtx) (lp : Name) (recNameOf : Nat → Name) : TermElabM Unit := do
+  let b := c.b
+  let ps := c.ps
+  if b.propIdxs.isEmpty then return
+  let recInfo ← getConstInfoRec (mkRecName (preName b.members[b.propIdxs[0]!]!.name))
+  -- the motives and minors of the pre-block's recursor run over its own members
+  -- in its own order, every constructor of every one of them
+  let pIdxs ← recInfo.all.toArray.mapM fun n => do
+    let some j := b.propIdxs.find? fun j => preName b.members[j]!.name == n
+      | throwError "No `Prop` member of the block behind `{n}`"
+    return j
+  -- the raw recursor carries a level of its own exactly when it eliminates large
+  let large := recInfo.levelParams.length != b.us.length
+  let lvl := if large then Level.param lp else Level.zero
+  let recLvls := if large then lvl :: b.lvls else b.lvls
+  let us := if large then lp :: b.us else b.us
+  let ppos (m : Nat) : Nat := (pIdxs.findIdx? (· == m)).getD 0
+  let mnames : Array Name := Id.run do
+    if pIdxs.size == 1 then return #[`C]
+    let mut used : Array String := #[]
+    let mut out : Array Name := #[]
+    for j in pIdxs do
+      let mut s := "C_" ++ b.members[j]!.name.getString!
+      let mut q := 1
+      while used.contains s do
+        q := q + 1
+        s := "C_" ++ b.members[j]!.name.getString! ++ "_" ++ toString q
+      used := used.push s
+      out := out.push (Name.mkSimple s)
+    return out
+  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+    pIdxs.mapIdx fun q j => (mnames[q]!, fun _ => do
+      forallTelescope (← instantiateForall b.members[j]!.type ps) fun idxs _ =>
+        withLocalDeclD `h (mkAppN (b.cst b.members[j]!.name) (ps ++ idxs)) fun h =>
+          mkForallFVars (idxs ++ #[h]) (mkSort lvl))
+  withImplicits motiveDecls fun motives => do
+    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
+    for j in pIdxs do
+      for cc in b.members[j]!.ctors do
+        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
+          forallTelescope (← instantiateForall cc.type ps) fun xs concl => do
+            let kinds := b.fieldKinds cc.kinds
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+              (propRecPositions b kinds).map fun z => (`ih, fun _ => do
+                let r? ← b.withRecTarget? (← inferType xs[z]!) fun ys m args =>
+                  mkForallFVars ys
+                    (mkAppN motives[ppos m]! (b.idxArgs args ++ #[mkAppN xs[z]! ys]))
+                let some e := r? | throwError "Not a recursive field of `{cc.name}`"
+                return e)
+            withLocalDeclsD ihDecls fun ihs =>
+              mkForallFVars (xs ++ ihs) (mkAppN motives[ppos j]!
+                (b.idxArgs concl.getAppArgs ++ #[mkAppN (b.cst cc.name) (ps ++ xs)])))
+    withLocalDeclsD minorDecls fun minors => do
+      let rmotives ← pIdxs.mapM fun j =>
+        c.withWfIdxs j fun pres ws reals =>
+          withLocalDeclD `h (mkAppN (b.cst (preName b.members[j]!.name)) (ps ++ pres)) fun h => do
+            let body ← mkForallFVars ws (mkAppN motives[ppos j]! (reals.map (·.1) ++ #[h]))
+            mkLambdaFVars (pres ++ #[h]) body
+      let recTy ← instantiateForall
+        (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) (ps ++ rmotives)
+      let rminors ← forallBoundedTelescope recTy recInfo.numMinors fun ms _ => do
+        let order : Array (Nat × CtorSpec) := pIdxs.flatMap fun j =>
+          b.members[j]!.ctors.map fun cc => (j, cc)
+        let mut out : Array Expr := #[]
+        for q in *...ms.size do
+          let (_, cc) := order[q]!
+          let kinds := b.fieldKinds cc.kinds
+          let ihPos := propRecPositions b kinds
+          out := out.push <| ←
+            forallBoundedTelescope (← inferType ms[q]!) (kinds.size + ihPos.size)
+              fun args concl => do
+                let xs := args.extract 0 kinds.size
+                let ihs := args.extract kinds.size args.size
+                forallTelescope (← whnf concl) fun ws _ => do
+                  let mut parts : Array (Expr × Expr) := #[]
+                  for w in ws do
+                    parts := parts ++ (← wfParts w)
+                  let mut vals : Array Expr := #[]
+                  let mut nihs : Array Expr := #[]
+                  for z in *...xs.size do
+                    let ty ← inferType xs[z]!
+                    match kinds[z]! with
+                    | .plain | .erased => vals := vals.push xs[z]!
+                    | .recur m =>
+                      if !b.members[m]!.isProp then
+                        -- a data field, rebuilt at the subtype from the proof in hand
+                        let pf ← findPart parts (← b.wfOfPre xs[z]! ty)
+                        vals := vals.push <| ← b.withPreTarget ty fun zs mm args' =>
+                          mkLambdaFVars zs (b.sMk mm args' (mkAppN xs[z]! zs) (mkAppN pf zs))
+                      else
+                        -- the field itself passes through; its hypothesis is the
+                        -- raw one at the well-formedness the rebuild used
+                        vals := vals.push xs[z]!
+                        let ih := ihs[nihs.size]!
+                        let nzs ← forallTelescope ty fun zs _ => pure zs.size
+                        nihs := nihs.push <| ←
+                          forallBoundedTelescope (← inferType ih) nzs fun zs rest => do
+                            forallTelescope (← whnf rest) fun ws' _ => do
+                              let mut fnd : Array Expr := #[]
+                              for w' in ws' do
+                                fnd := fnd.push (← findPart parts (← inferType w'))
+                              mkLambdaFVars zs (mkAppN ih (zs ++ fnd))
+                  mkLambdaFVars (args ++ ws) (mkAppN minors[q]! (vals ++ nihs))
+        return out
+      for q in *...pIdxs.size do
+        let j := pIdxs[q]!
+        let m := b.members[j]!
+        let (type, value) ←
+          forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
+            withLocalDeclD `h (mkAppN (b.cst m.name) (ps ++ idxs)) fun h => do
+              let ty := implicitPrefix ps.size (←
+                mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
+                  (mkAppN motives[q]! (idxs ++ #[h])))
+              -- the indices in the pre-world, and the well-formedness each of the
+              -- data ones carries, which is what the transported motive asks for
+              let mut pres : Array Expr := #[]
+              let mut wfs : Array Expr := #[]
+              for y in idxs do
+                let yty ← inferType y
+                pres := pres.push (← b.preImage y yty)
+                let isData ← b.withRecTarget? yty fun _ mm _ => pure (!b.members[mm]!.isProp)
+                if isData == some true then
+                  wfs := wfs.push (← b.propImage y yty)
+              let val := implicitPrefix ps.size (←
+                mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
+                  (mkAppN (mkConst (mkRecName (preName m.name)) recLvls)
+                    (ps ++ rmotives ++ rminors ++ pres ++ #[h] ++ wfs)))
+              return (ty, val)
+        addDef (recNameOf j) us (← instantiateMVars type) (← instantiateMVars value)
+          (compile := false)
+
 end BridgeCtx
 
 /-! ## Emitting the declarations -/
@@ -2543,7 +2723,22 @@ def emit (p : Plan) : TermElabM Unit := do
     let (_, _, recType, recValue) := results[q]!
     addDef (rawRecName dIdxs[q]!) (lp :: b.us) recType recValue
 
-  -- 9. the bridge back to the originals
+  -- 9. `X.rec` for the `Prop` members, out of the pre-block's own recursor.  A
+  -- copy is not a name anyone reaches for, and the type it copies has a real
+  -- recursor of Lean's own already, so a block with `Prop` copies is left alone
+  unless b.propIdxs.isEmpty || b.propIdxs.any (copyNames.contains b.members[·]!.name) do
+    let env ← getEnv
+    try
+      forallBoundedTelescope b.members[0]!.type b.numParams fun ps _ =>
+        BridgeCtx.addPropRecs { b, ps, copies := #[] } lp recName
+    catch _ =>
+      -- not every `Prop` member has a derivable recursor: a constructor with a
+      -- data field the conclusion's indices do not reach cannot have that field
+      -- put back at its subtype.  The block is perfectly usable without one, so
+      -- the group is dropped whole rather than left half-emitted
+      setEnv env
+
+  -- 10. the bridge back to the originals
   unless p.copies.isEmpty do
     let env ← getEnv
     let built ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do

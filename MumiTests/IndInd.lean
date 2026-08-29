@@ -104,12 +104,20 @@ example : ex.length = 2 := rfl
 The constructors are `def`s, so `match` and a bare `cases` do not see them.  The
 recursor's minor premises are named after the constructors, so `induction using`
 reads the way it would for a real inductive.
+
+A `Prop` member has one too, and it is indexed, so its indices are listed as
+targets just as they would be for a stock indexed family.
 -/
 
 example (Γ : Ctx) : 0 ≤ Γ.length := by
   induction Γ using Ctx.rec with
   | nil => simp [Ctx.length]
   | snoc Γ x h ih => simp
+
+example (x : String) (Γ : Ctx) (h : Fresh x Γ) : 0 ≤ Γ.length := by
+  induction x, Γ, h using Fresh.rec with
+  | nil x => simp [Ctx.length]
+  | snoc x y Γ h hne h' ih ih' => simp
 
 /-! ## Several `Prop` members
 
@@ -416,6 +424,10 @@ A member that gives no resulting type at all is read as `Type`, which is what
 *under* a data member -- `TreeNested.WF` beside `TreeNested` -- so "this type
 mentions a data member" has to be decided by exact name and not by prefix; and
 its three data members form a cycle that runs through both `Prop` members.
+
+All five recursors are pinned below.  What that is checking, beyond the shapes,
+is that none of them mentions a name the user did not write: no `_pre`, no
+`_wf`, no `nested_` copy.
 -/
 
 mutual
@@ -466,6 +478,73 @@ info: @TreeNested.rec : {C_TreeNested : TreeNested → Sort u_1} →
 -/
 #guard_msgs in
 #check @TreeNested.rec
+
+/--
+info: @WFTreeNested.rec : {C_TreeNested : TreeNested → Sort u_1} →
+  {C_WFTreeNested : WFTreeNested → Sort u_1} →
+    {C_RecWFTree : RecWFTree → Sort u_1} →
+      C_TreeNested TreeNested.empty →
+        ((key : Nat) →
+            (value : RecWFTree) →
+              (l r : TreeNested) →
+                C_RecWFTree value → C_TreeNested l → C_TreeNested r → C_TreeNested (TreeNested.node key value l r)) →
+          ((x : TreeNested) → (h : x.WF) → C_TreeNested x → C_WFTreeNested (WFTreeNested.mk x h)) →
+            ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) →
+              (t : WFTreeNested) → C_WFTreeNested t
+-/
+#guard_msgs in
+#check @WFTreeNested.rec
+
+/--
+info: @RecWFTree.rec : {C_TreeNested : TreeNested → Sort u_1} →
+  {C_WFTreeNested : WFTreeNested → Sort u_1} →
+    {C_RecWFTree : RecWFTree → Sort u_1} →
+      C_TreeNested TreeNested.empty →
+        ((key : Nat) →
+            (value : RecWFTree) →
+              (l r : TreeNested) →
+                C_RecWFTree value → C_TreeNested l → C_TreeNested r → C_TreeNested (TreeNested.node key value l r)) →
+          ((x : TreeNested) → (h : x.WF) → C_TreeNested x → C_WFTreeNested (WFTreeNested.mk x h)) →
+            ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) → (t : RecWFTree) → C_RecWFTree t
+-/
+#guard_msgs in
+#check @RecWFTree.rec
+
+-- the minors of a `Prop` recursor conclude at a constructor application, which
+-- is what this test is about; without `pp.proofs` they all print as `⋯`
+/--
+info: @TreeNested.WFWith.rec : ∀ {C_WFWith : (a : TreeNested) → (a_1 : List Nat) → a.WFWith a_1 → Prop}
+  {C_WF : (a : TreeNested) → a.WF → Prop},
+  C_WFWith TreeNested.empty [] TreeNested.WFWith.empty →
+    (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+        (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a),
+        C_WFWith l llist hl →
+          C_WFWith r rlist hr →
+            C_WFWith (TreeNested.node key value l r) (llist ++ key :: rlist)
+              (TreeNested.WFWith.node key value l r hl hr hl' hr')) →
+      (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l), C_WFWith t l h → C_WF t (TreeNested.WF.intro l t h)) →
+        ∀ (a : TreeNested) (a_1 : List Nat) (h : a.WFWith a_1), C_WFWith a a_1 h
+-/
+#guard_msgs in
+set_option pp.proofs true in
+#check @TreeNested.WFWith.rec
+
+/--
+info: @TreeNested.WF.rec : ∀ {C_WFWith : (a : TreeNested) → (a_1 : List Nat) → a.WFWith a_1 → Prop}
+  {C_WF : (a : TreeNested) → a.WF → Prop},
+  C_WFWith TreeNested.empty [] TreeNested.WFWith.empty →
+    (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+        (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a),
+        C_WFWith l llist hl →
+          C_WFWith r rlist hr →
+            C_WFWith (TreeNested.node key value l r) (llist ++ key :: rlist)
+              (TreeNested.WFWith.node key value l r hl hr hl' hr')) →
+      (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l), C_WFWith t l h → C_WF t (TreeNested.WF.intro l t h)) →
+        ∀ (a : TreeNested) (h : a.WF), C_WF a h
+-/
+#guard_msgs in
+set_option pp.proofs true in
+#check @TreeNested.WF.rec
 
 theorem leafWF : TreeNested.WF .empty := .intro [] _ .empty
 
