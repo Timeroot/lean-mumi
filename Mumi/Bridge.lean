@@ -39,7 +39,10 @@ sent to the original itself.
 
 Only a member carrying that coercion is displayed this way.  A copy that is
 merely *isomorphic* to what it copies -- any data member -- keeps its own name,
-which is the honest thing to show.
+which is the honest thing to show.  `Mumi.IndInd` deals with those copies the
+other way round: rather than displaying one as its original, it defines the
+constructors and recursor over the originals outright, out of the isomorphism,
+so there is nothing left for a delaborator to hide.
 
 `set_option mumi.pp.nested false` turns the display off, which is what to reach
 for when a mismatch between a copy and its original has to be seen.  It is off

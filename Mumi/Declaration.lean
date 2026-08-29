@@ -126,6 +126,11 @@ meta def elabDeclarationRescuingNested : CommandElab := fun stx => do
     try
       withExporting (isExporting := (← getScope).isPublic) do
       withoutCommandIncrementality true do
+      -- synchronously, so that a kernel error in one of the declarations we add
+      -- is thrown where it can be caught: `addDecl` otherwise hands the checking
+      -- to a background task, and the error would surface long after the retry
+      -- had reported success
+      withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
         k
       if ← errorLoggedSince nmsgs then
         throwError "the rescued declaration did not elaborate"

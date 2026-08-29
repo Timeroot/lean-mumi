@@ -193,14 +193,12 @@ structural.  Both differences are small and both are load-bearing.
   recursor is still `Fresh._pre`'s, stated over the pre-type.  Deriving a real
   `Fresh.rec` from it -- motive `fun x Γ₀ h => ∀ w, motive x ⟨Γ₀, w⟩ h` -- is
   the obvious next step and is not done here.
-* For a denested block, the *data* copies get no bridge back to the type they
-  are copies of, so `RecWFTree.mk` reads `RecWFTree.nested_WFTree_1 → RecWFTree`
-  rather than `WFTree RecWFTree → RecWFTree`.  `Mumi.Bridge` builds that bridge
-  for a `Prop` copy out of `propext`, and neither half of it applies here: the
-  copies are data, and a data copy of a type whose own fields mention other
-  copies is not equal to the original at all -- `nested_Tree_2` stores a
-  `RecWFTree`, `Tree RecWFTree` stores a `RecWFTree` too, but `nested_WF_3` and
-  `Tree.WF` are genuinely different predicates over genuinely different trees.
+* Two copies that need each other -- an original nested inside another
+  original -- have no order to build the bridge in.  That is reported rather
+  than worked around, and the bridge is dropped as a whole, as it is whenever
+  any step of it fails: the plain names are then the raw declarations,
+  `RecWFTree.mk` reads `RecWFTree.nested_WFTree_1 → RecWFTree` again, and the
+  block is exactly what it was before the bridge was attempted.
 * A nesting whose parameters mention a field of the constructor it appears in
   (`OkFam BadLocals n` for a local `n`).  `Mumi.Denest` turns such locals into
   extra indices of the copy; a copy that is a member of an induction-inductive
@@ -1403,19 +1401,48 @@ to read.  The two types are *isomorphic*, and the isomorphism is definable:
   ordinary inductive with an ordinary recursor, so this direction is the easy
   one: a data copy's is compiled by structural recursion, a `Prop` copy's is a
   theorem built from the original's own `rec`.
+* `X.toOrig` sends the copy back.  It has to recurse on the copy, which is a
+  member of the lowered block, so it goes through the pre-type: `X.toOrigPre`
+  is the structural recursion, over a motive that takes the well-formedness of
+  the indices *after* the term itself, and `X.toOrig` supplies them from the
+  index it was handed.
+* `X.ofOrig_toOrig : (X.ofOrig (X.toOrig x)).val = x.val` closes the round trip
+  on the side the recursor needs, by recursion on the copy the same way.
 
-With it, the constructor the writer declared can be given the type they wrote.
-The kernel-facing constructor keeps the copy in its type under a hidden name,
-`RecWFTree._nested_mk`, and `RecWFTree.mk` is a wrapper over it:
+With `ofOrig`, the constructor the writer declared can be given the type they
+wrote.  The kernel-facing constructor keeps the copy in its type under a hidden
+name, `RecWFTree._nested_mk`, and `RecWFTree.mk` is a wrapper over it:
 
 ```lean
 def RecWFTree.mk (x : WFTree RecWFTree) : RecWFTree := RecWFTree._nested_mk (ofOrig x)
 ```
 
+The recursor gets the same treatment, and needs the whole isomorphism.
+`RecWFTree._nested_rec` is the kernel-facing one, with a motive for every member
+of the enlarged block -- one of them over `RecWFTree.nested_WFTree_1`.  `X.rec`
+takes motives over the originals instead and applies `_nested_rec` at
+`fun idxs t => C .. (X.toOrig t)`, which is what makes a minor stated over a
+copy line up with one stated over the original: a field of copy type is handed
+on as `X.toOrig` of itself, and the induction hypotheses match on the nose.
+
+The one place it does not line up is a constructor of the writer's own that had
+to be renamed.  The raw minor concludes at the raw constructor applied to the
+copy-typed field, and the nice minor concludes at the nice constructor applied
+to `X.toOrig` of it -- which unfolds to the raw one at `X.ofOrig (X.toOrig ..)`.
+`ofOrig_toOrig` is exactly the difference, so the conclusion is transported
+along it, one field at a time and at the `.val` level, and `Subtype.ext` lifts
+the result back.
+
+A copy is not a name anyone reaches for, so a copy keeps only its raw recursor
+and `X.rec` is emitted for the members the writer declared.  The plain name is
+always free: every member of a lowered block is a `def`, so Lean generates no
+`X.rec` of its own to collide with.
+
 Nothing here is load-bearing.  Every step is attempted and, if any of it fails
 -- a copy whose original is nested in another copy needs the two `ofOrig`s in
-one mutual group, which is not done -- the plain names are defined as the raw
-declarations instead, and the block is exactly what it was before.
+one mutual group, which is not done -- the environment is rolled back to before
+the bridge, the plain names are defined as the raw declarations instead, and the
+block is exactly what it was before.
 -/
 
 /-- A member denesting added, and the type it is a copy of. -/
@@ -1682,6 +1709,582 @@ def niceCtors (c : BridgeCtx) (rawOf : Name → Name) : TermElabM Unit := do
 
 end BridgeCtx
 
+/-! ### The way back, and the recursor stated over the originals
+
+`ofOrig` alone gives the constructors their written types, but a recursor has to
+travel the other way: a minor is handed a term of the *copy* and has to produce
+one of the original for the writer's motive to apply to.  So the isomorphism is
+completed.
+
+* `X.toOrig` sends the copy to the original.  A data copy's is one application of
+  the copy's own recursor, with the members it is not eliminating given `PUnit`
+  as their motive.  A `Prop` copy's cannot be, quite: the copy is *defined* as
+  its pre-form at the underlying values, so a proof in hand says nothing about
+  the well-formedness of the terms it is indexed by, and the original's statement
+  needs those.  It goes through the pre-form's recursor with the well-formedness
+  proofs taken last, and `X.toOrig` supplies them from the index it was given.
+
+* `X.ofOrig_toOrig` is the round trip, at the underlying pre-world value.  It is
+  needed in exactly one place -- a minor for a constructor the writer declared
+  produces the raw constructor at the round-tripped fields, and this is what
+  turns that back into the raw constructor at the fields themselves.  Stating it
+  at the subtype would make that transport ill-typed, since a constructor with
+  an erased proof field has a field whose *type* moves with the transport; at the
+  value there are no proof fields left at all, and `Subtype.ext` lifts it.
+-/
+
+/-- The copy's image in the original: `X.toOrig : X ps idxs → I ps' idxs'`. -/
+def Copy.toName (c : Copy) : Name := c.name ++ `toOrig
+
+/-- The pre-world stepping stone a `Prop` copy's `toOrig` goes through. -/
+def Copy.preToName (c : Copy) : Name := c.name ++ `toOrigPre
+
+/-- `(X.ofOrig (X.toOrig x)).val = x.val`. -/
+def Copy.roundName (c : Copy) : Name := c.name ++ `ofOrig_toOrig
+
+/-- How many of the original's arguments are parameters. -/
+def Copy.numOrigParams (c : Copy) : Nat := c.app.getAppNumArgs
+
+/-- The original's constructor that `n`, a constructor of the copy, is a copy of. -/
+def Copy.origCtor (c : Copy) (n : Name) : Expr :=
+  mkAppN (mkConst (reroot c.name c.indName n) c.app.getAppFn.constLevels!) c.app.getAppArgs
+
+namespace BridgeCtx
+
+/-- Which copy the block's member `i` is, if it is one. -/
+def copyAt? (c : BridgeCtx) (i : Nat) : Option Nat :=
+  c.copies.findIdx? (·.idx == i)
+
+/-- Where the data member `i` sits among the motives. -/
+def dpos (c : BridgeCtx) (i : Nat) : Nat := (c.b.dataIdxs.findIdx? (· == i)).getD 0
+
+/-- The motive arguments of a member's type: a copy's are the *original's*. -/
+def niceIdxArgs (c : BridgeCtx) (i : Nat) (args : Array Expr) : Array Expr :=
+  match c.copyAt? i with
+  | some k => args.extract c.copies[k]!.numOrigParams args.size
+  | none   => c.b.idxArgs args
+
+/--
+The original-world image of `x : ty`, where `ty` is written in the copy world.
+
+The mirror of `BridgeCtx.ofImage`.  A copy's indices are the original's -- a data
+copy has the arity it copies, and a `Prop` copy's `toOrig` is stated at the
+copy's own -- so here too the indices are passed on as they stand.
+-/
+def toImage (c : BridgeCtx) (x ty : Expr) : MetaM Expr :=
+  forallTelescope ty fun ys concl => do
+    let some hd := concl.getAppFn.constName? | return x
+    let some k := c.copies.findIdx? (·.name == hd) | return x
+    mkLambdaFVars ys <|
+      mkAppN (mkConst c.copies[k]!.toName c.b.lvls)
+        (c.ps ++ c.b.idxArgs concl.getAppArgs ++ #[mkAppN x ys])
+
+/-- `X.toOrig`'s type: the copy at its indices, sent to the original at theirs. -/
+def toType (c : BridgeCtx) (k : Nat) : MetaM Expr := do
+  let cp := c.copies[k]!
+  forallTelescope (← instantiateForall c.b.members[cp.idx]!.type c.ps) fun idxs _ => do
+    let mut jdxs : Array Expr := #[]
+    for y in idxs do
+      jdxs := jdxs.push (← c.toImage y (← inferType y))
+    withLocalDeclD `x (mkAppN (c.b.cst cp.name) (c.ps ++ idxs)) fun x =>
+      return implicitPrefix (c.ps.size + idxs.size) (←
+        mkForallFVars (c.ps ++ idxs ++ #[x]) (mkAppN cp.app jdxs))
+
+/--
+Build one minor per constructor of every data member, reading the binders off
+the raw recursor's own type rather than reconstructing them.
+
+`mk` is handed the member, the constructor, the fields and the induction
+hypotheses, and returns the minor's body.
+-/
+def withRawMinors (c : BridgeCtx) (recCst : Expr) (motives : Array Expr)
+    (mk : Nat → CtorSpec → Array Expr → Array Expr → TermElabM Expr) :
+    TermElabM (Array Expr) := do
+  let b := c.b
+  let dIdxs := b.dataIdxs
+  let recTy ← instantiateForall (← inferType recCst) (c.ps ++ motives)
+  let mut n := 0
+  for i in dIdxs do
+    n := n + b.members[i]!.ctors.size
+  forallBoundedTelescope recTy n fun ms _ => do
+    let mut out : Array Expr := #[]
+    let mut q := 0
+    for i in dIdxs do
+      for cc in b.members[i]!.ctors do
+        let kinds := b.fieldKinds cc.kinds
+        let nf := kinds.size
+        out := out.push <| ←
+          forallBoundedTelescope (← inferType ms[q]!) (nf + (recPositions kinds).size)
+            fun args _ => do
+              mkLambdaFVars args (← mk i cc (args.extract 0 nf) (args.extract nf args.size))
+        q := q + 1
+    return out
+
+/--
+`X.toOrig` for a data copy: one application of the copy's own recursor.
+
+Only the copy being sent across has a motive worth anything; the other members
+of the block are eliminated into `PUnit`, which is what makes this a single
+recursor application rather than a mutual group.
+-/
+def toValueData (c : BridgeCtx) (k : Nat) (rawRec : Nat → Name) : TermElabM Expr := do
+  let b := c.b
+  let cp := c.copies[k]!
+  forallTelescope (← instantiateForall b.members[cp.idx]!.type c.ps) fun idxs _ => do
+    let mut jdxs : Array Expr := #[]
+    for y in idxs do
+      jdxs := jdxs.push (← c.toImage y (← inferType y))
+    let elim ← getLevel (mkAppN cp.app jdxs)
+    withLocalDeclD `x (mkAppN (b.cst cp.name) (c.ps ++ idxs)) fun x => do
+      let motives ← b.dataIdxs.mapM fun i => do
+        forallTelescope (← instantiateForall b.members[i]!.type c.ps) fun ids _ =>
+          withLocalDeclD `t (mkAppN (b.cst b.members[i]!.name) (c.ps ++ ids)) fun t => do
+            let body ← if i == cp.idx then do
+                let mut js : Array Expr := #[]
+                for y in ids do
+                  js := js.push (← c.toImage y (← inferType y))
+                pure (mkAppN cp.app js)
+              else
+                pure (mkConst ``PUnit [elim])
+            mkLambdaFVars (ids ++ #[t]) body
+      let recCst := mkConst (rawRec cp.idx) (elim :: b.lvls)
+      let minors ← c.withRawMinors recCst motives fun i cc xs ihs => do
+        if i != cp.idx then
+          return mkConst ``PUnit.unit [elim]
+        let kinds := b.fieldKinds cc.kinds
+        let mut vals : Array Expr := #[]
+        let mut nih := 0
+        for z in *...xs.size do
+          match kinds[z]! with
+          | .recur m =>
+            if m == cp.idx then vals := vals.push ihs[nih]!
+            else vals := vals.push (← c.toImage xs[z]! (← inferType xs[z]!))
+            nih := nih + 1
+          | .plain  => vals := vals.push xs[z]!
+          | .erased => vals := vals.push (← c.toImage xs[z]! (← inferType xs[z]!))
+        return mkAppN (cp.origCtor cc.name) vals
+      return implicitPrefix (c.ps.size + idxs.size) (← mkLambdaFVars (c.ps ++ idxs ++ #[x])
+        (mkAppN recCst (c.ps ++ motives ++ minors ++ idxs ++ #[x])))
+
+/--
+Walk a `Prop` member's indices in the pre-world, collecting the well-formedness
+proofs that turn them back into real ones.
+
+`k` receives the pre-world binders, one proof binder per index that lands in a
+data member, and the real indices rebuilt from the two.
+-/
+partial def withWfIdxsAux {α} [Inhabited α] (c : BridgeCtx) (idxs : Array Expr) (i : Nat)
+    (preTy : Expr) (pres ws : Array Expr) (reals : Array (Expr × Expr))
+    (k : Array Expr → Array Expr → Array (Expr × Expr) → TermElabM α) : TermElabM α := do
+  if h : i < idxs.size then
+    forallBoundedTelescope preTy (some 1) fun ys rest => do
+      let y := ys[0]!
+      -- the copy-world type the index was declared with, kept alongside the term:
+      -- a rebuilt index is a `Subtype.mk`, and what that infers to says `Subtype`
+      -- rather than the copy, which is what the image is looked up by.  A later
+      -- index's type can mention an earlier one, and what stands for that here is
+      -- the rebuilt index, not the binder the member was declared with
+      let ty := (← inferType idxs[i]).replaceFVars (idxs.extract 0 i) (reals.map (·.1))
+      let isData ← c.b.withRecTarget? ty fun _ m _ => pure (!c.b.members[m]!.isProp)
+      if isData == some true then
+        withLocalDeclD `w (← c.b.wfOfPre y (← inferType y)) fun w => do
+          let real ← c.b.withPreTarget (← inferType y) fun zs mm args =>
+            mkLambdaFVars zs (c.b.sMk mm args (mkAppN y zs) (mkAppN w zs))
+          c.withWfIdxsAux idxs (i + 1) rest (pres.push y) (ws.push w)
+            (reals.push (real, ty)) k
+      else
+        c.withWfIdxsAux idxs (i + 1) rest (pres.push y) ws (reals.push (y, ty)) k
+  else
+    k pres ws reals
+
+@[inherit_doc withWfIdxsAux]
+def withWfIdxs {α} [Inhabited α] (c : BridgeCtx) (j : Nat)
+    (k : Array Expr → Array Expr → Array (Expr × Expr) → TermElabM α) : TermElabM α := do
+  let m := c.b.members[j]!
+  let preTy ← instantiateForall (← inferType (c.b.cst (preName m.name))) c.ps
+  forallTelescope (← instantiateForall m.type c.ps) fun idxs _ =>
+    c.withWfIdxsAux idxs 0 preTy #[] #[] #[] k
+
+/--
+Every well-formedness fact a proof of a `_wf` conjunction yields, with the proof
+of each.
+
+`X._wf` at a constructor is a conjunction over the recursive fields, so a proof
+that a constructor application is well formed *contains* the proof for each of
+its arguments.  Which conjunct is which is not worth reconstructing: they are all
+collected and the one that is wanted is the one whose statement matches.
+-/
+partial def wfParts (w : Expr) : MetaM (Array (Expr × Expr)) := do
+  let ty ← whnf (← inferType w)
+  let mut out := #[(ty, w)]
+  if ty.isAppOfArity ``And 2 then
+    let l := ty.appFn!.appArg!
+    let r := ty.appArg!
+    out := out ++ (← wfParts (mkApp3 (mkConst ``And.left) l r w))
+    out := out ++ (← wfParts (mkApp3 (mkConst ``And.right) l r w))
+  return out
+
+/-- The proof among `parts` of the statement `want`. -/
+def findPart (parts : Array (Expr × Expr)) (want : Expr) : MetaM Expr := do
+  for (ty, pf) in parts do
+    if ← isDefEq ty want then return pf
+  throwError "No well-formedness proof to hand for{indentExpr want}"
+
+/--
+`X.toOrigPre` and `X.toOrig` for a `Prop` copy.
+
+The recursion is on the pre-form, whose motive takes the well-formedness of the
+indices *after* the proof itself; `X.toOrig` then supplies them from the index
+it was handed.
+
+Every `Prop` copy in the block gets its real motive, not just the one being
+defined, so that a copy whose constructor recurses into a *sibling* copy has an
+induction hypothesis to hand rather than a `True`.  The minors are then the same
+for all of them and only the recursor's head changes, which is why they are
+built here and not once per copy.  A `Prop` member the writer declared is not a
+copy of anything and is eliminated into `True`.
+-/
+def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
+  let b := c.b
+  let cp := c.copies[k]!
+  let recInfo ← getConstInfoRec (mkRecName (preName cp.name))
+  -- the motives and minors of a mutual recursor run over the block in its own
+  -- order, every constructor of every member; `rules` holds only the ones for
+  -- the type the recursor belongs to, so the order is read off `all` instead
+  let pIdxs ← recInfo.all.toArray.mapM fun n => do
+    let some j := b.propIdxs.find? fun j => preName b.members[j]!.name == n
+      | throwError "No `Prop` member of the block behind `{n}`"
+    return j
+  let motives ← pIdxs.mapM fun j =>
+    c.withWfIdxs j fun pres ws reals =>
+      withLocalDeclD `h (mkAppN (b.cst (preName b.members[j]!.name)) (c.ps ++ pres)) fun h => do
+        let body ← match c.copyAt? j with
+          | some kj => do
+            let mut js : Array Expr := #[]
+            for (r, ty) in reals do
+              js := js.push (← c.toImage r ty)
+            mkForallFVars ws (mkAppN c.copies[kj]!.app js)
+          | none => pure (mkConst ``True)
+        mkLambdaFVars (pres ++ #[h]) body
+  let recLvls := if recInfo.levelParams.length == b.us.length then b.lvls else Level.zero :: b.lvls
+  let recTy ← instantiateForall
+    (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) (c.ps ++ motives)
+  let minors ← forallBoundedTelescope recTy recInfo.numMinors fun ms _ => do
+    let order : Array (Nat × CtorSpec) := pIdxs.flatMap fun j =>
+      b.members[j]!.ctors.map fun cc => (j, cc)
+    let mut out : Array Expr := #[]
+    for q in *...ms.size do
+      let (j, cc) := order[q]!
+      let kinds := b.fieldKinds cc.kinds
+      let ihPos := (recPositions kinds).filter fun z =>
+        match kinds[z]! with
+        | .recur m => b.members[m]!.isProp
+        | _        => false
+      out := out.push <| ←
+        forallBoundedTelescope (← inferType ms[q]!) (kinds.size + ihPos.size) fun args concl => do
+          let some kj := c.copyAt? j
+            | return ← mkLambdaFVars args (mkConst ``True.intro)
+          let cpj := c.copies[kj]!
+          let xs := args.extract 0 kinds.size
+          let ihs := args.extract kinds.size args.size
+          forallTelescope (← whnf concl) fun ws _ => do
+            let mut parts : Array (Expr × Expr) := #[]
+            for w in ws do
+              parts := parts ++ (← wfParts w)
+            let mut vals : Array Expr := #[]
+            let mut nih := 0
+            for z in *...xs.size do
+              let ty ← inferType xs[z]!
+              match kinds[z]! with
+              | .plain  => vals := vals.push xs[z]!
+              | .erased => vals := vals.push xs[z]!
+              | .recur m =>
+                if !b.members[m]!.isProp then
+                  -- a data field, rebuilt at the subtype from the proof in hand
+                  let pf ← findPart parts (← b.wfOfPre xs[z]! ty)
+                  let (real, realTy) ← b.withPreTarget ty fun zs mm args' => do
+                    let v ← mkLambdaFVars zs (b.sMk mm args' (mkAppN xs[z]! zs) (mkAppN pf zs))
+                    let t ← mkForallFVars zs (mkAppN (b.cst b.members[mm]!.name) args')
+                    return (v, t)
+                  vals := vals.push (← c.toImage real realTy)
+                else if (c.copyAt? m).isSome then
+                  -- the hypothesis for this field, at its own indices' proofs
+                  let ih := ihs[nih]!
+                  let nzs ← forallTelescope ty fun zs _ => pure zs.size
+                  nih := nih + 1
+                  vals := vals.push <| ←
+                    forallBoundedTelescope (← inferType ih) nzs fun zs rest => do
+                      forallTelescope (← whnf rest) fun ws' _ => do
+                        let mut fnd : Array Expr := #[]
+                        for w' in ws' do
+                          fnd := fnd.push (← findPart parts (← inferType w'))
+                        mkLambdaFVars zs (mkAppN ih (zs ++ fnd))
+                else
+                  -- a `Prop` member the writer declared: the proof is the proof
+                  nih := nih + 1
+                  vals := vals.push xs[z]!
+            mkLambdaFVars (args ++ ws) (mkAppN (cpj.origCtor cc.name) vals)
+    return out
+  let preType ← c.withWfIdxs cp.idx fun pres ws reals =>
+    withLocalDeclD `h (mkAppN (b.cst (preName cp.name)) (c.ps ++ pres)) fun h => do
+      let mut js : Array Expr := #[]
+      for (r, ty) in reals do
+        js := js.push (← c.toImage r ty)
+      return implicitPrefix c.ps.size (←
+        mkForallFVars (c.ps ++ pres ++ #[h] ++ ws) (mkAppN cp.app js))
+  let preValue ← c.withWfIdxs cp.idx fun pres ws _ =>
+    withLocalDeclD `h (mkAppN (b.cst (preName cp.name)) (c.ps ++ pres)) fun h =>
+      return implicitPrefix c.ps.size (← mkLambdaFVars (c.ps ++ pres ++ #[h] ++ ws)
+        (mkAppN (mkConst recInfo.name recLvls)
+          (c.ps ++ motives ++ minors ++ pres ++ #[h] ++ ws)))
+  addDecl (.thmDecl { name := cp.preToName, levelParams := b.us
+                      type := ← instantiateMVars preType
+                      value := ← instantiateMVars preValue })
+  let value ← forallTelescope (← instantiateForall b.members[cp.idx]!.type c.ps) fun idxs _ =>
+    withLocalDeclD `x (mkAppN (b.cst cp.name) (c.ps ++ idxs)) fun x => do
+      let mut pres : Array Expr := #[]
+      let mut wps : Array Expr := #[]
+      for y in idxs do
+        let ty ← inferType y
+        pres := pres.push (← b.preImage y ty)
+        let isData ← b.withRecTarget? ty fun _ m _ => pure (!b.members[m]!.isProp)
+        if isData == some true then
+          wps := wps.push (← b.propImage y ty)
+      return implicitPrefix (c.ps.size + idxs.size) (← mkLambdaFVars (c.ps ++ idxs ++ #[x])
+        (mkAppN (mkConst cp.preToName b.lvls) (c.ps ++ pres ++ #[x] ++ wps)))
+  addDecl (.thmDecl { name := cp.toName, levelParams := b.us
+                      type := ← instantiateMVars (← c.toType k)
+                      value := ← instantiateMVars value })
+
+/-- Add `X.toOrig` for every copy, each after the ones its own body calls. -/
+def addToOrig (c : BridgeCtx) (rawRec : Nat → Name) : TermElabM Unit := do
+  for k in ← c.order do
+    let cp := c.copies[k]!
+    if c.b.members[cp.idx]!.isProp then
+      c.addToOrigProp k
+    else
+      addDef cp.toName c.b.us (← instantiateMVars (← c.toType k))
+        (← instantiateMVars (← c.toValueData k rawRec))
+
+/-- `funext` applied `n` times, to a hypothesis that is pointwise an equation. -/
+partial def funExtN (h : Expr) (n : Nat) : MetaM Expr := do
+  if n == 0 then return h
+  forallBoundedTelescope (← inferType h) (some 1) fun ys _ => do
+    let y := ys[0]!
+    mkFunExt (← mkLambdaFVars #[y] (← funExtN (mkApp h y) (n - 1)))
+
+/--
+`X._pre.c (kept images) = X._pre.c (kept fields)`, one step per field the two
+sides differ at.
+
+`pf z` is the equation for field `z`, or `none` when the two sides hold the same
+term there -- which is every field but a copy's, and every erased field, since
+those are not at this level at all.  The steps are taken one at a time rather
+than as a single `congr` so that a constructor whose later fields depend on
+earlier ones still goes through: what the steps move is never what a later field
+depends on, because a field used as an index has to be one erasure leaves alone.
+-/
+def valCongr (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
+    (pf : Nat → TermElabM (Option Expr)) : TermElabM Expr := do
+  let b := c.b
+  let kinds := b.fieldKinds cc.kinds
+  let head := mkAppN (b.cst (b.preOf cc.name)) c.ps
+  let eqSides (p : Expr) : TermElabM (Expr × Expr) := do
+    let some (_, l, r) := (← whnf (← instantiateMVars (← inferType p))).eq?
+      | throwError "Not an equation:{indentExpr p}"
+    return (l, r)
+  let mut cur : Array Expr := #[]
+  let mut steps : Array (Nat × Expr) := #[]
+  for z in keptPositions kinds do
+    match ← pf z with
+    | some p =>
+      steps := steps.push (cur.size, p)
+      cur := cur.push (← eqSides p).1
+    | none => cur := cur.push (← b.preImage xs[z]! (← inferType xs[z]!))
+  let mut acc ← mkEqRefl (mkAppN head cur)
+  for (pos, p) in steps do
+    let motive ← withLocalDeclD `a (← inferType cur[pos]!) fun a =>
+      mkLambdaFVars #[a] (mkAppN head (cur.set! pos a))
+    acc ← mkEqTrans acc (← mkCongrArg motive p)
+    cur := cur.set! pos (← eqSides p).2
+  return acc
+
+/-- `Subtype.ext` at the member `i`, whose type is a subtype by definition. -/
+def subtypeExt (c : BridgeCtx) (i : Nat) (args : Array Expr) (a a' h : Expr) : Expr :=
+  mkAppN (mkConst ``Subtype.ext [c.b.members[i]!.level])
+    #[c.b.preApp i args, c.b.wfApp i args, a, a', h]
+
+/-- Add `X.ofOrig_toOrig` for each copy in `needed`. -/
+def addRoundTrips (c : BridgeCtx) (needed : Array Nat) (rawRec : Nat → Name) :
+    TermElabM Unit := do
+  let b := c.b
+  -- `(X.ofOrig (X.toOrig t)).val`, for `t` a term of the copy at `ids`
+  let roundLhs (k : Nat) (ids : Array Expr) (t : Expr) : Expr :=
+    let cp := c.copies[k]!
+    let there := mkAppN (mkConst cp.toName b.lvls) (c.ps ++ ids ++ #[t])
+    let back := mkAppN (mkConst cp.ofName b.lvls) (c.ps ++ ids ++ #[there])
+    b.sVal cp.idx (c.ps ++ ids) back
+  let motives ← b.dataIdxs.mapM fun i => do
+    forallTelescope (← instantiateForall b.members[i]!.type c.ps) fun ids _ =>
+      withLocalDeclD `t (mkAppN (b.cst b.members[i]!.name) (c.ps ++ ids)) fun t => do
+        let body ← match c.copyAt? i with
+          | some k => mkEq (roundLhs k ids t) (b.sVal i (c.ps ++ ids) t)
+          | none   => pure (mkConst ``True)
+        mkLambdaFVars (ids ++ #[t]) body
+  for k in needed do
+    let cp := c.copies[k]!
+    let recCst := mkConst (rawRec cp.idx) (Level.zero :: b.lvls)
+    let minors ← c.withRawMinors recCst motives fun i cc xs ihs => do
+      if (c.copyAt? i).isNone then
+        return mkConst ``True.intro
+      let kinds := b.fieldKinds cc.kinds
+      let recPos := recPositions kinds
+      c.valCongr cc xs fun z => do
+        let .recur m := kinds[z]! | return none
+        if (c.copyAt? m).isNone then return none
+        let nzs ← forallTelescope (← inferType xs[z]!) fun zs _ => pure zs.size
+        return some (← funExtN ihs[(recPos.findIdx? (· == z)).getD 0]! nzs)
+    let (type, value) ←
+      forallTelescope (← instantiateForall b.members[cp.idx]!.type c.ps) fun idxs _ =>
+        withLocalDeclD `x (mkAppN (b.cst cp.name) (c.ps ++ idxs)) fun x => do
+          let ty := implicitPrefix (c.ps.size + idxs.size) (←
+            mkForallFVars (c.ps ++ idxs ++ #[x])
+              (← mkEq (roundLhs k idxs x) (b.sVal cp.idx (c.ps ++ idxs) x)))
+          let val := implicitPrefix (c.ps.size + idxs.size) (←
+            mkLambdaFVars (c.ps ++ idxs ++ #[x])
+              (mkAppN recCst (c.ps ++ motives ++ minors ++ idxs ++ #[x])))
+          return (ty, val)
+    addDecl (.thmDecl { name := cp.roundName, levelParams := b.us
+                        type := ← instantiateMVars type
+                        value := ← instantiateMVars value })
+
+/--
+The recursor for a member the writer declared, with only originals in it.
+
+The motives are over the originals, the minors are over the originals'
+constructors, and the copies are gone from both.  The value is the raw recursor
+at motives that send their argument across first; every minor then lines up
+definitionally, except for a constructor of the writer's own that had to be
+renamed -- there the raw one comes out at the round-tripped fields, and the round
+trip is what closes the gap.
+-/
+def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
+    (niceName : Name) (rawOf : Name → Name) : TermElabM Unit := do
+  let b := c.b
+  let lvl := Level.param lp
+  let dIdxs := b.dataIdxs
+  let shortOf (m : Nat) : String :=
+    match c.copyAt? m with
+    | some k => c.copies[k]!.indName.getString!
+    | none   => b.members[m]!.name.getString!
+  let mnames : Array Name := Id.run do
+    if dIdxs.size == 1 then return #[`C]
+    let mut used : Array String := #[]
+    let mut out : Array Name := #[]
+    for m in dIdxs do
+      let mut s := "C_" ++ shortOf m
+      let mut j := 1
+      while used.contains s do
+        j := j + 1
+        s := "C_" ++ shortOf m ++ "_" ++ toString j
+      used := used.push s
+      out := out.push (Name.mkSimple s)
+    return out
+  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+    dIdxs.mapIdx fun q m => (mnames[q]!, fun _ => do
+      match c.copyAt? m with
+      | some k =>
+        let cp := c.copies[k]!
+        forallTelescope (← inferType cp.app) fun jdxs _ =>
+          withLocalDeclD `t (mkAppN cp.app jdxs) fun t =>
+            mkForallFVars (jdxs ++ #[t]) (mkSort lvl)
+      | none =>
+        forallTelescope (← instantiateForall b.members[m]!.type c.ps) fun ids _ =>
+          withLocalDeclD `t (mkAppN (b.cst b.members[m]!.name) (c.ps ++ ids)) fun t =>
+            mkForallFVars (ids ++ #[t]) (mkSort lvl))
+  withImplicits motiveDecls fun nmotives => do
+    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
+    for m in dIdxs do
+      for cc in b.members[m]!.ctors do
+        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
+          forallTelescope (← c.unCopy (← instantiateForall cc.type c.ps)) fun ys concl => do
+            let kinds := b.fieldKinds cc.kinds
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+              (recPositions kinds).map fun z => (`ih, fun _ => do
+                let .recur mm := kinds[z]! | throwError "Not a recursive field"
+                forallTelescope (← inferType ys[z]!) fun zs tgt =>
+                  mkForallFVars zs (mkAppN nmotives[c.dpos mm]!
+                    (c.niceIdxArgs mm tgt.getAppArgs ++ #[mkAppN ys[z]! zs])))
+            withLocalDeclsD ihDecls fun ihs => do
+              let ctorApp := match c.copyAt? m with
+                | some k => mkAppN (c.copies[k]!.origCtor cc.name) ys
+                | none   => mkAppN (b.cst cc.name) (c.ps ++ ys)
+              mkForallFVars (ys ++ ihs) (mkAppN nmotives[c.dpos m]!
+                (c.niceIdxArgs m concl.getAppArgs ++ #[ctorApp])))
+    withLocalDeclsD minorDecls fun nminors => do
+      let rmotives ← dIdxs.mapM fun m =>
+        match c.copyAt? m with
+        | none   => pure nmotives[c.dpos m]!
+        | some k => do
+          let cp := c.copies[k]!
+          forallTelescope (← instantiateForall b.members[m]!.type c.ps) fun ids _ =>
+            withLocalDeclD `t (mkAppN (b.cst b.members[m]!.name) (c.ps ++ ids)) fun t => do
+              let mut js : Array Expr := #[]
+              for y in ids do
+                js := js.push (← c.toImage y (← inferType y))
+              mkLambdaFVars (ids ++ #[t]) (mkAppN nmotives[c.dpos m]!
+                (js ++ #[mkAppN (mkConst cp.toName b.lvls) (c.ps ++ ids ++ #[t])]))
+      let recCst := mkConst (rawRec i) (lvl :: b.lvls)
+      let rminors ← c.withRawMinors recCst rmotives fun m cc xs ihs => do
+        let mut vals : Array Expr := #[]
+        for x in xs do
+          vals := vals.push (← c.toImage x (← inferType x))
+        let minorIdx := Id.run do
+          let mut acc := 0
+          for m' in dIdxs do
+            for c' in b.members[m']!.ctors do
+              if c'.name == cc.name then return acc
+              acc := acc + 1
+          return acc
+        let body := mkAppN nminors[minorIdx]! (vals ++ ihs)
+        let raw := rawOf cc.name
+        if raw == cc.name then return body
+        -- the nice constructor is the raw one at `ofOrig` of its fields, so what
+        -- the minor produced is about the round trip; the equation removes it
+        let kinds := b.fieldKinds cc.kinds
+        let h ← c.valCongr cc xs fun z => do
+          let .recur mm := kinds[z]! | return none
+          let some k' := c.copyAt? mm | return none
+          let cp := c.copies[k']!
+          let nzs ← forallTelescope (← inferType xs[z]!) fun zs _ => pure zs.size
+          let pointwise ← forallTelescope (← inferType xs[z]!) fun zs tgt => do
+            let ids := b.idxArgs tgt.getAppArgs
+            let elt := mkAppN xs[z]! zs
+            -- at the value, which is where `valCongr` puts its steps; the whole
+            -- constructor application is lifted back to the subtype afterwards
+            mkLambdaFVars zs (mkAppN (mkConst cp.roundName b.lvls) (c.ps ++ ids ++ #[elt]))
+          return some (← funExtN pointwise nzs)
+        let src := mkAppN (b.cst cc.name) (c.ps ++ vals)
+        let tgt := mkAppN (b.cst raw) (c.ps ++ xs)
+        let tgtTy ← inferType tgt
+        let args := c.ps ++ b.idxArgs tgtTy.getAppArgs
+        let motive ← withLocalDeclD `z tgtTy fun z =>
+          mkLambdaFVars #[z] (mkAppN rmotives[c.dpos m]! (b.idxArgs tgtTy.getAppArgs ++ #[z]))
+        mkEqNDRec motive body (c.subtypeExt m args src tgt h)
+      let (type, value) ←
+        forallTelescope (← instantiateForall b.members[i]!.type c.ps) fun idxs _ =>
+          withLocalDeclD `t (mkAppN (b.cst b.members[i]!.name) (c.ps ++ idxs)) fun t => do
+            let ty := implicitPrefix c.ps.size (←
+              mkForallFVars (c.ps ++ nmotives ++ nminors ++ idxs ++ #[t])
+                (mkAppN nmotives[c.dpos i]! (idxs ++ #[t])))
+            let val := implicitPrefix c.ps.size (←
+              mkLambdaFVars (c.ps ++ nmotives ++ nminors ++ idxs ++ #[t])
+                (mkAppN recCst (c.ps ++ rmotives ++ rminors ++ idxs ++ #[t])))
+            return (ty, val)
+      addDef niceName (lp :: b.us) (← instantiateMVars type) (← instantiateMVars value)
+
+end BridgeCtx
+
 /-! ## Emitting the declarations -/
 
 /--
@@ -1796,6 +2399,13 @@ def emit (p : Plan) : TermElabM Unit := do
   let recName (i : Nat) : Name :=
     let n := b.members[i]!.name ++ `rec
     if (env.find? n).isNone then n else b.members[i]!.name ++ `recursor
+  -- a member the writer declared, in a block with copies in it, gets its
+  -- recursor twice over: the kernel-facing one, whose motives are over the
+  -- copies, under a hidden name, and `X.rec` stated over the originals.  A copy
+  -- is not a name anyone reaches for, so its recursor is only the raw one
+  let rawRecName (i : Nat) : Name :=
+    if p.copies.isEmpty || copyNames.contains b.members[i]!.name then recName i
+    else Name.mkStr b.members[i]!.name "_nested_rec"
   -- one motive is `C`; several are `C_Ctx`, `C_Ty`, .. so they can be named
   let motiveName (i : Nat) : Name :=
     if dIdxs.size == 1 then `C else Name.mkSimple ("C_" ++ b.members[i]!.name.getString!)
@@ -1931,10 +2541,11 @@ def emit (p : Plan) : TermElabM Unit := do
       addAndCompileNonRec docCtx preDef
   for q in *...dIdxs.size do
     let (_, _, recType, recValue) := results[q]!
-    addDef (recName dIdxs[q]!) (lp :: b.us) recType recValue
+    addDef (rawRecName dIdxs[q]!) (lp :: b.us) recType recValue
 
   -- 9. the bridge back to the originals
   unless p.copies.isEmpty do
+    let env ← getEnv
     let built ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
       let copies : Array Copy := p.copies.filterMap fun (n, e) => do
         let idx ← b.memberIdx? n
@@ -1942,11 +2553,32 @@ def emit (p : Plan) : TermElabM Unit := do
         let indName ← app.getAppFn.constName?
         some { idx, name := n, indName, app }
       let c : BridgeCtx := { b, ps, copies }
+      -- the round trip is wanted exactly where a constructor of the writer's own
+      -- has a copy-typed field, which is where the recursor has to transport
+      let needed : Array Nat := Id.run do
+        let mut out : Array Nat := #[]
+        for i in dIdxs do
+          if (c.copyAt? i).isSome then continue
+          for cc in b.members[i]!.ctors do
+            if rawCtorName cc.name == cc.name then continue
+            for k in b.fieldKinds cc.kinds do
+              if let .recur m := k then
+                if let some k' := c.copyAt? m then
+                  unless out.contains k' do out := out.push k'
+        return out
       try
         c.addOfOrig docCtx
+        c.addToOrig rawRecName
         c.niceCtors rawCtorName
+        c.addRoundTrips needed rawRecName
+        for i in dIdxs do
+          if (c.copyAt? i).isNone then
+            c.addNiceRec i lp rawRecName (recName i) rawCtorName
         return true
       catch _ =>
+        -- the bridge is all or nothing: it adds declarations one by one, and a
+        -- half-built one would collide with the plain names the fallback uses
+        setEnv env
         return false
     unless built do
       -- the copies stay visible, and the plain names are the raw declarations
@@ -1959,6 +2591,11 @@ def emit (p : Plan) : TermElabM Unit := do
               { name := c.name, levelParams := b.us, type := c.type, value := b.cst raw })
           else
             addDef c.name b.us c.type (b.cst raw)
+      for q in *...dIdxs.size do
+        let i := dIdxs[q]!
+        if rawRecName i == recName i then continue
+        let (_, _, recType, _) := results[q]!
+        addDef (recName i) (lp :: b.us) recType (mkConst (rawRecName i) (lvl :: b.lvls))
 
 /-! ## The entry point -/
 

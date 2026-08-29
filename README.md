@@ -413,11 +413,31 @@ constants and a copied constructor can appear in an *index* —
 `nested_WFWith_4.empty`'s first index is `nested_Tree_2.empty` — so the rewrite
 has to be structural.
 
-The data copies get no bridge back to the type they copy, which is why
-`RecWFTree.mk` reads `RecWFTree.nested_WFTree_1 → RecWFTree`. The `propext`
-equality that hides a `Prop` copy does not apply: these copies are data, and a
-data copy whose own fields mention other copies is not equal to the original at
-all.
+The copies stay out of sight. A copy is not the type it copies — the `propext`
+equality that hides a `Prop` copy in a heterogeneous denesting does not apply
+here, and `WFTree RecWFTree` cannot even be written until `RecWFTree` exists —
+but the two are *isomorphic*, and the isomorphism is definable, so everything
+anyone reads is stated over the originals:
+
+```lean
+#check @RecWFTree.mk    -- WFTree RecWFTree → RecWFTree
+#check @RecWFTree.rec
+-- {C_RecWFTree : RecWFTree → Sort u_1} → {C_WFTree : WFTree RecWFTree → Sort u_1} →
+--   {C_Tree : Tree RecWFTree → Sort u_1} →
+--     ((x : WFTree RecWFTree) → C_WFTree x → C_RecWFTree (RecWFTree.mk x)) → … →
+--       (t : RecWFTree) → C_RecWFTree t
+```
+
+`RecWFTree._nested_mk` and `RecWFTree._nested_rec` are the kernel-facing forms,
+stated over the copies; the plain names are built from them out of `X.ofOrig`,
+`X.toOrig` and the round-trip equation `X.ofOrig_toOrig`. The plain `.rec` is
+always free to take, because every member of a lowered block is a `def` and
+Lean generates no recursor of its own for it.
+
+The bridge is all or nothing. If any step of it fails — two copies that need
+each other have no order to build it in — the environment is rolled back, the
+plain names are the raw declarations again, `RecWFTree.mk` reads
+`RecWFTree.nested_WFTree_1 → RecWFTree`, and the block is what it was before.
 
 ### Turning it off
 
@@ -442,11 +462,13 @@ Stock behaviour returns immediately, including the stock error message.
   undeclared.)
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
-* A rescued nested inductive's constructor really takes a copy of the nested
-  type, and only a copy that is a `Prop` gets the equality, the coercions and
-  the display that hide it. A *data* copy — `N.nested_List_2` for
+* In a *heterogeneous* denesting the constructor really takes a copy of the
+  nested type, and only a copy that is a `Prop` gets the equality, the coercions
+  and the display that hide it. A *data* copy — `N.nested_List_2` for
   `Nonempty (List N)`, or a `List` nested inside a hand-written heterogeneous
-  block — is merely isomorphic to what it copies, and you are on your own.
+  block — is merely isomorphic to what it copies, and you are on your own. (An
+  induction-inductive denesting builds that isomorphism and restates the
+  constructors and the recursor over the originals; this path does not.)
 * A coercion is inserted only where the type it has to reach is known, so a
   consumer whose own type argument is still a metavariable does not get one:
   `Nonempty.elim h fun _ => …` on a field bound by a pattern match needs `h`

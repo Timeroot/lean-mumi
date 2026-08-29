@@ -117,9 +117,27 @@ info: @RecWFTree.nested_WFWith_4.node : ∀ {llist rlist : List Nat} (key : Nat)
 #guard_msgs in
 #check @RecWFTree.nested_WFWith_4.node
 
--- one motive per data member, and the erased proof back in its minor
+-- one motive per data member, and the erased proof back in its minor.  Nothing
+-- in it is a copy: the motives are over the types the block was written with,
+-- and so are the constructors the minors conclude at
 /--
 info: @RecWFTree.rec : {C_RecWFTree : RecWFTree → Sort u_1} →
+  {C_WFTree : WFTree RecWFTree → Sort u_1} →
+    {C_Tree : Tree RecWFTree → Sort u_1} →
+      ((x : WFTree RecWFTree) → C_WFTree x → C_RecWFTree (RecWFTree.mk x)) →
+        ((x : Tree RecWFTree) → (h : Tree.WF RecWFTree x) → C_Tree x → C_WFTree (WFTree.mk x h)) →
+          C_Tree Tree.empty →
+            ((key : Nat) →
+                (value : RecWFTree) →
+                  (l r : Tree RecWFTree) → C_RecWFTree value → C_Tree l → C_Tree r → C_Tree (Tree.node key value l r)) →
+              (t : RecWFTree) → C_RecWFTree t
+-/
+#guard_msgs in
+#check @RecWFTree.rec
+
+-- the kernel-facing one is still there, over the copies, under a hidden name
+/--
+info: @RecWFTree._nested_rec : {C_RecWFTree : RecWFTree → Sort u_1} →
   {C_nested_WFTree_1 : RecWFTree.nested_WFTree_1 → Sort u_1} →
     {C_nested_Tree_2 : RecWFTree.nested_Tree_2 → Sort u_1} →
       ((x : RecWFTree.nested_WFTree_1) → C_nested_WFTree_1 x → C_RecWFTree (RecWFTree._nested_mk x)) →
@@ -135,7 +153,18 @@ info: @RecWFTree.rec : {C_RecWFTree : RecWFTree → Sort u_1} →
               (t : RecWFTree) → C_RecWFTree t
 -/
 #guard_msgs in
-#check @RecWFTree.rec
+#check @RecWFTree._nested_rec
+
+-- the way back, which is what lets the recursor be stated over the originals
+/-- info: RecWFTree.nested_WFTree_1.toOrig : RecWFTree.nested_WFTree_1 → WFTree RecWFTree -/
+#guard_msgs in
+#check @RecWFTree.nested_WFTree_1.toOrig
+
+/--
+info: @RecWFTree.nested_WF_3.toOrig : ∀ {a : RecWFTree.nested_Tree_2}, RecWFTree.nested_WF_3 a → Tree.WF RecWFTree a.toOrig
+-/
+#guard_msgs in
+#check @RecWFTree.nested_WF_3.toOrig
 
 namespace RecWFTree
 
@@ -152,8 +181,8 @@ def wrap (v : RecWFTree) : RecWFTree := .mk (.mk (leaf v) (leafWF v))
 
 /-- How many `RecWFTree`s are nested inside. -/
 def depth (t : RecWFTree) : Nat :=
-  RecWFTree.rec (C_RecWFTree := fun _ => Nat) (C_nested_WFTree_1 := fun _ => Nat)
-    (C_nested_Tree_2 := fun _ => Nat)
+  RecWFTree.rec (C_RecWFTree := fun _ => Nat) (C_WFTree := fun _ => Nat)
+    (C_Tree := fun _ => Nat)
     (fun _ ih => ih + 1) (fun _ _ ih => ih) 0 (fun _ _ _ _ ihv ihl ihr => ihv + ihl + ihr) t
 
 -- iota holds definitionally, all the way through the copies
@@ -214,6 +243,24 @@ info: @Rec2.nested_List_3.cons : {β : Type} → Rec2 β → Rec2.nested_List_3 
 #guard_msgs in
 #check @Rec2.nested_List_3.cons
 
+-- and the recursor is over `OkBag`, `Bag` and `List`, the parameter carried through
+/--
+info: @Rec2.rec : {β : Type} →
+  {C_Rec2 : Rec2 β → Sort u_1} →
+    {C_OkBag : OkBag (Rec2 β) → Sort u_1} →
+      {C_Bag : Bag (Rec2 β) → Sort u_1} →
+        {C_List : List (Rec2 β) → Sort u_1} →
+          ((b : β) → C_Rec2 (Rec2.leaf b)) →
+            ((x : OkBag (Rec2 β)) → C_OkBag x → C_Rec2 (Rec2.mk x)) →
+              ((b : Bag (Rec2 β)) → (h : BagOk (Rec2 β) b) → C_Bag b → C_OkBag (OkBag.mk b h)) →
+                ((a : List (Rec2 β)) → C_List a → C_Bag (Bag.mk a)) →
+                  C_List [] →
+                    ((head : Rec2 β) → (tail : List (Rec2 β)) → C_Rec2 head → C_List tail → C_List (head :: tail)) →
+                      (t : Rec2 β) → C_Rec2 t
+-/
+#guard_msgs in
+#check @Rec2.rec
+
 /-! ## Indices, on both the data copy and the proof copy -/
 
 inductive Vec (α : Type) : Nat → Type where
@@ -241,6 +288,46 @@ inductive Rec3 where
 /-- info: @Rec3.nested_VecOk_3 : {n : Nat} → Rec3.nested_Vec_2 n → Prop -/
 #guard_msgs in
 #check @Rec3.nested_VecOk_3
+
+-- the index survives the trip out: the motive for the copy of `Vec` is a motive
+-- for `Vec`, at the index the copy was carrying
+/--
+info: @Rec3.rec : {C_Rec3 : Rec3 → Sort u_1} →
+  {C_OkVec : OkVec Rec3 → Sort u_1} →
+    {C_Vec : (a : Nat) → Vec Rec3 a → Sort u_1} →
+      ((x : OkVec Rec3) → C_OkVec x → C_Rec3 (Rec3.mk x)) →
+        ({n : Nat} → (v : Vec Rec3 n) → (h : VecOk Rec3 v) → C_Vec n v → C_OkVec (OkVec.mk v h)) →
+          C_Vec 0 Vec.nil →
+            ((a : Rec3) → {n : Nat} → (a_1 : Vec Rec3 n) → C_Rec3 a → C_Vec n a_1 → C_Vec (n + 1) (Vec.cons a a_1)) →
+              (t : Rec3) → C_Rec3 t
+-/
+#guard_msgs in
+#check @Rec3.rec
+
+namespace Rec3
+
+def bottom : Rec3 := .mk (.mk .nil .nil)
+
+def wrap (v : Rec3) : Rec3 := .mk (.mk (.cons v .nil) (.cons v .nil .nil))
+
+/-- How many `Rec3`s are nested inside. -/
+def depth (t : Rec3) : Nat :=
+  Rec3.rec (C_Rec3 := fun _ => Nat) (C_OkVec := fun _ => Nat) (C_Vec := fun _ _ => Nat)
+    (fun _ ih => ih + 1) (fun _ _ ih => ih) 0 (fun _ {_} _ iha ihv => iha + ihv) t
+
+-- iota holds through the indexed copy too
+example : depth bottom = 1 := rfl
+example : depth (wrap (wrap bottom)) = 3 := rfl
+
+/-- info: 3 -/
+#guard_msgs in
+#eval depth (wrap (wrap bottom))
+
+/-- info: 'Rec3.depth' does not depend on any axioms -/
+#guard_msgs in
+#print axioms depth
+
+end Rec3
 
 /-! ## What is not rescued
 
