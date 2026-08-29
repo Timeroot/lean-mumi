@@ -2,8 +2,24 @@
 
 **Mu**ltiple-**u**niverse **m**utual **i**nductives for Lean 4.
 
-Lean requires every member of a `mutual` inductive block to land in the same
-universe:
+Lean puts two restrictions on `mutual` inductive blocks that the type theory
+does not force: every member must land in the same universe, and no member's
+*arity* may mention a sibling. Import `Mumi` and both are lifted. There is no
+new syntax and no patched toolchain — you write `mutual`, and the recursors you
+get reduce in the kernel and run in compiled code.
+
+```toml
+[[require]]
+name = "lean-mumi"
+git = "https://github.com/Timeroot/lean-mumi"
+rev = "main"
+```
+
+Built against `leanprover/lean4:v4.33.1`.
+
+## Members in different universes
+
+Stock Lean:
 
 ```lean
 mutual
@@ -24,20 +40,10 @@ differs from a preceding one
 Note: All inductive types declared in the same `mutual` block must belong to the same type universe
 ```
 
-Import `Mumi` and that block compiles, with recursors that reduce in the kernel
-and run in compiled code:
+With `import Mumi` the same block compiles, and every member gets a recursor
+over the whole family:
 
 ```lean
-import Mumi
-
-mutual
-inductive A : Prop where
-  | mk : B → A
-inductive B : Type where
-  | leaf : Nat → B
-  | fromA : A → B
-end
-
 def bTag : B → Nat :=
   @B.mutualRec (fun _ => True) (fun _ => Nat) (fun _ _ => trivial) (fun n => n) (fun _ _ => 0)
 
@@ -45,10 +51,62 @@ example : bTag (B.leaf 7) = 7 := rfl   -- iota, in the kernel
 #eval bTag (B.leaf 7)                  -- 7, in compiled code
 ```
 
-No changes to Lean and no new syntax: you write `mutual` and it works.
+`Xᵢ.mutualRec` shares one telescope across the block —
+`{params} {motive₁ … motiveₙ} (case₁ … case_K) {idxs} (t : Xᵢ idxs) : motiveᵢ idxs t`
+— and the `Prop` members get `Xᵢ.rec` as well.
 
-The same restriction reaches *nested* inductives, because the kernel denests
-them into a mutual block. Those are rescued too:
+### Indices, parameters and several universes
+
+Nothing above is special to two members or to `Prop`-and-`Type`. Universes are
+derived per member, so each one sits exactly where it would if you had declared
+it alone:
+
+```lean
+universe u v w
+
+mutual
+inductive Wf (α : Type u) (β : Type v) : Nat → Prop where
+  | zero : Wf α β 0
+  | succ (n : Nat) : Layer α β n → Wf α β (n + 1)
+inductive Layer (α : Type u) (β : Type v) : Nat → Type (max u v) where
+  | base : α → β → Layer α β 0
+  | more (n : Nat) (h : Wf α β n) : Layer α β n → Layer α β (n + 1)
+inductive Tagged (α : Type u) (β : Type v) : Type (max u v (w + 1)) where
+  | mk : Type w → Layer α β 1 → Tagged α β
+end
+
+#check Layer   -- Layer.{u, v, w} (α : Type u) (β : Type v) : Nat → Type (max u v)
+#check Tagged  -- Tagged.{u, v, w} (α : Type u) (β : Type v) : Type (max u v (w + 1))
+```
+
+and it still computes:
+
+```lean
+def depth {α : Type u} {β : Type v} : (n : Nat) → Layer α β n → Nat :=
+  fun n t => @Layer.mutualRec α β (fun _ _ => True) (fun _ _ => Nat) (fun _ => Nat)
+    trivial (fun _ _ _ => trivial)
+    (fun _ _ => 0) (fun _ _ _ _ ih => ih + 1)
+    (fun _ _ ih => ih) n t
+
+example : depth 1 (Layer.more 0 .zero (.base 1 "x")) = 1 := rfl
+#eval depth.{0, 0, 0} 1 (Layer.more 0 .zero (.base 1 "x"))   -- 1
+```
+
+**Elimination is not derived per member.** A `Prop` member is still
+small-eliminating unless it independently qualifies for subsingleton
+elimination, exactly as it would be on its own. That boundary is what makes the
+translation conservative: everything the block produces is definable in vanilla
+Lean, just tediously. One axiom does show up — a `Prop` member's recursor uses
+`Classical.choice` when any member of the block has an infinitary field, and a
+data member's recursor inherits that only if it has a field of a `Prop` member's
+type. `#print axioms` will say which case you are in.
+
+### Nested inductives
+
+A nested inductive mentions itself under another type constructor. The kernel
+handles one by specialising the nesting type to the block and checking the
+enlarged block instead — so a nested inductive is a mutual block in disguise,
+and it inherits the same restriction:
 
 ```lean
 inductive T : Type where
@@ -56,9 +114,86 @@ inductive T : Type where
   | mkT : Nonempty T → T   -- (kernel) mutually inductive types must live in the same universe
 ```
 
-And a third restriction, unrelated to universes: a member's *arity* may not
-mention a sibling. When that dependency runs only through proofs, the block is
-lowered too:
+`Nonempty T` is a `Prop` and `T` is a `Type`. With `Mumi` imported the
+declaration goes through, and reads the way it was written:
+
+```lean
+#check @T.mkT          -- Nonempty T → T
+
+def T.two : T := T.mkT ⟨T.mk1⟩
+#print axioms T.two    -- 'T.two' does not depend on any axioms
+```
+
+Underneath, the field really has the type of an auxiliary *copy* of `Nonempty`
+specialised to `T`, and the copy cannot be avoided: `T.mkT : Nonempty T → T` is
+precisely the constructor the kernel refuses. What can be arranged is that its
+name is never needed. A `Prop` copy is not merely isomorphic to the original but
+*equal*, by `propext`, and from the two halves of that `Iff` come a coercion each
+way plus a delaborator keyed off it — so the original goes in, comes out, and is
+what every signature, goal and error message shows. Crossing between them uses
+the coercions rather than a `cast` along the equality, which is why a rescued
+value depends on no axioms and still reduces. `set_option mumi.pp.nested false`
+turns the display off, and it is off under `pp.explicit` anyway, so a mismatch
+between a copy and its original cannot hide behind it.
+
+**Nested inductives that already work are untouched.** Denesting is the kernel's
+own feature, so `Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates
+the declaration first, and only if that fails — and only if denesting is what
+made the block heterogeneous — do we denest it ourselves. Anything else is
+rolled back and Lean's error rethrown verbatim.
+
+Doing it in the elaborator lifts a second kernel restriction along the way, that
+a nested application's parameters be closed:
+
+```lean
+inductive Ix : Nat → Type where
+  | base : Ix 0
+  | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
+  -- (kernel) invalid nested inductive datatype 'Nonempty', nested inductive
+  -- datatypes parameters cannot contain local variables.
+```
+
+`Ix n` mentions a constructor field, so there is no single member it could
+become; we abstract the field and make it an *index* of the auxiliary member.
+`MumiTests/Nested.lean` covers all of this.
+
+### How it works
+
+The block is lowered to declarations the kernel already accepts: an all-`Prop`
+**shadow** of the whole block, which is a legal homogeneous mutual inductive;
+then the **data members**, declared separately against that shadow, grouped into
+strongly connected components of the data-only dependency graph and emitted in
+topological order; then the user-facing names, constructors and recursors on
+top. `Mumi/Lowering.lean`'s module docstring carries the argument — why every
+data SCC is necessarily homogeneous, why the derived recursors have exactly the
+elimination strength they should, and why each iota rule holds.
+
+Each data recursor also gets a `Xᵢ.mutualRec.impl` — a `casesOn` recursion put
+through Lean's own `Structural.structuralRecursion` — plus a kernel-checked
+`Xᵢ.mutualRec.eq_impl` registered with `@[csimp]`. Nothing is `unsafe` and
+nothing is `implemented_by`: an unprovable equation is an error at declaration
+time, never a miscompilation.
+
+`Mumi` is a filter on `mutual`, not a replacement. `Lean.KeyedDeclsAttribute`
+prepends, so an imported `@[command_elab]` is tried before the builtin, and
+`throwUnsupportedSyntax` hands the block back with any state the override
+touched rolled back. To decide, it elaborates the headers with the same-universe
+check removed and runs Lean's **own, unmodified** `checkHeaders` on the result,
+taking over exactly when that throws. A syntax error, a `mutual def`, an unknown
+identifier, a genuine universe error inside one member — all answer "not ours",
+and Lean elaborates the block and reports it in its own words;
+`MumiTests/NonInterference.lean` pins that down to the byte. Reaching Lean's
+`private` elaboration functions from downstream is done with
+`import all Lean.Elab.MutualInductive`: five sit on the path from `mutual` to
+the kernel and two of them enforce the restriction being lifted, so those five
+are reproduced in `Mumi/Elab.lean` with the check dropped.
+
+## Induction-induction through `Prop`
+
+A block is *induction-inductive* when one member's arity mentions another. This
+is a different obstruction: the block does not elaborate at all, because Lean
+elaborates every arity before any member is in scope. Collapsing the block to
+one universe would not help.
 
 ```lean
 mutual
@@ -70,318 +205,35 @@ inductive Fresh : String → Ctx → Prop where             -- unknown identifie
   | snoc : (x y : String) → (Γ : Ctx) → (h : Fresh y Γ) → x ≠ y → Fresh x Γ →
     Fresh x (.snoc Γ y h)
 end
+```
 
+`Mumi` takes such a block when the dependency runs **only through proofs** —
+every field of a data constructor whose type mentions a `Prop` member is itself
+a proof. Both kinds of member then get a recursor stated over the block as
+written:
+
+```lean
 def Ctx.length (Γ : Ctx) : Nat :=
   Ctx.rec (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
+
+example (x : String) (Γ : Ctx) (h : Fresh x Γ) : 0 ≤ Γ.length := by
+  induction x, Γ, h using Fresh.rec with
+  | nil x => simp [Ctx.length]
+  | snoc x y Γ h hne h' ih ih' => simp
 ```
 
-## Installing
+Any number of members of either kind are allowed, with parameters, universe
+parameters, indices on either kind, infinitary recursive fields, and members
+named under one another. What erasure cannot reach is rejected with an
+explanation rather than lowered wrongly: a *data* member's arity mentioning the
+block, a field that is neither a member's type nor a proof of one of the block's
+propositions (`(h : Γ = Γ')`, where erasing would have to transport between
+`Γ = Γ'` and `Γ.val = Γ'.val`), a field that *binds* a member (`(f : Ctx → Ctx)`),
+and a `Prop` index that merely contains one (`List Ctx`). We only claim a block
+whose headers Lean has *already* failed to elaborate and one of whose arities
+names a sibling; `MumiTests/IndInd.lean` pins all of it.
 
-```toml
-[[require]]
-name = "lean-mumi"
-git = "https://github.com/Timeroot/lean-mumi"
-rev = "main"
-```
-
-Built against `leanprover/lean4:v4.33.1`.
-
-## What you get
-
-For a block with members `X₁ … Xₙ`:
-
-* each member under its own name, with its own constructors;
-* one recursor per member, `Xᵢ.mutualRec`, all sharing the telescope
-  `{params} {motive₁ … motiveₙ} (case₁ … case_K) {idxs} (t : Xᵢ idxs) : motiveᵢ idxs t`;
-* `Xᵢ.rec` as well, for the `Prop` members;
-* a compiler implementation for each data member's recursor, so definitions
-  built from `mutualRec` are computable rather than `noncomputable`.
-
-Universes are derived per member. **Elimination is not.** A `Prop` member is
-still small-eliminating unless it independently qualifies (subsingleton
-elimination), exactly as it would be on its own. That boundary is what makes the
-translation conservative: everything the block produces is definable in vanilla
-Lean, just tediously.
-
-A `Prop` member's recursor uses `Classical.choice` when any member of the block
-has an infinitary field; a data member's recursor inherits that only if it has a
-field of a `Prop` member's type. `#print axioms` will tell you which case you
-are in.
-
-## How it works
-
-The block is lowered to declarations Lean's kernel already accepts:
-
-1. an all-`Prop` **shadow** of the whole block, which is a legal homogeneous
-   mutual inductive;
-2. the **data members**, declared separately against that shadow, grouped into
-   strongly connected components of the data-only dependency graph and emitted
-   in topological order;
-3. the **user-facing** names, constructors and recursors on top.
-
-`Mumi/Lowering.lean` does that, and its module docstring carries the argument:
-what each stage is for, why every SCC of data members is necessarily
-homogeneous, why the derived recursors have exactly the elimination strength
-they should, and why each iota rule holds — by proof irrelevance for the `Prop`
-members, by delta plus native iota for the data ones.
-
-Each data member's recursor gets a `Xᵢ.mutualRec.impl` — a `casesOn` recursion
-put through Lean's own `Structural.structuralRecursion` — plus a kernel-checked
-`Xᵢ.mutualRec.eq_impl : @Xᵢ.mutualRec = @Xᵢ.mutualRec.impl` registered with
-`@[csimp]`. Nothing is `unsafe` and nothing is `implemented_by`: if the proof
-cannot be produced you get an error at declaration time, never a miscompilation.
-
-### Taking over `mutual`
-
-`Lean.KeyedDeclsAttribute` *prepends*, so a `@[command_elab]` registered by an
-imported library is tried before the builtin one, and `throwUnsupportedSyntax`
-hands the block back to the builtin with any state the override touched rolled
-back. `Mumi/Mutual.lean` is therefore a filter, not a replacement.
-
-To decide, it elaborates the block's headers with the same-universe check
-removed, then runs Lean's **own, unmodified** `checkHeaders` on the result and
-takes over exactly when that throws. Any other outcome — a syntax error, a
-`mutual def`, an unknown identifier, a genuine universe error inside one member
-— answers "not ours", and Lean elaborates the block itself and reports it in its
-own words. The probe's state is discarded either way.
-
-`MumiTests/NonInterference.lean` pins this down: `mutual def`, `mutual theorem`,
-`structure`, `deriving`, homogeneous inductive blocks, working nested inductives
-and single inductives all still go through Lean, and error messages are
-unchanged down to the byte.
-
-Reaching Lean's `private` elaboration functions from downstream is done with
-`import all Lean.Elab.MutualInductive`. Five of them sit on the path between
-`mutual` and the kernel and two enforce the restriction being lifted, so those
-five are reproduced in `Mumi/Elab.lean` with the check dropped; everything else
-is called unmodified.
-
-### Rescuing nested inductives
-
-A *nested* inductive mentions itself under another type constructor. The kernel
-handles these by specialising the nesting type to the block and checking the
-enlarged block instead — so a nested inductive is really a mutual block in
-disguise, and it inherits the same-universe restriction:
-
-```lean
-inductive T : Type where
-  | mk1 : T
-  | mkT : Nonempty T → T
-```
-
-```
-error: (kernel) mutually inductive types must live in the same universe
-```
-
-`Nonempty T` is a `Prop` and `T` is a `Type`, so the block the kernel builds is
-heterogeneous, and this is exactly the restriction being lifted. With `Mumi`
-imported it goes through, and reads the way it was written:
-
-```lean
-#check @T.mkT   -- Nonempty T → T
-
-example (h : Nonempty T) : T := T.mkT h
-```
-
-The rescued type is an ordinary inductive: it pattern-matches, it recurses
-structurally, and it runs.
-
-Underneath, the nesting becomes a *copy* of `Nonempty` specialised to `T`, an
-auxiliary member of the block, and the constructor really takes that:
-
-```lean
-set_option mumi.pp.nested false in
-#check @T.mkT   -- T.nested_Nonempty_1 → T
-```
-
-The copy cannot be avoided. A nested inductive whose denesting is
-universe-heterogeneous is precisely the declaration the kernel refuses, so
-`T.mkT : Nonempty T → T` can never be a kernel constructor here — the field's
-type has to be something other than `Nonempty T`, or there is nothing to
-declare. What *can* be arranged is that the copy's name is never needed, and
-that is what the rest of this section is about.
-
-When the copy is a `Prop` it is not merely isomorphic to the original but
-*equal*, and saying so once is what makes it disappear:
-
-```lean
-set_option mumi.pp.nested false in
-#check @T.nested_Nonempty_1.eq_orig  -- T.nested_Nonempty_1 = Nonempty T
-```
-
-Both directions are one recursor call per constructor, which works because
-`A.cᵢ`'s fields are `I.cᵢ`'s with the nested occurrences rewritten — so when no
-field mentions an auxiliary member, the two constructors take the same
-arguments. That proviso rules out a wrapper that recurses through the nesting
-and a nesting inside a nesting; those get no `eq_orig`, and are otherwise
-unaffected.
-
-From those two implications the block gets a coercion each way and, keyed off
-the coercion, a delaborator. Together they mean the copy is neither written nor
-read: the original can be handed to the constructor, a field bound by a pattern
-match can be handed to anything that wants the original, and signatures, goals
-and error messages all show the original.
-
-```lean
-def T.witnessed (_ : Nonempty T) : Prop := True
-
-def T.probe : T → Prop
-  | .mk1 => False
-  | .mkT h => T.witnessed h   -- `h` is the copy; the coercion is inserted
-```
-
-`propext` is what makes the two *types* equal, and `eq_orig` needs it. Moving a
-value between them does not: each coercion is one half of the `Iff` rather than
-a `cast` along the equality, so a rescued value depends on no axioms and still
-reduces.
-
-```lean
-def T.coerced : T := T.mkT (Nonempty.intro T.mk1)
-#print axioms T.coerced   -- 'T.coerced' does not depend on any axioms
-```
-
-`⟨...⟩` gets its own treatment, because it reads the expected type rather than
-being elaborated and then coerced; left alone it would reach past the copy into
-the shadow block the lowering builds and ask for a `T._shadow`. Instead it is
-elaborated at the original:
-
-```lean
-example : T := T.mkT ⟨T.mk1⟩
-```
-
-A coercion needs somewhere to go, so a consumer whose type argument is still
-open does not get one — `Nonempty.elim h fun _ => trivial` needs the field
-ascribed, as `Nonempty.elim (h : Nonempty T) fun _ => trivial`. The copy's name
-is still not what gets written.
-
-A member with no `eq_orig` keeps its own name in both respects. A data copy is
-only isomorphic to what it copies, so displaying the original would be a lie,
-and `N.nested_List_2` stays `N.nested_List_2`.
-
-`set_option mumi.pp.nested false` turns the display off, which is what to reach
-for when a mismatch between a copy and its original has to be seen. It is off
-automatically under `pp.explicit`, so a type error whose two sides would
-otherwise both print as `Nonempty T` exposes the copy by itself.
-
-**Nested inductives that already work are not touched.** Denesting is the
-kernel's own feature and there is no reason to reimplement it, so
-`Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates the declaration
-first, and only if that fails do we denest it ourselves — and then only if
-denesting is what made the block heterogeneous. Anything else is rolled back and
-Lean's error is rethrown verbatim. So the second elaboration only ever happens to
-a declaration that was going to be an error anyway, and a working nested
-inductive still gets the kernel's `T.rec_1` and no `mutualRec`.
-
-Denesting at the elaborator instead of the kernel also lifts a second
-restriction. The kernel requires a nested application's parameters to be closed:
-
-```lean
-inductive Ix : Nat → Type where
-  | base : Ix 0
-  | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
-```
-
-```
-error: (kernel) nested inductive datatypes parameters cannot contain local variables
-```
-
-Here `Ix n` mentions a constructor field, so there is no single member it could
-become. We abstract the field and make it an *index* of the auxiliary member —
-`Ix.nested_Nonempty_1 : Nat → Prop` — which works whether or not the universes
-line up. Occurrences that differ only in which local they mention share one
-member.
-
-`MumiTests/Nested.lean` covers the classic case, the bridges, the coercions and
-the display, structural recursion and `#eval` on a rescued type, other `Prop`
-wrappers, parameters, indices, nesting inside a hand-written heterogeneous
-block, and nesting inside nesting.
-
-### Induction-induction through `Prop`
-
-A block is *induction-inductive* when one member's arity mentions another. This
-is a different obstruction: the block does not elaborate at all, because Lean
-elaborates every arity before any member is in scope, so the sibling is an
-unknown identifier. Collapsing the block to one universe would not help.
-
-`Mumi/IndInd.lean` handles the case where the dependency runs **only through
-proofs** — every field of a data constructor whose type mentions a `Prop` member
-is itself a proof. Then that field can be erased, and what is left is ordinary:
-
-```lean
-inductive Ctx._pre : Type where
-  | nil  : Ctx._pre
-  | snoc : Ctx._pre → String → Ctx._pre
-
-inductive Fresh._pre : String → Ctx._pre → Prop where ...
-```
-
-`Ctx._pre` has forgotten which of its elements are real contexts, so a predicate
-puts that back — as a *function*, not an inductive:
-
-```lean
-def Ctx._wf : Ctx._pre → Prop :=
-  Ctx._pre.rec (motive := fun _ => Prop) True (fun Γ x ih => ih ∧ Fresh._pre x Γ)
-
-def Ctx := { Γ : Ctx._pre // Ctx._wf Γ }
-def Fresh (x : String) (Γ : Ctx) : Prop := Fresh._pre x Γ.val
-```
-
-Being a function is what makes this cheap. `Ctx._wf (.snoc Γ x)` *is*
-`Ctx._wf Γ ∧ Fresh._pre x Γ`, definitionally, so "inversion" is `And.left` and
-`And.right` and no inversion lemmas have to be generated. One conjunct per
-recursive field, one per erased proof.
-
-The constructors become definitions, and `Ctx.rec` is written by structural
-recursion on the pre-type with the well-formedness proof threaded through, so it
-is computable for the same reason the heterogeneous recursors are. Both iota
-rules hold by `rfl` and nothing depends on any axiom — resting on the same two
-things the heterogeneous lowering rests on: definitional proof irrelevance,
-which collapses the `_wf` proofs, and definitional eta for structures, which
-gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
-
-The `Prop` members get a `.rec` too, and it is *not* `Fresh._pre.rec` renamed:
-that one eliminates a `Fresh._pre x Γ₀` for a bare `Γ₀ : Ctx._pre`, so its
-motive and minor premises talk about the pre-world. What is derived instead runs
-`Fresh._pre.rec` at the transported motive `fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h` — a
-statement about *every* way of making `Γ₀` well-formed — and applies the result
-to the major premise's own indices, where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it.
-Each minor then has to supply, for a data field it was handed in the pre-world,
-the proof that puts it back at its subtype; those proofs are read off the
-conclusion's `_wf`, which is a conjunction containing the well-formedness of
-everything the constructor was built from. So `@Fresh.rec` mentions `Ctx`,
-`Fresh` and their constructors and nothing else. A `Prop` member whose
-constructor takes a data field the conclusion's indices do not reach has no such
-proof to find; that group of recursors is then dropped whole rather than
-half-emitted, and the block is otherwise unaffected.
-
-Any number of data members and any number of `Prop` members are allowed, with
-parameters, universe parameters, indices on either kind, and infinitary
-recursive fields such as `(f : (n : Nat) → Vec n)`. Members may be named under
-one another — `TreeNested.WF` beside `TreeNested` — and a member that leaves its
-resulting type out, `inductive Tree where`, is read as `Type`. What erasure
-cannot reach is rejected with an explanation rather than lowered wrongly:
-
-* a *data* member's arity mentioning the block — data-on-data
-  induction-induction, where there is nothing to erase;
-* a field mentioning the block that is neither a member's type nor a proof of
-  one of the block's propositions, including `(h : Γ = Γ')`, where erasing would
-  have to transport between `Γ = Γ'` and `Γ.val = Γ'.val`;
-* a recursive field that *binds* a member, `(f : Ctx → Ctx)` — nothing can turn
-  a pre-world value back into a real one without its well-formedness proof;
-* data members at different universes, or at a bare `Sort u`, since the data
-  members share one pre-block and each is encoded as a `Subtype`;
-* a `Prop` member's index that merely *contains* a member, `List Ctx`, which has
-  no image on the erased types;
-* a member with no resulting type whose fields do not fit in `Type` — the guess
-  has to be fixed before the siblings' fields are elaborated against it, so the
-  answer is the type to write rather than a widened guess.
-
-We only claim a block whose headers Lean has *already* failed to elaborate and
-one of whose arities names a sibling. A legal block whose arity happens to name
-a same-named global is elaborated by Lean, untouched — `MumiTests/IndInd.lean`
-pins that alongside all of the above.
-
-### Nested inductives that denest to induction-induction
+### A nested type that denests to one
 
 Nobody writes an induction-inductive block by accident, but Lean will build one
 for you. Denesting specialises the nesting type constructor to the block, and if
@@ -404,35 +256,12 @@ inductive RecWFTree where
 ```
 
 Copying `WFTree` at `RecWFTree` drags in `Tree`, and copying `Tree` drags in
-`Tree.WF` and `Tree.WFWith`, whose arities are indexed by the copy of `Tree`.
-So Lean has to check a five-member block
-
-```lean
-RecWFTree                        : Type
-RecWFTree.nested_WFTree_1        : Type
-RecWFTree.nested_Tree_2          : Type
-RecWFTree.nested_WF_3            : RecWFTree.nested_Tree_2 → Prop
-RecWFTree.nested_WFWith_4        : RecWFTree.nested_Tree_2 → List Nat → Prop
-```
-
-which is exactly narrow-class induction-induction — only the `Prop` members'
-arities mention the block. So it is lowered, and `RecWFTree` gets a three-motive
-`RecWFTree.rec` whose iota rules hold by `rfl`, computes under `#eval`, and
-depends on no axioms. `MumiTests/NestedIndInd.lean` pins that, along with
-parameters and indices carried into the copies.
-
-`Mumi/Denest.lean` does the same job for the blocks that come out merely
-heterogeneous, but it cannot be reused here: it rewrites over member *free
-variables* and only at the head of an application, whereas the copies here are
-constants and a copied constructor can appear in an *index* —
-`nested_WFWith_4.empty`'s first index is `nested_Tree_2.empty` — so the rewrite
-has to be structural.
-
-The copies stay out of sight. A copy is not the type it copies — the `propext`
-equality that hides a `Prop` copy in a heterogeneous denesting does not apply
-here, and `WFTree RecWFTree` cannot even be written until `RecWFTree` exists —
-but the two are *isomorphic*, and the isomorphism is definable, so everything
-anyone reads is stated over the originals:
+`Tree.WF` and `Tree.WFWith`, whose arities are indexed by the copy of `Tree`:
+five members, and exactly the narrow class above. Here the copies are only
+*isomorphic* to the originals — the `propext` route does not apply, and
+`WFTree RecWFTree` cannot even be written until `RecWFTree` exists — but the
+isomorphism is definable, so everything anyone reads is stated over the
+originals anyway:
 
 ```lean
 #check @RecWFTree.mk    -- WFTree RecWFTree → RecWFTree
@@ -443,18 +272,58 @@ anyone reads is stated over the originals:
 --       (t : RecWFTree) → C_RecWFTree t
 ```
 
-`RecWFTree._nested_mk` and `RecWFTree._nested_rec` are the kernel-facing forms,
-stated over the copies; the plain names are built from them out of `X.ofOrig`,
-`X.toOrig` and the round-trip equation `X.ofOrig_toOrig`. The plain `.rec` is
-always free to take, because every member of a lowered block is a `def` and
-Lean generates no recursor of its own for it.
+`RecWFTree._nested_mk` and `._nested_rec` are the kernel-facing forms; the plain
+names are built from them out of `X.ofOrig`, `X.toOrig` and the round-trip
+equation `X.ofOrig_toOrig`. The plain `.rec` is always free to take, because
+every member of a lowered block is a `def` and Lean generates no recursor of its
+own for it. The bridge is all or nothing: if any step fails — two copies that
+need each other have no order to build it in — the environment is rolled back
+and the plain names are the raw declarations again.
+`MumiTests/NestedIndInd.lean` pins that, along with parameters and indices
+carried into the copies.
 
-The bridge is all or nothing. If any step of it fails — two copies that need
-each other have no order to build it in — the environment is rolled back, the
-plain names are the raw declarations again, `RecWFTree.mk` reads
-`RecWFTree.nested_WFTree_1 → RecWFTree`, and the block is what it was before.
+### How it works
 
-### Turning it off
+Erase the proof fields and declare what is left; put back what erasure forgot
+with a *function*, not an inductive; take the subtype.
+
+```lean
+inductive Ctx._pre : Type where
+  | nil  : Ctx._pre
+  | snoc : Ctx._pre → String → Ctx._pre
+
+inductive Fresh._pre : String → Ctx._pre → Prop where ...
+
+def Ctx._wf : Ctx._pre → Prop :=
+  Ctx._pre.rec (motive := fun _ => Prop) True (fun Γ x ih => ih ∧ Fresh._pre x Γ)
+
+def Ctx := { Γ : Ctx._pre // Ctx._wf Γ }
+def Fresh (x : String) (Γ : Ctx) : Prop := Fresh._pre x Γ.val
+```
+
+`_wf` being a function is what makes this cheap: `Ctx._wf (.snoc Γ x)` *is*
+`Ctx._wf Γ ∧ Fresh._pre x Γ`, definitionally, so "inversion" is `And.left` and
+`And.right` and no inversion lemmas have to be generated — one conjunct per
+recursive field, one per erased proof.
+
+`Ctx.rec` is structural recursion on the pre-type with the well-formedness proof
+threaded through, so it is computable for the same reason the heterogeneous
+recursors are. Both iota rules hold by `rfl` and nothing depends on an axiom,
+resting on the same two things as the lowering above: proof irrelevance, which
+collapses the `_wf` proofs, and definitional eta for structures, which gives
+`⟨Γ.val, Γ.property⟩ ≡ Γ`.
+
+`Fresh.rec` needs none of that machinery, because `Fresh` *is* `Fresh._pre` at
+the `.val`s of its indices — the only thing wrong with `Fresh._pre.rec` is the
+world its motive and minor premises are stated in. So it is run at the
+transported motive `fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h`, a statement about *every* way
+of making `Γ₀` well-formed, and the result applied to the major premise's own
+indices, where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it. A minor handed a data field
+in the pre-world puts it back at its subtype using a proof read off the
+conclusion's `_wf`, which contains the well-formedness of everything the
+constructor was built from.
+
+## Turning it off
 
 ```lean
 set_option mumi.enabled false
@@ -464,56 +333,44 @@ Stock behaviour returns immediately, including the stock error message.
 
 ## Limitations
 
-* A member's universe must be decidably `Prop`-or-not, so `inductive X : Sort u`
-  and `inductive X : Sort (imax u v)` are rejected — as they are by Lean itself.
-  `imax` inside a *field* is fine; it is only the member's own resulting universe
-  that has to be classifiable.
+* A member's universe has to be decidably `Prop`-or-not, so `inductive X : Sort u`
+  and `Sort (imax u v)` are rejected — as they are by Lean itself. `imax` inside
+  a *field* is fine.
 * Two data members that hold each other are in one component and must share a
   universe. Universes may differ only across components.
 * For a heterogeneous block, universe parameters have to be declared with
-  `universe` up front. With auto-bound implicits each member gets its own
+  `universe` up front: with auto-bound implicits each member gets its own
   parameter list, and `mutual` rejects the block before we see it. (An
-  induction-inductive block elaborates its own headers, so there `Type u` works
-  undeclared.)
+  induction-inductive block elaborates its own headers, so `Type u` works
+  undeclared there.)
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
-* In a *heterogeneous* denesting the constructor really takes a copy of the
-  nested type, and only a copy that is a `Prop` gets the equality, the coercions
-  and the display that hide it. A *data* copy — `N.nested_List_2` for
-  `Nonempty (List N)`, or a `List` nested inside a hand-written heterogeneous
-  block — is merely isomorphic to what it copies, and you are on your own. (An
-  induction-inductive denesting builds that isomorphism and restates the
-  constructors and the recursor over the originals; this path does not.)
-* A coercion is inserted only where the type it has to reach is known, so a
-  consumer whose own type argument is still a metavariable does not get one:
-  `Nonempty.elim h fun _ => …` on a field bound by a pattern match needs `h`
-  ascribed, or the argument given as `Nonempty.elim (α := T)`. The ascription
-  names the original, not the copy.
-* An induction-inductive block still has to be *narrow*: a data constructor's
-  field that mentions a `Prop` member must be a proof, and no data member's
-  arity may mention the block, so one whose data genuinely depends on data —
-  `Ctx` indexed by its own length — is out of scope. Its data members all share
-  one erased pre-block, hence one universe, and none may sit at a bare `Sort u`.
-  Section `variable`s are not supported.
-* An induction-inductive block's constructors are `def`s rather than
-  constructors, so `match` does not work and there is no `injEq` or
-  `noConfusion`. `induction Γ using Ctx.rec with | nil => … | snoc Γ x h ih
-  => …` is the way in; a bare `induction`/`cases` destructs the underlying
-  subtype and leaks `Ctx._pre` into the goal. The `Prop` members get a `.rec`
-  over the originals too — `induction x, Γ, h using Fresh.rec`, with the indices
-  listed as targets — but a bare `cases` on one still reaches for the pre-type's
-  `casesOn` and so works only where the motive does not depend on the indices.
+* In a *heterogeneous* denesting, only a copy that is a `Prop` gets the equality,
+  the coercions and the display that hide it. A *data* copy — `N.nested_List_2`
+  for `Nonempty (List N)` — is merely isomorphic to what it copies, and you are
+  on your own. (The induction-inductive path builds that isomorphism; this one
+  does not.)
+* A coercion needs a target, so a consumer whose own type argument is still a
+  metavariable does not get one: `Nonempty.elim h fun _ => …` on a field bound by
+  a pattern match needs `h` ascribed, or `Nonempty.elim (α := T)`.
+* An induction-inductive block must be *narrow*, and one whose data genuinely
+  depends on data — `Ctx` indexed by its own length — is out of scope. Its data
+  members share one erased pre-block, hence one universe, and none may sit at a
+  bare `Sort u`. Section `variable`s are not supported.
+* Its constructors are `def`s, so `match` does not work and there is no `injEq`
+  or `noConfusion`; a bare `induction`/`cases` destructs the underlying subtype
+  and leaks `Ctx._pre` into the goal. Use `induction Γ using Ctx.rec`, and for a
+  `Prop` member list the indices as targets — `induction x, Γ, h using Fresh.rec`.
+  A bare `cases` on a `Prop` member reaches for the pre-type's `casesOn` and so
+  works only where the motive does not depend on the indices.
 * A nested inductive whose denesting is induction-inductive is rescued only from
   a standalone `inductive`, not from a member of a `mutual` block, and only when
-  the nesting type is not itself part of a mutual family. A nesting whose
-  parameters mention a field of the constructor it appears in —
-  `OkFam BadLocals n` — is out too: for a merely heterogeneous denesting those
-  locals become extra indices of the copy, and that is not done for a copy
-  inside an induction-inductive block.
+  the nesting type is not itself part of a mutual family. Nesting parameters
+  that mention a constructor-local are out on that path too, though not on the
+  merely heterogeneous one.
 * Importing this library changes the formatting of a few kernel error messages
-  (some gain a `(kernel)` prefix). This predates the nested support and affects
-  declarations the library never touches; `set_option mumi.enabled false` does
-  not suppress it.
+  (some gain a `(kernel)` prefix). This affects declarations the library never
+  touches, and `set_option mumi.enabled false` does not suppress it.
 
 ## Status
 
