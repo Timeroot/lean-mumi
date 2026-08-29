@@ -124,6 +124,55 @@ error at the point of the block rather than a silent fallback.
   back into a `Ctx` without its well-formedness proof, so there is nothing to
   hand `f`.
 
+## Nested inductives that denest to this
+
+Nobody writes an induction-inductive block by accident, but Lean will build one
+for you.  A *nested* inductive is denested by specialising the nesting type
+constructor to the block, and if the type being specialised is itself a family
+indexed by another type being specialised, the enlarged block is
+induction-inductive.  The smallest interesting case is a tree that is
+well-formed by construction and stores itself:
+
+```lean
+inductive Tree (α : Type u) where
+  | empty
+  | node (key : Nat) (value : α) (l r : Tree α)
+inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where ..
+inductive Tree.WF (α : Type u) : Tree α → Prop where
+  | intro (l : List Nat) (t : Tree α) (h : Tree.WFWith α t l) : Tree.WF α t
+inductive WFTree (α : Type u) : Type u where
+  | mk (x : Tree α) (h : x.WF)
+
+inductive RecWFTree where
+  | mk (x : WFTree RecWFTree)
+```
+
+Copying `WFTree` at `RecWFTree` drags in `Tree`, and copying `Tree` drags in
+`Tree.WF` and `Tree.WFWith`, whose arities are indexed by the copy of `Tree`.
+So the block Lean would have to check is the five-member block
+
+```lean
+mutual
+inductive RecWFTree                             : Type
+inductive RecWFTree.nested_WFTree_1             : Type
+inductive RecWFTree.nested_Tree_2               : Type
+inductive RecWFTree.nested_WF_3     : RecWFTree.nested_Tree_2 → Prop
+inductive RecWFTree.nested_WFWith_4 : RecWFTree.nested_Tree_2 → List Nat → Prop
+end
+```
+
+and that is exactly a narrow-class induction-inductive block: only the `Prop`
+members' arities mention the block.  `denestRaw` builds it, `prepareCore`
+lowers it, and `Mumi.Declaration` reaches this path only after Lean itself and
+the heterogeneous retry have both failed.
+
+`Mumi.Denest` does the same job for the blocks `Mumi.Lowering` takes, but it
+cannot be reused: it rewrites an `Input` over member *free variables*, and only
+at the head of an application, whereas here the members are constants and a
+copied constructor can turn up in an *index* -- `nested_WFWith_4.empty` has
+`nested_Tree_2.empty` as its first index -- so the rewrite has to be
+structural.  Both differences are small and both are load-bearing.
+
 ## What this does not do
 
 * Section `variable`s.
@@ -144,6 +193,21 @@ error at the point of the block rather than a silent fallback.
   recursor is still `Fresh._pre`'s, stated over the pre-type.  Deriving a real
   `Fresh.rec` from it -- motive `fun x Γ₀ h => ∀ w, motive x ⟨Γ₀, w⟩ h` -- is
   the obvious next step and is not done here.
+* For a denested block, the *data* copies get no bridge back to the type they
+  are copies of, so `RecWFTree.mk` reads `RecWFTree.nested_WFTree_1 → RecWFTree`
+  rather than `WFTree RecWFTree → RecWFTree`.  `Mumi.Bridge` builds that bridge
+  for a `Prop` copy out of `propext`, and neither half of it applies here: the
+  copies are data, and a data copy of a type whose own fields mention other
+  copies is not equal to the original at all -- `nested_Tree_2` stores a
+  `RecWFTree`, `Tree RecWFTree` stores a `RecWFTree` too, but `nested_WF_3` and
+  `Tree.WF` are genuinely different predicates over genuinely different trees.
+* A nesting whose parameters mention a field of the constructor it appears in
+  (`OkFam BadLocals n` for a local `n`).  `Mumi.Denest` turns such locals into
+  extra indices of the copy; a copy that is a member of an induction-inductive
+  block would need the same, and does not get it.
+* A nesting type that is itself part of a mutual family, and a `mutual` block
+  one of whose members is nested this way.  Only a standalone `inductive`
+  reaches this path.
 -/
 
 public section
@@ -1021,6 +1085,290 @@ def withRaw {α} (views : Array InductiveView) (k : Raw → TermElabM α) : Term
 def prepare (views : Array InductiveView) : TermElabM Plan :=
   withRaw views prepareCore
 
+/-! ## Denesting into the block
+
+A *nested* occurrence is a member of the block appearing inside the parameters
+of some other inductive type, as `RecWFTree` does in
+
+```lean
+inductive RecWFTree where
+  | mk (x : WFTree RecWFTree)
+```
+
+The kernel handles these by specialising the nesting type constructor to the
+block: `WFTree RecWFTree` becomes a new member of the block, and the enlarged
+block is checked instead.  `Mumi.Denest` does the same at the elaborator, and
+hands the result to `Mumi.Lowering`.
+
+Neither can do it here.  The specialisation of `Tree.WF` above is
+`Tree.WF RecWFTree : Tree RecWFTree → Prop`, whose *arity* mentions the copy of
+`Tree` -- the enlarged block is induction-inductive, which is exactly what
+`Mumi.Denest` refuses and `Mumi.Lowering` cannot lower.  So the specialisation
+is done again here, against the `Raw` above, and the enlarged block goes through
+`prepareCore` like any other.
+
+Two things differ from `Mumi.Denest` beyond that, and both follow from where in
+the pipeline this sits.  The members are *constants* -- their scratch axioms --
+rather than free variables, so an occurrence is recognised by name.  And the
+rewrite is structural rather than head-only, because a copied constructor can
+appear in an index: `Tree.WFWith.empty`'s resulting type is
+`Tree.WFWith α .empty []`, and the `.empty` in it has to become the copy's.
+-/
+
+/-- One nested application, and the member it is about to become. -/
+private structure AuxSpec where
+  /--
+  `@I p₁ … p_k`: the type constructor applied to its parameters and nothing
+  else.  Two occurrences with the same parameters share one member, so this is
+  the key -- with the block's own constants stripped of their levels, because
+  each is a scratch axiom over every universe name in scope and two references
+  to it carry two different sets of metavariables.
+  -/
+  key       : Expr
+  name      : Name
+  /-- `I`'s parameters, as they were written -- levels and all, unlike `key`. -/
+  params    : Array Expr
+  indName   : Name
+  /-- The levels `I` was applied at. -/
+  levels    : List Level
+  numParams : Nat
+  ctors     : Array Name
+  deriving Inhabited
+
+private abbrev DenestM := StateRefT (Array AuxSpec) MetaM
+
+/-- Does `e` mention any of `names`? -/
+private def mentionsNames (names : Array Name) (e : Expr) : Bool :=
+  e.getUsedConstants.any (names.contains ·)
+
+/-- Put every constant of `names` at the empty level list, so that keys compare. -/
+private def stripLevels (names : Array Name) (e : Expr) : Expr :=
+  e.replace fun s =>
+    match s with
+    | .const n _ => if names.contains n then some (.const n []) else none
+    | _ => none
+
+/--
+Unfold definitions at the head of `e` until an inductive type constructor is
+exposed, so that a nested occurrence behind an `abbrev` is still seen.  Gives up
+after a few steps, and on anything that is not a definition.
+-/
+private def exposeInduct (e : Expr) : MetaM Expr := do
+  let mut e := e
+  for _ in *...8 do
+    let .const n _ := e.getAppFn | return e
+    if let some (.inductInfo _) := (← getEnv).find? n then return e
+    let some e' ← unfoldDefinition? e | return e
+    e := e'
+  return e
+
+/-- The last component of a name, for building a readable auxiliary name. -/
+private def shortName (n : Name) : String :=
+  match n with
+  | .str _ s => s
+  | _        => "nested"
+
+/--
+Recognise a nested occurrence: an inductive type applied to parameters that
+mention the block.  A member applied to its own arguments is not one, and
+neither is an inductive that mentions the block only outside its parameters.
+-/
+private def nestedApp? (names : Array Name) (e : Expr) :
+    MetaM (Option (Expr × InductiveVal × List Level × Array Expr × Array Expr)) := do
+  if !mentionsNames names e then return none
+  let .const hd _ := e.getAppFn | return none
+  if names.contains hd then return none
+  let e ← exposeInduct e
+  let .const iname lvls := e.getAppFn | return none
+  let some (.inductInfo info) := (← getEnv).find? iname | return none
+  let args := e.getAppArgs
+  if args.size < info.numParams then return none
+  let params := args.extract 0 info.numParams
+  if !params.any (mentionsNames names ·) then return none
+  return some (mkAppN (.const iname lvls) params, info, lvls, params,
+    args.extract info.numParams args.size)
+
+mutual
+
+/--
+Intern the nested application `e` is, if it is one, and then look through the
+copy's own arity and constructors for further nesting.
+-/
+private partial def internNested (names : Array Name) (root : Name) (e : Expr) :
+    DenestM Unit := do
+  let some (app, info, lvls, params, idxArgs) ← nestedApp? names e | return
+  let key := stripLevels names app
+  if (← get).any (·.key == key) then return
+  for a in idxArgs do
+    if mentionsNames names a then
+      throwError m!"Cannot denest{indentExpr e}"
+        ++ .note m!"`{info.name}` is applied to a member of the block in an index rather \
+          than a parameter, and only parameters can be specialised"
+  -- `Mumi.Denest` turns such locals into extra indices of the copy; here they
+  -- would have to be indices of a member of an induction-inductive block, and
+  -- that is not done
+  for p in params do
+    if p.hasLooseBVars then
+      throwError m!"Cannot denest{indentExpr e}"
+        ++ .note m!"`{info.name}` is applied to something that depends on a field of the \
+          constructor it appears in"
+  if info.all.length > 1 then
+    throwError m!"Cannot denest{indentExpr e}"
+      ++ .note m!"`{info.name}` is itself part of a mutual block, and only one member of it \
+        would be specialised"
+  let name := root ++ Name.mkSimple s!"nested_{shortName info.name}_{(← get).size + 1}"
+  modify (·.push { key, name, params, indName := info.name, levels := lvls,
+                   numParams := info.numParams, ctors := info.ctors.toArray })
+  let some ci := (← getEnv).find? info.name | return
+  scanExpr names root (← instantiateForall (ci.instantiateTypeLevelParams lvls) params)
+  for c in info.ctors do
+    let cinfo ← getConstInfoCtor c
+    scanExpr names root
+      (← instantiateForall (cinfo.type.instantiateLevelParams cinfo.levelParams lvls) params)
+
+/-- Look for nested occurrences everywhere in `e`, indices included. -/
+private partial def scanExpr (names : Array Name) (root : Name) (e : Expr) : DenestM Unit := do
+  match e with
+  | .app .. =>
+    internNested names root e
+    scanExpr names root e.getAppFn
+    for a in e.getAppArgs do scanExpr names root a
+  | .forallE _ d b _ | .lam _ d b _ =>
+    scanExpr names root d; scanExpr names root b
+  | .letE _ t v b _ =>
+    scanExpr names root t; scanExpr names root v; scanExpr names root b
+  | .mdata _ b | .proj _ _ b => scanExpr names root b
+  | _ => pure ()
+
+end
+
+/-- `e` as an application of a specialised type, or of one of its constructors. -/
+private def specHit? (names : Array Name) (specs : Array AuxSpec) (e : Expr) :
+    MetaM (Option (Name × Array Expr)) := do
+  let .const cn lvls := e.getAppFn | return none
+  if names.contains cn then return none
+  let args := e.getAppArgs
+  -- a constructor carries its type's parameters, so its copy is found the same way
+  if let some (.ctorInfo ci) := (← getEnv).find? cn then
+    if args.size < ci.numParams then return none
+    let key := stripLevels names (mkAppN (.const ci.induct lvls) (args.extract 0 ci.numParams))
+    let some s := specs.find? (·.key == key) | return none
+    return some (reroot s.indName s.name cn, args.extract ci.numParams args.size)
+  let some (app, _, _, _, idxArgs) ← nestedApp? names e | return none
+  let some s := specs.find? (·.key == stripLevels names app) | return none
+  return some (s.name, idxArgs)
+
+/-- Replace every specialised occurrence in `e` by the member it became. -/
+private partial def rwExpr (names : Array Name) (specs : Array AuxSpec) (ps : Array Expr)
+    (auxLvls : List Level) (e : Expr) : MetaM Expr := do
+  let rw := rwExpr names specs ps auxLvls
+  match e with
+  | .app .. =>
+    if mentionsNames names e then
+      if let some (aux, rest) ← specHit? names specs e then
+        return mkAppN (.const aux auxLvls) (ps ++ (← rest.mapM rw))
+    return mkAppN (← rw e.getAppFn) (← e.getAppArgs.mapM rw)
+  | .forallE n d b bi => return .forallE n (← rw d) (← rw b) bi
+  | .lam n d b bi => return .lam n (← rw d) (← rw b) bi
+  | .letE n t v b nd => return .letE n (← rw t) (← rw v) (← rw b) nd
+  | .mdata m b => return .mdata m (← rw b)
+  | .proj s i b => return .proj s i (← rw b)
+  | _ => return e
+
+/--
+Copy the first `n` binder names and annotations from `model` onto `e`.
+
+Rewriting under the block's parameters means taking them apart and putting them
+back, and `mkForallFVars` annotates each binder the way its local declaration
+is, which for a constructor is not how the constructor had it.
+-/
+private def copyLeadingBinders : Nat → Expr → Expr → Expr
+  | 0, _, e => e
+  | n + 1, .forallE mn _ mb mbi, .forallE _ ty b _ =>
+    .forallE mn ty (copyLeadingBinders n mb b) mbi
+  | _, _, e => e
+
+/--
+Specialise every nested occurrence in `r` into a member of its own.
+
+A block with no nested occurrence comes back untouched.  Otherwise the copies
+are appended as members, and everything -- the original members included -- is
+rewritten to mention them instead.  The copies are stubbed as scratch axioms on
+the way out, in dependency order, so that `prepareCore` can telescope over them
+like any other member.
+-/
+def denestRaw (r : Raw) : TermElabM Raw := do
+  let names := r.blockNames
+  let root := r.names[0]!
+  -- one telescope for the whole pass: a spec's key holds the parameters as they
+  -- appear under *these* binders, so a second telescope would not match it
+  forallBoundedTelescope r.arities[0]! r.numParams fun ps _ => do
+    let scan : DenestM Unit := do
+      for a in r.arities do scanExpr names root (← instantiateForall a ps)
+      for cts in r.ctorTypes do
+        for ct in cts do scanExpr names root (← instantiateForall ct ps)
+    let (_, specs) ← scan.run #[]
+    if specs.isEmpty then return r
+    -- the copies are referenced exactly as the members are: one metavariable
+    -- per universe name in scope, which `normLevels` replaces with the block's
+    let auxLvls ← (← Term.getLevelNames).mapM fun _ => mkFreshLevelMVar
+    let auxNames := specs.map (·.name)
+    let allNames := names ++ auxNames ++
+      specs.flatMap fun s => s.ctors.map (reroot s.indName s.name)
+    let rw (e : Expr) : MetaM Expr := rwExpr names specs ps auxLvls e
+    -- rewrite in place, keeping the original expression where nothing changed
+    let rwTop (model : Expr) : MetaM Expr := do
+      let body ← instantiateForall model ps
+      let body' ← rw body
+      if body' == body then return model
+      return copyLeadingBinders r.numParams model (← mkForallFVars ps body')
+    let arities ← r.arities.mapM fun a => (rwTop a : MetaM Expr)
+    let ctorTypes ← r.ctorTypes.mapM (·.mapM fun c => (rwTop c : MetaM Expr))
+    -- the copies themselves
+    let mut auxArities : Array Expr := #[]
+    let mut auxCtorTypes : Array (Array Expr) := #[]
+    for s in specs do
+      let params := s.params
+      let ci ← getConstInfo s.indName
+      let resType ← instantiateForall (ci.instantiateTypeLevelParams s.levels) params
+      auxArities := auxArities.push
+        (copyLeadingBinders r.numParams r.arities[0]! (← mkForallFVars ps (← rw resType)))
+      let mut cts : Array Expr := #[]
+      for c in s.ctors do
+        let cinfo ← getConstInfoCtor c
+        let cty ← instantiateForall
+          (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
+        cts := cts.push (implicitPrefix r.numParams (← mkForallFVars ps (← rw cty)))
+      auxCtorTypes := auxCtorTypes.push cts
+    -- stub the copies, arities before constructors and each after whatever it
+    -- mentions: a copy's arity may name a copy interned after it
+    let stubInOrder (todo : Array (Name × Expr)) : TermElabM Unit := do
+      let mut todo := todo
+      while !todo.isEmpty do
+        let env ← getEnv
+        let mut next : Array (Name × Expr) := #[]
+        let mut progress := false
+        for (n, t) in todo do
+          if t.getUsedConstants.any fun c => allNames.contains c && (env.find? c).isNone then
+            next := next.push (n, t)
+          else
+            stubAxiom n (← instantiateMVars t)
+            progress := true
+        unless progress do
+          throwError "The copies `{next.map (·.1)}` this nested inductive denests into \
+            depend on one another circularly"
+        todo := next
+    stubInOrder ((Array.range specs.size).map fun k => (auxNames[k]!, auxArities[k]!))
+    stubInOrder <| (Array.range specs.size).flatMap fun k =>
+      (Array.range auxCtorTypes[k]!.size).map fun j =>
+        (reroot specs[k]!.indName specs[k]!.name specs[k]!.ctors[j]!, auxCtorTypes[k]![j]!)
+    return { r with
+      names := r.names ++ auxNames
+      ctorNames := r.ctorNames ++ specs.map fun s => s.ctors.map (reroot s.indName s.name)
+      arities := (← arities.mapM instantiateMVars) ++ (← auxArities.mapM instantiateMVars)
+      ctorTypes := (← ctorTypes.mapM (·.mapM instantiateMVars)) ++
+        (← auxCtorTypes.mapM (·.mapM instantiateMVars)) }
+
 /-! ## Emitting the declarations -/
 
 /--
@@ -1283,5 +1631,31 @@ def elabInductionInductive (elems : Array Syntax) : CommandElabM Unit := do
     unless vars.isEmpty do
       throwError "Section variables are not supported for an induction-inductive block"
     emit (← prepare views)
+
+/--
+Elaborate a *nested* inductive whose denesting is induction-inductive.
+
+The gate is that denesting must both add a member and leave some member's arity
+mentioning the block.  That is exactly the case `Mumi.Denest` refuses -- it can
+specialise a nesting type only when the copy's arity comes out free of the
+block -- so nothing that already works reaches here.
+-/
+def elabNestedInductive (elems : Array Syntax) : CommandElabM Unit := do
+  let inductives ← elems.mapM fun stx => do
+    let modifiers ← elabModifiers ⟨stx[0]⟩
+    pure (modifiers, stx[1])
+  let elabs ← runTermElabM fun _ => inductives.mapM fun (m, s) => mkInductiveView m s
+  let views := elabs.map (·.view)
+  let plan ← runTermElabM fun vars => do
+    unless vars.isEmpty do
+      throwError "Section variables are not supported for an induction-inductive block"
+    withRaw views fun r => do
+      let r ← denestRaw r
+      if r.names.size == views.size then
+        throwError "This inductive has no nested occurrence to denest"
+      unless r.arities.any (mentionsNames r.names ·) do
+        throwError "Denesting this inductive does not make it induction-inductive"
+      prepareCore r
+  runTermElabM fun _ => emit plan
 
 end Mumi.IndInd

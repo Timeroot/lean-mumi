@@ -366,6 +366,59 @@ one of whose arities names a sibling. A legal block whose arity happens to name
 a same-named global is elaborated by Lean, untouched — `MumiTests/IndInd.lean`
 pins that alongside all of the above.
 
+### Nested inductives that denest to induction-induction
+
+Nobody writes an induction-inductive block by accident, but Lean will build one
+for you. Denesting specialises the nesting type constructor to the block, and if
+that type is a family indexed by another type being specialised, the enlarged
+block is induction-inductive. A tree that is well-formed by construction and
+stores itself is the smallest interesting case:
+
+```lean
+inductive Tree (α : Type u) where
+  | empty
+  | node (key : Nat) (value : α) (l r : Tree α)
+inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where ...
+inductive Tree.WF (α : Type u) : Tree α → Prop where
+  | intro (l : List Nat) (t : Tree α) (h : Tree.WFWith α t l) : Tree.WF α t
+inductive WFTree (α : Type u) : Type u where
+  | mk (x : Tree α) (h : x.WF)
+
+inductive RecWFTree where
+  | mk (x : WFTree RecWFTree)
+```
+
+Copying `WFTree` at `RecWFTree` drags in `Tree`, and copying `Tree` drags in
+`Tree.WF` and `Tree.WFWith`, whose arities are indexed by the copy of `Tree`.
+So Lean has to check a five-member block
+
+```lean
+RecWFTree                        : Type
+RecWFTree.nested_WFTree_1        : Type
+RecWFTree.nested_Tree_2          : Type
+RecWFTree.nested_WF_3            : RecWFTree.nested_Tree_2 → Prop
+RecWFTree.nested_WFWith_4        : RecWFTree.nested_Tree_2 → List Nat → Prop
+```
+
+which is exactly narrow-class induction-induction — only the `Prop` members'
+arities mention the block. So it is lowered, and `RecWFTree` gets a three-motive
+`RecWFTree.recursor` whose iota rules hold by `rfl`, computes under `#eval`, and
+depends on no axioms. `MumiTests/NestedIndInd.lean` pins that, along with
+parameters and indices carried into the copies.
+
+`Mumi/Denest.lean` does the same job for the blocks that come out merely
+heterogeneous, but it cannot be reused here: it rewrites over member *free
+variables* and only at the head of an application, whereas the copies here are
+constants and a copied constructor can appear in an *index* —
+`nested_WFWith_4.empty`'s first index is `nested_Tree_2.empty` — so the rewrite
+has to be structural.
+
+The data copies get no bridge back to the type they copy, which is why
+`RecWFTree.mk` reads `RecWFTree.nested_WFTree_1 → RecWFTree`. The `propext`
+equality that hides a `Prop` copy does not apply: these copies are data, and a
+data copy whose own fields mention other copies is not equal to the original at
+all.
+
 ### Turning it off
 
 ```lean
@@ -412,6 +465,13 @@ Stock behaviour returns immediately, including the stock error message.
   subtype and leaks `Ctx._pre` into the goal, and `cases` on the `Prop` member
   works only where the motive does not depend on the indices, pending a derived
   `Fresh.rec`.
+* A nested inductive whose denesting is induction-inductive is rescued only from
+  a standalone `inductive`, not from a member of a `mutual` block, and only when
+  the nesting type is not itself part of a mutual family. A nesting whose
+  parameters mention a field of the constructor it appears in —
+  `OkFam BadLocals n` — is out too: for a merely heterogeneous denesting those
+  locals become extra indices of the copy, and that is not done for a copy
+  inside an induction-inductive block.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This predates the nested support and affects
   declarations the library never touches; `set_option mumi.enabled false` does
