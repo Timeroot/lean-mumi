@@ -209,18 +209,41 @@ end
 
 `Mumi` takes such a block when the dependency runs **only through proofs** —
 every field of a data constructor whose type mentions a `Prop` member is itself
-a proof. Both kinds of member then get a recursor stated over the block as
-written:
+a proof. Every member then gets a recursor stated over the block as written, and
+they are all the *same* recursion: one `Sort u` motive per data member, and one
+`Prop` motive per predicate, each taking the value the data motive produced at
+the index it is about. That last argument is the point — it is what lets a proof
+by `Fresh.rec` say something about a function defined by `Ctx.rec`.
 
 ```lean
-def Ctx.length (Γ : Ctx) : Nat :=
-  Ctx.rec (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
+def Ctx.names : Ctx → List String :=
+  Ctx.rec (motive_1 := fun _ => List String) (motive_2 := fun x _ ns _ => x ∉ ns)
+    [] (fun _ x _ ih _ => x :: ih)
+    (fun _ => by simp)
+    (fun _ _ _ _ hne _ _ _ ih => by simp only [List.mem_cons, not_or]; exact ⟨hne, ih⟩)
 
-example (x : String) (Γ : Ctx) (h : Fresh x Γ) : 0 ≤ Γ.length := by
-  induction x, Γ, h using Fresh.rec with
-  | nil x => simp [Ctx.length]
-  | snoc x y Γ h hne h' ih ih' => simp
+theorem Fresh.not_mem {x : String} {Γ : Ctx} (h : Fresh x Γ) : x ∉ Γ.names :=
+  Fresh.rec (motive_1 := fun _ => List String) (motive_2 := fun x _ ns _ => x ∉ ns)
+    [] (fun _ x _ ih _ => x :: ih)
+    (fun _ => by simp)
+    (fun _ _ _ _ hne _ _ _ ih => by simp only [List.mem_cons, not_or]; exact ⟨hne, ih⟩)
+    x Γ h
 ```
+
+Motives and minor premises are named as they are for a Lean `mutual` —
+`motive_1 … motive_n` in block order, minors after their constructors with
+repeats numbered — so `induction Γ using Ctx.rec with | nil | snoc … | nil_1 |
+snoc_1` reads the way it would for a real inductive. A predicate's recursor is
+for term mode: `induction … using` reads an eliminator's targets only up to the
+first motive argument that is not a local variable, and for a predicate motive
+that is the data value. Wrapping it once, as `MumiTests/Roundtrip.lean` does,
+gives back the tactic.
+
+A block keeps the older split — a data recursor with no predicate motives, and a
+separate recursor per predicate, free to eliminate into `Sort u` — when a `Prop`
+member is not indexed by exactly one data member, or when the block came from
+denesting and left copies behind. `set_option trace.Mumi.indind true` reports
+which recursor a block got and why.
 
 Any number of members of either kind are allowed, with parameters, universe
 parameters, indices on either kind, infinitary recursive fields, and members
@@ -272,6 +295,11 @@ originals anyway:
 --       (t : RecWFTree) → C_RecWFTree t
 ```
 
+This is the copies case, so it is a split recursor: the three data members share
+one, and `Tree.WF` and `Tree.WFWith` keep theirs. Written out by hand, without
+the copies, the same five members get the single recursor above — `motive_1 …
+motive_5`, the predicates included.
+
 `RecWFTree._nested_mk` and `._nested_rec` are the kernel-facing forms; the plain
 names are built from them out of `X.ofOrig`, `X.toOrig` and the round-trip
 equation `X.ofOrig_toOrig`. The plain `.rec` is always free to take, because
@@ -306,22 +334,32 @@ def Fresh (x : String) (Γ : Ctx) : Prop := Fresh._pre x Γ.val
 `And.right` and no inversion lemmas have to be generated — one conjunct per
 recursive field, one per erased proof.
 
-`Ctx.rec` is structural recursion on the pre-type with the well-formedness proof
+The recursion is structural on the pre-type with the well-formedness proof
 threaded through, so it is computable for the same reason the heterogeneous
-recursors are. Both iota rules hold by `rfl` and nothing depends on an axiom,
-resting on the same two things as the lowering above: proof irrelevance, which
-collapses the `_wf` proofs, and definitional eta for structures, which gives
-`⟨Γ.val, Γ.property⟩ ≡ Γ`.
+recursors are. The iota rules hold by `rfl`, resting on the same two things as
+the lowering above: proof irrelevance, which collapses the `_wf` proofs, and
+definitional eta for structures, which gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
 
-`Fresh.rec` needs none of that machinery, because `Fresh` *is* `Fresh._pre` at
-the `.val`s of its indices — the only thing wrong with `Fresh._pre.rec` is the
-world its motive and minor premises are stated in. So it is run at the
-transported motive `fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h`, a statement about *every* way
-of making `Γ₀` well-formed, and the result applied to the major premise's own
-indices, where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it. A minor handed a data field
-in the pre-world puts it back at its subtype using a proof read off the
-conclusion's `_wf`, which contains the well-formedness of everything the
-constructor was built from.
+What that recursion computes is a *bundle*: at each data pre-value, the value of
+the data motive, paired with a proof of the predicate motive for every proof of
+every `Prop` member standing at that value. One `PSigma`, so all of it lands in
+one universe, and one recursion, so the two halves see each other — that is why
+a minor premise for a data constructor may use the induction hypotheses of the
+proofs it carries, and why a predicate's minor premise gets to talk about the
+value the data motive produced. `Ctx.rec` is the bundle's first projection and
+`Fresh.rec` the matching conjunct of its second, so the cross-member iota rule
+above is `rfl` too.
+
+Where the block falls back to split recursors, the `Prop` half needs none of
+that machinery, because `Fresh` *is* `Fresh._pre` at the `.val`s of its indices —
+the only thing wrong with `Fresh._pre.rec` is the world its motive and minor
+premises are stated in. So it is run at the transported motive
+`fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h`, a statement about *every* way of making `Γ₀`
+well-formed, and the result applied to the major premise's own indices, where
+`⟨Γ.val, Γ.property⟩ ≡ Γ` closes it. A minor handed a data field in the
+pre-world puts it back at its subtype using a proof read off the conclusion's
+`_wf`, which contains the well-formedness of everything the constructor was
+built from.
 
 ## Turning it off
 
@@ -359,10 +397,22 @@ Stock behaviour returns immediately, including the stock error message.
   bare `Sort u`. Section `variable`s are not supported.
 * Its constructors are `def`s, so `match` does not work and there is no `injEq`
   or `noConfusion`; a bare `induction`/`cases` destructs the underlying subtype
-  and leaks `Ctx._pre` into the goal. Use `induction Γ using Ctx.rec`, and for a
-  `Prop` member list the indices as targets — `induction x, Γ, h using Fresh.rec`.
-  A bare `cases` on a `Prop` member reaches for the pre-type's `casesOn` and so
-  works only where the motive does not depend on the indices.
+  and leaks `Ctx._pre` into the goal. Use `induction Γ using Ctx.rec`, supplying
+  the motives the goal does not fix. A `Prop` member's recursor does not drive
+  `induction … using` — `getElimInfo` reads targets only up to the first motive
+  argument that is not a local, and the data value is not one — so use it in
+  term mode, or wrap it in a lemma whose motive takes only the indices. A bare
+  `cases` on a `Prop` member reaches for the pre-type's `casesOn` and so works
+  only where the motive does not depend on the indices.
+* One recursor serves the whole block, so every use supplies every motive, and
+  two recursions that differ in the motives they were given are not defeq. A
+  `Prop` member covered by it eliminates only into `Prop`, even a subsingleton
+  one that could have had large elimination under the split.
+* A `Prop` member indexed by no data member, or by two, keeps the split
+  recursors, as does a block that denesting left copies in. The consolation is
+  that a split `Prop` recursor may eliminate into `Sort u`.
+* An *indexed* block's recursor depends on `propext`, by way of the `injEq`
+  Lean's own `cases` uses to unify indices. Unindexed blocks add no axiom.
 * A nested inductive whose denesting is induction-inductive is rescued only from
   a standalone `inductive`, not from a member of a `mutual` block, and only when
   the nesting type is not itself part of a mutual family. Nesting parameters

@@ -227,6 +227,9 @@ namespace Mumi.IndInd
 open Lean Lean.Meta Lean.Elab Lean.Elab.Command
 open Lean.Elab.MultiuniverseInductive (addDef addInd reroot)
 
+/-- Why a block fell back from the recursor it would rather have had. -/
+initialize registerTraceClass `Mumi.indind
+
 /-! ## Names -/
 
 /-- The erased pre-type of member `n`. -/
@@ -2542,6 +2545,641 @@ def addPropRecs (c : BridgeCtx) (lp : Name) (recNameOf : Nat → Name) : TermEla
 
 end BridgeCtx
 
+/-! ## The induction-inductive recursor
+
+Steps 8 and 9 below build two separate recursors: one for the data members,
+whose motives run over the data members only, and one for the `Prop` members,
+whose motives run over those.  That is enough to compute with, but it is not the
+eliminator the block deserves: a `Prop` member of an induction-inductive block
+is indexed by a data member, so its motive ought to be allowed to mention the
+*value* the recursion produced at that index, and a data constructor that
+carries a proof ought to get an induction hypothesis for it.  Written out for
+
+```
+mutual
+inductive Ctx : Type where
+  | nil | snoc (Γ : Ctx) (x : String) (h : Fresh x Γ) : Ctx
+inductive Fresh : String → Ctx → Prop where
+  | nil (x) : Fresh x .nil
+  | snoc (x y) (Γ) (h : Fresh y Γ) : x ≠ y → Fresh x Γ → Fresh x (.snoc Γ y h)
+end
+```
+
+the recursor wanted is
+
+```
+Ctx.rec.{u} {C_Ctx : Ctx → Sort u}
+    {C_Fresh : (x : String) → (Γ : Ctx) → C_Ctx Γ → Fresh x Γ → Prop}
+    (nil : C_Ctx .nil)
+    (snoc : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → (Γ_ih : C_Ctx Γ) →
+      (h_ih : C_Fresh x Γ Γ_ih h) → C_Ctx (.snoc Γ x h)) → ..
+```
+
+and `Fresh.rec` takes the very same motives and minors.  The two motives cannot
+be merged into one -- `Fresh` is small-eliminating, so nothing may land in
+`Sort u` by recursion on it -- but they can be *taken together*, which is
+exactly the shape above.
+
+It has to be one recursion, because the two halves are interleaved: the value at
+`Ctx.snoc Γ x h` needs the proof-motive's value at `h`, which needs the
+data-motive's value at `Γ`.  So the recursion computes, at each pre-term, a
+**bundle**: the data value paired with the proof-motive's value at *every* proof
+of *every* `Prop` member indexed by that pre-term.
+
+```
+Bundle p := (w : Ctx._wf p) →
+  PSigma fun c : C_Ctx ⟨p, w⟩ => ∀ x (h : Fresh._pre x p), C_Fresh x ⟨p, w⟩ c h
+```
+
+The pairing is a `PSigma` rather than a `Subtype` because the first component is
+data; and it stays a `PSigma` even for a data member no `Prop` member is indexed
+by (with `fun _ => True` as the second component), so that every member's bundle
+lands in `Sort (max 1 u)` and the group can recurse together.
+
+Building the bundle at a data constructor is where the work is.  The data
+component is the minor applied to the rebuilt fields, whose proof-field
+hypotheses come out of the bundle's *own* second component at the recursive
+field the proof is about.  The proof component is proved by inverting the
+`Prop` member's pre-form at the constructor: index unification forces the
+proof's fields to be the constructor's own, so the `Prop` minor's data
+hypotheses are the sibling bundles' first components and its proof hypotheses
+their second.  The inversion is `Lean.Meta.cases`, which discharges the
+alternatives that cannot happen; the recursive calls are named before it runs so
+that structural recursion sees them at the top of the alternative rather than
+buried under the equations the inversion introduces.
+-/
+
+/-- Where a `Prop` member of the block sits in the recursion. -/
+structure PropSlot where
+  /-- The `Prop` member's index in the block. -/
+  j : Nat
+  /-- The position, among its own indices, of the one that is a data member. -/
+  pos : Nat
+  /-- That data member's index in the block. -/
+  data : Nat
+  /-- For each index of that data member, which of the `Prop` member's it is. -/
+  bound : Array Nat
+  deriving Inhabited
+
+/-- The slot of the `Prop` member at block index `j`. -/
+def slotOf? (slots : Array PropSlot) (j : Nat) : Option PropSlot := slots.find? (·.j == j)
+
+/-- The slots the bundle of the data member at block index `i` carries. -/
+def slotsAt (slots : Array PropSlot) (i : Nat) : Array Nat :=
+  (Array.range slots.size).filter (slots[·]!.data == i)
+
+/--
+Read a slot off every `Prop` member of the block.
+
+A grand recursor needs each `Prop` member to be indexed by exactly one data
+member -- with none there is no bundle to put it in, and with two no single
+bundle has both of the hypotheses its motive would ask for.  The data member's
+own indices have to be earlier indices of the `Prop` member, so that fixing the
+one fixes the others.
+-/
+def propSlots? (b : Block) (ps : Array Expr) : TermElabM (Option (Array PropSlot)) := do
+  let mut out : Array PropSlot := #[]
+  for j in b.propIdxs do
+    let r ← forallTelescope (← instantiateForall b.members[j]!.type ps) fun idxs _ => do
+      let mut found : Option PropSlot := none
+      for k in *...idxs.size do
+        let hit ← b.withRecTarget? (← inferType idxs[k]!) fun ys m args =>
+          return (ys.isEmpty, m, b.idxArgs args)
+        let some (clean, m, margs) := hit | continue
+        if b.members[m]!.isProp then continue
+        unless clean do return none
+        if found.isSome then return none
+        let mut bound : Array Nat := #[]
+        for a in margs do
+          let some q := (idxs.extract 0 k).findIdx? (· == a) | return none
+          bound := bound.push q
+        found := some { j, pos := k, data := m, bound }
+      return found
+    let some s := r | return none
+    out := out.push s
+  return some out
+
+/--
+Re-bind a `Prop` member's index telescope with its data index pinned to
+`target` (and that index's own indices to `dIdxs`).  `k` receives the indices
+that stayed free, all of them in order, and their pre-world images -- with
+`targetPre` standing in for `target`, which is where the pre-term itself goes.
+-/
+partial def withSlotIdxs {α} [Inhabited α] (b : Block) (s : PropSlot) (dIdxs : Array Expr)
+    (target targetPre ty : Expr) (q : Nat) (free all pres : Array Expr)
+    (k : Array Expr → Array Expr → Array Expr → MetaM α) : MetaM α := do
+  match ty with
+  | .forallE nm d body bi =>
+    if q == s.pos then
+      withSlotIdxs b s dIdxs target targetPre (body.instantiate1 target) (q + 1)
+        free (all.push target) (pres.push targetPre) k
+    else if let some r := s.bound.findIdx? (· == q) then
+      let a := dIdxs[r]!
+      withSlotIdxs b s dIdxs target targetPre (body.instantiate1 a) (q + 1)
+        free (all.push a) (pres.push (← b.preImage a d)) k
+    else
+      withLocalDecl nm bi d fun x => do
+        let px ← b.preImage x d
+        withSlotIdxs b s dIdxs target targetPre (body.instantiate1 x) (q + 1)
+          (free.push x) (all.push x) (pres.push px) k
+  | _ => k free all pres
+
+/-- The conjuncts of a right-associated conjunction of `n` of them. -/
+def peelConj (n : Nat) (e : Expr) : Array Expr := Id.run do
+  let mut out : Array Expr := #[]
+  let mut e := e
+  for q in *...n do
+    if q + 1 == n then out := out.push e
+    else
+      out := out.push e.appFn!.appArg!
+      e := e.appArg!
+  return out
+
+/-- A proof of the conjunction of `pfs`, right-associated as `foldConj` folds it. -/
+def conjIntro (pfs : Array Expr) : MetaM Expr := do
+  if pfs.isEmpty then return mkConst ``True.intro
+  let mut e := pfs.back!
+  for q in *...(pfs.size - 1) do
+    e ← mkAppM ``And.intro #[pfs[pfs.size - 2 - q]!, e]
+  return e
+
+/-- Bind a batch of `let`s at once. -/
+partial def withLets {α} [Inhabited α] (names : Array Name) (tys vals : Array Expr)
+    (k : Array Expr → MetaM α) : MetaM α := go 0 #[]
+where
+  go (i : Nat) (acc : Array Expr) : MetaM α := do
+    if h : i < tys.size then
+      withLetDecl names[i]! tys[i] vals[i]! fun x => go (i + 1) (acc.push x)
+    else
+      k acc
+
+/--
+The recursor's own value at a term of a member's type, as the minors see it.
+
+A minor's conclusion says what the recursion returns at the constructor it is
+for, and a `Prop` member's motive takes the data motive's value at its index --
+so a `Prop` minor's conclusion has to name that value.  The index is built out
+of the constructor's fields, so the value is built the same way: a field's value
+is its induction hypothesis, and a constructor's is the minor for it, applied to
+the fields' values in turn.  Anything else is not something the recursion has a
+value for, and the block gets the split recursors instead.
+-/
+partial def ihOfTerm (b : Block) (ctors : Array (Nat × CtorSpec)) (minors : Array Expr)
+    (ihAt : Array (FVarId × Expr)) (e : Expr) : MetaM Expr := do
+  let f := e.getAppFn
+  if let .fvar id := f then
+    let some (_, ih) := ihAt.find? (·.1 == id)
+      | throwError "No induction hypothesis for{indentExpr e}"
+    return mkAppN ih e.getAppArgs
+  let some n := f.constName? | throwError "No induction hypothesis for{indentExpr e}"
+  let some q := ctors.findIdx? (·.2.name == n)
+    | throwError "No induction hypothesis for{indentExpr e}"
+  unless q < minors.size do
+    throwError "The minor for `{n}` is not in scope where{indentExpr e}\nis needed"
+  let kinds := b.fieldKinds ctors[q]!.2.kinds
+  let fields := b.idxArgs e.getAppArgs
+  unless fields.size == kinds.size do
+    throwError "`{n}` is not fully applied in{indentExpr e}"
+  let mut ihs : Array Expr := #[]
+  for z in *...kinds.size do
+    if kinds[z]! == .plain then continue
+    ihs := ihs.push <| ← forallTelescope (← inferType fields[z]!) fun ys _ => do
+      mkLambdaFVars ys (← ihOfTerm b ctors minors ihAt (mkAppN fields[z]! ys))
+  return mkAppN minors[q]! (fields ++ ihs)
+
+/--
+`X.rec` for every member of an induction-inductive block, over one set of
+motives and minors: see the section header for the shape and why it is one
+recursion.  Throws if the block is not one this can be done for, and the caller
+falls back to the split recursors.
+-/
+def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Name)
+    (recNameOf : Nat → Name) : TermElabM Unit := do
+  let dIdxs := b.dataIdxs
+  if dIdxs.isEmpty || b.propIdxs.isEmpty then
+    throwError "Not an induction-inductive block"
+  let lvl := Level.param lp
+  let recAuxName (i : Nat) : Name := b.members[i]!.name ++ `recAux
+  let ihName (n : Name) : Name := if n.hasMacroScopes then `ih else n.appendAfter "_ih"
+  let out ← forallBoundedTelescope b.members[0]!.type b.numParams fun ps _ => do
+    let some slots ← propSlots? b ps
+      | throwError "A `Prop` member is not indexed by exactly one data member"
+    -- motives and minors come out in the order the block was written, save that
+    -- a `Prop` member's motive has to follow the data motive it mentions
+    let ord : Array Nat := Id.run do
+      let mut out : Array Nat := #[]
+      let mut left := Array.range b.size
+      while !left.isEmpty do
+        let mut nxt : Array Nat := #[]
+        for i in left do
+          match slotOf? slots i with
+          | some s => if out.contains s.data then out := out.push i else nxt := nxt.push i
+          | none => out := out.push i
+        if nxt.size == left.size then return out
+        left := nxt
+      return out
+    unless ord.size == b.size do
+      throwError "A `Prop` member is indexed by a member that depends on it"
+    let mpos (i : Nat) : Nat := (ord.findIdx? (· == i)).getD 0
+    let ctors : Array (Nat × CtorSpec) :=
+      ord.flatMap fun i => b.members[i]!.ctors.map fun c => (i, c)
+    let minorPos (n : Name) : Nat := (ctors.findIdx? (·.2.name == n)).getD 0
+    -- this is a recursor over the whole block, one motive per member and one
+    -- minor per constructor, so it is named the way Lean names its own: two
+    -- members can share a constructor's short name, and a repeated binder is
+    -- one `induction .. using` cannot address, so repeats are numbered
+    let minorNames : Array Name := Id.run do
+      let mut out : Array Name := #[]
+      for (_, c) in ctors do
+        let base := c.name.getString!
+        let mut n := Name.mkSimple base
+        let mut k := 0
+        while out.contains n do
+          k := k + 1
+          n := Name.mkSimple s!"{base}_{k}"
+        out := out.push n
+      return out
+    let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := ord.mapIdx fun q i =>
+      (Name.mkSimple s!"motive_{q + 1}", fun acc => do
+        let m := b.members[i]!
+        forallTelescope (← instantiateForall m.type ps) fun idxs _ => do
+          match slotOf? slots i with
+          | some s =>
+            let d := idxs[s.pos]!
+            let some dArgs ← b.withRecTarget? (← inferType d) fun _ _ args =>
+                pure (b.idxArgs args)
+              | throwError "The index `{d}` of `{m.name}` is not a member's type"
+            withLocalDeclD (ihName (← d.fvarId!.getUserName))
+                (mkAppN acc[mpos s.data]! (dArgs ++ #[d])) fun xih =>
+              withLocalDeclD `h (mkAppN (b.cst m.name) (ps ++ idxs)) fun h =>
+                mkForallFVars (idxs ++ #[xih, h]) (mkSort Level.zero)
+          | none =>
+            withLocalDeclD `t (mkAppN (b.cst m.name) (ps ++ idxs)) fun t =>
+              mkForallFVars (idxs ++ #[t]) (mkSort lvl))
+    withImplicits motiveDecls fun motives => do
+      let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
+      for h : q in *...ctors.size do
+        let (i, c) := ctors[q]
+        minorDecls := minorDecls.push (minorNames[q]!, fun acc => do
+          forallTelescope (← instantiateForall c.type ps) fun xs concl => do
+            let kinds := b.fieldKinds c.kinds
+            -- a data constructor's proof fields get a hypothesis too, which is
+            -- the whole point; a `Prop` constructor has none to give one to
+            let ihPos := (Array.range kinds.size).filter fun k =>
+              if b.members[i]!.isProp then kinds[k]! matches .recur _ else kinds[k]! != .plain
+            let mut names : Array Name := #[]
+            for k in ihPos do
+              names := names.push (ihName (← xs[k]!.fvarId!.getUserName))
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+              ihPos.mapIdx fun q k => (names[q]!, fun ihAcc => do
+                let ihAt : Array (FVarId × Expr) :=
+                  (Array.range ihAcc.size).map fun z => (xs[ihPos[z]!]!.fvarId!, ihAcc[z]!)
+                let ty ← inferType xs[k]!
+                let r? ← b.withRecTarget? ty fun ys mm args => do
+                  let idxa := b.idxArgs args
+                  match slotOf? slots mm with
+                  | some s =>
+                    let ih ← ihOfTerm b ctors acc ihAt idxa[s.pos]!
+                    mkForallFVars ys (mkAppN motives[mpos mm]! (idxa ++ #[ih, mkAppN xs[k]! ys]))
+                  | none =>
+                    mkForallFVars ys (mkAppN motives[mpos mm]! (idxa ++ #[mkAppN xs[k]! ys]))
+                let some r := r?
+                  | throwError "The field `{xs[k]!}` of `{c.name}` is not a member's \
+                      type:{indentExpr ty}"
+                return r)
+            withLocalDeclsD ihDecls fun ihs => do
+              let ihAt : Array (FVarId × Expr) :=
+                (Array.range ihs.size).map fun z => (xs[ihPos[z]!]!.fvarId!, ihs[z]!)
+              let idxa := b.idxArgs concl.getAppArgs
+              let head := mkAppN (b.cst c.name) (ps ++ xs)
+              match slotOf? slots i with
+              | some s =>
+                let ih ← ihOfTerm b ctors acc ihAt idxa[s.pos]!
+                mkForallFVars (xs ++ ihs) (mkAppN motives[mpos i]! (idxa ++ #[ih, head]))
+              | none =>
+                mkForallFVars (xs ++ ihs) (mkAppN motives[mpos i]! (idxa ++ #[head])))
+      withLocalDeclsD minorDecls fun minors => do
+        -- the bundle: what the recursion computes at a pre-term
+        let bundleType (i : Nat) (mIdxs : Array Expr) (p wf : Expr) : MetaM Expr := do
+          let target := b.sMk i (ps ++ mIdxs) p wf
+          let cTy := mkAppN motives[mpos i]! (mIdxs ++ #[target])
+          withLocalDeclD `c cTy fun c => do
+            let mut comps : Array Expr := #[]
+            for si in slotsAt slots i do
+              let s := slots[si]!
+              comps := comps.push <| ←
+                withSlotIdxs b s mIdxs target p (← instantiateForall b.members[s.j]!.type ps)
+                  0 #[] #[] #[] fun free all pres =>
+                    withLocalDeclD `h
+                      (mkAppN (b.cst (preName b.members[s.j]!.name)) (ps ++ pres)) fun h =>
+                        mkForallFVars (free ++ #[h])
+                          (mkAppN motives[mpos s.j]! (all ++ #[c, h]))
+            let beta ← mkLambdaFVars #[c] (foldConj comps 0)
+            return mkApp2 (mkConst ``PSigma [lvl, Level.zero]) cTy beta
+        let bunFst (bTy bun : Expr) : Expr :=
+          mkApp3 (mkConst ``PSigma.fst [lvl, Level.zero]) bTy.appFn!.appArg! bTy.appArg! bun
+        let slotComp (bTy bun : Expr) (si : Nat) : MetaM Expr := do
+          let s := slots[si]!
+          let group := slotsAt slots s.data
+          let q := (group.findIdx? (· == si)).getD 0
+          let alpha := bTy.appFn!.appArg!
+          let beta := bTy.appArg!
+          let fst := mkApp3 (mkConst ``PSigma.fst [lvl, Level.zero]) alpha beta bun
+          let snd := mkApp3 (mkConst ``PSigma.snd [lvl, Level.zero]) alpha beta bun
+          return projConj (peelConj group.size (beta.bindingBody!.instantiate1 fst)) snd q
+        -- an index of a `Prop` member, back at the subtypes
+        let toRealIdxs (jj : Nat) (pidxs : Array Expr) (parts : Array (Expr × Expr)) :
+            MetaM (Array Expr) := do
+          let mut ty ← instantiateForall b.members[jj]!.type ps
+          let mut out : Array Expr := #[]
+          for z in *...pidxs.size do
+            let .forallE _ d bodyTy _ := ty
+              | throwError "`{b.members[jj]!.name}` has too few indices"
+            let isData ← b.withRecTarget? d fun ys m2 _ =>
+              pure (ys.isEmpty && !b.members[m2]!.isProp)
+            let v ← if isData == some true then
+                let pre := b.tr d
+                let pf ← BridgeCtx.findPart parts (← b.wfOfPre pidxs[z]! pre)
+                b.withPreTarget pre fun _ m2 args => pure (b.sMk m2 args pidxs[z]! pf)
+              else pure pidxs[z]!
+            out := out.push v
+            ty := bodyTy.instantiate1 v
+          return out
+        -- One alternative of the inversion that proves a bundle's proof
+        -- component.  A `Prop` constructor's data field need not be a *strict*
+        -- subterm of the pre-term being recursed at: `WF.intro (l) (t) (h : WFWith t l)`
+        -- has the pre-term itself in it, and asks for the data value there and
+        -- for the component of a `Prop` member at the very same place.  So the
+        -- bundle under construction stands in for a recursive call, its first
+        -- component being `self` and its slot components the ones already built
+        let fillAlt (imgs : Array (Option Expr)) (recPos : Array Nat) (buns : Array Expr)
+            (wc selfPre self : Expr) (selfProps : Array (Option Expr))
+            (sg : CasesSubgoal) : MetaM Unit := sg.mvarId.withContext do
+          let some ctorName := sg.ctorName | throwError "A sparse alternative in the inversion"
+          let some (_, cc) := (Array.range b.size).findSome? fun z =>
+              (b.members[z]!.ctors.find? fun cc => b.preOf cc.name == ctorName).map ((z, ·))
+            | throwError "No constructor of the block behind `{ctorName}`"
+          let kinds := b.fieldKinds cc.kinds
+          let fields := sg.fields
+          unless fields.size == kinds.size do
+            throwError "The inversion gave {fields.size} fields for `{cc.name}`"
+          let parts ← BridgeCtx.wfParts (sg.subst.apply wc)
+          let bunAt (e : Expr) : Option Nat := Id.run do
+            for q in *...recPos.size do
+              if e.getAppFn == sg.subst.apply (imgs[recPos[q]!]!).get! then return some q
+            return none
+          let bunOf (q : Nat) (args : Array Expr) : Expr := mkAppN (sg.subst.apply buns[q]!) args
+          let selfPreS := sg.subst.apply selfPre
+          let mut vals : Array Expr := #[]
+          let mut ihs : Array Expr := #[]
+          for z in *...kinds.size do
+            let f := fields[z]!
+            let fty ← inferType f
+            match kinds[z]! with
+            | .plain | .erased => vals := vals.push f
+            | .recur mm =>
+              if b.members[mm]!.isProp then
+                let some si := slots.findIdx? (·.j == mm)
+                  | throwError "No slot for `{b.members[mm]!.name}`"
+                let s := slots[si]!
+                vals := vals.push f
+                ihs := ihs.push <| ← b.withPreTarget fty fun zs _ pargs => do
+                  let pidxs := b.idxArgs pargs
+                  let principal := pidxs[s.pos]!
+                  let comp ←
+                    if principal == selfPreS then
+                      match selfProps[si]! with
+                      | some e => pure (sg.subst.apply e)
+                      | none =>
+                        throwError "`{b.members[s.j]!.name}` is wanted at the very term it is \
+                          being proved at, and is not settled yet"
+                    else do
+                      let some q := bunAt principal
+                        | throwError "No recursive call for{indentExpr principal}"
+                      let pwf ←
+                        BridgeCtx.findPart parts (← b.wfOfPre principal (← inferType principal))
+                      let bTy ← b.withPreTarget (← inferType principal) fun _ m2 args =>
+                        bundleType m2 (b.idxArgs args) principal pwf
+                      slotComp bTy (bunOf q principal.getAppArgs) si
+                  let reals ← toRealIdxs mm pidxs parts
+                  let mut fargs : Array Expr := #[]
+                  for y in *...pidxs.size do
+                    if y == s.pos || s.bound.contains y then continue
+                    fargs := fargs.push reals[y]!
+                  mkLambdaFVars zs (mkAppN comp (fargs ++ #[mkAppN f zs]))
+              else
+                let pf ← BridgeCtx.findPart parts (← b.wfOfPre f fty)
+                vals := vals.push <| ← b.withPreTarget fty fun zs m2 args =>
+                  mkLambdaFVars zs (b.sMk m2 args (mkAppN f zs) (mkAppN pf zs))
+                ihs := ihs.push <| ← b.withPreTarget fty fun zs m2 args => do
+                  if f == selfPreS then
+                    return ← mkLambdaFVars zs (sg.subst.apply self)
+                  let some q := bunAt f | throwError "No recursive call for{indentExpr f}"
+                  let bTy ← bundleType m2 (b.idxArgs args) (mkAppN f zs) (mkAppN pf zs)
+                  mkLambdaFVars zs (bunFst bTy (bunOf q zs))
+          sg.mvarId.assign (mkAppN (sg.subst.apply minors[minorPos cc.name]!) (vals ++ ihs))
+        -- one alternative of the recursion itself
+        let altFor (i : Nat) (c : CtorSpec) : MetaM Expr := do
+          let kinds := b.fieldKinds c.kinds
+          forallTelescope (← instantiateForall c.type ps) fun xs cconcl =>
+            withPreFields b kinds xs fun olds news imgs preTys => do
+              let cIdxs := cconcl.getAppArgs.map (·.replaceFVars olds news)
+              let head := mkAppN (b.cst (b.preOf c.name)) (ps ++ news)
+              withLocalDeclD `w (mkApp (b.wfApp i cIdxs) head) fun wc => do
+                let recPos := recPositions kinds
+                let mut conjs : Array Expr := #[]
+                for k in recPos do
+                  conjs := conjs.push (← b.wfOfPre (imgs[k]!).get! preTys[k]!)
+                for k in *...xs.size do
+                  if kinds[k]! == .erased then conjs := conjs.push preTys[k]!
+                let mut real : Array Expr := #[]
+                let mut nrec := 0
+                let mut nera := 0
+                for k in *...xs.size do
+                  match kinds[k]! with
+                  | .recur mm =>
+                    let y := (imgs[k]!).get!
+                    let pr := projConj conjs wc nrec
+                    real := real.push <| ← b.withPreTarget preTys[k]! fun ys _ args =>
+                      mkLambdaFVars ys (b.sMk mm args (mkAppN y ys) (mkAppN pr ys))
+                    nrec := nrec + 1
+                  | .plain => real := real.push (imgs[k]!).get!
+                  | .erased =>
+                    real := real.push (projConj conjs wc (recPos.size + nera))
+                    nera := nera + 1
+                -- the recursive calls, named before anything else, so that
+                -- structural recursion meets them at the top of the alternative
+                let mut bnames : Array Name := #[]
+                let mut btys : Array Expr := #[]
+                let mut bvals : Array Expr := #[]
+                for q in *...recPos.size do
+                  let k := recPos[q]!
+                  let y := (imgs[k]!).get!
+                  let pr := projConj conjs wc q
+                  bnames := bnames.push (ihName (← xs[k]!.fvarId!.getUserName))
+                  btys := btys.push <| ← b.withPreTarget preTys[k]! fun ys mm args => do
+                    mkForallFVars ys
+                      (← bundleType mm (b.idxArgs args) (mkAppN y ys) (mkAppN pr ys))
+                  bvals := bvals.push <| ← b.withPreTarget preTys[k]! fun ys mm args =>
+                    mkLambdaFVars ys (mkAppN (mkConst (recAuxName mm) (lvl :: b.lvls))
+                      (ps ++ motives ++ minors ++ b.idxArgs args ++
+                        #[mkAppN y ys, mkAppN pr ys]))
+                withLets bnames btys bvals fun buns => do
+                  let mut ihs : Array Expr := #[]
+                  for k in *...xs.size do
+                    match kinds[k]! with
+                    | .plain => pure ()
+                    | .recur _ =>
+                      let q := (recPos.findIdx? (· == k)).getD 0
+                      let y := (imgs[k]!).get!
+                      let pr := projConj conjs wc q
+                      ihs := ihs.push <| ← b.withPreTarget preTys[k]! fun ys mm args => do
+                        let bTy ← bundleType mm (b.idxArgs args) (mkAppN y ys) (mkAppN pr ys)
+                        mkLambdaFVars ys (bunFst bTy (mkAppN buns[q]! ys))
+                    | .erased =>
+                      let ty ← inferType xs[k]!
+                      let r? ← b.withRecTarget? ty fun ys jj rargs => do
+                        let some si := slots.findIdx? (·.j == jj)
+                          | throwError "No slot for `{b.members[jj]!.name}`"
+                        let s := slots[si]!
+                        let ridxs := b.idxArgs rargs
+                        let principal := ridxs[s.pos]!
+                        let some k' := (Array.range xs.size).find? fun z =>
+                            principal.getAppFn == xs[z]!
+                          | throwError "The proof field `{xs[k]!}` of `{c.name}` is not \
+                              about a recursive field"
+                        let some q := recPos.findIdx? (· == k')
+                          | throwError "The proof field `{xs[k]!}` of `{c.name}` is not \
+                              about a recursive field"
+                        let zs := principal.getAppArgs.map (·.replaceFVars olds news)
+                        let pTy ← instantiateForall preTys[k']! zs
+                        let bTy ← b.withPreTarget pTy fun _ mm2 args2 =>
+                          bundleType mm2 (b.idxArgs args2)
+                            (mkAppN (imgs[k']!).get! zs)
+                            (mkAppN (projConj conjs wc q) zs)
+                        let comp ← slotComp bTy (mkAppN buns[q]! zs) si
+                        let mut fargs : Array Expr := #[]
+                        for z in *...ridxs.size do
+                          if z == s.pos || s.bound.contains z then continue
+                          fargs := fargs.push (ridxs[z]!.replaceFVars xs real)
+                        mkLambdaFVars ys (mkAppN comp (fargs ++ #[mkAppN real[k]! ys]))
+                      let some e := r?
+                        | throwError "The proof field `{xs[k]!}` of `{c.name}` is not a \
+                            `Prop` member's type:{indentExpr ty}"
+                      ihs := ihs.push e
+                  let cVal := mkAppN minors[minorPos c.name]! (real ++ ihs)
+                  -- the slots are settled in block order, so a `Prop` member
+                  -- that appears in a later one's constructor is ready by then
+                  let mut props : Array Expr := #[]
+                  let mut selfProps : Array (Option Expr) :=
+                    (List.replicate slots.size none).toArray
+                  for si in slotsAt slots i do
+                    let s := slots[si]!
+                    let target := b.sMk i cIdxs head wc
+                    let sp := selfProps
+                    let pr ←
+                      withSlotIdxs b s (b.idxArgs cIdxs) target head
+                        (← instantiateForall b.members[s.j]!.type ps) 0 #[] #[] #[]
+                        fun free all pres =>
+                          withLocalDeclD `h
+                            (mkAppN (b.cst (preName b.members[s.j]!.name)) (ps ++ pres))
+                            fun h => do
+                              let goal := mkAppN motives[mpos s.j]! (all ++ #[cVal, h])
+                              let mv ← mkFreshExprSyntheticOpaqueMVar goal
+                              for sg in ← mv.mvarId!.cases h.fvarId! do
+                                fillAlt imgs recPos buns wc head cVal sp sg
+                              mkLambdaFVars (free ++ #[h]) (← instantiateMVars mv)
+                    props := props.push pr
+                    selfProps := selfProps.set! si (some pr)
+                  let bTy ← bundleType i (b.idxArgs cIdxs) head wc
+                  let body := mkApp4 (mkConst ``PSigma.mk [lvl, Level.zero])
+                    bTy.appFn!.appArg! bTy.appArg! cVal (← conjIntro props)
+                  mkLambdaFVars (news ++ #[wc]) (← mkLetFVars buns body)
+        -- the recursion, one mutual group over the data pre-types
+        let mut auxs : Array (Expr × Expr) := #[]
+        for i in dIdxs do
+          let m := b.members[i]!
+          auxs := auxs.push <| ← forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
+            withLocalDeclD `t (b.preApp i (ps ++ idxs)) fun t0 =>
+              withLocalDeclD `w (mkApp (b.wfApp i (ps ++ idxs)) t0) fun w => do
+                let bTy ← bundleType i idxs t0 w
+                let recAuxType := implicitPrefix ps.size <| ←
+                  mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[t0, w]) bTy
+                let inner ← mkForallFVars #[w] bTy
+                let elim ← getLevel inner
+                let casesMotive ← mkLambdaFVars (idxs ++ #[t0]) inner
+                let mut alts : Array Expr := #[]
+                for c in m.ctors do
+                  alts := alts.push (← altFor i c)
+                let body := mkApp (mkAppN (mkConst (preName m.name ++ `casesOn) (elim :: b.lvls))
+                  (ps ++ #[casesMotive] ++ idxs ++ #[t0] ++ alts)) w
+                let recAuxValue := implicitPrefix ps.size <|
+                  ← mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t0, w]) body
+                return (recAuxType, recAuxValue)
+        -- `X.rec` for the data members, then for the `Prop` ones
+        let mut recs : Array (Name × Expr × Expr × Bool) := #[]
+        for i in dIdxs do
+          let m := b.members[i]!
+          recs := recs.push <| ← forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
+            withLocalDeclD `t (mkAppN (b.cst m.name) (ps ++ idxs)) fun t => do
+              let ty := implicitPrefix ps.size <| ←
+                mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
+                  (mkAppN motives[mpos i]! (idxs ++ #[t]))
+              let tv := b.sVal i (ps ++ idxs) t
+              let tp := b.sProp i (ps ++ idxs) t
+              let bTy ← bundleType i idxs tv tp
+              let bun := mkAppN (mkConst (recAuxName i) (lvl :: b.lvls))
+                (ps ++ motives ++ minors ++ idxs ++ #[tv, tp])
+              let val := implicitPrefix ps.size <| ←
+                mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t]) (bunFst bTy bun)
+              return (recNameOf i, ty, val, true)
+        for si in *...slots.size do
+          let s := slots[si]!
+          let m := b.members[s.j]!
+          recs := recs.push <| ← forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
+            withLocalDeclD `h (mkAppN (b.cst m.name) (ps ++ idxs)) fun h => do
+              let d := idxs[s.pos]!
+              let some dArgs ← b.withRecTarget? (← inferType d) fun _ _ args =>
+                  pure (b.idxArgs args)
+                | throwError "The index `{d}` of `{m.name}` is not a member's type"
+              let dv := b.sVal s.data (ps ++ dArgs) d
+              let dp := b.sProp s.data (ps ++ dArgs) d
+              let bTy ← bundleType s.data dArgs dv dp
+              let bun := mkAppN (mkConst (recAuxName s.data) (lvl :: b.lvls))
+                (ps ++ motives ++ minors ++ dArgs ++ #[dv, dp])
+              let xih := mkAppN (mkConst (recNameOf s.data) (lvl :: b.lvls))
+                (ps ++ motives ++ minors ++ dArgs ++ #[d])
+              let ty := implicitPrefix ps.size <| ←
+                mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
+                  (mkAppN motives[mpos s.j]! (idxs ++ #[xih, h]))
+              let comp ← slotComp bTy bun si
+              let mut fargs : Array Expr := #[]
+              for z in *...idxs.size do
+                if z == s.pos || s.bound.contains z then continue
+                fargs := fargs.push idxs[z]!
+              let val := implicitPrefix ps.size <| ←
+                mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
+                  (mkAppN comp (fargs ++ #[h]))
+              return (recNameOf s.j, ty, val, false)
+        return (auxs, recs)
+  let (auxs, recs) := out
+  let mut preDefs : Array PreDefinition := #[]
+  for q in *...dIdxs.size do
+    let (recAuxType, recAuxValue) := auxs[q]!
+    preDefs := preDefs.push
+      { ref := .missing, kind := .def, levelParams := lp :: b.us, modifiers := {},
+        declName := recAuxName dIdxs[q]!, binders := .missing, type := recAuxType,
+        value := recAuxValue, termination := TerminationHints.none }
+  let auxNames := dIdxs.map recAuxName
+  if preDefs.any fun d => d.value.getUsedConstants.any (auxNames.contains ·) then
+    Structural.structuralRecursion docCtx preDefs
+      (preDefs.map fun _ => (none : Option TerminationMeasure))
+  else
+    for preDef in preDefs do
+      addAndCompileNonRec docCtx preDef
+  for (n, ty, val, compile) in recs do
+    addDef n (lp :: b.us) (← instantiateMVars ty) (← instantiateMVars val) (compile := compile)
+
 /-! ## Emitting the declarations -/
 
 /--
@@ -2656,6 +3294,22 @@ def emit (p : Plan) : TermElabM Unit := do
   let recName (i : Nat) : Name :=
     let n := b.members[i]!.name ++ `rec
     if (env.find? n).isNone then n else b.members[i]!.name ++ `recursor
+  -- an induction-inductive block wants one recursor over all of its members at
+  -- once, so that a `Prop` motive can mention the value the recursion produced
+  -- at the data member it is indexed by.  It does not always exist, and a block
+  -- with copies in it has a bridge to cross first, so both fall back to the
+  -- split recursors of steps 8 and 9
+  let grand ←
+    if !p.copies.isEmpty || b.propIdxs.isEmpty then pure false
+    else
+      let env ← getEnv
+      try
+        emitGrandRecs b docCtx lp recName
+        pure true
+      catch e =>
+        setEnv env
+        trace[Mumi.indind] "no recursor over the whole block: {e.toMessageData}"
+        pure false
   -- a member the writer declared, in a block with copies in it, gets its
   -- recursor twice over: the kernel-facing one, whose motives are over the
   -- copies, under a hidden name, and `X.rec` stated over the originals.  A copy
@@ -2668,7 +3322,9 @@ def emit (p : Plan) : TermElabM Unit := do
     if dIdxs.size == 1 then `C else Name.mkSimple ("C_" ++ b.members[i]!.name.getString!)
   -- the parameters are shared by every motive, minor and recursive call, so the
   -- whole group is built under one telescope of them
-  let results ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
+  let results ←
+   if grand then pure (#[] : Array (Expr × Expr × Expr × Expr)) else
+    forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
     let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := dIdxs.map fun i =>
       (motiveName i, fun _ => do
         forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ =>
@@ -2779,31 +3435,33 @@ def emit (p : Plan) : TermElabM Unit := do
                 return (recAuxType, recAuxValue, recType, recValue)
           out := out.push r
         return out
-  let mut preDefs : Array PreDefinition := #[]
-  for q in *...dIdxs.size do
-    let (recAuxType, recAuxValue, _, _) := results[q]!
-    preDefs := preDefs.push
-      { ref := .missing, kind := .def, levelParams := lp :: b.us, modifiers := {},
-        declName := recAuxName dIdxs[q]!, binders := .missing, type := recAuxType,
-        value := recAuxValue, termination := TerminationHints.none }
-  -- `structuralRecursion` throws if it cannot see that the definitions
-  -- terminate, which is what we want; but it also throws on a definition that
-  -- does not recurse at all, so those go the direct way
-  let auxNames := dIdxs.map recAuxName
-  if preDefs.any fun d => d.value.getUsedConstants.any (auxNames.contains ·) then
-    Structural.structuralRecursion docCtx preDefs
-      (preDefs.map fun _ => (none : Option TerminationMeasure))
-  else
-    for preDef in preDefs do
-      addAndCompileNonRec docCtx preDef
-  for q in *...dIdxs.size do
-    let (_, _, recType, recValue) := results[q]!
-    addDef (rawRecName dIdxs[q]!) (lp :: b.us) recType recValue
+  unless grand do
+    let mut preDefs : Array PreDefinition := #[]
+    for q in *...dIdxs.size do
+      let (recAuxType, recAuxValue, _, _) := results[q]!
+      preDefs := preDefs.push
+        { ref := .missing, kind := .def, levelParams := lp :: b.us, modifiers := {},
+          declName := recAuxName dIdxs[q]!, binders := .missing, type := recAuxType,
+          value := recAuxValue, termination := TerminationHints.none }
+    -- `structuralRecursion` throws if it cannot see that the definitions
+    -- terminate, which is what we want; but it also throws on a definition that
+    -- does not recurse at all, so those go the direct way
+    let auxNames := dIdxs.map recAuxName
+    if preDefs.any fun d => d.value.getUsedConstants.any (auxNames.contains ·) then
+      Structural.structuralRecursion docCtx preDefs
+        (preDefs.map fun _ => (none : Option TerminationMeasure))
+    else
+      for preDef in preDefs do
+        addAndCompileNonRec docCtx preDef
+    for q in *...dIdxs.size do
+      let (_, _, recType, recValue) := results[q]!
+      addDef (rawRecName dIdxs[q]!) (lp :: b.us) recType recValue
 
   -- 9. `X.rec` for the `Prop` members, out of the pre-block's own recursor.  A
   -- copy is not a name anyone reaches for, and the type it copies has a real
   -- recursor of Lean's own already, so a block with `Prop` copies is left alone
-  unless b.propIdxs.isEmpty || b.propIdxs.any (copyNames.contains b.members[·]!.name) do
+  unless grand || b.propIdxs.isEmpty ||
+      b.propIdxs.any (copyNames.contains b.members[·]!.name) do
     let env ← getEnv
     try
       forallBoundedTelescope b.members[0]!.type b.numParams fun ps _ =>

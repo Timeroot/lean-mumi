@@ -9,8 +9,12 @@ block in this file outright -- a member's arity names a constant that is not yet
 in scope -- so there is nothing here whose behaviour could have changed.
 
 The point of each test is that the *visible* declarations are the ones written,
-that both iota rules hold by `rfl`, that the result computes, and that no axiom
-is added.
+that both iota rules hold by `rfl`, and that the result computes.
+
+An unindexed block adds no axiom.  An indexed one adds `propext`: building the
+recursor inverts a proof of an indexed proposition, and Lean's `cases` unifies
+the indices through the `injEq` lemmas, which are proved by `propext`.  It is
+in the recursor, not in anything the recursor is used for.
 -/
 
 /-! ## The motivating block
@@ -56,25 +60,84 @@ info: Fresh.snoc : ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ), x ≠ y → F
 #check @Fresh.snoc
 
 /--
-info: @Ctx.rec : {C : Ctx → Sort u_1} →
-  C Ctx.nil → ((Γ : Ctx) → (x : String) → (a : Fresh x Γ) → C Γ → C (Γ.snoc x a)) → (t : Ctx) → C t
+info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
+  {motive_2 : (a : String) → (a_1 : Ctx) → motive_1 a_1 → Fresh a a_1 → Prop} →
+    (nil : motive_1 Ctx.nil) →
+      (snoc :
+          (Γ : Ctx) →
+            (x : String) → (a : Fresh x Γ) → (Γ_ih : motive_1 Γ) → motive_2 x Γ Γ_ih a → motive_1 (Γ.snoc x a)) →
+        (∀ (x : String), motive_2 x Ctx.nil nil ⋯) →
+          (∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (a : x ≠ y) (a_1 : Fresh x Γ) (Γ_ih : motive_1 Γ)
+              (h_ih : motive_2 y Γ Γ_ih h), motive_2 x Γ Γ_ih a_1 → motive_2 x (Γ.snoc y h) (snoc Γ y h Γ_ih h_ih) ⋯) →
+            (t : Ctx) → motive_1 t
 -/
 #guard_msgs in
 #check @Ctx.rec
 
+/-! ### One recursion over the whole block
+
+`Fresh`'s motive takes the value `Ctx`'s motive produced at the context it is
+about, and `Ctx.snoc`'s minor gets an induction hypothesis for the proof it
+carries.  The two members share their motives and minors, and differ only in
+what they are eliminating -- which is what Lean's own recursors for a `mutual`
+block do, and is what lets a proof by `Fresh.rec` say something about a function
+defined by `Ctx.rec`.
+-/
+
+/--
+info: @Fresh.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : String) → (a_1 : Ctx) → motive_1 a_1 → Fresh a a_1 → Prop}
+  (nil : motive_1 Ctx.nil)
+  (snoc :
+    (Γ : Ctx) → (x : String) → (a : Fresh x Γ) → (Γ_ih : motive_1 Γ) → motive_2 x Γ Γ_ih a → motive_1 (Γ.snoc x a))
+  (nil_1 : ∀ (x : String), motive_2 x Ctx.nil nil ⋯)
+  (snoc_1 :
+    ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (a : x ≠ y) (a_1 : Fresh x Γ) (Γ_ih : motive_1 Γ)
+      (h_ih : motive_2 y Γ Γ_ih h), motive_2 x Γ Γ_ih a_1 → motive_2 x (Γ.snoc y h) (snoc Γ y h Γ_ih h_ih) ⋯)
+  (a : String) (a_1 : Ctx) (h : Fresh a a_1), motive_2 a a_1 (Ctx.rec nil snoc nil_1 snoc_1 a_1) h
+-/
+#guard_msgs in
+#check @Fresh.rec
+
 /-! ### The recursor computes, and both iota rules are definitional -/
 
+/-- The names in a context, and the proof that a fresh name is not among them. -/
+def Ctx.names : Ctx → List String :=
+  Ctx.rec (motive_1 := fun _ => List String) (motive_2 := fun x _ ns _ => x ∉ ns)
+    [] (fun _ x _ ih _ => x :: ih)
+    (fun _ => by simp)
+    (fun _ _ _ _ hne _ _ _ ih => by simp only [List.mem_cons, not_or]; exact ⟨hne, ih⟩)
+
+theorem Fresh.not_mem {x : String} {Γ : Ctx} (h : Fresh x Γ) : x ∉ Γ.names :=
+  Fresh.rec (motive_1 := fun _ => List String) (motive_2 := fun x _ ns _ => x ∉ ns)
+    [] (fun _ x _ ih _ => x :: ih)
+    (fun _ => by simp)
+    (fun _ _ _ _ hne _ _ _ ih => by simp only [List.mem_cons, not_or]; exact ⟨hne, ih⟩)
+    x Γ h
+
+/-- A motive for `Fresh` no one cares about, for a recursion that only computes. -/
+abbrev Ctx.trivialMotive {C : Ctx → Sort u} : (x : String) → (Γ : Ctx) → C Γ → Fresh x Γ → Prop :=
+  fun _ _ _ _ => True
+
 def Ctx.length (Γ : Ctx) : Nat :=
-  Ctx.rec (C := fun _ => Nat) 0 (fun _ _ _ ih => ih + 1) Γ
+  Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := Ctx.trivialMotive)
+    0 (fun _ _ _ ih _ => ih + 1)
+    (fun _ => trivial) (fun _ _ _ _ _ _ _ _ _ => trivial) Γ
 
-example {C : Ctx → Sort u} (n : C .nil)
-    (s : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → C Γ → C (.snoc Γ x h)) :
-    Ctx.rec n s .nil = n := rfl
+section
+variable {C : Ctx → Sort u} {D : (x : String) → (Γ : Ctx) → C Γ → Fresh x Γ → Prop}
+  (n : C .nil)
+  (s : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → (ih : C Γ) → D x Γ ih h → C (.snoc Γ x h))
+  (dn : ∀ x, D x .nil n (.nil x))
+  (ds : ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (hne : x ≠ y) (h' : Fresh x Γ) (ih : C Γ)
+    (hih : D y Γ ih h), D x Γ ih h' → D x (.snoc Γ y h) (s Γ y h ih hih) (.snoc x y Γ h hne h'))
 
-example {C : Ctx → Sort u} (n : C .nil)
-    (s : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → C Γ → C (.snoc Γ x h))
-    (Γ : Ctx) (x : String) (h : Fresh x Γ) :
-    Ctx.rec n s (.snoc Γ x h) = s Γ x h (Ctx.rec n s Γ) := rfl
+example : Ctx.rec (motive_1 := C) (motive_2 := D) n s dn ds .nil = n := rfl
+
+example (Γ : Ctx) (x : String) (h : Fresh x Γ) :
+    Ctx.rec (motive_1 := C) (motive_2 := D) n s dn ds (.snoc Γ x h)
+      = s Γ x h (Ctx.rec (motive_1 := C) (motive_2 := D) n s dn ds Γ)
+          (Fresh.rec (motive_1 := C) (motive_2 := D) n s dn ds x Γ h) := rfl
+end
 
 /-- A closed term, built through the `Fresh` obligations. -/
 def ex : Ctx :=
@@ -103,25 +166,28 @@ example : ex.length = 2 := rfl
 
 The constructors are `def`s, so `match` and a bare `cases` do not see them.  The
 recursor's minor premises are named after the constructors, so `induction using`
-reads the way it would for a real inductive.
+reads the way it would for a real inductive; a name two members share is
+numbered, again as it would be for a Lean `mutual`.  The motives the goal does
+not fix have to be given, since one recursor serves the whole block.
 
-A `Prop` member has one too, and it is indexed, so its indices are listed as
-targets just as they would be for a stock indexed family.
+The `Prop` members' recursors are for term mode, not for `induction using`:
+`getElimInfo` reads the motive's arguments up to the first that is not a local,
+and a predicate motive's third argument is the *value* the data motive produced,
+which never is one.  `Fresh.not_mem` above is the term-mode form.
 -/
 
 example (Γ : Ctx) : 0 ≤ Γ.length := by
-  induction Γ using Ctx.rec with
+  induction Γ using Ctx.rec (motive_2 := Ctx.trivialMotive) with
   | nil => simp [Ctx.length]
-  | snoc Γ x h ih => simp
-
-example (x : String) (Γ : Ctx) (h : Fresh x Γ) : 0 ≤ Γ.length := by
-  induction x, Γ, h using Fresh.rec with
-  | nil x => simp [Ctx.length]
-  | snoc x y Γ h hne h' ih ih' => simp
+  | snoc Γ x h ih ih' => simp
+  | nil_1 => trivial
+  | snoc_1 => intros; trivial
 
 /-! ## Several `Prop` members
 
-Any number of propositions may hang off one data member.
+Any number of propositions may hang off one data member; each gets a motive of
+its own, and a data constructor's minor premise gets one induction hypothesis
+per erased field.
 -/
 
 mutual
@@ -149,9 +215,38 @@ end
 #guard_msgs in
 #check @Closed.lam
 
+/--
+info: @Tm.rec : {motive_1 : Tm → Sort u_1} →
+  {motive_2 : (a : Tm) → motive_1 a → Ok a → Prop} →
+    {motive_3 : (a : Tm) → motive_1 a → Closed a → Prop} →
+      (var : (a : Nat) → motive_1 (Tm.var a)) →
+        ((f a : Tm) →
+            (a_1 : Ok f) →
+              (a_2 : Ok a) →
+                (f_ih : motive_1 f) →
+                  (a_ih : motive_1 a) → motive_2 f f_ih a_1 → motive_2 a a_ih a_2 → motive_1 (f.app a a_1 a_2)) →
+          (lam : (b : Tm) → (a : Closed b) → (b_ih : motive_1 b) → motive_3 b b_ih a → motive_1 (b.lam a)) →
+            (∀ (n : Nat), motive_2 (Tm.var n) (var n) ⋯) →
+              (∀ (b : Tm) (h : Closed b) (b_ih : motive_1 b) (h_ih : motive_3 b b_ih h),
+                  motive_2 (b.lam h) (lam b h b_ih h_ih) ⋯) →
+                (∀ (n : Nat), motive_3 (Tm.var n) (var n) ⋯) →
+                  (∀ (b : Tm) (h : Closed b) (b_ih : motive_1 b) (h_ih : motive_3 b b_ih h),
+                      motive_3 (b.lam h) (lam b h b_ih h_ih) ⋯) →
+                    (t : Tm) → motive_1 t
+-/
+#guard_msgs in
+#check @Tm.rec
+
+/-- A recursion that only computes still has to say what the propositions mean. -/
+abbrev Tm.trivialOk {C : Tm → Sort u} : (t : Tm) → C t → Ok t → Prop := fun _ _ _ => True
+
+abbrev Tm.trivialClosed {C : Tm → Sort u} : (t : Tm) → C t → Closed t → Prop := fun _ _ _ => True
+
 def Tm.size (t : Tm) : Nat :=
-  Tm.rec (C := fun _ => Nat) (fun _ => 1) (fun _ _ _ _ i j => i + j + 1)
-    (fun _ _ i => i + 1) t
+  Tm.rec (motive_1 := fun _ => Nat) (motive_2 := Tm.trivialOk) (motive_3 := Tm.trivialClosed)
+    (fun _ => 1) (fun _ _ _ _ i j _ _ => i + j + 1) (fun _ _ i _ => i + 1)
+    (fun _ => trivial) (fun _ _ _ _ => trivial)
+    (fun _ => trivial) (fun _ _ _ _ => trivial) t
 
 example : Tm.size (.var 3) = 1 := rfl
 
@@ -180,8 +275,21 @@ end
 #guard_msgs in
 #check @Vec3.cons
 
+-- the motives come in block order, so `Ok3`'s is second even though `Ok3` is
+-- written first: a predicate's motive has to follow the data motive it mentions
+/--
+info: @Vec3.rec : {motive_1 : Vec3 → Sort u_1} →
+  {motive_2 : (a : Vec3) → motive_1 a → Ok3 a → Prop} →
+    (nil : motive_1 Vec3.nil) →
+      ((v : Vec3) → (a : Ok3 v) → (v_ih : motive_1 v) → motive_2 v v_ih a → motive_1 (v.cons a)) →
+        motive_2 Vec3.nil nil Ok3.nil → (t : Vec3) → motive_1 t
+-/
+#guard_msgs in
+#check @Vec3.rec
+
 def Vec3.size (v : Vec3) : Nat :=
-  Vec3.rec (C := fun _ => Nat) 0 (fun _ _ ih => ih + 1) v
+  Vec3.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => True)
+    0 (fun _ _ ih _ => ih + 1) trivial v
 
 /-- info: 1 -/
 #guard_msgs in
@@ -217,16 +325,33 @@ info: IFresh.cons : ∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v),
 #check @IFresh.cons
 
 /--
-info: @IVec.rec : {C : (a : Nat) → IVec a → Sort u_1} →
-  C 0 IVec.nil →
-    ((n : Nat) → (v : IVec n) → (x : Nat) → (a : IFresh x n v) → C n v → C (n + 1) (IVec.cons n v x a)) →
-      (a : Nat) → (t : IVec a) → C a t
+info: @IVec.rec : {motive_1 : (a : Nat) → IVec a → Sort u_1} →
+  {motive_2 : (a n : Nat) → (a_1 : IVec n) → motive_1 n a_1 → IFresh a n a_1 → Prop} →
+    (nil : motive_1 0 IVec.nil) →
+      (cons :
+          (n : Nat) →
+            (v : IVec n) →
+              (x : Nat) →
+                (a : IFresh x n v) →
+                  (v_ih : motive_1 n v) → motive_2 x n v v_ih a → motive_1 (n + 1) (IVec.cons n v x a)) →
+        (∀ (x : Nat), motive_2 x 0 IVec.nil nil ⋯) →
+          (∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v) (a : x ≠ y) (a_1 : IFresh x n v) (v_ih : motive_1 n v)
+              (h_ih : motive_2 y n v v_ih h),
+              motive_2 x n v v_ih a_1 → motive_2 x (n + 1) (IVec.cons n v y h) (cons n v y h v_ih h_ih) ⋯) →
+            (a : Nat) → (t : IVec a) → motive_1 a t
 -/
 #guard_msgs in
 #check @IVec.rec
 
+/-- `IFresh`'s own index `x` leads the list, then `IVec`'s. -/
+abbrev IVec.trivialFresh {C : (n : Nat) → IVec n → Sort u} :
+    (x n : Nat) → (v : IVec n) → C n v → IFresh x n v → Prop :=
+  fun _ _ _ _ _ => True
+
 def IVec.sum : (n : Nat) → IVec n → Nat :=
-  fun n v => IVec.rec (C := fun _ _ => Nat) 0 (fun _ _ x _ ih => ih + x) n v
+  fun n v => IVec.rec (motive_1 := fun _ _ => Nat) (motive_2 := IVec.trivialFresh)
+    0 (fun _ _ x _ ih _ => ih + x)
+    (fun _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ => trivial) n v
 
 def exVec : IVec 1 := .cons 0 .nil 5 (.nil 5)
 
@@ -236,26 +361,52 @@ def exVec : IVec 1 := .cons 0 .nil 5 (.nil 5)
 
 example : IVec.sum 1 exVec = 5 := rfl
 
-example {C : (n : Nat) → IVec n → Sort u} (nil : C 0 .nil)
-    (cons : (n : Nat) → (v : IVec n) → (x : Nat) → (h : IFresh x n v) → C n v →
-      C (n + 1) (.cons n v x h)) (n : Nat) (v : IVec n) (x : Nat) (h : IFresh x n v) :
-    IVec.rec nil cons (n + 1) (.cons n v x h)
-      = cons n v x h (IVec.rec nil cons n v) := rfl
+section
+variable {C : (n : Nat) → IVec n → Sort u}
+  {D : (x n : Nat) → (v : IVec n) → C n v → IFresh x n v → Prop}
+  (nil : C 0 .nil)
+  (cons : (n : Nat) → (v : IVec n) → (x : Nat) → (h : IFresh x n v) → (ih : C n v) →
+    D x n v ih h → C (n + 1) (.cons n v x h))
+  (dnil : ∀ x, D x 0 .nil nil (.nil x))
+  (dcons : ∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v) (hne : x ≠ y) (h' : IFresh x n v)
+    (ih : C n v) (hih : D y n v ih h), D x n v ih h' →
+    D x (n + 1) (.cons n v y h) (cons n v y h ih hih) (.cons x y n v h hne h'))
 
-/-- info: 'IVec.sum' does not depend on any axioms -/
+example (n : Nat) (v : IVec n) (x : Nat) (h : IFresh x n v) :
+    IVec.rec nil cons dnil dcons (n + 1) (.cons n v x h)
+      = cons n v x h (IVec.rec nil cons dnil dcons n v)
+          (IFresh.rec nil cons dnil dcons x n v h) := rfl
+end
+
+-- indexed, so the recursor carries `propext` and everything built from it does too
+/-- info: 'IVec.rec' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms IVec.rec
+
+/-- info: 'IVec.sum' depends on axioms: [propext] -/
 #guard_msgs in
 #print axioms IVec.sum
 
 -- the indices are generalised along with the major premise
 example (n : Nat) (v : IVec n) : 0 ≤ IVec.sum n v := by
-  induction n, v using IVec.rec with
-  | nil => simp [IVec.sum]
-  | cons n v x h ih => simp
+  induction n, v using IVec.rec (motive_2 := IVec.trivialFresh) with
+  | nil => exact Nat.zero_le _
+  | cons n v x h ih ihh => exact Nat.zero_le _
+  | nil_1 => intros; trivial
+  | cons_1 => intros; trivial
 
 /-! ## Several data members
 
 The data members become one mutual pre-block, so each of their recursors takes
 one motive per data member and one minor premise per constructor of any of them.
+
+`Wf` is indexed by *two* data members, and a predicate's motive is carried in
+the recursion on the one data member it is indexed by -- there is no one member
+to hang this on.  So this block keeps the split recursors: a data recursor with
+no predicate motives, and a `Prop` recursor of its own.  `set_option
+trace.Mumi.indind true` says so while the block elaborates.  The consolation is
+that `Wf.rec` is then free to eliminate into `Sort u`, which a joint recursor
+could not offer.
 -/
 
 mutual
@@ -316,6 +467,9 @@ example : exCtx2.length = 1 := rfl
 /-! ## Infinitary recursive fields
 
 `Nat → Tree` recurses under a binder, and the induction hypothesis follows it.
+
+`Good`'s index is `Nat → Tree`, not a `Tree`, so again there is no data member
+to carry its motive and the block keeps the split recursors.
 -/
 
 mutual
@@ -352,6 +506,9 @@ example : Tree.depthAt (.node (fun _ => .leaf) .leaf) 3 = 1 := rfl
 The parameters lead every arity, every constructor and the recursor, and are
 implicit on the last two.  The universe parameters are shared by the whole
 block, as they are for a Lean `mutual`.
+
+`OkB` is indexed by both `Bag` and `Tag2`, so this is a third block on the
+split recursors.
 -/
 
 mutual
@@ -523,47 +680,91 @@ end
 #check @WFTreeNested.mk
 
 /--
-info: @TreeNested.rec : {C_TreeNested : TreeNested → Sort u_1} →
-  {C_WFTreeNested : WFTreeNested → Sort u_1} →
-    {C_RecWFTree : RecWFTree → Sort u_1} →
-      C_TreeNested TreeNested.empty →
-        ((key : Nat) →
-            (value : RecWFTree) →
-              (l r : TreeNested) →
-                C_RecWFTree value → C_TreeNested l → C_TreeNested r → C_TreeNested (TreeNested.node key value l r)) →
-          ((x : TreeNested) → (h : x.WF) → C_TreeNested x → C_WFTreeNested (WFTreeNested.mk x h)) →
-            ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) → (t : TreeNested) → C_TreeNested t
+info: @TreeNested.rec : {motive_1 : TreeNested → Sort u_1} →
+  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop} →
+    {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} →
+      {motive_4 : WFTreeNested → Sort u_1} →
+        {motive_5 : RecWFTree → Sort u_1} →
+          (empty : motive_1 TreeNested.empty) →
+            (node :
+                (key : Nat) →
+                  (value : RecWFTree) →
+                    (l r : TreeNested) →
+                      motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r)) →
+              motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty →
+                (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+                    (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key)
+                    (hr' : ∀ (a : Nat), a ∈ rlist → key < a) (value_ih : motive_5 value) (l_ih : motive_1 l)
+                    (r_ih : motive_1 r),
+                    motive_2 l llist l_ih hl →
+                      motive_2 r rlist r_ih hr →
+                        motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist)
+                          (node key value l r value_ih l_ih r_ih) ⋯) →
+                  (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
+                      motive_2 t l t_ih h → motive_3 t t_ih ⋯) →
+                    ((x : TreeNested) →
+                        (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h)) →
+                      ((x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) → (t : TreeNested) → motive_1 t
 -/
 #guard_msgs in
 #check @TreeNested.rec
 
 /--
-info: @WFTreeNested.rec : {C_TreeNested : TreeNested → Sort u_1} →
-  {C_WFTreeNested : WFTreeNested → Sort u_1} →
-    {C_RecWFTree : RecWFTree → Sort u_1} →
-      C_TreeNested TreeNested.empty →
-        ((key : Nat) →
-            (value : RecWFTree) →
-              (l r : TreeNested) →
-                C_RecWFTree value → C_TreeNested l → C_TreeNested r → C_TreeNested (TreeNested.node key value l r)) →
-          ((x : TreeNested) → (h : x.WF) → C_TreeNested x → C_WFTreeNested (WFTreeNested.mk x h)) →
-            ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) →
-              (t : WFTreeNested) → C_WFTreeNested t
+info: @WFTreeNested.rec : {motive_1 : TreeNested → Sort u_1} →
+  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop} →
+    {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} →
+      {motive_4 : WFTreeNested → Sort u_1} →
+        {motive_5 : RecWFTree → Sort u_1} →
+          (empty : motive_1 TreeNested.empty) →
+            (node :
+                (key : Nat) →
+                  (value : RecWFTree) →
+                    (l r : TreeNested) →
+                      motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r)) →
+              motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty →
+                (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+                    (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key)
+                    (hr' : ∀ (a : Nat), a ∈ rlist → key < a) (value_ih : motive_5 value) (l_ih : motive_1 l)
+                    (r_ih : motive_1 r),
+                    motive_2 l llist l_ih hl →
+                      motive_2 r rlist r_ih hr →
+                        motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist)
+                          (node key value l r value_ih l_ih r_ih) ⋯) →
+                  (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
+                      motive_2 t l t_ih h → motive_3 t t_ih ⋯) →
+                    ((x : TreeNested) →
+                        (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h)) →
+                      ((x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) → (t : WFTreeNested) → motive_4 t
 -/
 #guard_msgs in
 #check @WFTreeNested.rec
 
 /--
-info: @RecWFTree.rec : {C_TreeNested : TreeNested → Sort u_1} →
-  {C_WFTreeNested : WFTreeNested → Sort u_1} →
-    {C_RecWFTree : RecWFTree → Sort u_1} →
-      C_TreeNested TreeNested.empty →
-        ((key : Nat) →
-            (value : RecWFTree) →
-              (l r : TreeNested) →
-                C_RecWFTree value → C_TreeNested l → C_TreeNested r → C_TreeNested (TreeNested.node key value l r)) →
-          ((x : TreeNested) → (h : x.WF) → C_TreeNested x → C_WFTreeNested (WFTreeNested.mk x h)) →
-            ((x : WFTreeNested) → C_WFTreeNested x → C_RecWFTree (RecWFTree.mk x)) → (t : RecWFTree) → C_RecWFTree t
+info: @RecWFTree.rec : {motive_1 : TreeNested → Sort u_1} →
+  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop} →
+    {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} →
+      {motive_4 : WFTreeNested → Sort u_1} →
+        {motive_5 : RecWFTree → Sort u_1} →
+          (empty : motive_1 TreeNested.empty) →
+            (node :
+                (key : Nat) →
+                  (value : RecWFTree) →
+                    (l r : TreeNested) →
+                      motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r)) →
+              motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty →
+                (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+                    (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key)
+                    (hr' : ∀ (a : Nat), a ∈ rlist → key < a) (value_ih : motive_5 value) (l_ih : motive_1 l)
+                    (r_ih : motive_1 r),
+                    motive_2 l llist l_ih hl →
+                      motive_2 r rlist r_ih hr →
+                        motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist)
+                          (node key value l r value_ih l_ih r_ih) ⋯) →
+                  (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
+                      motive_2 t l t_ih h → motive_3 t t_ih ⋯) →
+                    ((x : TreeNested) →
+                        (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h)) →
+                      ((x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) → (t : RecWFTree) → motive_5 t
 -/
 #guard_msgs in
 #check @RecWFTree.rec
@@ -571,34 +772,58 @@ info: @RecWFTree.rec : {C_TreeNested : TreeNested → Sort u_1} →
 -- the minors of a `Prop` recursor conclude at a constructor application, which
 -- is what this test is about; without `pp.proofs` they all print as `⋯`
 /--
-info: @TreeNested.WFWith.rec : ∀ {C_WFWith : (a : TreeNested) → (a_1 : List Nat) → a.WFWith a_1 → Prop}
-  {C_WF : (a : TreeNested) → a.WF → Prop},
-  C_WFWith TreeNested.empty [] TreeNested.WFWith.empty →
-    (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
-        (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a),
-        C_WFWith l llist hl →
-          C_WFWith r rlist hr →
-            C_WFWith (TreeNested.node key value l r) (llist ++ key :: rlist)
-              (TreeNested.WFWith.node key value l r hl hr hl' hr')) →
-      (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l), C_WFWith t l h → C_WF t (TreeNested.WF.intro l t h)) →
-        ∀ (a : TreeNested) (a_1 : List Nat) (h : a.WFWith a_1), C_WFWith a a_1 h
+info: @TreeNested.WFWith.rec : ∀ {motive_1 : TreeNested → Sort u_1}
+  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop}
+  {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} {motive_4 : WFTreeNested → Sort u_1}
+  {motive_5 : RecWFTree → Sort u_1} (empty : motive_1 TreeNested.empty)
+  (node :
+    (key : Nat) →
+      (value : RecWFTree) →
+        (l r : TreeNested) → motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r))
+  (empty_1 : motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty)
+  (node_1 :
+    ∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+      (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a)
+      (value_ih : motive_5 value) (l_ih : motive_1 l) (r_ih : motive_1 r),
+      motive_2 l llist l_ih hl →
+        motive_2 r rlist r_ih hr →
+          motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist) (node key value l r value_ih l_ih r_ih)
+            (TreeNested.WFWith.node key value l r hl hr hl' hr'))
+  (intro :
+    ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
+      motive_2 t l t_ih h → motive_3 t t_ih (TreeNested.WF.intro l t h))
+  (mk : (x : TreeNested) → (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h))
+  (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) (a : TreeNested) (a_1 : List Nat)
+  (h : a.WFWith a_1), motive_2 a a_1 (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) h
 -/
 #guard_msgs in
 set_option pp.proofs true in
 #check @TreeNested.WFWith.rec
 
 /--
-info: @TreeNested.WF.rec : ∀ {C_WFWith : (a : TreeNested) → (a_1 : List Nat) → a.WFWith a_1 → Prop}
-  {C_WF : (a : TreeNested) → a.WF → Prop},
-  C_WFWith TreeNested.empty [] TreeNested.WFWith.empty →
-    (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
-        (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a),
-        C_WFWith l llist hl →
-          C_WFWith r rlist hr →
-            C_WFWith (TreeNested.node key value l r) (llist ++ key :: rlist)
-              (TreeNested.WFWith.node key value l r hl hr hl' hr')) →
-      (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l), C_WFWith t l h → C_WF t (TreeNested.WF.intro l t h)) →
-        ∀ (a : TreeNested) (h : a.WF), C_WF a h
+info: @TreeNested.WF.rec : ∀ {motive_1 : TreeNested → Sort u_1}
+  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop}
+  {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} {motive_4 : WFTreeNested → Sort u_1}
+  {motive_5 : RecWFTree → Sort u_1} (empty : motive_1 TreeNested.empty)
+  (node :
+    (key : Nat) →
+      (value : RecWFTree) →
+        (l r : TreeNested) → motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r))
+  (empty_1 : motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty)
+  (node_1 :
+    ∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
+      (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a)
+      (value_ih : motive_5 value) (l_ih : motive_1 l) (r_ih : motive_1 r),
+      motive_2 l llist l_ih hl →
+        motive_2 r rlist r_ih hr →
+          motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist) (node key value l r value_ih l_ih r_ih)
+            (TreeNested.WFWith.node key value l r hl hr hl' hr'))
+  (intro :
+    ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
+      motive_2 t l t_ih h → motive_3 t t_ih (TreeNested.WF.intro l t h))
+  (mk : (x : TreeNested) → (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h))
+  (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) (a : TreeNested) (h : a.WF),
+  motive_3 a (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) h
 -/
 #guard_msgs in
 set_option pp.proofs true in
@@ -617,21 +842,83 @@ theorem oneWF : TreeNested.WF one := .intro _ _ oneWFWith
 
 def oneR : RecWFTree := .mk (.mk one oneWF)
 
+/-! ### A predicate motive that says something about the computed value
+
+The block is elaborated once, so `TreeNested.size` and the theorem below are two
+projections of a *single* recursion: they name the same seven minor premises
+under the same five motives.  `M2` is where the point is -- it is a statement
+about the `Nat` that `M1`'s minors produced, so proving it is proving something
+about `TreeNested.size` while `TreeNested.size` is being defined.
+
+Two recursions with *different* motive sets are not defeq, exactly as for Lean's
+own mutual recursors; that is the price of one recursor for the whole block.
+-/
+
+abbrev M1 : TreeNested → Type := fun _ => Nat
+abbrev M4 : WFTreeNested → Type := fun _ => Nat
+abbrev M5 : RecWFTree → Type := fun _ => Nat
+abbrev M2 : (x : TreeNested) → (l : List Nat) → M1 x → x.WFWith l → Prop :=
+  fun _ l n _ => l.length ≤ n
+abbrev M3 : (x : TreeNested) → M1 x → x.WF → Prop := fun _ _ _ => True
+
+def sEmpty : M1 .empty := 0
+
+def sNode : (key : Nat) → (value : RecWFTree) → (l r : TreeNested) →
+    M5 value → M1 l → M1 r → M1 (.node key value l r) :=
+  fun _ _ _ _ v l r => v + l + r + 1
+
+theorem sEmptyW : M2 .empty [] sEmpty .empty := by simp [sEmpty]
+
+theorem sNodeW : ∀ {ll rl : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested)
+    (hl : l.WFWith ll) (hr : r.WFWith rl) (hl' : ∀ a ∈ ll, a < key) (hr' : ∀ a ∈ rl, key < a)
+    (vih : M5 value) (lih : M1 l) (rih : M1 r), M2 l ll lih hl → M2 r rl rih hr →
+      M2 (.node key value l r) (ll ++ key :: rl) (sNode key value l r vih lih rih)
+      (TreeNested.WFWith.node key value l r hl hr hl' hr') := by
+  intro ll rl k v l r hl hr _ _ vih lih rih ihl ihr
+  simp only [M2, sNode, List.length_append, List.length_cons] at *
+  omega
+
+theorem sIntro : ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : M1 t),
+    M2 t l t_ih h → M3 t t_ih (.intro l t h) := fun _ _ _ _ _ => trivial
+
+def sMk : (x : TreeNested) → (h : x.WF) → (x_ih : M1 x) → M3 x x_ih h → M4 (.mk x h) :=
+  fun _ _ n _ => n
+
+def sMk2 : (x : WFTreeNested) → M4 x → M5 (.mk x) := fun _ n => n
+
 def TreeNested.size : TreeNested → Nat :=
-  TreeNested.rec (C_TreeNested := fun _ => Nat) (C_WFTreeNested := fun _ => Nat)
-    (C_RecWFTree := fun _ => Nat)
-    0 (fun _ _ _ _ v l r => v + l + r + 1) (fun _ _ n => n) (fun _ n => n)
+  TreeNested.rec (motive_1 := M1) (motive_2 := M2) (motive_3 := M3) (motive_4 := M4)
+    (motive_5 := M5) sEmpty sNode sEmptyW sNodeW sIntro sMk sMk2
+
+def RecWFTree.size : RecWFTree → Nat :=
+  RecWFTree.rec (motive_1 := M1) (motive_2 := M2) (motive_3 := M3) (motive_4 := M4)
+    (motive_5 := M5) sEmpty sNode sEmptyW sNodeW sIntro sMk sMk2
 
 example : TreeNested.size .empty = 0 := rfl
 example : TreeNested.size one = 1 := rfl
+
+-- the iota rule crosses members: `value` is a `RecWFTree`, three members away
+example (k : Nat) (v : RecWFTree) (l r : TreeNested) :
+    TreeNested.size (.node k v l r)
+      = RecWFTree.size v + TreeNested.size l + TreeNested.size r + 1 := rfl
 
 /-- info: 3 -/
 #guard_msgs in
 #eval TreeNested.size (.node 1 oneR one .empty)
 
-/-- info: 'TreeNested.size' does not depend on any axioms -/
+-- `propext` from the indexed recursor, `Quot.sound` from `sNodeW`'s `omega`
+/-- info: 'TreeNested.size' depends on axioms: [propext, Quot.sound] -/
 #guard_msgs in
 #print axioms TreeNested.size
+
+/-- The predicate recursor, at a motive that mentions the data recursor's value. -/
+theorem wfwith_le (t : TreeNested) (l : List Nat) (h : t.WFWith l) : l.length ≤ t.size :=
+  TreeNested.WFWith.rec (motive_1 := M1) (motive_2 := M2) (motive_3 := M3) (motive_4 := M4)
+    (motive_5 := M5) sEmpty sNode sEmptyW sNodeW sIntro sMk sMk2 t l h
+
+/-- info: 'wfwith_le' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms wfwith_le
 
 /-- info: 'leafWF' does not depend on any axioms -/
 #guard_msgs in
