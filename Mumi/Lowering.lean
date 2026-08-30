@@ -13,6 +13,7 @@ import Lean.Meta.IndPredBelow
 import Lean.Meta.Injective
 public import Lean.Elab.PreDefinition.Structural
 import Lean.Compiler.CSimpAttr
+import Lean.Elab.App
 
 public section
 
@@ -95,6 +96,10 @@ implementations below.
 namespace Lean.Elab.MultiuniverseInductive
 
 open Lean Meta
+
+/-- Parent of every trace class this library registers, so that
+`set_option trace.Mumi true` turns all of them on at once. -/
+initialize registerTraceClass `Mumi
 
 /-! ## Auxiliary names -/
 
@@ -291,6 +296,36 @@ def addDef (name : Name) (levelParams : List Name) (type value : Expr)
   addDecl decl
   if compile then
     compileDecl decl (logErrors := false)
+
+/--
+Tag a recursor `@[elab_as_elim]`, as Lean's own recursors are.  Without it an
+application is elaborated left to right and the motive is whatever unification
+happens to pin down from the expected type; with it the motive is generalised
+from the expected type over the major premises first, so that
+`Ctx.rec .. Γ : C Γ` elaborates its minors at the general statement rather than
+at the one instance the goal mentions.
+
+Two things have to hold first.  Every argument the conclusion applies the motive
+to must be a local, because those are the targets the expected type gets
+abstracted over; a predicate motive of an induction-inductive block takes the
+*value* the data motive computed, which is not one, and tagging it would turn
+applications that elaborate today into "invalid motive".  And
+`getElabElimInfo` -- the check the attribute itself runs -- has to accept it.
+
+A recursor that fails either keeps working and merely elaborates left to right,
+which is a better outcome than refusing the block; `trace.Mumi` says which.
+-/
+def markElabAsElim (n : Name) : MetaM Unit := do
+  let simple ← forallTelescopeReducing (← getConstInfo n).type fun _ concl =>
+    pure (concl.getAppFn.isFVar && concl.getAppArgs.all (·.isFVar))
+  unless simple do
+    trace[Mumi] "`{n}` is not an eliminator: its motive is applied to a computed value"
+    return
+  try
+    discard <| Lean.Elab.Term.getElabElimInfo n
+    Lean.Elab.Term.elabAsElim.setTag n
+  catch e =>
+    trace[Mumi] "`{n}` does not take `@[elab_as_elim]`: {e.toMessageData}"
 
 /--
 Add an inductive declaration and everything Lean normally builds alongside one.
@@ -610,6 +645,7 @@ private def aliasNativeRecs (b : Block) : MetaM Unit := do
     let info ← getConstInfoRec rn
     addDef (b.recName i) info.levelParams info.type
       (mkConst rn (info.levelParams.map Level.param)) (compile := false)
+    markElabAsElim (b.recName i)
 
 /-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so
 that this library's `mutual` is a strict superset of Lean's. -/
@@ -997,10 +1033,12 @@ private def emitRec (b : Block) (i : Nat) : MetaM Unit := do
   -- and its code comes instead from the implementation emitted afterwards.  A
   -- `Prop` member's is a proof, so it erases and may as well go through now
   addDef (b.recName i) b.recLevelParams ty val (compile := m.isProp)
+  markElabAsElim (b.recName i)
   -- a `Prop` member has no native recursor under its user-facing name, so the
   -- block-wide one may as well also answer to `X.rec`
   if m.isProp then
     addDef (m.name ++ `rec) b.recLevelParams ty val
+    markElabAsElim (m.name ++ `rec)
 
 /-! ### Making the recursors computable
 

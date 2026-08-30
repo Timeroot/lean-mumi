@@ -183,6 +183,31 @@ example (Γ : Ctx) : 0 ≤ Γ.length := by
   | nil_1 => trivial
   | snoc_1 => intros; trivial
 
+/-! ### `@[elab_as_elim]`
+
+A data recursor is tagged, so a term-mode application generalises its motive
+over the major premise instead of taking whatever unification pins down from the
+expected type.  Written `@Ctx.rec`, which bypasses that, the example below infers
+`fun _ => Ctx.nil = Γ` and neither the minors nor the result typecheck.
+
+A predicate recursor is not tagged: its motive is applied to the value the data
+motive computed, which is not a target to abstract over, so eliminator
+elaboration has nothing to generalise.  This is the same limit that keeps it out
+of `induction ... using`.
+-/
+
+example (Γ : Ctx) : Γ.names = Γ.names :=
+  Ctx.rec (motive_2 := Ctx.trivialMotive) rfl (fun _ _ _ _ _ => rfl)
+    (fun _ => trivial) (fun _ _ _ _ _ _ _ _ _ => trivial) Γ
+
+open Lean Elab Term in
+/-- info: Ctx.rec true, Fresh.rec false -/
+#guard_msgs in
+run_meta do
+  let env ← getEnv
+  logInfo s!"Ctx.rec {elabAsElim.hasTag env `Ctx.rec}, \
+    Fresh.rec {elabAsElim.hasTag env `Fresh.rec}"
+
 /-! ## Several `Prop` members
 
 Any number of propositions may hang off one data member; each gets a motive of

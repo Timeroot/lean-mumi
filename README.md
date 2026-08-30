@@ -231,19 +231,25 @@ theorem Fresh.not_mem {x : String} {Γ : Ctx} (h : Fresh x Γ) : x ∉ Γ.names 
 ```
 
 Motives and minor premises are named as they are for a Lean `mutual` —
-`motive_1 … motive_n` in block order, minors after their constructors with
-repeats numbered — so `induction Γ using Ctx.rec with | nil | snoc … | nil_1 |
-snoc_1` reads the way it would for a real inductive. A predicate's recursor is
-for term mode: `induction … using` reads an eliminator's targets only up to the
-first motive argument that is not a local variable, and for a predicate motive
-that is the data value. Wrapping it once, as `MumiTests/Roundtrip.lean` does,
-gives back the tactic.
+`motive_1 … motive_n` in block order (just `motive` when a recursor has one),
+minors after their constructors with repeats numbered — so `induction Γ using
+Ctx.rec with | nil | snoc … | nil_1 | snoc_1` reads the way it would for a real
+inductive. A predicate's recursor is for term mode: `induction … using` reads an
+eliminator's targets only up to the first motive argument that is not a local
+variable, and for a predicate motive that is the data value. Wrapping it once,
+as `MumiTests/Roundtrip.lean` does, gives back the tactic.
+
+Every recursor is `@[elab_as_elim]`, which Lean gives its own recursors for free
+and a `def` has to be told, so an application generalises its motive over the
+major premise rather than taking whatever the expected type unifies with. The
+predicate recursors of an induction-inductive block are the exception, for the
+same reason they stay out of `induction … using`.
 
 A block keeps the older split — a data recursor with no predicate motives, and a
 separate recursor per predicate, free to eliminate into `Sort u` — when a `Prop`
 member is not indexed by exactly one data member, or when the block came from
-denesting and left copies behind. `set_option trace.Mumi.indind true` reports
-which recursor a block got and why.
+denesting and left copies behind. `set_option trace.Mumi true` reports which
+recursor a block got, and which ones took `@[elab_as_elim]`.
 
 Any number of members of either kind are allowed, with parameters, universe
 parameters, indices on either kind, infinitary recursive fields, and members

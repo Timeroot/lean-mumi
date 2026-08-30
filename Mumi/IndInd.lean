@@ -225,10 +225,10 @@ public section
 namespace Mumi.IndInd
 
 open Lean Lean.Meta Lean.Elab Lean.Elab.Command
-open Lean.Elab.MultiuniverseInductive (addDef addInd reroot motiveNames)
+open Lean.Elab.MultiuniverseInductive (addDef addInd reroot motiveNames markElabAsElim)
 
 /-- Why a block fell back from the recursor it would rather have had. -/
-initialize registerTraceClass `Mumi.indind
+initialize registerTraceClass `Mumi.indind (inherited := true)
 
 /-! ## Names -/
 
@@ -2358,6 +2358,7 @@ def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
                 (mkAppN recCst (c.ps ++ rmotives ++ rminors ++ idxs ++ #[t])))
             return (ty, val)
       addDef niceName (lp :: b.us) (← instantiateMVars type) (← instantiateMVars value)
+      markElabAsElim niceName
 
 /-- The positions of the fields a `Prop` member's recursor gets a hypothesis for. -/
 def propRecPositions (b : Block) (kinds : Array FieldKind) : Array Nat :=
@@ -2514,6 +2515,7 @@ def addPropRecs (c : BridgeCtx) (lp : Name) (recNameOf : Nat → Name) : TermEla
               return (ty, val)
         addDef (recNameOf j) us (← instantiateMVars type) (← instantiateMVars value)
           (compile := false)
+        markElabAsElim (recNameOf j)
 
 end BridgeCtx
 
@@ -3152,6 +3154,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
       addAndCompileNonRec docCtx preDef
   for (n, ty, val, compile) in recs do
     addDef n (lp :: b.us) (← instantiateMVars ty) (← instantiateMVars val) (compile := compile)
+    markElabAsElim n
 
 /-! ## Emitting the declarations -/
 
@@ -3427,6 +3430,7 @@ def emit (p : Plan) : TermElabM Unit := do
     for q in *...dIdxs.size do
       let (_, _, recType, recValue) := results[q]!
       addDef (rawRecName dIdxs[q]!) (lp :: b.us) recType recValue
+      markElabAsElim (rawRecName dIdxs[q]!)
 
   -- 9. `X.rec` for the `Prop` members, out of the pre-block's own recursor.  A
   -- copy is not a name anyone reaches for, and the type it copies has a real
@@ -3497,6 +3501,7 @@ def emit (p : Plan) : TermElabM Unit := do
         if rawRecName i == recName i then continue
         let (_, _, recType, _) := results[q]!
         addDef (recName i) (lp :: b.us) recType (mkConst (rawRecName i) (lvl :: b.lvls))
+        markElabAsElim (recName i)
 
 /-! ## The entry point -/
 
