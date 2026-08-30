@@ -289,10 +289,10 @@ originals anyway:
 ```lean
 #check @RecWFTree.mk    -- WFTree RecWFTree → RecWFTree
 #check @RecWFTree.rec
--- {C_RecWFTree : RecWFTree → Sort u_1} → {C_WFTree : WFTree RecWFTree → Sort u_1} →
---   {C_Tree : Tree RecWFTree → Sort u_1} →
---     ((x : WFTree RecWFTree) → C_WFTree x → C_RecWFTree (RecWFTree.mk x)) → … →
---       (t : RecWFTree) → C_RecWFTree t
+-- {motive_1 : RecWFTree → Sort u_1} → {motive_2 : WFTree RecWFTree → Sort u_1} →
+--   {motive_3 : Tree RecWFTree → Sort u_1} →
+--     ((x : WFTree RecWFTree) → motive_2 x → motive_1 (RecWFTree.mk x)) → … →
+--       (t : RecWFTree) → motive_1 t
 ```
 
 This is the copies case, so it is a split recursor: the three data members share

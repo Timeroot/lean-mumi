@@ -421,31 +421,31 @@ inductive Wf : Ctx2 → Ty → Prop where
 end
 
 /--
-info: @Ctx2.rec : {C_Ctx2 : Ctx2 → Sort u_1} →
-  {C_Ty : Ty → Sort u_1} →
-    C_Ctx2 Ctx2.nil →
-      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → C_Ctx2 Γ → C_Ty t → C_Ctx2 (Γ.snoc t a)) →
-        C_Ty Ty.base → ((a b : Ty) → C_Ty a → C_Ty b → C_Ty (a.arr b)) → (t : Ctx2) → C_Ctx2 t
+info: @Ctx2.rec : {motive_1 : Ctx2 → Sort u_1} →
+  {motive_2 : Ty → Sort u_1} →
+    motive_1 Ctx2.nil →
+      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → motive_1 Γ → motive_2 t → motive_1 (Γ.snoc t a)) →
+        motive_2 Ty.base → ((a b : Ty) → motive_2 a → motive_2 b → motive_2 (a.arr b)) → (t : Ctx2) → motive_1 t
 -/
 #guard_msgs in
 #check @Ctx2.rec
 
 /--
-info: @Ty.rec : {C_Ctx2 : Ctx2 → Sort u_1} →
-  {C_Ty : Ty → Sort u_1} →
-    C_Ctx2 Ctx2.nil →
-      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → C_Ctx2 Γ → C_Ty t → C_Ctx2 (Γ.snoc t a)) →
-        C_Ty Ty.base → ((a b : Ty) → C_Ty a → C_Ty b → C_Ty (a.arr b)) → (t : Ty) → C_Ty t
+info: @Ty.rec : {motive_1 : Ctx2 → Sort u_1} →
+  {motive_2 : Ty → Sort u_1} →
+    motive_1 Ctx2.nil →
+      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → motive_1 Γ → motive_2 t → motive_1 (Γ.snoc t a)) →
+        motive_2 Ty.base → ((a b : Ty) → motive_2 a → motive_2 b → motive_2 (a.arr b)) → (t : Ty) → motive_2 t
 -/
 #guard_msgs in
 #check @Ty.rec
 
 def Ctx2.length (Γ : Ctx2) : Nat :=
-  Ctx2.rec (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
+  Ctx2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) Γ
 
 def Ty.size (t : Ty) : Nat :=
-  Ty.rec (C_Ctx2 := fun _ => Nat) (C_Ty := fun _ => Nat)
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) t
 
 def exCtx2 : Ctx2 := .snoc .nil .base (.base .nil)
@@ -485,14 +485,15 @@ end
 #check @Tree.node
 
 /--
-info: @Tree.rec : {C : Tree → Sort u_1} →
-  C Tree.leaf → ((f : Nat → Tree) → (a : Good f) → ((a : Nat) → C (f a)) → C (Tree.node f a)) → (t : Tree) → C t
+info: @Tree.rec : {motive : Tree → Sort u_1} →
+  motive Tree.leaf →
+    ((f : Nat → Tree) → (a : Good f) → ((a : Nat) → motive (f a)) → motive (Tree.node f a)) → (t : Tree) → motive t
 -/
 #guard_msgs in
 #check @Tree.rec
 
 def Tree.depthAt (t : Tree) (k : Nat) : Nat :=
-  Tree.rec (C := fun _ => Nat → Nat) (fun _ => 0)
+  Tree.rec (motive := fun _ => Nat → Nat) (fun _ => 0)
     (fun _ _ ih k => ih k k + 1) t k
 
 /-- info: 1 -/
@@ -543,19 +544,20 @@ info: @Bag.cons : {α : Type u_1} →
 /--
 info: @Bag.rec : {α : Type u_2} →
   {β : Type u_3} →
-    {C_Bag : (a : Nat) → Bag α β a → Sort u_1} →
-      {C_Tag2 : Tag2 α β → Sort u_1} →
-        C_Bag 0 Bag.nil →
+    {motive_1 : (a : Nat) → Bag α β a → Sort u_1} →
+      {motive_2 : Tag2 α β → Sort u_1} →
+        motive_1 0 Bag.nil →
           ((n : Nat) →
               (b : Bag α β n) →
-                (t : Tag2 α β) → (a : OkB α β n b t) → C_Bag n b → C_Tag2 t → C_Bag (n + 1) (Bag.cons n b t a)) →
-            ((a : α) → (a_1 : β) → C_Tag2 (Tag2.mk a a_1)) → (a : Nat) → (t : Bag α β a) → C_Bag a t
+                (t : Tag2 α β) →
+                  (a : OkB α β n b t) → motive_1 n b → motive_2 t → motive_1 (n + 1) (Bag.cons n b t a)) →
+            ((a : α) → (a_1 : β) → motive_2 (Tag2.mk a a_1)) → (a : Nat) → (t : Bag α β a) → motive_1 a t
 -/
 #guard_msgs in
 #check @Bag.rec
 
 def Bag.count {α : Type u} {β : Type v} : (n : Nat) → Bag α β n → Nat :=
-  fun n b => Bag.rec (C_Bag := fun _ _ => Nat) (C_Tag2 := fun _ => Nat)
+  fun n b => Bag.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ => Nat)
     0 (fun _ _ _ _ ih _ => ih + 1) (fun _ _ => 0) n b
 
 def exBag : Bag String Nat 1 := .cons 0 .nil (.mk "a" 3) (.nil (.mk "a" 3))

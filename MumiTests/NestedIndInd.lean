@@ -121,36 +121,35 @@ info: @RecWFTree.nested_WFWith_4.node : ∀ {llist rlist : List Nat} (key : Nat)
 -- in it is a copy: the motives are over the types the block was written with,
 -- and so are the constructors the minors conclude at
 /--
-info: @RecWFTree.rec : {C_RecWFTree : RecWFTree → Sort u_1} →
-  {C_WFTree : WFTree RecWFTree → Sort u_1} →
-    {C_Tree : Tree RecWFTree → Sort u_1} →
-      ((x : WFTree RecWFTree) → C_WFTree x → C_RecWFTree (RecWFTree.mk x)) →
-        ((x : Tree RecWFTree) → (h : Tree.WF RecWFTree x) → C_Tree x → C_WFTree (WFTree.mk x h)) →
-          C_Tree Tree.empty →
+info: @RecWFTree.rec : {motive_1 : RecWFTree → Sort u_1} →
+  {motive_2 : WFTree RecWFTree → Sort u_1} →
+    {motive_3 : Tree RecWFTree → Sort u_1} →
+      ((x : WFTree RecWFTree) → motive_2 x → motive_1 (RecWFTree.mk x)) →
+        ((x : Tree RecWFTree) → (h : Tree.WF RecWFTree x) → motive_3 x → motive_2 (WFTree.mk x h)) →
+          motive_3 Tree.empty →
             ((key : Nat) →
                 (value : RecWFTree) →
-                  (l r : Tree RecWFTree) → C_RecWFTree value → C_Tree l → C_Tree r → C_Tree (Tree.node key value l r)) →
-              (t : RecWFTree) → C_RecWFTree t
+                  (l r : Tree RecWFTree) →
+                    motive_1 value → motive_3 l → motive_3 r → motive_3 (Tree.node key value l r)) →
+              (t : RecWFTree) → motive_1 t
 -/
 #guard_msgs in
 #check @RecWFTree.rec
 
 -- the kernel-facing one is still there, over the copies, under a hidden name
 /--
-info: @RecWFTree._nested_rec : {C_RecWFTree : RecWFTree → Sort u_1} →
-  {C_nested_WFTree_1 : RecWFTree.nested_WFTree_1 → Sort u_1} →
-    {C_nested_Tree_2 : RecWFTree.nested_Tree_2 → Sort u_1} →
-      ((x : RecWFTree.nested_WFTree_1) → C_nested_WFTree_1 x → C_RecWFTree (RecWFTree._nested_mk x)) →
+info: @RecWFTree._nested_rec : {motive_1 : RecWFTree → Sort u_1} →
+  {motive_2 : RecWFTree.nested_WFTree_1 → Sort u_1} →
+    {motive_3 : RecWFTree.nested_Tree_2 → Sort u_1} →
+      ((x : RecWFTree.nested_WFTree_1) → motive_2 x → motive_1 (RecWFTree._nested_mk x)) →
         ((x : RecWFTree.nested_Tree_2) →
-            (h : RecWFTree.nested_WF_3 x) → C_nested_Tree_2 x → C_nested_WFTree_1 (RecWFTree.nested_WFTree_1.mk x h)) →
-          C_nested_Tree_2 RecWFTree.nested_Tree_2.empty →
+            (h : RecWFTree.nested_WF_3 x) → motive_3 x → motive_2 (RecWFTree.nested_WFTree_1.mk x h)) →
+          motive_3 RecWFTree.nested_Tree_2.empty →
             ((key : Nat) →
                 (value : RecWFTree) →
                   (l r : RecWFTree.nested_Tree_2) →
-                    C_RecWFTree value →
-                      C_nested_Tree_2 l →
-                        C_nested_Tree_2 r → C_nested_Tree_2 (RecWFTree.nested_Tree_2.node key value l r)) →
-              (t : RecWFTree) → C_RecWFTree t
+                    motive_1 value → motive_3 l → motive_3 r → motive_3 (RecWFTree.nested_Tree_2.node key value l r)) →
+              (t : RecWFTree) → motive_1 t
 -/
 #guard_msgs in
 #check @RecWFTree._nested_rec
@@ -181,8 +180,8 @@ def wrap (v : RecWFTree) : RecWFTree := .mk (.mk (leaf v) (leafWF v))
 
 /-- How many `RecWFTree`s are nested inside. -/
 def depth (t : RecWFTree) : Nat :=
-  RecWFTree.rec (C_RecWFTree := fun _ => Nat) (C_WFTree := fun _ => Nat)
-    (C_Tree := fun _ => Nat)
+  RecWFTree.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat)
     (fun _ ih => ih + 1) (fun _ _ ih => ih) 0 (fun _ _ _ _ ihv ihl ihr => ihv + ihl + ihr) t
 
 -- iota holds definitionally, all the way through the copies
@@ -246,17 +245,18 @@ info: @Rec2.nested_List_3.cons : {β : Type} → Rec2 β → Rec2.nested_List_3 
 -- and the recursor is over `OkBag`, `Bag` and `List`, the parameter carried through
 /--
 info: @Rec2.rec : {β : Type} →
-  {C_Rec2 : Rec2 β → Sort u_1} →
-    {C_OkBag : OkBag (Rec2 β) → Sort u_1} →
-      {C_Bag : Bag (Rec2 β) → Sort u_1} →
-        {C_List : List (Rec2 β) → Sort u_1} →
-          ((b : β) → C_Rec2 (Rec2.leaf b)) →
-            ((x : OkBag (Rec2 β)) → C_OkBag x → C_Rec2 (Rec2.mk x)) →
-              ((b : Bag (Rec2 β)) → (h : BagOk (Rec2 β) b) → C_Bag b → C_OkBag (OkBag.mk b h)) →
-                ((a : List (Rec2 β)) → C_List a → C_Bag (Bag.mk a)) →
-                  C_List [] →
-                    ((head : Rec2 β) → (tail : List (Rec2 β)) → C_Rec2 head → C_List tail → C_List (head :: tail)) →
-                      (t : Rec2 β) → C_Rec2 t
+  {motive_1 : Rec2 β → Sort u_1} →
+    {motive_2 : OkBag (Rec2 β) → Sort u_1} →
+      {motive_3 : Bag (Rec2 β) → Sort u_1} →
+        {motive_4 : List (Rec2 β) → Sort u_1} →
+          ((b : β) → motive_1 (Rec2.leaf b)) →
+            ((x : OkBag (Rec2 β)) → motive_2 x → motive_1 (Rec2.mk x)) →
+              ((b : Bag (Rec2 β)) → (h : BagOk (Rec2 β) b) → motive_3 b → motive_2 (OkBag.mk b h)) →
+                ((a : List (Rec2 β)) → motive_4 a → motive_3 (Bag.mk a)) →
+                  motive_4 [] →
+                    ((head : Rec2 β) →
+                        (tail : List (Rec2 β)) → motive_1 head → motive_4 tail → motive_4 (head :: tail)) →
+                      (t : Rec2 β) → motive_1 t
 -/
 #guard_msgs in
 #check @Rec2.rec
@@ -292,14 +292,15 @@ inductive Rec3 where
 -- the index survives the trip out: the motive for the copy of `Vec` is a motive
 -- for `Vec`, at the index the copy was carrying
 /--
-info: @Rec3.rec : {C_Rec3 : Rec3 → Sort u_1} →
-  {C_OkVec : OkVec Rec3 → Sort u_1} →
-    {C_Vec : (a : Nat) → Vec Rec3 a → Sort u_1} →
-      ((x : OkVec Rec3) → C_OkVec x → C_Rec3 (Rec3.mk x)) →
-        ({n : Nat} → (v : Vec Rec3 n) → (h : VecOk Rec3 v) → C_Vec n v → C_OkVec (OkVec.mk v h)) →
-          C_Vec 0 Vec.nil →
-            ((a : Rec3) → {n : Nat} → (a_1 : Vec Rec3 n) → C_Rec3 a → C_Vec n a_1 → C_Vec (n + 1) (Vec.cons a a_1)) →
-              (t : Rec3) → C_Rec3 t
+info: @Rec3.rec : {motive_1 : Rec3 → Sort u_1} →
+  {motive_2 : OkVec Rec3 → Sort u_1} →
+    {motive_3 : (a : Nat) → Vec Rec3 a → Sort u_1} →
+      ((x : OkVec Rec3) → motive_2 x → motive_1 (Rec3.mk x)) →
+        ({n : Nat} → (v : Vec Rec3 n) → (h : VecOk Rec3 v) → motive_3 n v → motive_2 (OkVec.mk v h)) →
+          motive_3 0 Vec.nil →
+            ((a : Rec3) →
+                {n : Nat} → (a_1 : Vec Rec3 n) → motive_1 a → motive_3 n a_1 → motive_3 (n + 1) (Vec.cons a a_1)) →
+              (t : Rec3) → motive_1 t
 -/
 #guard_msgs in
 #check @Rec3.rec
@@ -312,7 +313,7 @@ def wrap (v : Rec3) : Rec3 := .mk (.mk (.cons v .nil) (.cons v .nil .nil))
 
 /-- How many `Rec3`s are nested inside. -/
 def depth (t : Rec3) : Nat :=
-  Rec3.rec (C_Rec3 := fun _ => Nat) (C_OkVec := fun _ => Nat) (C_Vec := fun _ _ => Nat)
+  Rec3.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ _ => Nat)
     (fun _ ih => ih + 1) (fun _ _ ih => ih) 0 (fun _ {_} _ iha ihv => iha + ihv) t
 
 -- iota holds through the indexed copy too

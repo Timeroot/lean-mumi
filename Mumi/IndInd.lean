@@ -225,7 +225,7 @@ public section
 namespace Mumi.IndInd
 
 open Lean Lean.Meta Lean.Elab Lean.Elab.Command
-open Lean.Elab.MultiuniverseInductive (addDef addInd reroot)
+open Lean.Elab.MultiuniverseInductive (addDef addInd reroot motiveNames)
 
 /-- Why a block fell back from the recursor it would rather have had. -/
 initialize registerTraceClass `Mumi.indind
@@ -2265,23 +2265,7 @@ def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
   let b := c.b
   let lvl := Level.param lp
   let dIdxs := b.dataIdxs
-  let shortOf (m : Nat) : String :=
-    match c.copyAt? m with
-    | some k => c.copies[k]!.indName.getString!
-    | none   => b.members[m]!.name.getString!
-  let mnames : Array Name := Id.run do
-    if dIdxs.size == 1 then return #[`C]
-    let mut used : Array String := #[]
-    let mut out : Array Name := #[]
-    for m in dIdxs do
-      let mut s := "C_" ++ shortOf m
-      let mut j := 1
-      while used.contains s do
-        j := j + 1
-        s := "C_" ++ shortOf m ++ "_" ++ toString j
-      used := used.push s
-      out := out.push (Name.mkSimple s)
-    return out
+  let mnames := motiveNames dIdxs.size
   let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
     dIdxs.mapIdx fun q m => (mnames[q]!, fun _ => do
       match c.copyAt? m with
@@ -2429,19 +2413,7 @@ def addPropRecs (c : BridgeCtx) (lp : Name) (recNameOf : Nat → Name) : TermEla
   let recLvls := if large then lvl :: b.lvls else b.lvls
   let us := if large then lp :: b.us else b.us
   let ppos (m : Nat) : Nat := (pIdxs.findIdx? (· == m)).getD 0
-  let mnames : Array Name := Id.run do
-    if pIdxs.size == 1 then return #[`C]
-    let mut used : Array String := #[]
-    let mut out : Array Name := #[]
-    for j in pIdxs do
-      let mut s := "C_" ++ b.members[j]!.name.getString!
-      let mut q := 1
-      while used.contains s do
-        q := q + 1
-        s := "C_" ++ b.members[j]!.name.getString! ++ "_" ++ toString q
-      used := used.push s
-      out := out.push (Name.mkSimple s)
-    return out
+  let mnames := motiveNames pIdxs.size
   let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
     pIdxs.mapIdx fun q j => (mnames[q]!, fun _ => do
       forallTelescope (← instantiateForall b.members[j]!.type ps) fun idxs _ =>
@@ -2568,11 +2540,11 @@ end
 the recursor wanted is
 
 ```
-Ctx.rec.{u} {C_Ctx : Ctx → Sort u}
-    {C_Fresh : (x : String) → (Γ : Ctx) → C_Ctx Γ → Fresh x Γ → Prop}
-    (nil : C_Ctx .nil)
-    (snoc : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → (Γ_ih : C_Ctx Γ) →
-      (h_ih : C_Fresh x Γ Γ_ih h) → C_Ctx (.snoc Γ x h)) → ..
+Ctx.rec.{u} {motive_1 : Ctx → Sort u}
+    {motive_2 : (x : String) → (Γ : Ctx) → motive_1 Γ → Fresh x Γ → Prop}
+    (nil : motive_1 .nil)
+    (snoc : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → (Γ_ih : motive_1 Γ) →
+      (h_ih : motive_2 x Γ Γ_ih h) → motive_1 (.snoc Γ x h)) → ..
 ```
 
 and `Fresh.rec` takes the very same motives and minors.  The two motives cannot
@@ -2588,7 +2560,7 @@ of *every* `Prop` member indexed by that pre-term.
 
 ```
 Bundle p := (w : Ctx._wf p) →
-  PSigma fun c : C_Ctx ⟨p, w⟩ => ∀ x (h : Fresh._pre x p), C_Fresh x ⟨p, w⟩ c h
+  PSigma fun c : motive_1 ⟨p, w⟩ => ∀ x (h : Fresh._pre x p), motive_2 x ⟨p, w⟩ c h
 ```
 
 The pairing is a `PSigma` rather than a `Subtype` because the first component is
@@ -2799,8 +2771,9 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
           n := Name.mkSimple s!"{base}_{k}"
         out := out.push n
       return out
+    let mnames := motiveNames ord.size
     let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := ord.mapIdx fun q i =>
-      (Name.mkSimple s!"motive_{q + 1}", fun acc => do
+      (mnames[q]!, fun acc => do
         let m := b.members[i]!
         forallTelescope (← instantiateForall m.type ps) fun idxs _ => do
           match slotOf? slots i with
@@ -3317,16 +3290,14 @@ def emit (p : Plan) : TermElabM Unit := do
   let rawRecName (i : Nat) : Name :=
     if p.copies.isEmpty || copyNames.contains b.members[i]!.name then recName i
     else Name.mkStr b.members[i]!.name "_nested_rec"
-  -- one motive is `C`; several are `C_Ctx`, `C_Ty`, .. so they can be named
-  let motiveName (i : Nat) : Name :=
-    if dIdxs.size == 1 then `C else Name.mkSimple ("C_" ++ b.members[i]!.name.getString!)
+  let mnames := motiveNames dIdxs.size
   -- the parameters are shared by every motive, minor and recursive call, so the
   -- whole group is built under one telescope of them
   let results ←
    if grand then pure (#[] : Array (Expr × Expr × Expr × Expr)) else
     forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
-    let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := dIdxs.map fun i =>
-      (motiveName i, fun _ => do
+    let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := dIdxs.mapIdx fun q i =>
+      (mnames[q]!, fun _ => do
         forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ =>
           withLocalDeclD `t (mkAppN (b.cst b.members[i]!.name) (ps ++ idxs)) fun t =>
             mkForallFVars (idxs ++ #[t]) (mkSort lvl))

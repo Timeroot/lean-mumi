@@ -765,10 +765,19 @@ and result:
 ```
 
 with `motive_j` at `Prop` for a `Prop` member and at that member's SCC universe
-otherwise.  This uniformity is what lets a data recursor plug `X_j.mutualRec`
+otherwise (and named plain `motive` when the block has only one member, which is
+`motiveNames` below).  This uniformity is what lets a data recursor plug `X_j.mutualRec`
 in as the induction hypothesis for a field it has no native IH for: the
 arguments it already has are exactly the ones `X_j.mutualRec` wants.
 -/
+
+/-- What to call the motives of a recursor that has `n` of them: `motive` on its
+own when there is only one, `motive_1 .. motive_n` otherwise.  Lean names its own
+recursors this way, and every recursor we emit follows it, so that a caller who
+has to name a motive names it the same whichever member it came from. -/
+def motiveNames (n : Nat) : Array Name :=
+  if n == 1 then #[`motive]
+  else Array.ofFn (n := n) fun j => Name.mkSimple s!"motive_{j.val + 1}"
 
 /-- The type of the minor premise for constructor `c`: all fields, then one
 induction hypothesis per recursive field, in field order. -/
@@ -801,13 +810,13 @@ private def withRecTelescope (b : Block) (i : Nat)
     let userOf (j : Nat) (jidxs : Array Expr) : Expr :=
       mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs)
     let mut motiveDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
+    let mnames := motiveNames b.size
     for j in *...b.size do
       let aj ← instantiateForall b.members[j]!.type params
       let mt ← forallTelescope aj fun jidxs _ =>
         withLocalDeclD `t (userOf j jidxs) fun tv =>
           mkForallFVars (jidxs ++ #[tv]) (mkSort (b.motiveLevel j))
-      motiveDecls := motiveDecls.push
-        (Name.mkSimple s!"motive_{j + 1}", .implicit, fun _ => pure mt)
+      motiveDecls := motiveDecls.push (mnames[j]!, .implicit, fun _ => pure mt)
     withLocalDecls motiveDecls fun motives => do
       let mut minorDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
       for q in *...b.allCtors.size do

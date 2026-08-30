@@ -309,8 +309,8 @@ they are inverted through `Tree.WF.rec`. -/
 
 theorem ofOrig_toOrig (a : nested_Tree_2) : nested_Tree_2.ofOrig a.toOrig = a :=
   nested_Tree_2.rec
-    (C_RecWFTree := fun _ => True) (C_nested_WFTree_1 := fun _ => True)
-    (C_nested_Tree_2 := fun a => nested_Tree_2.ofOrig a.toOrig = a)
+    (motive_1 := fun _ => True) (motive_2 := fun _ => True)
+    (motive_3 := fun a => nested_Tree_2.ofOrig a.toOrig = a)
     (fun _ _ => trivial) (fun _ _ _ => trivial)
     rfl
     (fun k v l r _ ihl ihr => by
