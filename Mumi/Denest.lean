@@ -6,6 +6,7 @@ Authors: Alex Meiburg
 module
 
 public import Mumi.Lowering
+import Lean.Compiler.ImplementedByAttr
 
 /-!
 # Denesting
@@ -85,6 +86,10 @@ private structure AuxSpec where
   /-- `∀ idxs, Sort l`, `I`'s type with its parameters fixed, abstracted over
   `extras`.  Mentions no member of the block. -/
   resType   : Expr
+  /-- The application as it was *written*, abstracted over `extras`: `key` with
+  a reducible alias left in place of the inductive behind it.  What the copy is
+  identified with, so that it reads back as the type the writer named. -/
+  origAbs   : Expr
   indName   : Name
   levels    : List Level
   ctors     : Array Name
@@ -121,17 +126,31 @@ inductive (`Quot`, a function), or an inductive applied to a member only outside
 its parameters.
 -/
 private def nestedApp? (members : Array Expr) (body : Expr) :
-    MetaM (Option (Expr × InductiveVal × List Level × Array Expr × Array Expr)) := do
-  if !mentionsAny members body then return none
-  if members.any (· == body.getAppFn) then return none
-  let body ← exposeInduct body
+    MetaM (Option (Expr × Expr × InductiveVal × List Level × Array Expr × Array Expr)) := do
+  -- Specialising a parameter that is a function -- `Sigma`'s `β`, `Subtype`'s
+  -- `p` -- leaves the fields of that type as redexes, and the nesting is only
+  -- visible once they are reduced.
+  let written := body.headBeta
+  if !mentionsAny members written then return none
+  if members.any (· == written.getAppFn) then return none
+  let body ← exposeInduct written
   let .const iname lvls := body.getAppFn | return none
   let some (.inductInfo info) := (← getEnv).find? iname | return none
   let args := body.getAppArgs
   if args.size < info.numParams then return none
   let params := args.extract 0 info.numParams
   if !params.any (mentionsAny members ·) then return none
-  return some (mkAppN (.const iname lvls) params, info, lvls,
+  -- A member `lower` produced is a reducible alias for its shadow, and the
+  -- alias is what the writer typed.  Finding the inductive means seeing through
+  -- it, but the copy should still read back as what was written, so the written
+  -- head is kept when it stands for this very application.
+  let visFn :=
+    match written.getAppFn with
+    | .const vn vls =>
+      if iname == vn ++ `_shadow && written.getAppArgs.size == args.size then .const vn vls
+      else .const iname lvls
+    | _ => .const iname lvls
+  return some (mkAppN (.const iname lvls) params, mkAppN visFn params, info, lvls,
     params, args.extract info.numParams args.size)
 
 /--
@@ -160,10 +179,12 @@ private def extraLocals (ps members : Array Expr) (es : Array Expr) : MetaM (Arr
   let idx (fv : FVarId) : Nat := match lctx.find? fv with | some d => d.index | none => 0
   return (order.qsort fun a b => idx a < idx b).map mkFVar
 
-/-- The last component of a name, for building a readable auxiliary name. -/
-private def shortName (n : Name) : String :=
-  match n with
-  | .str _ s => s
+/-- The last component of a name, for building a readable auxiliary name.  A
+component the elaborator added rather than the writer -- `T._shadow`, which is
+what `lower` leaves behind a member of a block it took over -- is stepped past,
+so that nesting over a lowered type still names the type the writer wrote. -/
+private def shortName : Name → String
+  | .str p s => if s.startsWith "_" then shortName p else s
   | _        => "nested"
 
 mutual
@@ -174,7 +195,7 @@ look through the copy's own fields for further nesting.
 -/
 private partial def internNested (root : Name) (members ps : Array Expr) (body : Expr) :
     DenestM Unit := do
-  let some (app, info, lvls, params, idxArgs) ← nestedApp? members body | return
+  let some (app, vis, info, lvls, params, idxArgs) ← nestedApp? members body | return
   let xs ← extraLocals ps members params
   let key := app.abstract xs
   if (← get).specs.any (·.key == key) then return
@@ -201,7 +222,8 @@ private partial def internNested (root : Name) (members ps : Array Expr) (body :
   let name := root ++ Name.mkSimple s!"nested_{shortName info.name}_{(← get).specs.size + 1}"
   let spec : AuxSpec :=
     { key, name, extras, paramsAbs := params.map (·.abstract xs), resType := resType.abstract xs,
-      indName := info.name, levels := lvls, ctors := info.ctors.toArray }
+      origAbs := vis.abstract xs, indName := info.name, levels := lvls,
+      ctors := info.ctors.toArray }
   modify fun s => { s with specs := s.specs.push spec }
   for c in info.ctors do
     let cinfo ← getConstInfoCtor c
@@ -213,7 +235,7 @@ private partial def internNested (root : Name) (members ps : Array Expr) (body :
 
 /-- Scan one strictly-positive position: strip the leading binders, look at the head. -/
 private partial def scanPos (root : Name) (members ps : Array Expr) (ty : Expr) : DenestM Unit :=
-  forallTelescope ty fun _ys body => internNested root members ps body
+  forallTelescope ty.headBeta fun _ys body => internNested root members ps body
 
 end
 
@@ -240,7 +262,7 @@ private structure RwCtx where
 
 /-- Replace a nested application at the head of a strictly-positive position. -/
 private def RwCtx.head (c : RwCtx) (body : Expr) : MetaM Expr := do
-  let some (app, _, _, params, idxArgs) ← nestedApp? c.members body | return body
+  let some (app, _, _, _, params, idxArgs) ← nestedApp? c.members body | return body
   let xs ← extraLocals c.ps c.members params
   let some k := c.specs.findIdx? (·.key == app.abstract xs)
     | throwError m!"Cannot denest{indentExpr body}"
@@ -249,7 +271,7 @@ private def RwCtx.head (c : RwCtx) (body : Expr) : MetaM Expr := do
 
 /-- Rewrite one strictly-positive position. -/
 private def RwCtx.pos (c : RwCtx) (ty : Expr) : MetaM Expr :=
-  forallTelescope ty fun ys body => do mkForallFVars ys (← c.head body)
+  forallTelescope ty.headBeta fun ys body => do mkForallFVars ys (← c.head body)
 
 /-- Rewrite a constructor's fields and result. -/
 private partial def RwCtx.pi (c : RwCtx) (e : Expr) : MetaM Expr := do
@@ -277,28 +299,52 @@ example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
 
 Both directions are the copy's recursor against the original's, which is
 possible exactly because the two have the same constructors: `A.cᵢ`'s fields are
-`I.cᵢ`'s with the nested occurrences rewritten, so when no field mentions an
-auxiliary member the two constructors take *the same* arguments and each
-direction is one recursor call per constructor.
+`I.cᵢ`'s with the nested occurrences rewritten, so each direction is one
+recursor call per constructor, and the only question is what to hand the
+constructor on the other side.  A field the rewriting left alone is handed over
+as it stands.  A field at the copy being bridged is handed its induction
+hypothesis, which is that field already on the other side.  A field at *another*
+copy goes through that copy's own bridge -- so a nesting inside a nesting works,
+as long as the inner one does, and the bridges are built innermost first.
 
 `propext` turns the two implications into an equality and is the only axiom the
 equality needs.  It is not needed to *use* the identification: the coercions
 below are the implications themselves, so a term that moves a value between a
 copy and its original depends on no axioms and still reduces.
 
-That proviso is the whole restriction.  It rules out a wrapper that is
-recursive through the nesting (`A`'s own field would be an `A`) and a nesting
-inside a nesting (the field is the inner copy, which for a data member is only
-isomorphic to the original, not equal to it).  Everything that does not qualify
-simply gets no bridge; the type itself is unaffected either way.
+What is left out is a field that mentions a copy anywhere else: in the domain of
+one of its own binders, or in a nested position.  Nothing can be handed over for
+such a field, so the member simply gets no bridge; the type itself is unaffected
+either way.
 -/
 
-/-- Does no field of this rewritten constructor type mention an auxiliary member? -/
-private def fieldsClean (auxFVars : Array Expr) (cty : Expr) : MetaM Bool :=
+/--
+Can this rewritten constructor type be sent across the bridge, and what does
+that lean on?
+
+A field that mentions no auxiliary member at all can be handed over as it
+stands.  So can one whose own type *is* the member being bridged, however deep
+under a telescope: the recursor supplies a hypothesis for such a field, already
+at the type the other side wants.  A field at a *different* copy can be handed
+over through that copy's own bridge, so the answer names which copies that is.
+Anything else -- a copy in a nested position, or in a binder's domain -- has
+nothing to be handed over as, and the answer is `none`.
+-/
+private def fieldsBridgeable (auxFVars : Array Expr) (self : Nat) (cty : Expr) :
+    MetaM (Option (Array Nat)) :=
   forallTelescope cty fun fields _ => do
+    let mut deps : Array Nat := #[]
     for f in fields do
-      if mentionsAny auxFVars (← inferType f) then return false
-    return true
+      let some ks ← forallTelescope (← inferType f) fun ys concl => do
+          for y in ys do
+            if mentionsAny auxFVars (← inferType y) then return none
+          let some k := auxFVars.idxOf? concl.getAppFn
+            | return if mentionsAny auxFVars concl then none else some (#[] : Array Nat)
+          if concl.getAppArgs.any (mentionsAny auxFVars ·) then return none
+          return some #[k]
+        | return none
+      deps := deps ++ ks.filter (· != self)
+    return some deps
 
 /--
 Copy the first `n` binder annotations of `model` onto `e`.
@@ -324,6 +370,7 @@ private structure Bridge where
   denote them. -/
   members : Array Expr
   repl    : Array Expr
+  deriving Inhabited
 
 /--
 `I`'s parameters for a given choice of extras.
@@ -335,18 +382,47 @@ extras' own loose bound variables.
 private def Bridge.paramsAt (b : Bridge) (xs : Array Expr) : Array Expr :=
   b.spec.paramsAbs.map fun p => (p.instantiateRev xs).replaceFVars b.members b.repl
 
+/-- The type the copy is identified with, for a given choice of extras: the
+application the writer wrote, which is `I` at `paramsAt` up to unfolding a
+reducible alias. -/
+private def Bridge.origAt (b : Bridge) (xs : Array Expr) : Expr :=
+  (b.spec.origAbs.instantiateRev xs).replaceFVars b.members b.repl
+
 /--
-The uniform recursor's motives: the original type for the member being bridged,
-and `True` for every other member, which is why the recursor's motive universe
-can be instantiated to zero.
+Open the copy's index telescope and hand `k` the two sides of the
+identification, along with the binders everything about it is stated over: the
+block's parameters, the extras this copy was taken at, and the indices.
 -/
-private def bridgeMotives (b : Bridge) (j : Nat) (mtypes : Array Expr) : MetaM (Array Expr) := do
+private def Bridge.withSides {α : Type} [Inhabited α] (b : Bridge) (ownLevels : List Level)
+    (ps xs : Array Expr) (k : Array Expr → Expr → Expr → Array Expr → MetaM α) : MetaM α :=
+  forallTelescope (b.spec.resType.instantiateRev xs) fun idxs _ =>
+    k idxs (mkAppN (.const b.spec.name ownLevels) (ps ++ xs ++ idxs))
+      (mkAppN (b.origAt xs) idxs) (ps ++ xs ++ idxs)
+
+/--
+The recursor's motives: the original type for each member being bridged, and
+`unit` -- the one-element type in whatever universe the recursor is being run
+at -- for every other member it asks about.  Nothing is asked of those members,
+which is why a `Prop` copy can pull the motive universe all the way down to
+zero.
+
+More than one member can be bridged at once because a nesting over a *mutual*
+family copies every member of it, and each copy's fields reach the others.  Give
+them all real motives and one pass of the recursor takes the whole family
+across; the induction hypothesis for a field at a sibling then arrives already
+on the other side, exactly as for a field at the copy itself.
+
+`mIdxs` says which member each motive is for, since the recursor of a copy that
+lowering could give a one-motive form to asks about only that copy.
+-/
+private def bridgeMotives (bridgeFor : Nat → Option Bridge) (unit : Expr) (mIdxs : Array Nat)
+    (mtypes : Array Expr) : MetaM (Array Expr) := do
   let mut vals : Array Expr := #[]
   for i in *...mtypes.size do
     let v ← forallTelescope mtypes[i]! fun ys _ => do
-      if i != j then
-        mkLambdaFVars ys (.const ``True [])
-      else
+      match bridgeFor mIdxs[i]! with
+      | none => mkLambdaFVars ys unit
+      | some b =>
         -- `ys` is the member's indices followed by the element itself, and the
         -- auxiliary member's indices are `extras` first, then `I`'s own
         let xs := ys.extract 0 b.spec.extras.size
@@ -387,10 +463,13 @@ field ascribed, and the ascription names the original rather than the copy.
 `⟨...⟩` reads the expected type instead of being coerced afterwards, and is
 handled separately in `Mumi.Bridge`.
 -/
-private def mkCoe (name : Name) (levelParams : List Name) (binders : Array Expr)
-    (src tgt f : Expr) : MetaM Unit := do
+private def coeDecl (binders : Array Expr) (src tgt f : Expr) : MetaM (Expr × Expr) := do
   let type  ← mkForallFVars binders (← mkAppM ``CoeOut #[src, tgt])
   let value ← mkLambdaFVars binders (← mkAppM ``CoeOut.mk #[f])
+  return (type, value)
+
+/-- Add what `coeDecl` built, once the function it coerces by really exists. -/
+private def addCoe (name : Name) (levelParams : List Name) (type value : Expr) : MetaM Unit := do
   check value
   unless ← isDefEq (← inferType value) type do return
   addDecl (.defnDecl
@@ -398,99 +477,665 @@ private def mkCoe (name : Name) (levelParams : List Name) (binders : Array Expr)
   setReducibleAttribute name
   Meta.addInstance name .global 1000
 
+/-- How many binders a telescope starts with. -/
+private def numForalls : Expr → Nat
+  | .forallE _ _ b _ => numForalls b + 1
+  | _ => 0
+
 /--
-Prove `A ps xs idxs = I params idxs` and add it as `A.eq_orig`, then make the
-identification usable without naming `A`, by registering a coercion in each
-direction.  The forward one doubles as the marker `Mumi.Bridge` reads to display
-`A` as the type it copies.
+The types the copy's constructor gives its fields, with the fields being handed
+to it put in their place.
+
+Going backwards, nothing in the original's own fields says that one of them
+stands for a copy; only the copy's constructor knows, so its telescope is walked
+alongside.
+-/
+private def copyFieldTypes (cty : Expr) (flds : Array Expr) : Array Expr := Id.run do
+  let mut out : Array Expr := #[]
+  let mut e := cty
+  for f in flds do
+    let .forallE _ d b _ := e | break
+    out := out.push d
+    e := b.instantiate1 f
+  return out
+
+/--
+Send one field through another copy's bridge, if that is what it needs.
+
+`ct` is the field's type on the copy's side, which is the side a copy shows up
+on in either direction: going forwards it is the field's own type, going
+backwards it is the type the copy's constructor wants.  When its head is a copy
+with a bridge of its own, that bridge is what carries the field over -- pointwise,
+under whatever binders an infinitary field takes.  Anything else already has the
+type the other side wants and is handed over as it stands.
+
+`over` is consulted before the environment is, and answers with a *term* to cross
+by rather than a name.  That is what lets a group of copies that reach each other
+be crossed by functions which do not exist yet: the companions of a mutual family
+are built against variables standing for one another, and only then tied together.
+-/
+private def crossField (f ct : Expr) (dir : Name) (lvls : List Level) (copies : Array Name)
+    (over : Name → Option Expr) : MetaM Expr := do
+  forallBoundedTelescope (← inferType f) (some (numForalls ct)) fun ys _ => do
+    let concl ← instantiateForall ct ys
+    let some k := concl.getAppFn.constName? | return f
+    let fn ←
+      match over k with
+      | some e => pure e
+      | none   =>
+        unless copies.contains k && (← getEnv).contains (k ++ dir) do return f
+        pure (.const (k ++ dir) lvls)
+    mkLambdaFVars ys (mkApp (mkAppN fn concl.getAppArgs) (mkAppN f ys))
+
+/--
+Which induction hypothesis, if any, each field of a minor premise has.
+
+A minor premise binds the constructor's fields and then one hypothesis per
+recursive field, and each hypothesis says which field it belongs to: its type
+ends in the motive applied to that field.  Reading the pairing off that way is
+the only reliable way to get it.  Counting fields whose head is the type being
+recursed on does not do: a field can be at that very type without being a
+recursive occurrence, as the field of `Nonempty (Nonempty α)` is.
+
+This has to happen before the motives are instantiated, since instantiating them
+is exactly what throws away the field a hypothesis names.  `mvs` are the motives
+as they are still bound; a binder is a hypothesis when its type ends in one.
+-/
+private def minorPairing (mvs : Array Expr) (cty : Expr) : MetaM (Option (Array (Option Nat))) :=
+  forallTelescope cty fun bs _ => do
+    let mut ihFor : Array (Option Nat) := #[]
+    let mut fields : Array Expr := #[]
+    let mut nIH := 0
+    for b in bs do
+      let concl ← forallTelescope (← inferType b) fun _ c => pure c
+      if mvs.contains concl.getAppFn then
+        let some tgt := concl.getAppArgs.back? | return none
+        let some i := fields.idxOf? tgt.getAppFn | return none
+        if (ihFor[i]!).isSome then return none
+        ihFor := ihFor.set! i (some nIH)
+        nIH := nIH + 1
+      else
+        fields := fields.push b
+        ihFor := ihFor.push none
+    return some ihFor
+
+/--
+A recursor's minor premises: the type of each, and for each the field its
+induction hypotheses are about.
+
+The pairing has to be read while the motives are still bound, because
+instantiating them is exactly what throws away which motive a hypothesis was
+at.  The types have to be read after.  Two readings of one telescope that must
+stay in step, so they are taken together.
+-/
+private def minorsOf (what : MessageData) (recTy : Expr) (motives : Array Expr)
+    (numMinors : Nat) : MetaM (Array Expr × Array (Option (Array (Option Nat)))) := do
+  let types ← forallBoundedTelescope (← instantiateForall recTy motives) (some numMinors)
+    fun cvs _ => cvs.mapM inferType
+  unless types.size == numMinors do
+    throwError "{what} takes {types.size} cases, not {numMinors}"
+  let pairings ← forallBoundedTelescope recTy (some motives.size) fun mvs body =>
+    forallBoundedTelescope body (some numMinors) fun cvs _ =>
+      cvs.mapM fun c => do minorPairing mvs (← inferType c)
+  return (types, pairings)
+
+/--
+The arguments to give the constructor on the other side of the bridge.
+
+A field at one of the members being bridged is handed over as its induction
+hypothesis, which is already the value on the other side -- and for an
+infinitary field is that function pointwise.  That covers the copy itself and,
+when a whole mutual family is crossed at once, its siblings: they all have real
+motives, so they all have usable hypotheses.  A field at a copy *outside* the
+group goes through that copy's own bridge.  Anything else stands as it is,
+including a field at a different member of the block, which is the same type on
+both sides even though the recursor made a hypothesis for it too.
+
+Which of those a field is, is decided by its type on the *copy's* side, `selves`
+being the names of the copies this recursor pass settles: that is the one side
+where the distinction is written down, and it reads the same going either way.
+`over` carries a field at a copy outside that set but still being built, whose
+direction is a variable until the group is put in.
+-/
+private def bridgeArgs (flds ihs copyTys : Array Expr) (ihFor : Array (Option Nat))
+    (selves : Array Name) (dir : Name) (lvls : List Level) (copies : Array Name)
+    (over : Name → Option Expr) : MetaM (Option (Array Expr)) := do
+  let mut out : Array Expr := #[]
+  for i in *...flds.size do
+    let ct := copyTys[i]?.getD (← inferType flds[i]!)
+    let atSelf ← forallTelescope ct fun _ c => pure
+      (c.getAppFn.constName?.any (selves.contains ·))
+    if atSelf then
+      let some (some k) := ihFor[i]? | return none
+      let some ih := ihs[k]? | return none
+      out := out.push ih
+    else
+      out := out.push (← crossField flds[i]! ct dir lvls copies over)
+  return some out
+
+/--
+Write one direction of a data bridge a second time, out of `casesOn` and a
+recursive call, so that it can actually run.
+
+The direction itself is a recursor application, and the code generator compiles
+no recursor application at all; it does compile a `casesOn`, and it does compile
+recursion inside an `unsafe` definition.  So the same function is built again in
+a shape the compiler will take, and attached to the real one with
+`@[implemented_by]`.  Nothing is trusted here: the safe definition is what the
+kernel checked and what every proof sees, and a direction whose companion does
+not go through simply stays `noncomputable`.
+
+`casesOn` binds its parameters, then the motive, then the indices and the term
+being taken apart, then one minor premise per constructor.  Each minor binds
+`nLead` arguments the target constructor does not share -- the extras a copy
+carries -- and then the fields; a field at `self` becomes a recursive call,
+pointwise under whatever binders an infinitary one takes, and `rc` says at which
+arguments.  A field at another copy crosses the same way it does in the checked
+definition, through that copy's own direction, which has a companion of its own
+and so runs; `copyTysOf` gives the copy's side of each field.  When that other
+copy is a sibling in the same mutual family, `over` answers with the variable
+standing for its companion instead, and the two end up genuinely mutually
+recursive.
+-/
+private def implDirection (casesName : Name) (csLevels : List Level) (pre : Array Expr)
+    (motive : Expr) (idxArgs : Array Expr) (srcTy : Expr) (nCtors nLead : Nat)
+    (self : Name) (dir : Name) (lvls : List Level) (copies : Array Name)
+    (over : Name → Option Expr)
+    (copyTysOf : Nat → Array Expr → MetaM (Array Expr))
+    (rc : Expr → Expr) (mkTarget : Nat → Array Expr → Array Expr → Expr) :
+    MetaM (Option Expr) := do
+  let some csInfo := (← getEnv).find? casesName | return none
+  unless csInfo.levelParams.length == csLevels.length do return none
+  let csTy ← instantiateForall
+    (csInfo.type.instantiateLevelParams csInfo.levelParams csLevels) pre
+  let afterMotive ← instantiateForall csTy #[motive]
+  withLocalDeclD `x srcTy fun x => do
+    let afterMajor ← instantiateForall afterMotive (idxArgs ++ #[x])
+    let mtys ← forallBoundedTelescope afterMajor (some nCtors) fun mvs _ => mvs.mapM inferType
+    unless mtys.size == nCtors do return none
+    let mut minors : Array Expr := #[]
+    for q in *...nCtors do
+      minors := minors.push (← forallTelescope mtys[q]! fun flds _ => do
+        let fs := flds.extract nLead flds.size
+        let cts ← copyTysOf q fs
+        let mut args : Array Expr := #[]
+        for i in *...fs.size do
+          let f := fs[i]!
+          let fty ← inferType f
+          let ct := cts[i]?.getD fty
+          if ← forallTelescope ct fun _ c => pure (c.getAppFn.constName? == some self) then
+            args := args.push (← forallTelescope fty fun ys concl =>
+              mkLambdaFVars ys (mkApp (rc concl) (mkAppN f ys)))
+          else
+            args := args.push (← crossField f ct dir lvls copies over)
+        mkLambdaFVars flds (mkTarget q (flds.extract 0 nLead) args))
+    return some (← mkLambdaFVars #[x]
+      (mkAppN (.const casesName csLevels) (pre ++ #[motive] ++ idxArgs ++ #[x] ++ minors)))
+
+/--
+Add the directions of a group of data bridges, with compiled companions if they
+can be built.  A companion has to be in place before its direction is handed to
+the code generator, which is why the two are added together.
+
+`mkImpls` is handed one *variable* per direction, standing for every recursive
+call the companions may make -- their own and each other's -- and gives back one
+body per direction, closed but for those variables.  That is what lets the
+companions be checked here rather than left to the kernel: once they are in the
+environment their recursion is real, and a bad one would be reported at the
+declaration the writer wrote rather than caught.  It is also what lets the
+copies of a mutual family call one another, since the variables become names
+only after every body is in hand, and the bodies then go in as a single block.
+
+Companions are all-or-nothing, since a mutual block is: if any body cannot be
+built or the block does not compile, every direction in the group stays
+`noncomputable` and the environment is put back as it was.
+-/
+private def addDirections (levelParams : List Name) (ds : Array (Name × Expr × Expr))
+    (mkImpls : Array Expr → MetaM (Option (Array Expr))) : MetaM Unit := do
+  let decls := ds.map fun (name, type, value) =>
+    Declaration.defnDecl { name, levelParams, type, value, hints := .regular 0, safety := .safe }
+  for d in decls do addDecl d
+  let lvls := levelParams.map Level.param
+  let implNames := ds.map fun (name, _, _) => name ++ `impl
+  let saved ← getEnv
+  try
+    let values ← withLocalDeclsD (ds.map fun (_, type, _) => (`rec_, fun _ => pure type))
+        fun selves => do
+      let some bodies ← mkImpls selves | throwError "no companion"
+      unless bodies.size == selves.size do throwError "no companion"
+      let consts := implNames.map fun n => Expr.const n lvls
+      bodies.mapM fun body => do
+        check (← mkLambdaFVars selves body)
+        return body.replaceFVars selves consts
+    let mut defns : Array DefinitionVal := #[]
+    for i in *...ds.size do
+      defns := defns.push
+        { name := implNames[i]!, levelParams, type := ds[i]!.2.1, value := values[i]!,
+          hints := .opaque, safety := .unsafe }
+    let implDecl := match defns.toList with
+      | [d] => Declaration.defnDecl d
+      | l   => Declaration.mutualDefnDecl l
+    addDecl implDecl
+    compileDecl implDecl (logErrors := false)
+    for n in implNames do
+      if Lean.isNoncomputable (← getEnv) n then throwError "companion did not compile"
+    for i in *...ds.size do Lean.setImplementedBy ds[i]!.1 implNames[i]!
+  catch _ =>
+    setEnv saved
+  for d in decls do compileDecl d (logErrors := false)
+
+/-- What one member's way back needs: the original's recursor read at this
+member's parameters, with a motive for every copy one pass of it can settle and
+`unit` for anything else it quantifies over. -/
+private structure BwdData where
+  levels  : List Level
+  params  : Array Expr
+  motives : Array Expr
+  minors  : Array Expr
+  /-- The motive standing for this member itself, which its compiled companion
+  recurses at. -/
+  selfMot : Expr
+  /-- How many parameters the original takes, so that a recursive field of it
+  can be cut down to its indices. -/
+  numPs   : Nat
+  deriving Inhabited
+
+/-- Everything one member of a group contributes, worked out under its own
+indices and then closed up, so that a group can be checked before any of it is
+added. -/
+private structure DirData where
+  /-- Which of the group this is. -/
+  gpos     : Nat
+  /-- Which member of the block the copy belongs to. -/
+  member   : Nat
+  typeFwd  : Expr
+  typeBwd  : Expr
+  valueFwd : Expr
+  valueBwd : Expr
+  /-- The equality between the copy and its original, and its proof: a `Prop`
+  copy has one, a data copy has only the two directions. -/
+  eq?      : Option (Expr × Expr)
+  /-- The motive this member's own forward companion recurses at. -/
+  motiveJ  : Expr
+  bwd      : BwdData
+  deriving Inhabited
+
+/--
+Identify each `A ps xs idxs` in a group with the `I params idxs` it copies, and
+make the identification usable without naming `A`, by registering a coercion in
+each direction.
+
+Two copies are equal to their originals to different degrees.  A `Prop` copy has
+the same elements *and* the same proof irrelevance, so the two types are equal
+outright, and that goes in as `A.eq_orig`; the forward coercion doubles as the
+marker `Mumi.Bridge` reads to display `A` as the type it copies.  A data copy is
+only isomorphic -- its constructors are genuinely different constants -- so all
+there is to say is the pair of maps, and they go in under their own names,
+`A.toOrig` and `A.ofOrig`.  Either way the coercions are what let the copy's
+name stay out of the way at the use site.
+
+A whole `group` is bridged at once, because nesting over a *mutual* family
+copies every member of it and the copies reach each other: `Rose`'s copy has a
+field at `Forest`'s and the other way about, so neither can be crossed before
+the other.  Giving every copy in the family a real motive settles both at once,
+and one pass of the recursor carries the family across.  A family of one is the
+ordinary case and takes the same road.
+
+Which copies one pass settles is not the same question as which family a type
+belongs to, so it is read off the recursor: a motive is matched to a copy by the
+whole application it quantifies over.  That is what lets a nesting over a type
+which is *itself* nested work.  `RL α`, defined through `List (RL α)`, copies
+both, and its recursor has a motive at each even though `List` is no relation of
+it; `List`'s own recursor, meanwhile, reaches only the one.  A member whose
+recursor falls short crosses the shortfall on its sibling's direction instead,
+which is why the members are built against variables standing for one another
+and only then put in, in an order in which each one's definition already exists.
+A member that cannot be built at all costs the others nothing.
 
 Nothing here can make the block worse: it runs after the block has been
 declared, and reads only what is already in the environment.
 -/
-private def mkBridge (inp : Input) (ps : Array Expr) (ctorNames : Array (Array Name))
-    (j : Nat) (b : Bridge) : TermElabM Unit := do
-  let s := b.spec
+private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array Name))
+    (memberNames : Array Name) (group : Array (Nat × Bridge)) : TermElabM Unit := do
+  let some (_, b0) := group[0]? | return
+  let s0 := b0.spec
   let ownLevels := inp.levelParams.map Level.param
-  -- the copy's `rec` is a definition standing for its `mutualRec`, the
-  -- original's is a genuine recursor; only the type and levels matter here
-  let some recInfo := (← getEnv).find? (s.name ++ `rec) | return
-  let some origRec := (← getEnv).find? (s.indName ++ `rec) | return
-  -- the recursor's motive universe is the one level it does not share with the
-  -- block; every motive we supply is a `Prop`, so it goes to zero
-  let recLevels := recInfo.levelParams.map fun p =>
-    if inp.levelParams.contains p then .param p else .zero
-  -- the original's recursor puts its motive universe first, if it has one
-  let origLevels :=
-    if origRec.levelParams.length == s.levels.length + 1 then .zero :: s.levels else s.levels
-  unless origRec.levelParams.length == origLevels.length do return
-  withExtras s fun xs => do
-    let params := b.paramsAt xs
-    let orig := mkAppN (.const s.indName s.levels) params
-    forallTelescope (s.resType.instantiateRev xs) fun idxs sortE => do
-      let .sort lvl := sortE | return
-      unless lvl.normalize.isZero do return
-      let lhs := mkAppN (.const s.name ownLevels) (ps ++ xs ++ idxs)
-      let rhs := mkAppN orig idxs
-      -- forward: the copy's recursor, one case per constructor
-      let recTy ← instantiateForall
-        (recInfo.type.instantiateLevelParams recInfo.levelParams recLevels) ps
-      let mtypes ← forallBoundedTelescope recTy (some ctorNames.size) fun mvs _ =>
-        mvs.mapM inferType
-      let motives ← bridgeMotives b j mtypes
-      let afterMotives ← instantiateForall recTy motives
-      let nCases := ctorNames.foldl (fun n cs => n + cs.size) 0
-      let ctypes ← forallBoundedTelescope afterMotives (some nCases) fun cvs _ =>
-        cvs.mapM inferType
-      let mut cases : Array Expr := #[]
-      for i in *...ctorNames.size do
-        for q in *...ctorNames[i]!.size do
-          let cty := ctypes[cases.size]!
-          cases := cases.push (← forallTelescope cty fun bs _ => do
-            if i != j then
-              mkLambdaFVars bs (.const ``True.intro [])
-            else
-              -- the leading arguments of the copy's constructor are the extras
-              -- and then the original constructor's own fields; the rest of the
-              -- case's binders are induction hypotheses, which a bridged member
-              -- never needs
-              let n := s.extras.size + (← getConstInfoCtor s.ctors[q]!).numFields
-              let xs' := bs.extract 0 s.extras.size
-              let flds := bs.extract s.extras.size n
-              mkLambdaFVars bs
-                (mkAppN (.const s.ctors[q]! s.levels) (b.paramsAt xs' ++ flds)))
-      let fwd := mkAppN (.const (s.name ++ `rec) recLevels) (ps ++ motives ++ cases ++ xs ++ idxs)
-      -- backward: the original's recursor, rebuilding each constructor as the copy's
+  -- The copies in a group all come of one nesting, so they share the locals
+  -- abstracted out of it and the universes it was written at.  They need not be
+  -- one family, and need not even be of one type constructor.
+  unless group.all (fun (_, b) => b.spec.extras == s0.extras && b.spec.levels == s0.levels) do
+    throwError "the copies in this group were not taken at one nesting"
+  let selves := group.map fun (_, b) => b.spec.name
+  let bridgeOf (i : Nat) : Option Bridge := (group.find? (·.1 == i)).map (·.2)
+  withExtras s0 fun xs => do
+    let sortOf (s : AuxSpec) : MetaM Level :=
+      forallTelescope (s.resType.instantiateRev xs) fun _ sortE => do
+        let .sort l := sortE | throwError "the copy does not end in a sort"
+        return l
+    let lvl ← sortOf s0
+    let isProp := lvl.normalize.isZero
+    -- a group is crossed by one recursor pass at one motive universe, so a
+    -- `Prop` copy and a data copy cannot be in it together
+    for (_, b) in group do
+      unless (← sortOf b.spec).normalize.isZero == isProp do
+        throwError "the group has a `Prop` copy and a data copy in it"
+    -- the recursor's motive universe is the one level it does not share with
+    -- the block.  A `Prop` copy asks only for a proposition, so it goes to
+    -- zero; a data copy asks for the type it copies, and its recursor has to
+    -- eliminate that far
+    let mlvl := if isProp then Level.zero else lvl
+    let unit    := if isProp then .const ``True [] else .const ``PUnit [mlvl]
+    let unitVal := if isProp then .const ``True.intro [] else .const ``PUnit.unit [mlvl]
+    -- the two statements, which are all that is needed to stand a member in for
+    -- itself while the others are being built
+    let statements ← group.mapM fun (_, b) =>
+      b.withSides ownLevels ps xs fun _ lhs rhs bs => do
+        return (← mkForallFVars bs (← mkArrow lhs rhs), ← mkForallFVars bs (← mkArrow rhs lhs))
+    -- Which copy a motive of a recursor is for is read off the application it
+    -- quantifies over.  A mutual family's recursor has a motive at each member;
+    -- the recursor of a type that is itself nested has one at the type it nests
+    -- through, which is no member of its family at all.
+    let copyOfDomain (dty : Expr) : MetaM (Option (Nat × Bridge)) := do
+      let some hd := dty.getAppFn.constName? | return none
+      let some (.inductInfo hi) := (← getEnv).find? hd | return none
+      let dps := dty.getAppArgs.extract 0 hi.numParams
+      let mut hit : Option (Nat × Bridge) := none
+      for (j, b) in group do
+        if hit.isNone && b.spec.indName == hd then
+          let key := mkAppN (.const b.spec.indName b.spec.levels) (b.paramsAt xs)
+          if ← isDefEq (mkAppN (.const hd b.spec.levels) dps) key then
+            hit := some (j, b)
+      return hit
+    withLocalDeclsD (statements.map fun (t, _) => (`fwd_, fun _ => pure t)) fun fvs => do
+    withLocalDeclsD (statements.map fun (_, t) => (`bwd_, fun _ => pure t)) fun bvs => do
+    -- a field at a copy the recursor in hand cannot settle crosses on that
+    -- copy's own direction, which need not exist yet: the variable stands for
+    -- it until the order in which they go in has been worked out
+    let posIn (sel : Array Name) (vars : Array Expr) : Name → Option Expr := fun n =>
+      (sel.idxOf? n).map fun i => vars[i]!
+    let overF := posIn selves fvs
+    let overB := posIn selves bvs
+    -- Backward: the original's recursor, rebuilding each constructor as the
+    -- copy's.  A motive with no copy behind it -- a family member this nesting
+    -- never reached -- goes to `unit`, as do its cases.
+    let bwdDataFor (b : Bridge) : MetaM BwdData := do
+      let s := b.spec
+      let bparams := b.paramsAt xs
+      let some origRec := (← getEnv).find? (s.indName ++ `rec)
+        | throwError "`{s.indName}` has no recursor"
+      -- the original's recursor puts its motive universe first, if it has one
+      let bLevels :=
+        if origRec.levelParams.length == s.levels.length + 1 then mlvl :: s.levels else s.levels
+      unless origRec.levelParams.length == bLevels.length do
+        throwError "`{s.indName}.rec` takes {origRec.levelParams.length} universes, not \
+          {bLevels.length}"
       let origTy ← instantiateForall
-        (origRec.type.instantiateLevelParams origRec.levelParams origLevels) params
-      let omtype ← forallBoundedTelescope origTy (some 1) fun mvs _ => inferType mvs[0]!
-      let omotive ← forallTelescope omtype fun ys _ =>
-        mkLambdaFVars ys (mkAppN (.const s.name ownLevels) (ps ++ xs ++ ys.extract 0 (ys.size - 1)))
-      let afterOMotive ← instantiateForall origTy #[omotive]
-      let otypes ← forallBoundedTelescope afterOMotive (some s.ctors.size) fun cvs _ =>
-        cvs.mapM inferType
-      let mut minors : Array Expr := #[]
-      for q in *...s.ctors.size do
-        minors := minors.push (← forallTelescope otypes[q]! fun bs _ => do
-          let n := (← getConstInfoCtor s.ctors[q]!).numFields
-          mkLambdaFVars bs
-            (mkAppN (.const ctorNames[j]![q]! ownLevels) (ps ++ xs ++ bs.extract 0 n)))
-      let bwd := mkAppN (.const (s.indName ++ `rec) origLevels)
-        (params ++ #[omotive] ++ minors ++ idxs)
-      let proof := mkApp3 (.const ``propext []) lhs rhs
-        (mkApp4 (.const ``Iff.intro []) lhs rhs fwd bwd)
-      let type ← mkForallFVars (ps ++ xs ++ idxs) (← mkEq lhs rhs)
-      let value ← mkLambdaFVars (ps ++ xs ++ idxs) proof
-      -- check before adding: `addDecl` reports a bad declaration rather than
-      -- refusing it, and a bridge must never be able to say anything
-      check value
-      unless ← isDefEq (← inferType value) type do return
-      addDecl (.thmDecl { name := s.name ++ `eq_orig, levelParams := inp.levelParams, type, value })
-      -- the coercions are the two halves of the `Iff`, not a `cast` along the
-      -- equality: `propext` is what makes the two *types* equal, and nothing
-      -- that merely moves a value between them should have to depend on it
-      let bs := ps ++ xs ++ idxs
-      mkCoe (origCoeName s.name) inp.levelParams bs lhs rhs fwd
-      mkCoe (s.name ++ `coeOfOrig) inp.levelParams bs rhs lhs bwd
+        (origRec.type.instantiateLevelParams origRec.levelParams bLevels) bparams
+      -- the leading binders whose own type ends in a sort are the motives
+      let nM ← forallTelescope origTy fun mvs _ => do
+        let mut n := 0
+        for m in mvs do
+          let isS ← forallTelescope (← inferType m) fun _ c => pure c.isSort
+          unless isS do break
+          n := n + 1
+        return n
+      let mtypes ← forallBoundedTelescope origTy (some nM) fun mvs _ => mvs.mapM inferType
+      let mut mFor  : Array (Option (Nat × Bridge)) := #[]
+      let mut heads : Array Name := #[]
+      for mt in mtypes do
+        let (hit, hd) ← forallTelescope mt fun ys _ => do
+          let some last := ys.back?
+            | throwError "a motive of `{s.indName}.rec` quantifies over nothing"
+          let dty ← inferType last
+          let some hd := dty.getAppFn.constName?
+            | throwError "a motive of `{s.indName}.rec` is not at an inductive type"
+          return (← copyOfDomain dty, hd)
+        mFor := mFor.push hit
+        heads := heads.push hd
+      let some k0 := mFor.findIdx? (fun h => h.any (·.2.spec.name == s.name))
+        | throwError "`{s.indName}.rec` has no motive for the copy being bridged"
+      let mut omotives : Array Expr := #[]
+      for k in *...nM do
+        omotives := omotives.push (← forallTelescope mtypes[k]! fun ys _ =>
+          match mFor[k]! with
+          | none => mkLambdaFVars ys unit
+          | some (_, bj) => mkLambdaFVars ys
+              (mkAppN (.const bj.spec.name ownLevels) (ps ++ xs ++ ys.extract 0 (ys.size - 1))))
+      let mut nOMinors := 0
+      for h in heads do nOMinors := nOMinors + (← getConstInfoInduct h).ctors.length
+      let (otypes, opairings) ←
+        minorsOf m!"`{s.indName}.rec`" origTy omotives nOMinors
+      -- a field at a copy this recursor has a motive for arrives as an
+      -- induction hypothesis; one at a copy it does not have to cross
+      let covered := mFor.filterMap (·.map (·.2.spec.name))
+      let mut ominors : Array Expr := #[]
+      for k in *...nM do
+        let kctors := (← getConstInfoInduct heads[k]!).ctors.toArray
+        let copy? := mFor[k]!
+        for q in *...kctors.size do
+          let idx := ominors.size
+          let some mnr ← (forallTelescope otypes[idx]! fun bs _ => do
+            let some (jk, _) := copy? | return some (← mkLambdaFVars bs unitVal)
+            let n := (← getConstInfoCtor kctors[q]!).numFields
+            let flds := bs.extract 0 n
+            let some ihFor := opairings[idx]! | return none
+            -- The copy's own constructor is what says which of the original's
+            -- fields stands for a copy, and at which arguments.  It need not be a
+            -- kernel constructor: lowering leaves the user-visible ones as
+            -- definitions over the shadow block it built, so only the type can be
+            -- asked for.
+            let ci ← getConstInfo ctorNames[jk]![q]!
+            let cct ← instantiateForall
+              (ci.type.instantiateLevelParams ci.levelParams ownLevels) (ps ++ xs)
+            let some args ← bridgeArgs flds (bs.extract n bs.size) (copyFieldTypes cct flds)
+                ihFor covered `ofOrig ownLevels memberNames overB | return none
+            return some (← mkLambdaFVars bs
+              (mkAppN (.const ctorNames[jk]![q]! ownLevels) (ps ++ xs ++ args))))
+            | throwError "no arguments for `{kctors[q]!}` going back"
+          ominors := ominors.push mnr
+      return { levels := bLevels, params := bparams, motives := omotives, minors := ominors,
+               selfMot := omotives[k0]!, numPs := (← getConstInfoInduct s.indName).numParams }
+    -- Forward: each copy's recursor, one case per constructor it asks about.
+    -- That is every member of the lowered block -- unless lowering managed to
+    -- give this copy a recursor over fewer, in which case only those get a
+    -- hypothesis and the rest of the group is crossed.
+    let mut built : Array DirData := #[]
+    for gp in *...group.size do
+      let (jm, b) := group[gp]!
+      try
+        let s := b.spec
+        let some recInfo := (← getEnv).find? (s.name ++ `rec)
+          | throwError "the copy has no recursor"
+        let recLevels := recInfo.levelParams.map fun p =>
+          if inp.levelParams.contains p then .param p else mlvl
+        let recTy ← instantiateForall
+          (recInfo.type.instantiateLevelParams recInfo.levelParams recLevels) ps
+        let mIdxs ← forallBoundedTelescope recTy (some ctorNames.size) fun mvs _ => do
+          let mut out : Array Nat := #[]
+          for m in mvs do
+            let k? ← forallTelescope (← inferType m) fun ys c => do
+              unless c.isSort do return none
+              let some last := ys.back? | return none
+              let some hd := (← inferType last).getAppFn.constName? | return none
+              return memberNames.idxOf? hd
+            let some k := k? | break
+            out := out.push k
+          return out
+        unless mIdxs.contains jm do
+          throwError "the copy's recursor has no motive for it"
+        let mtypes ← forallBoundedTelescope recTy (some mIdxs.size) fun mvs _ =>
+          mvs.mapM inferType
+        let motives ← bridgeMotives bridgeOf unit mIdxs mtypes
+        -- only the copies this recursor reaches have a hypothesis to offer
+        let fselves := mIdxs.filterMap fun i => (bridgeOf i).map (·.spec.name)
+        let nCases := mIdxs.foldl (fun n i => n + ctorNames[i]!.size) 0
+        let (ctypes, pairings) ←
+          minorsOf m!"the copy's recursor" recTy motives nCases
+        let mut cases : Array Expr := #[]
+        for i in mIdxs do
+          let bi? := bridgeOf i
+          for q in *...ctorNames[i]!.size do
+            let idx := cases.size
+            let some cse ← (forallTelescope ctypes[idx]! fun bs _ => do
+              let some bi := bi? | return some (← mkLambdaFVars bs unitVal)
+              let si := bi.spec
+              -- the leading arguments of the copy's constructor are the extras and
+              -- then the original constructor's own fields; the rest of the case's
+              -- binders are the induction hypotheses
+              let n := si.extras.size + (← getConstInfoCtor si.ctors[q]!).numFields
+              let xs' := bs.extract 0 si.extras.size
+              let flds := bs.extract si.extras.size n
+              let some ihFor := pairings[idx]! | return none
+              let some args ← bridgeArgs flds (bs.extract n bs.size) (← flds.mapM inferType)
+                  (ihFor.extract si.extras.size ihFor.size) fselves `toOrig ownLevels memberNames
+                  overF
+                | return none
+              return some (← mkLambdaFVars bs
+                (mkAppN (.const si.ctors[q]! si.levels) (bi.paramsAt xs' ++ args))))
+              | throwError "no arguments for `{ctorNames[i]![q]!}` going forwards"
+            cases := cases.push cse
+        let bwd ← bwdDataFor b
+        let (typeFwd, typeBwd) := statements[gp]!
+        let d ← b.withSides ownLevels ps xs fun idxs lhs rhs bs => do
+          let fwdE := mkAppN (.const (s.name ++ `rec) recLevels)
+            (ps ++ motives ++ cases ++ xs ++ idxs)
+          let bwdE := mkAppN (.const (s.indName ++ `rec) bwd.levels)
+            (bwd.params ++ bwd.motives ++ bwd.minors ++ idxs)
+          let eq? ← if isProp then
+              let proof := mkApp3 (.const ``propext []) lhs rhs
+                (mkApp4 (.const ``Iff.intro []) lhs rhs fwdE bwdE)
+              pure (some (← mkForallFVars bs (← mkEq lhs rhs), ← mkLambdaFVars bs proof))
+            else pure none
+          return { gpos := gp, member := jm, typeFwd, typeBwd,
+                   valueFwd := ← mkLambdaFVars bs fwdE, valueBwd := ← mkLambdaFVars bs bwdE,
+                   eq?, motiveJ := motives[mIdxs.idxOf jm]!, bwd }
+        -- Check before adding: `addDecl` reports a bad declaration rather than
+        -- refusing it, and a bridge must never be able to say anything.  A
+        -- variable standing in for a sibling has exactly the type the constant
+        -- replacing it will have, so what is checked here is what goes in.
+        let checked (what : String) (type value : Expr) : MetaM Unit := do
+          check value
+          unless ← isDefEq (← inferType value) type do
+            throwError "{what}: {← inferType value} is not {type}"
+        checked "forwards" d.typeFwd d.valueFwd
+        checked "backwards" d.typeBwd d.valueBwd
+        if let some (type, value) := d.eq? then checked "the equality" type value
+        built := built.push d
+      catch e =>
+        trace[Mumi] "no bridge from `{b.spec.name}` to `{b.spec.indName}`: {e.toMessageData}"
+    -- A definition can only name one already in the environment, so those that
+    -- crossed on a sibling go in after it.  A cycle would need them defined
+    -- simultaneously, which no recursor can do, so a member left in one is
+    -- dropped -- as is one waiting on a sibling that could not be built.
+    let ids := (fvs ++ bvs).map (·.fvarId!)
+    let needs := built.map fun d =>
+      (Array.range group.size).filter fun j =>
+        j != d.gpos &&
+          [d.valueFwd, d.valueBwd].any fun v =>
+            v.hasAnyFVar fun i => i == ids[j]! || i == ids[group.size + j]!
+    let mut ord : Array Nat := #[]
+    let mut changed := true
+    while changed do
+      changed := false
+      for k in *...built.size do
+        unless ord.contains k do
+          let ready := needs[k]!.all fun j =>
+            match built.findIdx? (·.gpos == j) with
+            | none   => false
+            | some i => i == k || ord.contains i
+          if ready then
+            ord := ord.push k
+            changed := true
+    if ord.isEmpty then return
+    -- what stayed has been checked, and can now be said in terms of itself
+    let names := ord.map fun k => group[built[k]!.gpos]!.2.spec.name
+    let toConsts (e : Expr) : Expr := e.replaceFVars (fvs ++ bvs)
+      ((group.map fun (_, b) => .const (b.spec.name ++ `toOrig) ownLevels) ++
+       (group.map fun (_, b) => .const (b.spec.name ++ `ofOrig) ownLevels))
+    let ok := ord.map fun k =>
+      let d := built[k]!
+      { d with valueFwd := toConsts d.valueFwd, valueBwd := toConsts d.valueBwd,
+               eq? := d.eq?.map fun (t, v) => (t, toConsts v) }
+    if isProp then
+      -- an implication between propositions is a theorem, and nothing the code
+      -- generator has to be told about
+      for k in *...ok.size do
+        let d := ok[k]!
+        addDecl (.thmDecl { name := names[k]! ++ `toOrig, levelParams := inp.levelParams,
+                            type := d.typeFwd, value := d.valueFwd })
+        addDecl (.thmDecl { name := names[k]! ++ `ofOrig, levelParams := inp.levelParams,
+                            type := d.typeBwd, value := d.valueBwd })
+        if let some (type, value) := d.eq? then
+          addDecl (.thmDecl
+            { name := names[k]! ++ `eq_orig, levelParams := inp.levelParams, type, value })
+    else
+      -- Each direction is a recursor application, which the code generator
+      -- cannot take, so each is given a compiled companion; if that does not go
+      -- through the definition stays `noncomputable`, and the error at the use
+      -- site then names `toOrig` rather than a recursor the writer never
+      -- mentioned.  The group's companions in one direction go in together,
+      -- since a family that reaches itself needs them mutually recursive.
+      let csLevels? (n : Name) : MetaM (Option (List Level)) := do
+        let some ci := (← getEnv).find? n | return none
+        return some (ci.levelParams.map fun p =>
+          if inp.levelParams.contains p then .param p else mlvl)
+      -- a field at a sibling crosses by the variable standing for that sibling's
+      -- companion, which is what ties the block together
+      let over := posIn names
+      let fwdDs := ok.mapIdx fun k d => (names[k]! ++ `toOrig, d.typeFwd, d.valueFwd)
+      let bwdDs := ok.mapIdx fun k d => (names[k]! ++ `ofOrig, d.typeBwd, d.valueBwd)
+      -- a direction goes in whole or not at all, so one member the `casesOn`
+      -- cannot be written for gives up the whole group's companions
+      let bodiesOf (f : Nat → DirData → Bridge → Array Expr → Expr → Expr →
+            Array Expr → MetaM (Option Expr)) (vars : Array Expr) :
+          MetaM (Option (Array Expr)) := do
+        let mut bodies : Array Expr := #[]
+        for k in *...ok.size do
+          let d := ok[k]!
+          let b := group[d.gpos]!.2
+          let some body ← (b.withSides ownLevels ps xs fun idxs lhs rhs bs => do
+            let some e ← f k d b idxs lhs rhs vars | return none
+            return some (← mkLambdaFVars bs e))
+            | return none
+          bodies := bodies.push body
+        return some bodies
+      addDirections inp.levelParams fwdDs <| bodiesOf fun k d b idxs lhs _ vars => do
+        let s := b.spec
+        let some csLevels ← csLevels? (s.name ++ `casesOn) | return none
+        -- a recursive field of the copy is the copy at its own arguments, and
+        -- those are exactly the arguments the companion takes
+        implDirection (s.name ++ `casesOn) csLevels ps d.motiveJ
+          (xs ++ idxs) lhs ctorNames[d.member]!.size s.extras.size s.name `toOrig ownLevels
+          memberNames (over vars) (fun _ fs => fs.mapM inferType)
+          (fun concl => mkAppN vars[k]! concl.getAppArgs)
+          (fun q lead args => mkAppN (.const s.ctors[q]! s.levels) (b.paramsAt lead ++ args))
+      addDirections inp.levelParams bwdDs <| bodiesOf fun k d b idxs _ rhs vars => do
+        let s := b.spec
+        -- the original's parameters are fixed by the extras, so a recursive
+        -- field of the original differs from this one only in its indices
+        implDirection (s.indName ++ `casesOn) d.bwd.levels d.bwd.params
+          d.bwd.selfMot idxs rhs s.ctors.size 0 s.name `ofOrig ownLevels
+          memberNames (over vars)
+          (fun q fs => do
+            let ci ← getConstInfo ctorNames[d.member]![q]!
+            return copyFieldTypes (← instantiateForall
+              (ci.type.instantiateLevelParams ci.levelParams ownLevels) (ps ++ xs)) fs)
+          (fun concl => mkAppN vars[k]!
+            (ps ++ xs ++ concl.getAppArgs.extract d.bwd.numPs concl.getAppArgs.size))
+          (fun q _ args =>
+            mkAppN (.const ctorNames[d.member]![q]! ownLevels) (ps ++ xs ++ args))
+    -- The coercions name the two directions, so they come last.  For a `Prop`
+    -- copy those are the two halves of the `Iff` rather than a `cast` along the
+    -- equality: `propext` is what makes the two *types* equal, and nothing that
+    -- merely moves a value between them should depend on it.
+    for k in *...ok.size do
+      let d := ok[k]!
+      let s := group[d.gpos]!.2.spec
+      group[d.gpos]!.2.withSides ownLevels ps xs fun _ lhs rhs bs => do
+        let (t, v) ← coeDecl bs lhs rhs (mkAppN (.const (s.name ++ `toOrig) ownLevels) bs)
+        addCoe (origCoeName s.name) inp.levelParams t v
+        let (t, v) ← coeDecl bs rhs lhs (mkAppN (.const (s.name ++ `ofOrig) ownLevels) bs)
+        addCoe (s.name ++ `coeOfOrig) inp.levelParams t v
 
 /--
 Add one member per distinct nested application, rewrite the constructors to
@@ -526,7 +1171,7 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       let mut memberFVars := inp.memberFVars
       let mut ctorNames   := inp.ctorNames
       let mut ctorTypes   := inp.ctorTypes
-      let mut bridgeOk    : Array Bool := #[]
+      let mut bridgeDeps  : Array (Option (Array Nat)) := #[]
       -- any of the block's own constructors will do: they all carry the same
       -- parameters, and an auxiliary member only exists because one of them
       -- nests something, so there is always at least one
@@ -542,36 +1187,99 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
         memberNames := memberNames.push s.name
         memberTypes := memberTypes.push auxTypes[j]!
         memberFVars := memberFVars.push auxFVars[j]!
-        let (cts, ok) ← withExtras s fun xs => do
+        let (cts, deps) ← withExtras s fun xs => do
           let params := s.paramsAbs.map (·.instantiateRev xs)
           let mut cts : Array Expr := #[]
-          let mut ok := true
+          let mut deps : Option (Array Nat) := some #[]
           for ctor in s.ctors do
             let cinfo ← getConstInfoCtor ctor
             let cty ← instantiateForall
               (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
             let rw ← c.pi cty
-            unless ← fieldsClean auxFVars rw do ok := false
+            match ← fieldsBridgeable auxFVars j rw with
+            | none    => deps := none
+            | some ds => if let some acc := deps then deps := some (acc ++ ds)
             let full ← mkForallFVars (ps ++ xs) rw
             cts := cts.push (match model? with
               | some m => withLeadingBinderInfo inp.numParams m full
               | none   => full)
-          return (cts, ok)
+          return (cts, deps)
         ctorNames := ctorNames.push (s.ctors.map (reroot s.indName s.name))
         ctorTypes := ctorTypes.push cts
-        bridgeOk := bridgeOk.push ok
-      let out ← k { inp with memberNames, memberTypes, memberFVars, ctorNames, ctorTypes }
+        bridgeDeps := bridgeDeps.push deps
+      let out ← k { inp with memberNames, memberTypes, memberFVars, ctorNames, ctorTypes,
+                             localIndices := st.specs.any (!·.extras.isEmpty) }
       -- the members exist now, so the copies can be identified with the originals
       let ownLevels := inp.levelParams.map Level.param
       let vars := ps.extract 0 inp.numVars
       let repl := inp.memberNames.map fun n => mkAppN (.const n ownLevels) vars
-      for j in *...st.specs.size do
-        if bridgeOk[j]! then
-          let b : Bridge := { spec := st.specs[j]!, members, repl }
+      -- Copies that reach each other cannot be crossed one at a time: nesting
+      -- over a mutual family copies every member of it, and `Rose`'s copy has a
+      -- field at `Forest`'s exactly as `Forest`'s has one at `Rose`'s, so
+      -- neither bridge can be built before the other.  Those go together, and
+      -- the groups are precisely the cycles of the dependency graph.  Being of
+      -- one family is not enough on its own: two members of a `mutual` block
+      -- that do not actually reach each other are still bridged one at a time,
+      -- and the second then crosses its field on the first's bridge.
+      let n := st.specs.size
+      let mut reach : Array (Array Bool) := Array.replicate n (Array.replicate n false)
+      for j in *...n do
+        if let some ds := bridgeDeps[j]! then
+          for k in ds do
+            if k < n then reach := reach.modify j (·.set! k true)
+      for m in *...n do
+        for j in *...n do
+          if reach[j]![m]! then
+            for k in *...n do
+              if reach[m]![k]! then reach := reach.modify j (·.set! k true)
+      let mut gid    : Array Nat := Array.replicate n n
+      let mut groups : Array (Array Nat) := #[]
+      for j in *...n do
+        if gid[j]! != n then continue
+        let g := groups.size
+        let mut mem : Array Nat := #[j]
+        gid := gid.set! j g
+        for k in *...n do
+          if k > j && gid[k]! == n && reach[j]![k]! && reach[k]![j]! then
+            gid := gid.set! k g
+            mem := mem.push k
+        groups := groups.push mem
+      -- A group that leans on another group's bridges only has them if that one
+      -- does, and has to be built after it.  Which comes first is not decided by
+      -- the order they were interned in -- two occurrences of the same nesting
+      -- share one member, so `List (List T)` finds its inner copy already
+      -- there -- so the order is worked out here instead.  Nesting is well
+      -- founded, so taking whichever group is ready next always finishes.
+      let mut built : Array Bool := Array.replicate st.specs.size false
+      let mut done  : Array Bool := Array.replicate groups.size false
+      let mut progress := true
+      while progress do
+        progress := false
+        for g in *...groups.size do
+          if done[g]! then continue
+          let mut ready := true
+          for j in groups[g]! do
+            match bridgeDeps[j]! with
+            | none    => ready := false
+            | some ds => unless ds.all (fun k =>
+                k < st.specs.size && (gid[k]! == g || built[k]!)) do ready := false
+          unless ready do continue
+          done := done.set! g true
+          progress := true
+          let grp := groups[g]!.map fun j =>
+            (inp.memberNames.size + j, ({ spec := st.specs[j]!, members, repl } : Bridge))
           -- a bridge is a convenience; never let one failing take the block with it
           try
-            mkBridge inp ps ctorNames (inp.memberNames.size + j) b
-          catch _ => pure ()
+            mkBridges inp ps ctorNames memberNames grp
+          catch e =>
+            let s := st.specs[groups[g]![0]!]!
+            trace[Mumi] "no bridge from `{s.name}` to `{s.indName}`: {e.toMessageData}"
+          -- what the copies that lean on these need is the pair of directions,
+          -- so whether they can go ahead is exactly whether it is there -- not
+          -- whether `mkBridges` was asked to build it
+          for j in groups[g]! do
+            if (← getEnv).contains (st.specs[j]!.name ++ `toOrig) then
+              built := built.set! j true
       return out
 
 /-- Do the members of the block end up in more than one universe? -/

@@ -172,3 +172,84 @@ recursor to it, registered with `@[csimp]`. -/
 /-- info: 'B.mutualRec.impl' does not depend on any axioms -/
 #guard_msgs in
 #print axioms B.mutualRec.impl
+
+/-! ## A member the lowering does not have to touch
+
+`Small` and `Huge` are one `mutual` block and two universes, so Lean will not
+take them.  But they are not mutually recursive: `Huge` mentions `Small` and
+`Small` does not mention `Huge`, so the block is two strongly connected
+components, each of them homogeneous on its own.
+
+The lowering emits such a component natively, and "natively" is meant strictly.
+`Small.rec` is the recursor Lean would have written -- one motive, no copies --
+so the `induction` tactic takes it, a function defined by pattern matching finds
+its decreasing measure, and neither the type nor anything built from it picks up
+an axiom.  What the lowering adds is the recursor the writer asked for by
+putting the two in one block: `Small.mutualRec` has a motive for each, and it is
+axiom-free too, because there was no shadow block to quotient by.
+-/
+
+namespace NativeScc
+
+mutual
+inductive Small : Type where
+  | nil
+  | s : Small → Small
+inductive Huge : Type 1 where
+  | of : Type → Huge
+  | c : Small → Huge
+end
+
+/--
+info: @Small.rec : {motive : Small → Sort u_1} →
+  motive Small.nil → ((a : Small) → motive a → motive a.s) → (t : Small) → motive t
+-/
+#guard_msgs in
+#check @Small.rec
+
+/--
+info: @Huge.rec : {motive : Huge → Sort u_1} →
+  ((a : Type) → motive (Huge.of a)) → ((a : Small) → motive (Huge.c a)) → (t : Huge) → motive t
+-/
+#guard_msgs in
+#check @Huge.rec
+
+/--
+info: @Small.mutualRec : {motive_1 : Small → Sort u_1} →
+  {motive_2 : Huge → Sort u_2} →
+    motive_1 Small.nil →
+      ((a : Small) → motive_1 a → motive_1 a.s) →
+        ((a : Type) → motive_2 (Huge.of a)) →
+          ((a : Small) → motive_1 a → motive_2 (Huge.c a)) → (t : Small) → motive_1 t
+-/
+#guard_msgs in
+#check @Small.mutualRec
+
+-- the `induction` tactic, which needs a single-motive recursor
+example (x : Small) : True := by
+  induction x with
+  | nil => trivial
+  | s _ ih => exact ih
+
+-- structural recursion, which needs the argument to be a subterm
+def depth : Small → Nat
+  | .nil => 0
+  | .s x => depth x + 1
+
+/-- info: 2 -/
+#guard_msgs in
+#eval depth (.s (.s .nil))
+
+/-- info: 'NativeScc.Small.rec' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Small.rec
+
+/-- info: 'NativeScc.Small.mutualRec' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Small.mutualRec
+
+/-- info: 'NativeScc.depth' does not depend on any axioms -/
+#guard_msgs in
+#print axioms depth
+
+end NativeScc

@@ -138,9 +138,9 @@ between a copy and its original cannot hide behind it.
 
 **Nested inductives that already work are untouched.** Denesting is the kernel's
 own feature, so `Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates
-the declaration first, and only if that fails — and only if denesting is what
-made the block heterogeneous — do we denest it ourselves. Anything else is
-rolled back and Lean's error rethrown verbatim.
+the declaration first, and only if that fails, and only if denesting it ourselves
+yields something Lean could not have yielded, do we take the block over. Anything
+else is rolled back and Lean's error rethrown verbatim.
 
 Doing it in the elaborator lifts a second kernel restriction along the way, that
 a nested application's parameters be closed:
@@ -155,6 +155,39 @@ inductive Ix : Nat → Type where
 
 `Ix n` mentions a constructor field, so there is no single member it could
 become; we abstract the field and make it an *index* of the auxiliary member.
+
+That is the second thing denesting can yield that Lean cannot, and it is a reason
+to take a block over in its own right — the result need not be heterogeneous at
+all. A plain data nesting whose parameter mentions a field works the same way:
+
+```lean
+inductive Wrap (α : Type) (n : Nat) | mk (a : α)
+
+inductive A where
+  | tip
+  | mk (n : Nat) (v : List (Wrap A n))     -- same kernel refusal, same rescue
+
+#check @A.mk    -- (n : Nat) → List (Wrap A n) → A
+```
+
+so does the same shape inside a `mutual` of data members.
+
+Both retries recognise this shape, and the induction-inductive one is offered it
+first, because that route can state the block back over the type it copied: it
+is `A.mk 3 [.mk .tip]` written with list syntax, and `A.rec`'s minor premises
+are `List`'s own. The price is the one that route always charges — `A.mk` is a
+`def`, so `match` and `cases` do not work on it, and one recursor serves the
+whole block.
+
+Lowering relates a data copy to its original too, but by an isomorphism rather
+than an equality, which is the most that can be true of two distinct data types.
+Each copy gets `toOrig` and `ofOrig` and a coercion each way, so a list already
+in hand goes in and comes out, and both directions compile. What it does not get
+is the display: a `Prop` copy is *equal* to its original and can be shown as it,
+and a data copy has to be shown under its own name. Which copies are settled
+together is read off the recursor, so a copy reached through another copy —
+`RL` defined through `List (RL α)`, nested in a heterogeneous block — is bridged
+in the same pass, and a cycle of them goes in as one mutually recursive group.
 `MumiTests/Nested.lean` covers all of this.
 
 ### How it works
@@ -207,9 +240,9 @@ inductive Fresh : String → Ctx → Prop where             -- unknown identifie
 end
 ```
 
-`Mumi` takes such a block when the dependency runs **only through proofs** —
-every field of a data constructor whose type mentions a `Prop` member is itself
-a proof. Every member then gets a recursor stated over the block as written, and
+`Mumi` takes such a block when it is **narrow** — every field of a data
+constructor whose type mentions a `Prop` member is itself a proof. Every member
+then gets a recursor stated over the block as written, and
 they are all the *same* recursion: one `Sort u` motive per data member, and one
 `Prop` motive per predicate, each taking the value the data motive produced at
 the index it is about. That last argument is the point — it is what lets a proof
@@ -230,26 +263,88 @@ theorem Fresh.not_mem {x : String} {Γ : Ctx} (h : Fresh x Γ) : x ∉ Γ.names 
     x Γ h
 ```
 
+The dependency need not run through a proof. A *data* member's arity may mention
+the block as well, which is the shape every dependent type theory is written in:
+
+```lean
+mutual
+inductive Ctx : Type where
+  | nil  : Ctx
+  | snoc : (Γ : Ctx) → Ty Γ → Ctx
+inductive Ty : Ctx → Type where
+  | base : (Γ : Ctx) → Ty Γ
+  | pi   : (Γ : Ctx) → (A : Ty Γ) → Ty (Ctx.snoc Γ A) → Ty Γ
+inductive Tm : (Γ : Ctx) → Ty Γ → Type where
+  | var : (Γ : Ctx) → (A : Ty Γ) → Tm (Ctx.snoc Γ A) (Ty.base (Ctx.snoc Γ A))
+  | lam : (Γ : Ctx) → (A : Ty Γ) → (B : Ty (Ctx.snoc Γ A)) →
+      Tm (Ctx.snoc Γ A) B → Tm Γ (Ty.pi Γ A B)
+end
+
+#check @Tm.rec
+-- … → ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A →
+--        motive_3 (Γ.snoc A) (Ty.base (Γ.snoc A)) (Tm.var Γ A)) → …
+```
+
+An index like `Ty`'s is *deleted*: the pre-world has no `Ctx` to state a `Ty` at,
+so `Ty._pre` carries no index and the well-formedness puts a `Ctx._pre` back. A
+constructor either gives a deleted index as a field of its own or **builds** it —
+`Tm.var` builds both of its, the second out of the first — and the alternative is
+handed the index the recursion arrived at rather than the constructor's reading
+of it, with the equation the well-formedness carries to get from the one to the
+other. What comes out is the alternative the block was written with, and terms
+compute.
+
 Motives and minor premises are named as they are for a Lean `mutual` —
 `motive_1 … motive_n` in block order (just `motive` when a recursor has one),
 minors after their constructors with repeats numbered — so `induction Γ using
 Ctx.rec with | nil | snoc … | nil_1 | snoc_1` reads the way it would for a real
-inductive. A predicate's recursor is for term mode: `induction … using` reads an
-eliminator's targets only up to the first motive argument that is not a local
-variable, and for a predicate motive that is the data value. Wrapping it once,
-as `MumiTests/Roundtrip.lean` does, gives back the tactic.
+inductive.
+
+That recursor asks for every motive in the block, and a goal about one member
+determines only its own, so it is `using`-only — as a Lean `mutual` block's
+recursors are. So each member also gets a recursor with the others' motives
+discharged and one motive left:
+
+```lean
+#check @Ctx.recD    -- {motive : Ctx → Sort u_1} → …, every `Prop` motive at `True`
+#check @Fresh.recP  -- {motive : … → Prop} → …, every data motive at `Unit`
+
+example (Γ : Ctx) : True := by induction Γ with | nil => trivial | snoc Γ x h ih => trivial
+```
+
+Discharging a motive of the *other* kind costs nothing a proof of that shape
+could have used: `True` is what a goal with no predicate motive was going to
+prove at each proposition anyway, and `Unit` is what a proof about a predicate
+was going to compute at each data member. Discharging one of the same kind —
+two data members, or two propositions — does cost the hypotheses at the member
+that went, and is done anyway: a member here is a `def`, so a bare `induction`
+that finds no eliminator does not stop the way mainline stops a `mutual`, it
+unfolds the member and splits on the subtype. `X.recD` keeps the full `Sort u`
+elimination; `X.recP` lands in `Prop`, as the block-wide recursion does. Both
+are registered as the `induction` tactic's default eliminator for their member,
+so a bare `induction Γ` and a bare `induction h` work, and the corresponding
+`X.casesD` and `X.casesP` do the same for `cases`. `MumiTests/SoloRec.lean`
+pins which blocks get what.
 
 Every recursor is `@[elab_as_elim]`, which Lean gives its own recursors for free
 and a `def` has to be told, so an application generalises its motive over the
 major premise rather than taking whatever the expected type unifies with. The
-predicate recursors of an induction-inductive block are the exception, for the
-same reason they stay out of `induction … using`.
+block-wide recursor is the exception at a predicate: `Fresh.rec` is for term
+mode, because `induction … using` reads an eliminator's targets only up to the
+first motive argument that is not a local variable, and for a predicate motive
+that is the data value the proposition stands at. `Fresh.recP`, which has no
+data motive left to take one, is the one the tactic drives.
 
 A block keeps the older split — a data recursor with no predicate motives, and a
-separate recursor per predicate, free to eliminate into `Sort u` — when a `Prop`
-member is not indexed by exactly one data member, or when the block came from
-denesting and left copies behind. `set_option trace.Mumi true` reports which
-recursor a block got, and which ones took `@[elab_as_elim]`.
+separate recursor per predicate, free to eliminate into `Sort u` — in two cases.
+One is a `Prop` member not indexed by exactly one data member: a relation
+`Rel : Lst α → Lst α → Prop` is not a fact about either of its arguments, and
+there is no one value for the recursion to carry it alongside. The other is a
+`Prop` constructor whose index *pins* a field of the data constructor it stands
+at instead of naming it — `Short.cons (a : α) : Short (.cons a .nil)` fixes the
+tail to `.nil`, and the recursion, which has a call at that tail, would be left
+computing at a term it is not recursing on. `set_option trace.Mumi true` reports
+which recursor a block got, and which ones took `@[elab_as_elim]`.
 
 Any number of members of either kind are allowed, with parameters, universe
 parameters, indices on either kind, infinitary recursive fields, and members
@@ -297,24 +392,69 @@ originals anyway:
 #check @RecWFTree.rec
 -- {motive_1 : RecWFTree → Sort u_1} → {motive_2 : WFTree RecWFTree → Sort u_1} →
 --   {motive_3 : Tree RecWFTree → Sort u_1} →
---     ((x : WFTree RecWFTree) → motive_2 x → motive_1 (RecWFTree.mk x)) → … →
---       (t : RecWFTree) → motive_1 t
+--     {motive_4 : (a : Tree RecWFTree) → motive_3 a → Tree.WF RecWFTree a → Prop} →
+--       {motive_5 : (a : Tree RecWFTree) → (l : List Nat) → motive_3 a →
+--                     Tree.WFWith RecWFTree a l → Prop} →
+--         ((x : WFTree RecWFTree) → motive_2 x → motive_1 (RecWFTree.mk x)) → … →
+--           (t : RecWFTree) → motive_1 t
 ```
 
-This is the copies case, so it is a split recursor: the three data members share
-one, and `Tree.WF` and `Tree.WFWith` keep theirs. Written out by hand, without
-the copies, the same five members get the single recursor above — `motive_1 …
-motive_5`, the predicates included.
+Five members, five motives, seven minors — the same single recursor the block
+would get if it had been written out by hand, and none of it mentions a copy.
+The predicate motives are the reason to want it. Without them, the minor for
+`WFTree.mk (x : Tree α) (h : x.WF)` is handed a proof that the tree it was
+*given* is well-formed and asked for a value at the tree the recursion *built*,
+and nothing bridges the two: a map defined by recursion over `RecWFTree` gets
+stuck at exactly that step. With them, `motive_4` says the rebuilt tree is
+well-formed, the `WFWith` minors maintain it, and an isomorphism between two
+copies of this block is definable from the user-side constants alone — no
+`sorry`, no appeal to the underlying subtype, and no axioms.
 
 `RecWFTree._nested_mk` and `._nested_rec` are the kernel-facing forms; the plain
 names are built from them out of `X.ofOrig`, `X.toOrig` and the round-trip
 equation `X.ofOrig_toOrig`. The plain `.rec` is always free to take, because
 every member of a lowered block is a `def` and Lean generates no recursor of its
-own for it. The bridge is all or nothing: if any step fails — two copies that
-need each other have no order to build it in — the environment is rolled back
-and the plain names are the raw declarations again.
-`MumiTests/NestedIndInd.lean` pins that, along with parameters and indices
-carried into the copies.
+own for it. The bridge is all or nothing: if any step fails — a group of copies
+mixing data and `Prop` has no shape to compile in, one being a function and the
+other a theorem — the environment is rolled back and the plain names are the raw
+declarations again, which `set_option trace.Mumi.indind true` will say.
+
+Copies that need each other are found and built together rather than in
+sequence: `Rose α`, whose own field is a `List (Rose α)`, and the two members of
+a `mutual` family, since specialising one of those calls for specialising all of
+them. Each copy in such a group is given a real motive when the others are
+built, so a sibling arrives as an induction hypothesis instead of as a call to a
+declaration that does not exist yet.
+
+Only the type the writer declared gets its own name for the whole-block
+recursor. The other members of a denested block are types that already existed,
+and their `.rec` is Lean's own; the recursion over the enlarged block is reached
+through the writer's.
+
+`MumiTests/NestedIndInd.lean` pins the motivating block, along with parameters
+and indices carried into the copies, a nesting type that nests again
+(`Rose`, into `List (Rose _)`), one that is a member of a `mutual` family, and
+one applied to a field of the constructor it sits in, which copies a whole
+family at once and indexes it by that field.
+Two sweeps follow it. `MumiTests/GrandRec.lean` varies the block: abstract
+universes and two parameters, two predicates over one data member, infinitary
+fields in both the data and the `Prop` member, two unrelated nesting families in
+one constructor, and a `mutual` family of two `Prop`s where the copy of the
+member nobody wrote still gets a motive.
+`MumiTests/Shapes.lean` varies the path from the writer's constructor down to
+the recursive occurrence, holding one family fixed: through a second copy of
+that family (`WFTree (WFTree R)`, which copies it twice over and gives seven
+motives), through a `List`, twice in one constructor, at an indexed member,
+through a function field, from a writer with its own parameter at an
+abstract universe, and from an indexed writer that passes its own index into the
+nesting (`mk (n : Nat) (x : WFTree (R n)) : R n`). It also varies how the bundle of a value and its proof is
+spelled — an `inductive`, a `structure`, or just `{ t : Tree R // t.WF }`, which
+needs no new declaration at all and gives the same four-motive recursor — and
+puts an ordinary nesting beside the induction-inductive one (`mk (x : WFTree R)
+(l : List R)`), a container inside the family's parameter (`WFTree (Option R)`),
+and a second writer nested at a first (`WFTree (Ra × Rb)`, where only `Rb` is
+being defined and only `Rb` gets an induction hypothesis). Both sweeps also hold
+the shapes that fall back to split recursors or are not rescued at all.
 
 ### How it works
 
@@ -389,41 +529,135 @@ Stock behaviour returns immediately, including the stock error message.
   undeclared there.)
 * Structures, classes and coinductive members are not lowered; a `mutual` block
   containing one is left to Lean.
-* In a *heterogeneous* denesting, only a copy that is a `Prop` gets the equality,
-  the coercions and the display that hide it. A *data* copy — `N.nested_List_2`
-  for `Nonempty (List N)` — is merely isomorphic to what it copies, and you are
-  on your own. (The induction-inductive path builds that isomorphism; this one
-  does not.)
+* In a *heterogeneous* denesting, only a copy that is a `Prop` gets the equality
+  and the display that hide it. A *data* copy — `N.nested_List_2` for
+  `Nonempty (List N)` — is only isomorphic to what it copies, which is the most
+  two distinct data types can be, so it keeps its own name in signatures, goals
+  and error messages; `toOrig`, `ofOrig` and a coercion each way cross between
+  them. A copy this route cannot bridge is dropped from the group and the rest
+  still land, so a block may come out with some copies related to their
+  originals and others bare; `set_option trace.Mumi true` names the ones that
+  did not go through and why.
+* A data copy has to be *named*, not only read, to recurse into the nesting. A
+  function on `S` that recurses through an `S.t : Tree S → S` needs a companion
+  at the nested type, and the companion has to be declared at
+  `S.nested_Tree_1`: the coercion from `Tree S` is a function, so an argument of
+  the original type is a subterm of nothing and no measure decreases. Declared
+  at the copy it goes through and computes. This is the one place the copy is
+  more than a matter of display, and only the lowering route has it — over on
+  the induction-inductive route the block is stated over the originals outright,
+  so the question never comes up.
 * A coercion needs a target, so a consumer whose own type argument is still a
   metavariable does not get one: `Nonempty.elim h fun _ => …` on a field bound by
   a pattern match needs `h` ascribed, or `Nonempty.elim (α := T)`.
-* An induction-inductive block must be *narrow*, and one whose data genuinely
-  depends on data — `Ctx` indexed by its own length — is out of scope. Its data
-  members share one erased pre-block, hence one universe, and none may sit at a
-  bare `Sort u`. Section `variable`s are not supported.
-* Its constructors are `def`s, so `match` does not work and there is no `injEq`
-  or `noConfusion`; a bare `induction`/`cases` destructs the underlying subtype
-  and leaks `Ctx._pre` into the goal. Use `induction Γ using Ctx.rec`, supplying
-  the motives the goal does not fix. A `Prop` member's recursor does not drive
-  `induction … using` — `getElimInfo` reads targets only up to the first motive
-  argument that is not a local, and the data value is not one — so use it in
-  term mode, or wrap it in a lemma whose motive takes only the indices. A bare
-  `cases` on a `Prop` member reaches for the pre-type's `casesOn` and so works
-  only where the motive does not depend on the indices.
+* An induction-inductive block must be *narrow*. A data member's index may
+  mention the block, and the erasure deletes such an index outright, so it has
+  to be a member's own type applied to arguments — `(f : Nat → Ctx)` is not one,
+  and neither is a proof of one of the block's propositions, since erasure keeps
+  a proposition's proofs nowhere. What is left of the deleted index's type may
+  name the indices that *stayed* but not the ones that went, because the deleted
+  indices are handed round as an array and an array has nowhere for one entry to
+  have bound another: `Ctx : Nat → Type` beside `Ty : (n : Nat) → Ctx n → Type`
+  is fine, the deleted `Ctx n` reading `Ctx._pre n` and `n` being an index that
+  stayed. An index that stays may not mention one that goes. No data member may
+  sit at a bare `Sort u`. Section `variable`s are not supported.
+  Its data members need not share a universe: they become one erased pre-block,
+  and that pre-block is emitted through the lowering rather than straight to the
+  kernel, so the two passes compose — erasure removes the arity dependency, and
+  the lowering removes the universe difference in what is left. The rules
+  underneath survive: data members that recurse into *one another* still have to
+  agree, since an edge puts one universe at or below the other and a cycle makes
+  them equal, and a field still has to fit inside the member it belongs to.
+* Its constructors are `def`s, so `match` does not work and there is no
+  `noConfusion` at the name one would reach for. They do get `X.c.inj` and a
+  `@[simp] X.c.injEq`, stated exactly
+  as the ones a real inductive's constructors get — the field an index pins is
+  shared rather than compared, a proof field is left out, a dependent field is
+  compared with `HEq` — so `simp` takes a constructor equation apart the way it
+  would anywhere else. A field at a *denested copy* works too: the equation
+  reduces to that copy's `ofOrig` of either side, and the bridge proves each
+  copy an `X.ofOrig_inj` out of the round trip taken from the original, which
+  reads it back. Two *different* constructors
+  are told apart by a simproc instead of a theorem — a lemma per pair would be
+  quadratically many declarations, and the one simproc pushes the equation
+  through `Subtype.val` and asks the erased pre-block's own `noConfusion` — so
+  `Ctx.nil ≠ Ctx.snoc Γ A` and the rest of that family go by `simp` as well, at
+  a denested copy included. `induction` and `cases` work,
+  on the `X.recD`/`X.recP` and
+  `X.casesD`/`X.casesP` registered as their defaults; where the block had to
+  discharge a motive of the same kind to get one — two data members, or two
+  propositions — the hypotheses at the member that went are gone with it, and
+  `induction Γ using Ctx.rec` with the motives the goal does not fix is still
+  the strong reading. The block-wide recursor does not drive `induction … using`
+  at a *predicate* — `getElimInfo` reads targets only up to the first motive
+  argument that is not a local, and the data value is not one — so use that one
+  in term mode, or wrap it in a lemma whose motive takes only the indices.
+* `deriving` on an induction-inductive block reaches its members only through
+  `Subtype`, since a data member there *is* one. The class is derived for the
+  pre-type, where the constructors are, and lifted; `DecidableEq` and `Repr`
+  come across that way, `Repr` printing the pre-term, constructor names and all.
+  A class with nothing to lift, `Inhabited` among them, says so and leaves the
+  block standing. For a block that was rescued rather than written as a
+  `mutual`, the clause helps pick the route: a class this path can answer keeps
+  the field as it was written, and one it cannot sends the block to lowering,
+  which can.
 * One recursor serves the whole block, so every use supplies every motive, and
   two recursions that differ in the motives they were given are not defeq. A
   `Prop` member covered by it eliminates only into `Prop`, even a subsingleton
   one that could have had large elimination under the split.
 * A `Prop` member indexed by no data member, or by two, keeps the split
-  recursors, as does a block that denesting left copies in. The consolation is
-  that a split `Prop` recursor may eliminate into `Sort u`.
+  recursors, and so does one whose constructor pins a field of the data
+  constructor it stands at rather than naming it. The consolation is that a
+  split `Prop` recursor may eliminate into `Sort u`.
+* A `Prop` constructor with a data field its *conclusion* never mentions —
+  `Pair.cons (a : α) (t u : Chain α) (h : Pair t) : Pair (.cons a t)`, where `u`
+  goes nowhere — costs more than that. Such a field cannot be put back at its
+  subtype: a `Prop` constructor carries no well-formedness of its own, only what
+  its indices bring it, so there is nothing to state that minor premise with.
+  The `Prop` members share one erased recursion, so one such constructor costs
+  the block every `Prop` recursor, and in a denested block the map back to the
+  originals goes through those recursors, so the copies stay visible too. The
+  writer's own type still works and the block is still sound; it is the
+  presentation that degrades. `set_option trace.Mumi.indind true` names the
+  constructor and the field.
+* A `Prop` member indexed by another `Prop` member of the same block is out of
+  scope. Erasure sends the data members to one mutual inductive and the
+  propositions to a second, and no member of a mutual inductive may appear in
+  another's arity — so the erasure buys one crossing, from data to `Prop`, and
+  not a second one from `Prop` to `Prop`.
+* A copy's parameters are fixed before its constructors are known, so a nesting
+  applied to something that mentions a field of the constructor it appears in
+  cannot be copied at one parameter. Both routes abstract the field out and make
+  it an *index* of the copy instead, so one copy stands for the whole family:
+  `mk (n : Nat) (x : WFTree (R n)) : R n` gets a copy
+  `R.nested_WFTree_1 : Nat → Type`, and the recursor's motive for it is over
+  `WFTree (R n)` with the `n` in front. The field's own type has to be free of
+  the block for that telescope to be writable, so
+  `mk (b : Box R) (h : b.Never)` is still out. The sharpest form of that is a
+  nesting over an equation between two fields — `mk (a b : Z) (h : a = b)` —
+  where the abstracted field is of block type, so the copy would have to be
+  *indexed by* a member and the block would have to be routed back through the
+  induction-inductive path it came out of. It reports *Cannot denest `a = b`*.
+* The head of a nesting has to be an inductive, so `Quot` at one is out and
+  stays out: there is nothing to specialise to the block.
+* In a denested block only the writer's own type carries the whole-block
+  recursor; the other members are pre-existing types whose `.rec` is Lean's.
 * An *indexed* block's recursor depends on `propext`, by way of the `injEq`
-  Lean's own `cases` uses to unify indices. Unindexed blocks add no axiom.
-* A nested inductive whose denesting is induction-inductive is rescued only from
-  a standalone `inductive`, not from a member of a `mutual` block, and only when
-  the nesting type is not itself part of a mutual family. Nesting parameters
-  that mention a constructor-local are out on that path too, though not on the
-  merely heterogeneous one.
+  Lean's own `cases` uses to unify indices, and a denested block with an
+  *infinitary* constructor depends on `Quot.sound`, because the round trip
+  between a copy and its original is the identity only up to `funext`. Blocks
+  with neither add no axiom.
+* A nested inductive whose denesting is induction-inductive is rescued from a
+  standalone `inductive` and from a `mutual` block of data members alike, the
+  nesting type may itself be a member of a mutual family, and the nesting's
+  parameters may mention a field of the constructor they sit in.
+  A family whose `Prop` member has *no constructors*
+  never reaches us at all: Lean infers an inductive's parameters from its
+  constructors, so with none it reads that member's index as a parameter and its
+  own nesting check rejects the block first. A declaration we decline reports
+  *Lean's* error and
+  drops ours, which is right for a block that was never ours and unhelpful for
+  one that was: `set_option trace.Mumi.rescue true` keeps every retry's reason.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This affects declarations the library never
   touches, and `set_option mumi.enabled false` does not suppress it.

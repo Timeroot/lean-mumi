@@ -7,7 +7,7 @@ module
 
 public meta import Mumi.Options
 public meta import Mumi.Elab
-public meta import Lean.Message
+public meta import Mumi.Rescue
 public meta import Lean.Elab.Declaration
 
 /-!
@@ -56,31 +56,33 @@ block that comes out.
 Nested inductives that work are the kernel's business, and should stay that way:
 the kernel's denesting is trusted code with its own `rec`, `below`, `brecOn` and
 `sizeOf` handling, and replacing it with ours would be a large, invisible change
-to declarations that were perfectly fine.  Deciding up front whether a given
-inductive is one Lean can handle means reimplementing the kernel's positivity
-and universe analysis, and being wrong in either direction is bad: too eager and
-we take over working declarations, too shy and we miss the ones we exist for.
-
-Letting Lean answer the question is exact, and costs nothing on the path that
-matters -- a declaration Lean accepts is elaborated once, by Lean, and we never
-run.  Only a declaration that was going to be an error anyway is elaborated
-twice.
+to declarations that were perfectly fine.  So we let Lean answer the question of
+whether a declaration is one of ours, and step in only if it says no.
+`Mumi.Rescue` has the machinery and the rest of the argument.
 
 ## The gate
 
-Failure alone is not enough of a reason to take over: an inductive can fail for
-any number of reasons that are nothing to do with us, and we must not "rescue"
-one by quietly building a different declaration.
+Each retry is gated on the enlarged block being one Lean could not have handled.
+`Mumi.IndInd.elabNestedInductive` requires denesting to produce at least one new
+member, and then either the enlarged block to be induction-inductive, or a copy
+to have taken a field of the constructor it sat in as an index.
+`elabHeterogeneousInductive` with `requireHeterogeneous` lowers the block only if
+denesting it yields members in more than one universe, or needs such a field.
+Both conditions are ones Lean cannot be in: if the denested block were
+homogeneous, not induction-inductive and indexed only at closed parameters, the
+kernel would have handled it, so the failure was a real one.
 
-So each retry is gated on the enlarged block being one Lean could not have
-handled.  The first runs with `requireHeterogeneous`, which lowers the block
-only if denesting it yields members in more than one universe.  The second,
-`Mumi.IndInd.elabNestedInductive`, requires denesting to produce at least one
-new member *and* the enlarged block to be induction-inductive.  Both conditions
-are ones Lean cannot be in: if the denested block were homogeneous and not
-induction-inductive, the kernel would have handled it, so the failure was a real
-one.  When both gates reject, or both retries fail for any other reason, the
-original error is reported and every trace of the retries is dropped.
+## Why there are three retries and not two
+
+The two gates overlap on the constructor-field case, and neither route is better
+on all of it.  `Mumi.IndInd` can state the block over the original nesting types
+-- `Pair2 R n m` rather than `R.nested_Pair2_1 n m` -- which lowering never does.
+But its bridge does not always go through, and a block that comes out of it with
+the copies visible is worse than the same block lowered, which at least relates
+the two with `eq_orig`.  So the good case is asked for first, by way of
+`requireBridge`, lowering gets the block if that is declined, and the third retry
+is the same route with the bridge no longer required -- reached only when
+lowering will not have the block either.
 -/
 
 public section
@@ -88,11 +90,6 @@ public section
 open Lean Lean.Elab Lean.Elab.Command
 
 namespace Mumi
-
-/-- Has an error been logged since the log had `n` messages in it? -/
-private meta def errorLoggedSince (n : Nat) : CommandElabM Bool := do
-  let msgs := (← get).messages.reportedPlusUnreported
-  return (msgs.toList.drop n).any (·.severity matches .error)
 
 /--
 Elaborates a declaration by handing it to Lean, and, if it is an `inductive`
@@ -109,44 +106,14 @@ meta def elabDeclarationRescuingNested : CommandElab := fun stx => do
   -- that `def`s keep their incremental elaboration
   unless stx[1].getKind == ``Lean.Parser.Command.«inductive» do
     throwUnsupportedSyntax
-  let saved ← get
-  let nmsgs := saved.messages.reportedPlusUnreported.size
-  let stockEx? ←
-    try
-      elabDeclaration stx
-      pure none
-    catch ex =>
-      pure (some ex)
-  if stockEx?.isNone && !(← errorLoggedSince nmsgs) then
-    return
-  -- Lean rejected it; see whether it is one of ours
-  let stockState ← get
-  let attempt (k : CommandElabM Unit) : CommandElabM Bool := do
-    set saved
-    try
-      withExporting (isExporting := (← getScope).isPublic) do
-      withoutCommandIncrementality true do
-      -- synchronously, so that a kernel error in one of the declarations we add
-      -- is thrown where it can be caught: `addDecl` otherwise hands the checking
-      -- to a background task, and the error would surface long after the retry
-      -- had reported success
-      withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
-        k
-      if ← errorLoggedSince nmsgs then
-        throwError "the rescued declaration did not elaborate"
-      return true
-    catch _ =>
-      return false
-  -- denesting either makes the block heterogeneous, which `Mumi.Lowering`
-  -- takes, or induction-inductive, which `Mumi.IndInd` takes
-  if ← attempt (elabHeterogeneousInductive #[stx] (requireHeterogeneous := true)) then
-    return
-  if ← attempt (IndInd.elabNestedInductive #[stx]) then
-    return
-  -- not ours, or ours and broken: report exactly what Lean reported
-  set stockState
-  match stockEx? with
-  | some ex => throw ex
-  | none    => pure ()
+  -- denesting either makes the block induction-inductive, which `Mumi.IndInd`
+  -- takes, or heterogeneous, which `Mumi.Lowering` takes
+  rescuing (elabDeclaration stx) #[
+    ("the induction-inductive retry, over the originals",
+      IndInd.elabNestedInductive #[stx] (requireBridge := true)),
+    ("lowering the denested block",
+      elabHeterogeneousInductive #[stx] (requireHeterogeneous := true)),
+    ("the induction-inductive retry",
+      IndInd.elabNestedInductive #[stx])]
 
 end Mumi

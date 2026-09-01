@@ -58,66 +58,50 @@ end
 
 /-! ## Driving the recursor
 
-One recursor serves the whole block, so every use of it supplies a motive for `Ctx`
-*and* a motive for `Fresh`.  Each wrapper below fixes the one that is not interesting,
-and the rest of the file recurses with those.
+One recursor serves the whole block, so every use of `Ctx.rec` supplies a motive for
+`Ctx` *and* a motive for `Fresh`.  Alongside it the block gets `Ctx.recD` and
+`Fresh.recP`, which fix the motive that is not interesting -- `True` for the
+proposition, `Unit` for the data -- and the rest of the file recurses with those.
 
-They are also what `induction ... using` can drive.  `Ctx.rec` it can drive directly;
-`Fresh.rec` it cannot, because Lean reads an eliminator's targets only up to the first
-argument of the motive that is not a local variable, and a predicate motive's third
-argument is the value the data motive produced.  `Fresh.recP` has that argument
-already discharged, so its targets are the three Lean expects.
+They are also what `induction` drives, and `Ctx.recD` is registered as the default
+eliminator for `Ctx`.  `Ctx.rec` could not be: nothing in the goal determines the
+`Fresh` motive.  Nor could `Fresh.rec`, because Lean reads an eliminator's targets
+only up to the first argument of the motive that is not a local variable, and a
+predicate motive's third argument is the value the data motive produced.
+`Fresh.recP` has that argument already discharged, so its targets are the three Lean
+expects.
 -/
 
-/-- `Ctx.rec` with nothing to say about `Fresh`. -/
-def Ctx.recD {C : Ctx → Sort u} (nil : C .nil)
-    (snoc : (Γ : Ctx) → (x : String) → (h : Fresh x Γ) → C Γ → C (.snoc Γ x h)) :
-    (Γ : Ctx) → C Γ :=
-  Ctx.rec (motive_1 := C) (motive_2 := fun _ _ _ _ => True)
-    nil (fun Γ x h ih _ => snoc Γ x h ih)
-    (fun _ => trivial) (fun _ _ _ _ _ _ _ _ _ => trivial)
+/--
+info: @Ctx.recD : {motive : Ctx → Sort u_1} →
+  motive Ctx.nil → ((Γ : Ctx) → (x : String) → (h : Fresh x Γ) → motive Γ → motive (Γ.snoc x h)) → (t : Ctx) → motive t
+-/
+#guard_msgs in
+#check @Ctx.recD
 
-/-- `Fresh.rec` with nothing to say about `Ctx`. -/
-theorem Fresh.recP {D : (x : String) → (Γ : Ctx) → Fresh x Γ → Prop}
-    (nil : ∀ x, D x .nil (.nil x))
-    (snoc : ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (hne : x ≠ y) (h' : Fresh x Γ),
-      D y Γ h → D x Γ h' → D x (.snoc Γ y h) (.snoc x y Γ h hne h')) :
-    ∀ {x : String} {Γ : Ctx} (h : Fresh x Γ), D x Γ h :=
-  fun {x Γ} h =>
-    Fresh.rec (motive_1 := fun _ => Unit) (motive_2 := fun x Γ _ h => D x Γ h)
-      () (fun _ _ _ _ _ => ())
-      nil (fun x y Γ h hne h' _ ih ih' => snoc x y Γ h hne h' ih ih') x Γ h
-
-/-- `Ctx'.rec` with nothing to say about `Fresh'`. -/
-def Ctx'.recD {C : Ctx' → Sort u} (nil : C .nil)
-    (snoc : (Δ : Ctx') → (a : String) → (p : Fresh' a Δ) → C Δ → C (.snoc Δ a p)) :
-    (Δ : Ctx') → C Δ :=
-  Ctx'.rec (motive_1 := C) (motive_2 := fun _ _ _ _ => True)
-    nil (fun Δ a p ih _ => snoc Δ a p ih)
-    (fun _ => trivial) (fun _ _ _ _ _ _ _ _ _ => trivial)
-
-/-- `Fresh'.rec` with nothing to say about `Ctx'`. -/
-theorem Fresh'.recP {D : (a : String) → (Δ : Ctx') → Fresh' a Δ → Prop}
-    (nil : ∀ a, D a .nil (.nil a))
-    (snoc : ∀ (a b : String) (Δ : Ctx') (p : Fresh' b Δ) (hne : a ≠ b) (p' : Fresh' a Δ),
-      D b Δ p → D a Δ p' → D a (.snoc Δ b p) (.snoc a b Δ p hne p')) :
-    ∀ {a : String} {Δ : Ctx'} (p : Fresh' a Δ), D a Δ p :=
-  fun {a Δ} p =>
-    Fresh'.rec (motive_1 := fun _ => Unit) (motive_2 := fun a Δ _ p => D a Δ p)
-      () (fun _ _ _ _ _ => ())
-      nil (fun a b Δ p hne p' _ ih ih' => snoc a b Δ p hne p' ih ih') a Δ p
+/--
+info: @Fresh.recP : ∀ {motive : (a : String) → (a_1 : Ctx) → Fresh a a_1 → Prop},
+  (∀ (x : String), motive x Ctx.nil ⋯) →
+    (∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (hne : x ≠ y) (hΓ : Fresh x Γ),
+        motive y Γ h → motive x Γ hΓ → motive x (Γ.snoc y h) ⋯) →
+      ∀ {a : String} {a_1 : Ctx} (h : Fresh a a_1), motive a a_1 h
+-/
+#guard_msgs in
+#check @Fresh.recP
 
 /-! ## No confusion
 
-The members of a lowered block are `def`s, so there is no `injEq` and no
-`noConfusion`.  Both come out of `Ctx.rec` by hand, because its iota rule holds by
-`rfl`.
+The members of a lowered block are `def`s, so what tells two constructors apart
+is a simproc rather than a `noConfusion`, and the `injEq` they do get is proved
+through the subtype rather than out of the block's own constants.  Both come out
+of `Ctx.rec` by hand here, which is what this file is for: its iota rule holds by
+`rfl`, and that is all either proof needs.
 -/
 
 private def Ctx.head? : Ctx → Option String :=
-  Ctx.recD (C := fun _ => Option String) none (fun _ x _ _ => some x)
+  Ctx.recD (motive := fun _ => Option String) none (fun _ x _ _ => some x)
 private def Ctx.tail : Ctx → Ctx :=
-  Ctx.recD (C := fun _ => Ctx) Ctx.nil (fun Γ₀ _ _ _ => Γ₀)
+  Ctx.recD (motive := fun _ => Ctx) Ctx.nil (fun Γ₀ _ _ _ => Γ₀)
 
 theorem Ctx.nil_ne_snoc (Γ x h) : Ctx.nil ≠ Ctx.snoc Γ x h := by
   intro e
@@ -133,9 +117,9 @@ theorem Ctx.snoc_congr {Γ₁ Γ₂ : Ctx} (e : Γ₁ = Γ₂) (x) (h₁ : Fresh
   subst e; rfl
 
 private def Ctx'.head? : Ctx' → Option String :=
-  Ctx'.recD (C := fun _ => Option String) none (fun _ a _ _ => some a)
+  Ctx'.recD (motive := fun _ => Option String) none (fun _ a _ _ => some a)
 private def Ctx'.tail : Ctx' → Ctx' :=
-  Ctx'.recD (C := fun _ => Ctx') Ctx'.nil (fun Δ₀ _ _ _ => Δ₀)
+  Ctx'.recD (motive := fun _ => Ctx') Ctx'.nil (fun Δ₀ _ _ _ => Δ₀)
 
 theorem Ctx'.nil_ne_snoc (Δ a p) : Ctx'.nil ≠ Ctx'.snoc Δ a p := by
   intro e
@@ -190,7 +174,7 @@ below is the one that does.
 -/
 
 private def toC' (Γ : Ctx) : { Δ : Ctx' // ∀ x, Fresh x Γ → Fresh' x Δ } :=
-  Ctx.recD (C := fun Γ => { Δ : Ctx' // ∀ x, Fresh x Γ → Fresh' x Δ })
+  Ctx.recD (motive := fun Γ => { Δ : Ctx' // ∀ x, Fresh x Γ → Fresh' x Δ })
     ⟨.nil, fun x _ => .nil x⟩
     (fun _Γ x h ih =>
       ⟨.snoc ih.val x (ih.property x h), fun y hy =>
@@ -202,7 +186,7 @@ def Ctx.toCtx' (Γ : Ctx) : Ctx' := (toC' Γ).val
 theorem Fresh.toFresh' {x Γ} (h : Fresh x Γ) : Fresh' x Γ.toCtx' := (toC' Γ).property x h
 
 private def toC (Δ : Ctx') : { Γ : Ctx // ∀ a, Fresh' a Δ → Fresh a Γ } :=
-  Ctx'.recD (C := fun Δ => { Γ : Ctx // ∀ a, Fresh' a Δ → Fresh a Γ })
+  Ctx'.recD (motive := fun Δ => { Γ : Ctx // ∀ a, Fresh' a Δ → Fresh a Γ })
     ⟨.nil, fun a _ => .nil a⟩
     (fun _Δ a p ih =>
       ⟨.snoc ih.val a (ih.property a p), fun b pb =>
@@ -239,7 +223,7 @@ theorem fresh'_iff (a : String) (Δ : Ctx') : Fresh' a Δ ↔ Fresh a Δ.toCtx :
 /-! ## The predicate is the least fixed point, not the greatest -/
 
 def Ctx.names : Ctx → List String :=
-  Ctx.recD (C := fun _ => List String) [] (fun _ x _ ih => x :: ih)
+  Ctx.recD (motive := fun _ => List String) [] (fun _ x _ ih => x :: ih)
 
 theorem Ctx.names_nil : Ctx.nil.names = [] := rfl
 theorem Ctx.names_snoc (Γ x h) : (Ctx.snoc Γ x h).names = x :: Γ.names := rfl
@@ -264,7 +248,7 @@ example : ¬ Fresh "a" (Ctx.snoc Ctx.nil "a" (Fresh.nil "a")) := by
   simp [fresh_iff_not_mem, Ctx.names_snoc, Ctx.names_nil]
 
 def Ctx'.names : Ctx' → List String :=
-  Ctx'.recD (C := fun _ => List String) [] (fun _ a _ ih => a :: ih)
+  Ctx'.recD (motive := fun _ => List String) [] (fun _ a _ ih => a :: ih)
 
 theorem names_toCtx' (Γ : Ctx) : Γ.toCtx'.names = Γ.names := by
   induction Γ using Ctx.recD with

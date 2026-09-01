@@ -258,7 +258,7 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
           }
           -- a block with no nested occurrence comes back from `denest` unchanged
           MultiuniverseInductive.denest inp fun inp => do
-            if requireHeterogeneous && !(← inp.isHeterogeneous) then
+            if requireHeterogeneous && !(← inp.isHeterogeneous) && !inp.localIndices then
               throwError "This block is homogeneous once denested, so it is Lean's to elaborate"
             MultiuniverseInductive.lower inp
           buildFinalizeContext context.elabs' context.levelParams context.vars context.params
@@ -277,11 +277,16 @@ of the `mutual` block (`stx[1].getArgs`).
 The caller is responsible for having established that every element is an
 `inductive` declaration.
 
-With `requireHeterogeneous`, the block is only lowered if it really is
-heterogeneous once denested, and an error is thrown otherwise.  A caller that
-has not already checked -- the nested-inductive rescue, which cannot know
-without denesting -- uses this to be sure it is not taking over a block Lean
-handles itself.
+With `requireHeterogeneous`, the block is only lowered if denesting it produces
+something Lean could not have produced itself, and an error is thrown otherwise.
+A caller that has not already checked -- the nested-inductive rescue, which
+cannot know without denesting -- uses this to be sure it is not taking over a
+block Lean handles itself.
+
+There are two such things.  The block can come out heterogeneous, which is the
+usual one.  Or a copy can need a constructor-local as an index, which the
+kernel's denesting refuses outright, so a homogeneous block that needed one is
+still not a block Lean could have taken.
 -/
 def elabHeterogeneousInductive (elems : Array Syntax) (requireHeterogeneous := false) :
     CommandElabM Unit := do

@@ -142,6 +142,11 @@ structure Input where
   /-- Whether the block declares classes; if so, `SizeOf` instances and
   injectivity theorems are not generated, as for `mutual`. -/
   isClass     : Bool := false
+  /-- Set by `denest` when a copy takes a constructor-local as an index of its
+  own.  The kernel's denesting refuses that outright -- *nested inductive
+  datatypes parameters cannot contain local variables* -- so a block that needed
+  it is one Lean could not have elaborated, however homogeneous it came out. -/
+  localIndices : Bool := false
 
 /-! ## Block description -/
 
@@ -298,6 +303,68 @@ def addDef (name : Name) (levelParams : List Name) (type value : Expr)
     compileDecl decl (logErrors := false)
 
 /--
+Run `act`, and if it throws, wind the environment back and carry on without it.
+
+Several of the constructions this library makes are optional: a recursor over a
+whole block, a bridge back to the original nesting types, an extra recursor the
+`induction` tactic can drive.  The block is emitted either way -- what a failure
+costs is what sits on top of it -- so none of them may take the declaration down
+with it.  What a failure must not leave behind is half of itself, since the
+plain names are exactly the ones whatever runs instead will want.  So the
+environment goes back to where it was and the reason goes to the trace, which
+`set_option trace.Mumi true` shows.
+
+`none` says the attempt did not go through.
+-/
+def attempt? {m : Type → Type} [Monad m] [MonadEnv m] [MonadExcept Exception m]
+    [MonadTrace m] [MonadRef m] [AddMessageContext m] [MonadOptions m] {α}
+    (cls : Name) (what : MessageData) (act : m α) : m (Option α) := do
+  let env ← getEnv
+  try
+    return some (← act)
+  catch e =>
+    setEnv env
+    Lean.trace cls fun _ => m!"{what}: {e.toMessageData}"
+    return none
+
+/--
+`attempt?` for a construction whose result is nothing but whether it went
+through.
+-/
+def attempted {m : Type → Type} [Monad m] [MonadEnv m] [MonadExcept Exception m]
+    [MonadTrace m] [MonadRef m] [AddMessageContext m] [MonadOptions m]
+    (cls : Name) (what : MessageData) (act : m Unit) : m Bool :=
+  Option.isSome <$> attempt? cls what act
+
+/--
+Can the `induction` tactic supply every argument of `n` by itself?
+
+It builds the motive out of the goal, reads the targets off the term being
+inducted on, and turns the explicit remainder into goals.  Anything else
+implicit is filled only if solving the motive solves it -- which is how a
+parameter like `List.rec`'s `{α}` gets filled, since it appears in the motive's
+own type.
+
+The binder that is not filled is a *second* motive, which the recursor over a
+whole block has one of per member.  `induction` would leave it as a
+metavariable, and the tactic reports that as a stuck instance problem in the
+first branch rather than as anything to do with the eliminator, so such a
+recursor is left `using`-only -- as Lean leaves the recursor of any mutual or
+nested inductive.
+-/
+def elimIsSelfContained (n : Name) : MetaM Bool := do
+  let info ← getElimInfo n
+  forallTelescopeReducing info.elimType fun xs _ => do
+    let motiveTy ← inferType xs[info.motivePos]!
+    for h : i in *...xs.size do
+      if i == info.motivePos || info.targetsPos.contains i then continue
+      let d ← xs[i].fvarId!.getDecl
+      if d.binderInfo.isExplicit || d.binderInfo == .instImplicit then continue
+      unless ← dependsOn motiveTy d.fvarId do
+        return false
+    return true
+
+/--
 Tag a recursor `@[elab_as_elim]`, as Lean's own recursors are.  Without it an
 application is elaborated left to right and the motive is whatever unification
 happens to pin down from the expected type; with it the motive is generalised
@@ -314,8 +381,15 @@ applications that elaborate today into "invalid motive".  And
 
 A recursor that fails either keeps working and merely elaborates left to right,
 which is a better outcome than refusing the block; `trace.Mumi` says which.
+
+One that `elimIsSelfContained` accepts is registered as the `induction` tactic's
+default eliminator for the member as well.  Without that, `induction` reaches
+for the recursor of whatever the member unfolds to and reports the pre-block --
+`the induction tactic does not support the type Ctx._pre` -- which names a
+declaration the writer never wrote.  `induction := false` registers it for
+`cases` instead, which is what a hypothesis-free eliminator is for.
 -/
-def markElabAsElim (n : Name) : MetaM Unit := do
+def markElabAsElim (n : Name) (induction := true) : MetaM Unit := do
   let simple ← forallTelescopeReducing (← getConstInfo n).type fun _ concl =>
     pure (concl.getAppFn.isFVar && concl.getAppArgs.all (·.isFVar))
   unless simple do
@@ -326,6 +400,12 @@ def markElabAsElim (n : Name) : MetaM Unit := do
     Lean.Elab.Term.elabAsElim.setTag n
   catch e =>
     trace[Mumi] "`{n}` does not take `@[elab_as_elim]`: {e.toMessageData}"
+  try
+    if ← elimIsSelfContained n then
+      addCustomEliminator n .global (induction := induction)
+  catch e =>
+    let what := if induction then "induction" else "cases"
+    trace[Mumi] "`{n}` does not take `@[{what}_eliminator]`: {e.toMessageData}"
 
 /--
 Add an inductive declaration and everything Lean normally builds alongside one.
@@ -363,6 +443,208 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
     IndPredBelow.mkBelow names[0]!
     for n in names do
       mkInjectiveTheorems n
+
+/-! ## An eliminator with one motive -/
+
+/--
+Walk the minors of a recursion whose other motives have been discharged,
+keeping the ones that conclude at the motive `kept`, dropping the rest, and
+handing the continuation the binders that survived alongside the arguments the
+original recursor is to be applied to.
+
+`mots`/`motVals` are the recursion's motives and what each is being replaced
+by, and `others` the motives being discharged.  A minor's type can mention both
+the motives and the minors before it -- that is what makes a recursion over a
+whole block one recursion -- so each is put across under everything before it.
+
+Within a surviving minor, a binder whose type mentions a motive that is going is
+an induction hypothesis about a member the caller will learn nothing about, and
+goes with it.  `forCases` counts the kept motive among those, which is what
+turns the recursion into a case split: a minor concludes at the motive applied
+to the constructor, which mentions the fields and never the hypotheses, so
+dropping them all leaves every minor saying what it said.
+-/
+private partial def soloMinors {α} [Inhabited α] (others mots motVals mins : Array Expr)
+    (kept : Expr) (forCases : Bool) (q : Nat) (newMins minVals : Array Expr)
+    (k : Array Expr → Array Expr → MetaM α) : MetaM α := do
+  if h : q < mins.size then
+    let orig := mins[q]
+    let origTy ← inferType orig
+    let isGone (id : FVarId) :=
+      others.any (·.fvarId! == id) || (forCases && kept.fvarId! == id)
+    -- read off before the substitution: what it leaves at the conclusion's head
+    -- is no longer a motive, and a hypothesis at a discharged motive no longer
+    -- mentions one
+    let atKept ← forallTelescope origTy fun _ c => pure (c.getAppFn == kept)
+    let drop ← forallTelescope origTy fun as _ =>
+      as.mapM fun a => return (← inferType a).hasAnyFVar isGone
+    let keptOf (as : Array Expr) : Array Expr :=
+      (as.zip drop).filterMap fun (a, d) => if d then none else some a
+    let ty ← Core.betaReduce (origTy.replaceFVars (mots ++ mins.extract 0 q) (motVals ++ minVals))
+    if atKept then
+      -- the minors of the members that go carry the names the recursion over
+      -- the whole block had to disambiguate them into, so each surviving one is
+      -- renamed after the constructor it is for: `induction ... with | snoc`
+      let ctor? ← forallTelescope origTy fun _ c =>
+        pure (c.getAppArgs.back?.bind (·.getAppFn.constName?))
+      let name ← match ctor? with
+        | some (.str _ s) => pure (Name.mkSimple s)
+        | _               => orig.fvarId!.getUserName
+      let rTy ← forallTelescope ty fun as c => mkForallFVars (keptOf as) c
+      withLocalDeclD name rTy fun nm => do
+        let val ← forallTelescope ty fun as _ => mkLambdaFVars as (mkAppN nm (keptOf as))
+        soloMinors others mots motVals mins kept forCases (q + 1)
+          (newMins.push nm) (minVals.push val) k
+    else
+      let val ← forallTelescope ty fun as c => do
+        mkLambdaFVars as (mkConst ``PUnit.unit [← getLevel c])
+      soloMinors others mots motVals mins kept forCases (q + 1) newMins (minVals.push val) k
+  else
+    k newMins minVals
+
+/--
+An eliminator with one motive, for a member whose siblings' motives can be
+filled in with nothing.
+
+The recursion over the whole block asks for a motive at every member, which is
+what makes it strong -- and what stops `induction` from driving it, since
+nothing determines the motives the goal does not mention.  Discharge every
+motive but one and what comes out is the shape `induction` expects, at the cost
+of the hypotheses at the discharged members.
+
+Those hypotheses are only worth their cost in two arrangements.  A block with
+one data member and any number of propositions gives the data member a recursor
+into any sort; a block with one proposition gives that one a recursor into
+`Prop`.  Both are as strong as a one-motive statement can be: a motive at a
+single member cannot mention what the recursion computed at another, so what is
+dropped is what it could not have used.
+
+Any other arrangement would discharge a second *data* motive, which does lose
+hypotheses a caller could have wanted, so `src` is left as the only recursor
+there.  Nothing is emitted then, and nothing is reported: this is an extra, and
+a block that cannot have one is not thereby worse off.
+
+`evenIfWeaker` asks for it anyway, whatever the arrangement costs.  What makes
+the refusal above safe is that the member is a real inductive, so a caller who
+writes `induction` and gets nothing gets mainline's own refusal -- "does not
+support the type, because it is mutually inductive" -- and goes looking for the
+recursor.  A member of an induction-inductive block is a `def`, and there is no
+such refusal to fall back on: `induction` unfolds it to the subtype it is
+encoded as and offers a case split on `Subtype.mk`, binding a pre-term and a
+proof of its well-formedness.  Weighed against that, a one-motive principle
+that has lost a sibling's hypotheses is the better default by some way, and the
+recursion over the whole block is a `using` away.
+
+`forCases` asks instead for the eliminator a case split needs, which is the
+same one with every minor's hypotheses gone.  A case split uses no hypothesis at
+any member, so there is none to weigh and no arrangement to refuse: every other
+motive is discharged whatever kind it is, and a block whose recursion already
+had one motive still has hypotheses worth dropping out of it.  That leaves
+`cases` working where `induction` does not, which is where mainline leaves them
+too -- a mutual inductive gets a `casesOn` at one motive and is refused by
+`induction` outright.
+
+Emitting one at all is the point.  `cases` on a member of an erased block
+reaches for whatever the member unfolds to, and so asks for `Subtype.mk` -- the
+encoding's constructor, under a name the writer never wrote and cannot usefully
+name the fields of, since what it binds is a pre-term and a proof rather than
+the constructor's arguments.  A `Prop` member fares no better for being a real
+inductive underneath: splitting one whose data index is a variable makes the
+tactic solve `Γ.1 = Ctx._pre.nil`, which is the encoding again and which it
+cannot do.  Registering one of these instead leaves the block's own constructors
+as the cases, and the unification that would have gone through the subtype does
+not arise.
+
+`elimLevels` are the universe parameters `src` carries for its data motives --
+one per data SCC on this route, one overall on the induction-inductive one.
+-/
+def addSoloElim (nParams : Nat) (elimLevels : Array Name) (keepIsProp : Bool)
+    (src soloName : Name) (forCases : Bool) (evenIfWeaker := false) : MetaM Unit := do
+  let some info := (← getEnv).find? src | return
+  let recCst := mkConst src (info.levelParams.map Level.param)
+  forallBoundedTelescope info.type nParams fun ps rest =>
+  forallTelescope rest fun xs concl => do
+    -- the motives lead, and are the binders that take a member to a sort
+    let mut nMot := 0
+    for x in xs do
+      unless ← forallTelescope (← inferType x) fun _ c => pure c.isSort do break
+      nMot := nMot + 1
+    let mots := xs.extract 0 nMot
+    -- a recursion at one motive is nothing to cut down, though it still has
+    -- hypotheses a case split wants gone
+    if nMot ≤ 1 && !forCases then return
+    let some kq := mots.findIdx? (· == concl.getAppFn) | return
+    let isProp ← mots.mapM fun m => do
+      forallTelescope (← inferType m) fun _ c =>
+        pure (match c with | .sort u => u.isZero | _ => false)
+    -- every other motive has to be of the other kind, or discharging it would
+    -- cost a hypothesis worth having -- which a case split has not got, and
+    -- which a block with no refusal to fall back on would rather pay
+    unless forCases || evenIfWeaker ||
+        (Array.range nMot).all fun q => q == kq || isProp[q]! != keepIsProp do
+      return
+    -- whether what comes out is itself a proof, which is not the same question as
+    -- whether the member is a `Prop`: a subsingleton's recursor eliminates into
+    -- any sort, and the eliminator built from it has to go on carrying the
+    -- universe it does that in.  Where it *is* a proof, the sorts the data motives
+    -- were polymorphic in have nothing left to range over, and are pinned rather
+    -- than carried
+    let intoProp := keepIsProp && isProp[kq]!
+    let pinned := if intoProp then elimLevels.filter (info.levelParams.contains ·) else #[]
+    let pin (e : Expr) : Expr :=
+      e.instantiateLevelParams pinned.toList (pinned.toList.map fun _ => Level.one)
+    let outLvls := info.levelParams.filter (!pinned.contains ·)
+    let others := (Array.range nMot).filterMap fun q => if q == kq then none else some mots[q]!
+    let isOther (id : FVarId) := others.any (·.fvarId! == id)
+    -- a discharged motive is filled in with the one-element type at its own
+    -- sort, which is the only thing to fill a *data* motive in with while the
+    -- sort it lands in is still a parameter the kept motive needs
+    let triv (ty : Expr) : MetaM Expr :=
+      forallTelescope ty fun as c => mkLambdaFVars as (mkConst ``PUnit [c.sortLevel!])
+    let subst (e : Expr) (vals : Array Expr) : MetaM Expr :=
+      Core.betaReduce (e.replaceFVars (mots.extract 0 vals.size) vals)
+    -- the discharged motives before the kept one, so that its own type can be
+    -- put across before its binders are counted
+    let mut motVals : Array Expr := #[]
+    for q in *...kq do
+      motVals := motVals.push (← triv (← subst (← inferType mots[q]!) motVals))
+    let keptTy ← inferType mots[kq]!
+    let drop ← forallTelescope keptTy fun as _ =>
+      as.mapM fun a => return (← inferType a).hasAnyFVar isOther
+    let keptOf (as : Array Expr) : Array Expr :=
+      (as.zip drop).filterMap fun (a, d) => if d then none else some a
+    let keptTy' ← subst keptTy motVals
+    let dTy ← forallTelescope keptTy' fun as c => mkForallFVars (keptOf as) c
+    let before := motVals
+    withLocalDecl `motive .implicit dTy fun d => do
+      let mut motVals := before.push (←
+        forallTelescope keptTy' fun as _ => mkLambdaFVars as (mkAppN d (keptOf as)))
+      for q in (kq + 1)...nMot do
+        motVals := motVals.push (← triv (← subst (← inferType mots[q]!) motVals))
+      -- a minor is a binder concluding at a motive; what follows them is the
+      -- indices and the major, which pass through untouched
+      let rest' := xs.extract nMot xs.size
+      let mut nMin := 0
+      for x in rest' do
+        unless ← forallTelescope (← inferType x) fun _ c => pure (mots.contains c.getAppFn) do
+          break
+        nMin := nMin + 1
+      let mins := rest'.extract 0 nMin
+      let tgts := rest'.extract nMin rest'.size
+      let (ty, val) ← soloMinors others mots motVals mins mots[kq]! forCases 0 #[] #[]
+        fun newMins minVals => do
+          let binders := ps ++ #[d] ++ newMins ++ tgts
+          let ty ← mkForallFVars binders
+            (← Core.betaReduce (concl.replaceFVars (mots ++ mins) (motVals ++ minVals)))
+          let val ← mkLambdaFVars binders
+            (mkAppN recCst (ps ++ motVals ++ minVals ++ tgts))
+          return ((ty : Expr), (val : Expr))
+      if intoProp then
+        addDecl (.thmDecl
+          { name := soloName, levelParams := outLvls, type := pin ty, value := pin val })
+      else
+        addDef soloName outLvls (pin ty) (pin val)
+      markElabAsElim soloName (induction := !forCases)
 
 /--
 `Nonempty ((w : α) ×' β w)`: a `Prop` that still remembers a data witness, and
@@ -1039,6 +1321,13 @@ private def emitRec (b : Block) (i : Nat) : MetaM Unit := do
   if m.isProp then
     addDef (m.name ++ `rec) b.recLevelParams ty val
     markElabAsElim (m.name ++ `rec)
+    -- neither of those is a shape `induction` can drive: both ask for a motive
+    -- at every data member of the block, and the goal determines none of them.
+    -- `X.recP` has them discharged at `Unit`, which costs nothing a proof about
+    -- a `Prop` member could have used
+    discard <| attempt? `Mumi m!"no one-motive recursor for `{m.name}`" <|
+      addSoloElim b.numParams b.sccLevel true (b.recName i) (m.name ++ `recP)
+        (forCases := false)
 
 /-! ### Making the recursors computable
 

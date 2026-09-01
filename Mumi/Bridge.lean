@@ -62,6 +62,11 @@ been identified with one, and is applied to all of its parameters and indices.
 -/
 meta def origType? (n : Name) (lvls : List Level) (args : Array Expr) :
     MetaM (Option Expr) := do
+  -- only an *equality* licenses showing one type as the other.  A data copy
+  -- carries the same pair of coercions but is merely isomorphic to what it
+  -- copies, and displaying it as the original would make two distinct types
+  -- print the same
+  unless (← getEnv).contains (n ++ `eq_orig) do return none
   let some ci := (← getEnv).find? (origCoeName n) | return none
   forallTelescope ci.type fun ys body => do
     -- a partially applied copy has no original to show: the original's
