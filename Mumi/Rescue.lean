@@ -105,6 +105,16 @@ meta def rescuing (stock : CommandElabM Unit)
     return
   -- Lean rejected it; see whether it is one of ours
   let stockState ← get
+  -- the reason the route tried first did not take is thrown away as soon as a
+  -- retry does, and when that route is one of ours it is the half of the
+  -- diagnosis worth having.  It has to be kept in hand rather than traced here,
+  -- since restoring the state to try a retry would take the trace with it
+  let stockWhys : Array MessageData ← match stockEx? with
+    | some ex => pure #[ex.toMessageData]
+    | none    => pure (← errorsSince nmsgs).toArray
+  let traceStock : CommandElabM Unit := do
+    for why in stockWhys do
+      trace[Mumi.rescue] "the route tried first did not take: {why}"
   -- `none` on success, and on failure the reason, held back until the state
   -- that would have swallowed it has been restored
   let attempt (k : CommandElabM Unit) : CommandElabM (Option MessageData) := do
@@ -130,6 +140,7 @@ meta def rescuing (stock : CommandElabM Unit)
     | none     =>
       -- the retries are in preference order, so which ones were passed over on
       -- the way to the one that took is the interesting half of the diagnosis
+      traceStock
       for (label, why) in whys do
         trace[Mumi.rescue] "{label} did not take: {why}"
       trace[Mumi.rescue] "{label} took it"

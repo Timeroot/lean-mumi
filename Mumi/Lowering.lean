@@ -63,6 +63,13 @@ do is fail.
    shadows) and constructors, the squash maps `X._squash : X → X._shadow`, and
    a block-wide recursor `X.mutualRec` for every member.
 
+A data SCC may come back from `addDecl` larger than it went in: a nesting the
+kernel can denest is one it *does* denest, giving itself a type for the
+occurrence and an extra recursor `X.rec_k` at it.  Those extras are carried
+through rather than hidden, so the block's recursors range over them too and
+the constructor keeps the type the writer wrote; see the section on what the
+kernel denested.
+
 Only the `Prop` members are mangled.  Data members are honest inductive types
 under the names the user wrote, so `match`, `induction`, `cases`, `injection`,
 `noConfusion`, `deriving`, `sizeOf` and the code generator all work on them as
@@ -420,6 +427,21 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
   let decl := Declaration.inductDecl levelParams numParams indTypes.toList false
   addDecl decl
   let names := indTypes.map (·.name)
+  -- a nested occurrence is denested by the kernel, which declares a type for it
+  -- and a recursor `X.rec_k` with the major premise there.  The kernel knows
+  -- about those, but the environment the elaborator reads does not until it is
+  -- told, one by one until there are no more -- the kernel is the only record of
+  -- how many there were
+  for name in names do
+    let mut k := 1
+    repeat
+      let auxRec := name ++ `rec |>.appendIndexAfter k
+      let some info := (← getEnv).toKernelEnv.find? auxRec | break
+      let res ← (← getEnv).addConstAsync auxRec .recursor
+      res.commitConst res.asyncEnv (info? := info)
+      res.commitCheckEnv res.asyncEnv
+      setEnv res.mainEnv
+      k := k + 1
   Lean.compileDecls names
   let env ← getEnv
   let hasEq   := env.contains ``Eq
@@ -753,18 +775,32 @@ private def mentionsMember (fvars : Array Expr) (e : Expr) : Bool :=
   fvars.any fun f => e.containsFVar f.fvarId!
 
 /--
+What a constructor field turns out to be.
+-/
+private inductive FieldKind where
+  /-- Recurses into a member, or mentions none at all: `none` for the latter. -/
+  | plain (rf : Option RecField)
+  /-- Mentions members only from inside another type constructor's parameters,
+  as `List B` and `Tree S` do.  `denest` leaves such an occurrence alone and
+  hands it to the kernel, which either finds the type closed already -- `B` is
+  declared before `A` -- or denests it itself.  Either way there is nothing for
+  the lowering to recurse into, but the emission order still has to respect the
+  members the occurrence names. -/
+  | inert (deps : Array Nat) (why : MessageData)
+
+/--
 Classify one constructor field.
 
-Accepts a non-recursive field (no member occurrence at all), or a field of the
+Accepts a non-recursive field (no member occurrence at all), a field of the
 form `∀ ys, X_j params idxs` where neither the `ys` domains nor the `idxs`
-mention any member.  Everything else -- in particular a *nested* occurrence
-such as `List (X_j ...)` -- is rejected: the shadow has no data to rebuild such
-a field from without lowering the surrounding type constructor too.
+mention any member, or a *nested* occurrence such as `List (X_j ...)`.  The last
+of those is only accepted provisionally: `analyze` checks below that the block
+is one whose nested occurrences reach the kernel at all.
 -/
 private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) :
-    MetaM (Option RecField) := do
+    MetaM FieldKind := do
   if !mentionsMember inp.memberFVars fieldTy then
-    return none
+    return .plain none
   forallTelescope fieldTy fun ys body => do
     for y in ys do
       if mentionsMember inp.memberFVars (← inferType y) then
@@ -773,19 +809,33 @@ private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) 
           ++ .note "This is not a strictly positive occurrence, so the lowering has nothing \
             to translate it to"
     let some j := inp.memberFVars.findIdx? (· == body.getAppFn)
-      | throwError m!"Unsupported constructor field in a multiuniverse block: field \
-          {k + 1} of `{ctor}` mentions a member of the block in a nested position, in the \
-          type{indentExpr fieldTy}"
-          ++ .note "Nested occurrences are not supported: the shadow of a data member carries \
-            no data, so there is nothing to rebuild such a field from without lowering the \
-            surrounding type as well"
+      | let bad := m!"Unsupported constructor field in a multiuniverse block: field \
+            {k + 1} of `{ctor}` mentions a member of the block in a nested position, in the \
+            type{indentExpr fieldTy}"
+        -- a nested occurrence goes one of two ways: left as written, for the
+        -- kernel to denest, or copied into a member of the block.  A head that
+        -- is not an inductive type is out of reach of both -- there is nothing
+        -- for the kernel to denest and no constructors to copy
+        let head? := body.getAppFn.constName?.bind (← getEnv).find?
+        unless head? matches some (.inductInfo _) do
+          throwError bad ++ .note "The head of the occurrence is not an inductive type, so \
+            there is nothing to denest and nothing to copy"
+        let mut deps : Array Nat := #[]
+        for i in *...inp.memberFVars.size do
+          if body.containsFVar inp.memberFVars[i]!.fvarId! then
+            deps := deps.push i
+        return .inert deps (← addMessageContext <| bad
+          ++ .note "A block with a `Prop` member is lowered through an all-`Prop` shadow, \
+            which copies every constructor field with the members redirected -- and a \
+            redirected nested occurrence is not even well-typed.  So the occurrence had to \
+            become a member of the block itself, and it could not be")
     for a in body.getAppArgs do
       if mentionsMember inp.memberFVars a then
         throwError m!"Unsupported constructor field in a multiuniverse block: field \
           {k + 1} of `{ctor}` has a type that applies a member of the block to an argument \
           mentioning another one, in the type{indentExpr fieldTy}"
           ++ .note "Nested occurrences are not supported"
-    return some { member := j, arity := ys.size }
+    return .plain (some { member := j, arity := ys.size })
 
 /--
 Reject a constructor whose *result indices* depend on a field of data-member
@@ -836,21 +886,29 @@ def analyze (inp : Input) : MetaM Block := do
   let mut members : Array MemberInfo := #[]
   let mut allCtors : Array CtorInfo := #[]
   let mut edges : Array (Array Bool) := rep n (rep n false)
+  -- one entry per member an inert field names, to be checked in step 3
+  let mut inert : Array (Nat × Nat × MessageData) := #[]
   for i in *...n do
     let mut ctors : Array CtorInfo := #[]
     for j in *...inp.ctorNames[i]!.size do
       let cname := inp.ctorNames[i]![j]!
       let cty := inp.ctorTypes[i]![j]!
-      let c ← forallBoundedTelescope cty (some inp.numParams) fun _params inner =>
+      let (c, inerts) ← forallBoundedTelescope cty (some inp.numParams) fun _params inner =>
         forallTelescope inner fun fields result => do
           let mut fs : Array (Option RecField) := #[]
+          let mut inerts : Array (Nat × Nat × MessageData) := #[]
           for k in *...fields.size do
-            fs := fs.push (← analyzeField inp (← inferType fields[k]!) cname k)
+            match ← analyzeField inp (← inferType fields[k]!) cname k with
+            | .plain rf => fs := fs.push rf
+            | .inert deps why =>
+              fs := fs.push none
+              for d in deps do inerts := inerts.push (i, d, why)
           let c : CtorInfo :=
             { name := cname, owner := i, type := cty, numFields := fields.size, fields := fs }
           let args := result.getAppArgs
           checkIndices isProp c fields (args.extract inp.numParams args.size)
-          return c
+          return (c, inerts)
+      inert := inert ++ inerts
       if !isProp[i]! then
         for f? in c.fields do
           if let some rf := f? then
@@ -861,9 +919,19 @@ def analyze (inp : Input) : MetaM Block := do
     members := members.push
       { name := inp.memberNames[i]!, type := inp.memberTypes[i]!,
         level := levels[i]!, isProp := isProp[i]!, ctors }
+  -- an inert field recurses into nothing, but the member it names still has to
+  -- exist by the time this one is declared
+  for (i, d, _) in inert do
+    if !isProp[i]! && !isProp[d]! then
+      edges := edges.set! i (edges[i]!.set! d true)
   -- 3. condensation of the data-only graph
   let isData := isProp.map not
   let (sccs, sccOf) := computeSCCs n isData edges
+  -- `denest` copies every nested occurrence of a block with a `Prop` member, so
+  -- one that survived to here is one it could not copy
+  if isProp.any id then
+    for (_, _, why) in inert do
+      throwError why
   let sccLevel := freshLevelNames inp.levelParams sccs.size
   return { levelParams := inp.levelParams, numVars := inp.numVars, numParams := inp.numParams,
            memberFVars := inp.memberFVars, members, allCtors,
@@ -1072,6 +1140,199 @@ private def emitPropCtors (b : Block) : MetaM Unit := do
           addDef c.name b.levelParams cty
             (← mkLambdaFVars (params ++ fields) (mkAppN realCtor (params ++ gs)))
 
+/-! ### What the kernel denested
+
+`Mumi.Denest` leaves a nested occurrence the kernel can take to the kernel, so
+`S.t` really is stated at `Tree S`, and the type the kernel invents for `Tree S`
+is declared alongside `S`.  What that costs is that the component's native
+recursor ranges over more than the component's members: it has a motive for
+each invented type and minor premises for its constructors.  Everything the
+lowering builds out of that recursor has to offer the same.
+
+They go at the end of their kind -- every member's motive first and then the
+invented ones, every constructor of the block first and then theirs -- so a
+block with nothing nested reads exactly as it did, and one with a nesting reads
+as the recursor Lean writes for a `mutual` block that nests.
+-/
+
+/-- One type the kernel denested, and where it lands in the block-wide recursors. -/
+structure NestSpec where
+  /-- The type constructor itself: `Tree`, not `Tree S`. -/
+  head       : Name
+  /-- Its motive's position, at or past `b.size`. -/
+  motive     : Nat
+  /-- Its first minor premise's position, at or past `b.allCtors.size`. -/
+  firstMinor : Nat
+  /-- How many constructors it has, hence how many minor premises. -/
+  numMinors  : Nat
+  /-- The kernel's own recursor with the major premise at this type: `S.rec_1`
+  where the component's members have `S.rec`. -/
+  nativeRec  : Name
+  /-- The block-wide recursor at this type, which is to `S.mutualRec` what
+  `S.rec_1` is to `S.rec`. -/
+  recName    : Name
+  deriving Inhabited
+
+/-- What the kernel denested, one entry per data SCC. -/
+structure Nests where
+  perScc     : Array (Array NestSpec)
+  numMotives : Nat
+  numMinors  : Nat
+  deriving Inhabited
+
+/-- Nothing was denested: every block without a nesting, and the native path. -/
+def Nests.empty (n : Nat) : Nests :=
+  { perScc := rep n #[], numMotives := 0, numMinors := 0 }
+
+def Nests.forScc (ns : Nests) (s : Nat) : Array NestSpec := ns.perScc[s]?.getD #[]
+
+/-- Which denested type a motive index past the block's own members belongs to. -/
+def Nests.spec? (ns : Nests) (e : Nat) : Option NestSpec :=
+  ns.perScc.findSome? fun specs => specs.findSome? fun sp =>
+    if sp.motive == e then some sp else none
+
+/-- The implementation of a block-wide recursor, and the `@[csimp]` theorem for
+it.  Named as a member's are, so that a nesting's recursor and a member's are
+told apart only by which of them they belong to. -/
+def NestSpec.implName (sp : NestSpec) : Name := sp.recName ++ `impl
+
+@[inherit_doc NestSpec.implName]
+def NestSpec.implEqName (sp : NestSpec) : Name := sp.recName ++ `eq_impl
+
+/-- `X_i.rec`, at the block's parameters and at motive values of the caller's
+choosing, with the type that is left over. -/
+private def memberRecAt (b : Block) (i : Nat) (params vals : Array Expr) :
+    MetaM (Expr × Expr) := do
+  let recName := b.members[i]!.name ++ `rec
+  let recFn := mkConst recName (← elimLevelsFor recName (b.motiveLevel i) b.ownLevels)
+  let ty ← instantiateForall (← inferType recFn) params
+  return (recFn, ← instantiateForall ty vals)
+
+/-- The motive values a component's native recursor is applied at, in its own
+order: the block's motive for each of the component's members, then the block's
+motive for each type the kernel denested for the component.
+
+They are passed as they stand rather than eta-expanded, so that the induction
+hypotheses read back off the recursor mention the motive itself.  Whoever reads
+them has to recognise which motive an induction hypothesis is about, and a
+`(fun t => motive_1 t) a` in a minor premise the writer will read is worse
+besides. -/
+private def sccMotiveVals (b : Block) (ns : Nests) (s : Nat) (motives : Array Expr) :
+    Array Expr :=
+  b.sccs[s]!.map (motives[·]!) ++ (ns.forScc s).map fun sp => motives[sp.motive]!
+
+/--
+Read off what the kernel denested for each component, by comparing that
+component's native recursor with the component the lowering handed it.  A
+recursor with more motives than its component has members has them for types the
+kernel invented, and there is no other way for one to arise.
+-/
+private def mkNests (b : Block) : MetaM Nests := do
+  let mut perScc : Array (Array NestSpec) := #[]
+  let mut nMot := 0
+  let mut nMin := 0
+  for s in *...b.sccs.size do
+    let i := b.sccs[s]![0]!
+    let name := b.members[i]!.name
+    let info ← getConstInfoRec (name ++ `rec)
+    let sz := b.sccs[s]!.size
+    if info.numMotives == sz then
+      perScc := perScc.push #[]
+      continue
+    if b.hasProp then
+      throwError "(internal) multiuniverse lowering: the kernel denested an occurrence in a \
+        block with a `Prop` member, which its shadow cannot follow"
+    let heads ← forallBoundedTelescope b.members[i]!.type (some b.numParams) fun params _ => do
+      let (_, ty) ← memberRecAt b i params #[]
+      forallBoundedTelescope ty (some info.numMotives) fun ms _ =>
+        (ms.extract sz info.numMotives).mapM fun m => do
+          forallTelescope (← inferType m) fun zs _ => do
+            let some t := zs.back?
+              | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive that \
+                  takes no major premise"
+            let some hd := (← whnf (← inferType t)).getAppFn.constName?
+              | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive over \
+                  something that is not a type constructor"
+            return hd
+    let mut specs : Array NestSpec := #[]
+    for k in *...heads.size do
+      let numMinors := (← getConstInfoInduct heads[k]!).numCtors
+      let nativeRec := name ++ `rec |>.appendIndexAfter (k + 1)
+      discard <| getConstInfoRec nativeRec
+      specs := specs.push
+        { head := heads[k]!, motive := b.size + nMot, firstMinor := b.allCtors.size + nMin,
+          numMinors, nativeRec, recName := name ++ `mutualRec |>.appendIndexAfter (k + 1) }
+      nMot := nMot + 1
+      nMin := nMin + numMinors
+    unless info.numMinors == (sccCtorIndices b s).size + specs.foldl (· + ·.numMinors) 0 do
+      throwError "(internal) multiuniverse lowering: `{name}.rec` asks for {info.numMinors} \
+        minor premises, which its component and what the kernel denested for it do not \
+        account for"
+    perScc := perScc.push specs
+  return { perScc, numMotives := nMot, numMinors := nMin }
+
+/-- The motives a component's native recursor asks for beyond its members'. -/
+private def nestMotiveTypes (b : Block) (ns : Nests) (s : Nat) (params : Array Expr) :
+    MetaM (Array Expr) := do
+  let e := (ns.forScc s).size
+  if e == 0 then return #[]
+  let sz := b.sccs[s]!.size
+  let (_, ty) ← memberRecAt b b.sccs[s]![0]! params #[]
+  forallBoundedTelescope ty (some (sz + e)) fun xs _ =>
+    (xs.extract sz (sz + e)).mapM inferType
+
+/-- The minor premises it asks for beyond its members' constructors, stated at
+the block's own motives.  No minor premise's type mentions the ones before it, so
+reading them all off one telescope is enough. -/
+private def nestMinorTypes (b : Block) (ns : Nests) (s : Nat) (params motives : Array Expr) :
+    MetaM (Array Expr) := do
+  let specs := ns.forScc s
+  if specs.isEmpty then return #[]
+  let (_, ty) ← memberRecAt b b.sccs[s]![0]! params (sccMotiveVals b ns s motives)
+  let own := (sccCtorIndices b s).size
+  let tot := specs.foldl (· + ·.numMinors) 0
+  forallBoundedTelescope ty (some (own + tot)) fun xs _ =>
+    (xs.extract own (own + tot)).mapM inferType
+
+/--
+The induction hypotheses the kernel's own recursor offers for `c` that the
+block's field analysis does not: one for each occurrence the kernel denested.
+
+Each comes back as the index of the field it is about, and its type abstracted
+over the constructor's fields, for the caller to restate at whichever copies of
+them it holds.  Which field a hypothesis is about is not guessed: it is the one
+whose variable the hypothesis mentions.
+-/
+private def nestIHs (b : Block) (ns : Nests) (params motives : Array Expr) (c : CtorInfo) :
+    MetaM (Array (Nat × Expr)) := do
+  let some s := b.sccOf[c.owner]! | return #[]
+  if (ns.forScc s).isEmpty then return #[]
+  let (_, ty) ← memberRecAt b b.sccs[s]![0]! params (sccMotiveVals b ns s motives)
+  let ctorIdx := sccCtorIndices b s
+  let some pos := ctorIdx.findIdx? (b.allCtors[·]!.name == c.name)
+    | throwError "(internal) multiuniverse lowering: `{c.name}` is not a constructor of its \
+        own component"
+  let minorTy ← forallBoundedTelescope ty (some (pos + 1)) fun xs _ => inferType xs[pos]!
+  forallBoundedTelescope minorTy (some c.numFields) fun fields rest =>
+    forallTelescope rest fun ihs _ => do
+      let mut out : Array (Nat × Expr) := #[]
+      for ih in ihs do
+        let t ← inferType ih
+        let mut which : Option Nat := none
+        for k in *...c.numFields do
+          if which.isNone && t.containsFVar fields[k]!.fvarId! then which := some k
+        let some k := which
+          | throwError "(internal) multiuniverse lowering: an induction hypothesis of \
+              `{c.name}` is about none of its fields"
+        if c.fields[k]!.isNone then out := out.push (k, t.abstract fields)
+      return out
+
+/-- The one of `nestIHs`' hypotheses that is about field `k`, restated at
+`fields`. -/
+private def nestIH? (nested : Array (Nat × Expr)) (k : Nat) (fields : Array Expr) :
+    Option Expr :=
+  nested.findSome? fun (j, t) => if j == k then some (t.instantiateRev fields) else none
+
 /-! ### Recursors
 
 Every generated recursor has the *same* signature apart from its major premise
@@ -1098,9 +1359,11 @@ def motiveNames (n : Nat) : Array Name :=
   else Array.ofFn (n := n) fun j => Name.mkSimple s!"motive_{j.val + 1}"
 
 /-- The type of the minor premise for constructor `c`: all fields, then one
-induction hypothesis per recursive field, in field order. -/
-private def mkMinorType (b : Block) (params motives : Array Expr) (c : CtorInfo) :
+induction hypothesis per recursive field and per field the kernel denested, in
+field order -- which is the order the kernel's own recursors use. -/
+private def mkMinorType (b : Block) (ns : Nests) (params motives : Array Expr) (c : CtorInfo) :
     MetaM Expr := do
+  let nested ← nestIHs b ns params motives c
   let inner ← instantiateForall (← b.toUser c.type) params
   forallTelescope inner fun fields result => do
     let args := result.getAppArgs
@@ -1115,45 +1378,85 @@ private def mkMinorType (b : Block) (params motives : Array Expr) (c : CtorInfo)
           let fidxs := fargs.extract b.numParams fargs.size
           mkForallFVars ys (mkAppN motives[rf.member]! (fidxs ++ #[mkAppN fields[k]! ys]))
         ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
+      else if let some ih := nestIH? nested k fields then
+        ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
     -- no induction hypothesis is ever referred to, so plain `forallE` is safe
     for (nm, t) in ihs.reverse do
       concl := .forallE nm t concl .default
     mkForallFVars fields concl
 
-/-- Set up the common outer telescope and hand the body builder the pieces. -/
-private def withRecTelescope (b : Block) (i : Nat)
+/-- The binder infos of every recursor in the block: parameters and motives
+implicit, minor premises explicit, then the indices implicit and the major
+premise explicit. -/
+private def recBinderInfos (b : Block) (ns : Nests) (nidxs : Nat) : Array BinderInfo :=
+  rep b.numParams BinderInfo.implicit
+    ++ rep (b.size + ns.numMotives) BinderInfo.implicit
+    ++ rep (b.allCtors.size + ns.numMinors) BinderInfo.default
+    ++ rep nidxs BinderInfo.implicit
+    ++ #[BinderInfo.default]
+
+/-- Set up the front of the telescope every recursor in the block shares -- one
+motive per member and per type the kernel denested, then one minor premise per
+constructor of each -- and hand it to `k`. -/
+private def withRecFront {α} [Inhabited α] (b : Block) (ns : Nests) (params : Array Expr)
+    (k : Array Expr → Array Expr → MetaM α) : MetaM α := do
+  let mut motiveTys : Array Expr := #[]
+  for j in *...b.size do
+    let aj ← instantiateForall b.members[j]!.type params
+    motiveTys := motiveTys.push <| ← forallTelescope aj fun jidxs _ =>
+      withLocalDeclD `t (mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs))
+        fun tv => mkForallFVars (jidxs ++ #[tv]) (mkSort (b.motiveLevel j))
+  for s in *...b.sccs.size do
+    motiveTys := motiveTys ++ (← nestMotiveTypes b ns s params)
+  let mnames := motiveNames motiveTys.size
+  let mut motiveDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
+  for j in *...motiveTys.size do
+    motiveDecls := motiveDecls.push (mnames[j]!, .implicit, fun _ => pure motiveTys[j]!)
+  withLocalDecls motiveDecls fun motives => do
+    let mut minorTys : Array Expr := #[]
+    for q in *...b.allCtors.size do
+      minorTys := minorTys.push (← mkMinorType b ns params motives b.allCtors[q]!)
+    for s in *...b.sccs.size do
+      minorTys := minorTys ++ (← nestMinorTypes b ns s params motives)
+    let mut minorDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
+    for q in *...minorTys.size do
+      minorDecls := minorDecls.push
+        (Name.mkSimple s!"case_{q + 1}", .default, fun _ => pure minorTys[q]!)
+    withLocalDecls minorDecls fun minors => k motives minors
+
+/-- Set up the whole telescope of `X_i.mutualRec` and hand the body builder the
+pieces. -/
+private def withRecTelescope (b : Block) (ns : Nests) (i : Nat)
     (mkBody : Array Expr → Array Expr → Array Expr → Array Expr → Expr → MetaM Expr) :
     MetaM (Expr × Expr) := do
-  forallBoundedTelescope b.members[i]!.type (some b.numParams) fun params _ => do
-    let userOf (j : Nat) (jidxs : Array Expr) : Expr :=
-      mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs)
-    let mut motiveDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
-    let mnames := motiveNames b.size
-    for j in *...b.size do
-      let aj ← instantiateForall b.members[j]!.type params
-      let mt ← forallTelescope aj fun jidxs _ =>
-        withLocalDeclD `t (userOf j jidxs) fun tv =>
-          mkForallFVars (jidxs ++ #[tv]) (mkSort (b.motiveLevel j))
-      motiveDecls := motiveDecls.push (mnames[j]!, .implicit, fun _ => pure mt)
-    withLocalDecls motiveDecls fun motives => do
-      let mut minorDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
-      for q in *...b.allCtors.size do
-        let mt ← mkMinorType b params motives b.allCtors[q]!
-        minorDecls := minorDecls.push
-          (Name.mkSimple s!"case_{q + 1}", .default, fun _ => pure mt)
-      withLocalDecls minorDecls fun minors => do
-        let ai ← instantiateForall b.members[i]!.type params
-        forallTelescope ai fun idxs _ =>
-          withLocalDeclD `t (userOf i idxs) fun major => do
-            let body ← mkBody params motives minors idxs major
-            let all := params ++ motives ++ minors ++ idxs ++ #[major]
-            let ty ← mkForallFVars all (mkAppN motives[i]! (idxs ++ #[major]))
-            let bis := rep b.numParams BinderInfo.implicit
-                    ++ rep b.size BinderInfo.implicit
-                    ++ rep b.allCtors.size BinderInfo.default
-                    ++ rep idxs.size BinderInfo.implicit
-                    ++ #[BinderInfo.default]
-            return (forceBinderInfos ty bis, ← mkLambdaFVars all body)
+  forallBoundedTelescope b.members[i]!.type (some b.numParams) fun params _ =>
+    withRecFront b ns params fun motives minors => do
+      let ai ← instantiateForall b.members[i]!.type params
+      forallTelescope ai fun idxs _ =>
+        withLocalDeclD `t (mkAppN (mkConst b.members[i]!.name b.ownLevels) (params ++ idxs))
+            fun major => do
+          let body ← mkBody params motives minors idxs major
+          let all := params ++ motives ++ minors ++ idxs ++ #[major]
+          let ty ← mkForallFVars all (mkAppN motives[i]! (idxs ++ #[major]))
+          return (forceBinderInfos ty (recBinderInfos b ns idxs.size), ← mkLambdaFVars all body)
+
+/-- The same, for the recursor whose major premise is a type the kernel denested.
+Its indices and major premise are read off its motive, which is the kernel's own. -/
+private def withNestRecTelescope (b : Block) (ns : Nests) (s : Nat) (sp : NestSpec)
+    (mkBody : Array Expr → Array Expr → Array Expr → Array Expr → Expr → MetaM Expr) :
+    MetaM (Expr × Expr) := do
+  forallBoundedTelescope b.members[b.sccs[s]![0]!]!.type (some b.numParams) fun params _ =>
+    withRecFront b ns params fun motives minors => do
+      forallTelescope (← inferType motives[sp.motive]!) fun zs _ => do
+        let some t := zs.back?
+          | throwError "(internal) multiuniverse lowering: the motive for `{sp.head}` takes no \
+              major premise"
+        let idxs := zs.pop
+        withLocalDeclD `t (← inferType t) fun major => do
+          let body ← mkBody params motives minors idxs major
+          let all := params ++ motives ++ minors ++ idxs ++ #[major]
+          let ty ← mkForallFVars all (mkAppN motives[sp.motive]! (idxs ++ #[major]))
+          return (forceBinderInfos ty (recBinderInfos b ns idxs.size), ← mkLambdaFVars all body)
 
 /-- `nameOf j` -- `X_j.mutualRec`, or the implementation of it built below --
 applied at the current motives and minors, lifted pointwise through any leading
@@ -1264,26 +1567,37 @@ private def mkPropRecBody (b : Block) (i : Nat)
       mkLambdaFVars args body
   return mkAppN recFn (params ++ smotives ++ sminors ++ idxs ++ #[major])
 
-private def mkDataRecBody (b : Block) (i : Nat)
+/--
+The body of a data recursor: one application of the kernel's own recursor for
+the component, at the block's motives.
+
+`recName` says which one -- a member's `rec`, or the `rec_k` the kernel gave a
+type it denested for the component.  Both have the same motives and minor
+premises, so the same body serves for either; only the major premise differs.
+
+The minor premises for the component's own constructors are the block's,
+supplied with an induction hypothesis for every field: the kernel's own where it
+has one, and a call to the block-wide recursor where the field points outside the
+component.  The ones the kernel added for what it denested are passed through
+untouched, since the block asks for them in exactly the form the kernel does.
+-/
+private def mkSccRecBody (b : Block) (ns : Nests) (s : Nat) (recName : Name)
     (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
-  let some s := b.sccOf[i]!
-    | throwError "(internal) multiuniverse lowering: data member without an SCC"
-  let mut nmotives := #[]
-  for j in b.sccs[s]! do
-    let aj ← instantiateForall b.members[j]!.type params
-    let mot ← forallTelescope aj fun jidxs _ => do
-      let dTy := mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs)
-      withLocalDeclD `t dTy fun tv =>
-        mkLambdaFVars (jidxs ++ #[tv]) (mkAppN motives[j]! (jidxs ++ #[tv]))
-    nmotives := nmotives.push mot
-  let recName := b.members[i]!.name ++ `rec
-  let recFn := mkConst recName (← elimLevelsFor recName (b.motiveLevel i) b.ownLevels)
+  let nmotives := sccMotiveVals b ns s motives
+  let lvl := b.motiveLevel b.sccs[s]![0]!
+  let recFn := mkConst recName (← elimLevelsFor recName lvl b.ownLevels)
   let ty0 ← instantiateForall (← inferType recFn) params
   let ty1 ← instantiateForall ty0 nmotives
   let ctorIdx := sccCtorIndices b s
-  let nminors ← buildArgs ty1 ctorIdx.size fun q minorTy => do
+  let specs := ns.forScc s
+  let nminors ← buildArgs ty1 (ctorIdx.size + specs.foldl (· + ·.numMinors) 0) fun q minorTy => do
+    if q ≥ ctorIdx.size then
+      -- the specs of a component are numbered consecutively, so its extra minor
+      -- premises sit in one run of the block's
+      return minors[specs[0]!.firstMinor + (q - ctorIdx.size)]!
     let gq := ctorIdx[q]!
     let c := b.allCtors[gq]!
+    let nested ← nestIHs b ns params motives c
     forallTelescope minorTy fun args _ => do
       let fields := args.extract 0 c.numFields
       let nih := args.extract c.numFields args.size
@@ -1300,16 +1614,22 @@ private def mkDataRecBody (b : Block) (i : Nat)
             -- block-wide recursor is already defined and takes exactly our
             -- arguments
             userIH := userIH.push (← recCall b params motives minors rf.member fields[k]!)
+        else if (nestIH? nested k fields).isSome then
+          -- an occurrence the kernel denested, so the native recursor has it
+          userIH := userIH.push nih[p]!
+          p := p + 1
       mkLambdaFVars args (mkAppN minors[gq]! (fields ++ userIH))
   return mkAppN recFn (params ++ nmotives ++ nminors ++ idxs ++ #[major])
 
-private def emitRec (b : Block) (i : Nat) : MetaM Unit := do
+private def emitRec (b : Block) (ns : Nests) (i : Nat) : MetaM Unit := do
   let m := b.members[i]!
-  let (ty, val) ← withRecTelescope b i fun params motives minors idxs major =>
+  let (ty, val) ← withRecTelescope b ns i fun params motives minors idxs major => do
     if m.isProp then
       mkPropRecBody b i params motives minors idxs major
     else
-      mkDataRecBody b i params motives minors idxs major
+      let some s := b.sccOf[i]!
+        | throwError "(internal) multiuniverse lowering: data member without an SCC"
+      mkSccRecBody b ns s (m.name ++ `rec) params motives minors idxs major
   -- a data member's recursor is left uncompiled: its body is a recursor
   -- application, so compiling it here would fail and mark it `noncomputable`,
   -- and its code comes instead from the implementation emitted afterwards.  A
@@ -1328,6 +1648,15 @@ private def emitRec (b : Block) (i : Nat) : MetaM Unit := do
     discard <| attempt? `Mumi m!"no one-motive recursor for `{m.name}`" <|
       addSoloElim b.numParams b.sccLevel true (b.recName i) (m.name ++ `recP)
         (forCases := false)
+
+/-- The block-wide recursor whose major premise is a type the kernel denested.
+Lean declares one of these for every mutual block that nests, so a block lowered
+here has them too, under the names a `mutual` block's would have. -/
+private def emitNestRec (b : Block) (ns : Nests) (s : Nat) (sp : NestSpec) : MetaM Unit := do
+  let (ty, val) ← withNestRecTelescope b ns s sp fun params motives minors idxs major =>
+    mkSccRecBody b ns s sp.nativeRec params motives minors idxs major
+  addDef sp.recName b.recLevelParams ty val (compile := false)
+  markElabAsElim sp.recName
 
 /-! ### Making the recursors computable
 
@@ -1384,6 +1713,60 @@ def Block.implName (b : Block) (i : Nat) : Name := b.recName i ++ `impl
 /-- The `@[csimp]` theorem `@X_i.mutualRec = @X_i.mutualRec.impl`. -/
 def Block.implEqName (b : Block) (i : Nat) : Name := b.recName i ++ `eq_impl
 
+/-! A *slot* is a position among the block's motives: a member below `b.size`,
+and a type the kernel denested above it.  The implementations are written over
+slots throughout, since a member's recursion into a nesting and back is one
+mutual recursion and has to be defined as one. -/
+
+/-- The block-wide recursor for a slot. -/
+private def slotRecName (b : Block) (ns : Nests) (e : Nat) : Name :=
+  match ns.spec? e with
+  | some sp => sp.recName
+  | none => b.recName e
+
+/-- Its implementation. -/
+private def slotImplName (b : Block) (ns : Nests) (e : Nat) : Name :=
+  match ns.spec? e with
+  | some sp => sp.implName
+  | none => b.implName e
+
+/-- Its `@[csimp]` theorem. -/
+private def slotImplEqName (b : Block) (ns : Nests) (e : Nat) : Name :=
+  match ns.spec? e with
+  | some sp => sp.implEqName
+  | none => b.implEqName e
+
+/-- Which slot an induction hypothesis is about, and how many arguments it is
+lifted through.  Its conclusion is an application of exactly one of the motives,
+so neither has to be guessed from the field it came from. -/
+private def ihSlot (motives : Array Expr) (ihTy : Expr) : MetaM (Nat × Nat) :=
+  forallTelescope ihTy fun ys body => do
+    let some e := motives.findIdx? (· == body.getAppFn)
+      | throwError "(internal) multiuniverse lowering: an induction hypothesis is about none \
+          of the block's motives:{indentExpr ihTy}"
+    return (e, ys.size)
+
+/-- An induction hypothesis of type `ihTy`, built by recursing with `nameOf` on
+the slot the hypothesis is about.  Every recursor in the block takes the same
+arguments before the indices, so the ones we already hold are the ones it wants,
+and the indices and the value it wants are the hypothesis' own. -/
+private def implIH (levels : List Level) (nameOf : Nat → Name)
+    (params motives minors : Array Expr) (ihTy : Expr) : MetaM Expr :=
+  forallTelescope ihTy fun ys body => do
+    let (e, _) ← ihSlot motives (← mkForallFVars ys body)
+    mkLambdaFVars ys
+      (mkAppN (mkConst (nameOf e) levels) (params ++ motives ++ minors ++ body.getAppArgs))
+
+/-- A minor premise of a block-wide recursor, applied to a constructor's fields
+and to induction hypotheses built by recursing.  `casesOn` offers no hypotheses
+of its own, so which ones are wanted is read off the minor premise's own type. -/
+private def applyMinor (levels : List Level) (nameOf : Nat → Name)
+    (params motives minors : Array Expr) (minor : Expr) (fields : Array Expr) : MetaM Expr := do
+  forallTelescope (← instantiateForall (← inferType minor) fields) fun ihs _ => do
+    let vals ← ihs.mapM fun ih => do
+      implIH levels nameOf params motives minors (← inferType ih)
+    return mkAppN minor (fields ++ vals)
+
 /--
 The body of `X_i.mutualRec.impl`: one `X_i.casesOn`, with every induction
 hypothesis supplied by a direct call -- to a sibling's implementation inside
@@ -1391,14 +1774,11 @@ hypothesis supplied by a direct call -- to a sibling's implementation inside
 theorem takes over.  `levels` are the levels the recursors are instantiated at,
 which differ between the lowered and the native path.
 -/
-private def mkImplBody (b : Block) (group : Array Nat) (levels : List Level) (i : Nat)
-    (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
+private def mkImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
+    (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
   let m := b.members[i]!
-  let ai ← instantiateForall m.type params
-  let mot ← forallTelescope ai fun jidxs _ => do
-    let dTy := mkAppN (mkConst m.name b.ownLevels) (params ++ jidxs)
-    withLocalDeclD `t dTy fun tv =>
-      mkLambdaFVars (jidxs ++ #[tv]) (mkAppN motives[i]! (jidxs ++ #[tv]))
+  let mot ← forallTelescope (← inferType motives[i]!) fun zs _ =>
+    mkLambdaFVars zs (mkAppN motives[i]! zs)
   let casesName := m.name ++ `casesOn
   let elim ← getLevel (mkAppN motives[i]! (idxs ++ #[major]))
   let casesFn := mkConst casesName (← elimLevelsFor casesName elim b.ownLevels)
@@ -1408,24 +1788,49 @@ private def mkImplBody (b : Block) (group : Array Nat) (levels : List Level) (i 
   -- outside the group -- an earlier SCC, or a `Prop` member, whose recursor is a
   -- proof and needs no implementation -- go through `mutualRec` and let `csimp`
   -- rewrite the call
-  let nameOf (j : Nat) : Name :=
-    if group.contains j then b.implName j else b.recName j
+  let nameOf (e : Nat) : Name :=
+    if group.contains e then slotImplName b ns e else slotRecName b ns e
   let mut ctorIdx := #[]
   for q in *...b.allCtors.size do
     if b.allCtors[q]!.owner == i then
       ctorIdx := ctorIdx.push q
   let cminors ← buildArgs ty2 ctorIdx.size fun q minorTy => do
     let gq := ctorIdx[q]!
-    let c := b.allCtors[gq]!
     -- `casesOn` offers no induction hypotheses, so its minor premise binds the
     -- fields and nothing else
-    forallBoundedTelescope minorTy (some c.numFields) fun fields _ => do
-      let mut ihs := #[]
-      for k in *...c.numFields do
-        if let some rf := c.fields[k]! then
-          ihs := ihs.push (← recCallTo b nameOf levels params motives minors rf.member fields[k]!)
-      mkLambdaFVars fields (mkAppN minors[gq]! (fields ++ ihs))
+    forallBoundedTelescope minorTy (some b.allCtors[gq]!.numFields) fun fields _ => do
+      mkLambdaFVars fields
+        (← applyMinor levels nameOf params motives minors minors[gq]! fields)
   return mkAppN casesFn (params ++ #[mot] ++ idxs ++ #[major] ++ cminors)
+
+/--
+The same, for the implementation of a recursor over a type the kernel denested.
+That type is not a member of the block, so the cases are its own and the
+parameters they are taken at are the major premise's, not the block's; from
+there the induction hypotheses are built exactly as a member's are.
+-/
+private def mkNestImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
+    (sp : NestSpec) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
+  let dinfo ← getConstInfoInduct sp.head
+  let majorTy ← whnf (← inferType major)
+  let dparams := majorTy.getAppArgs.extract 0 dinfo.numParams
+  let mot ← forallTelescope (← inferType motives[sp.motive]!) fun zs _ =>
+    mkLambdaFVars zs (mkAppN motives[sp.motive]! zs)
+  let casesName := sp.head ++ `casesOn
+  let elim ← getLevel (mkAppN motives[sp.motive]! (idxs ++ #[major]))
+  let casesFn := mkConst casesName (← elimLevelsFor casesName elim majorTy.getAppFn.constLevels!)
+  let ty0 ← instantiateForall (← inferType casesFn) dparams
+  let ty1 ← instantiateForall ty0 #[mot]
+  let ty2 ← instantiateForall ty1 (idxs ++ #[major])
+  let nameOf (e : Nat) : Name :=
+    if group.contains e then slotImplName b ns e else slotRecName b ns e
+  let ctors := dinfo.ctors.toArray
+  let cminors ← buildArgs ty2 ctors.size fun q minorTy => do
+    let numFields := (← getConstInfoCtor ctors[q]!).numFields
+    forallBoundedTelescope minorTy (some numFields) fun fields _ => do
+      mkLambdaFVars fields
+        (← applyMinor levels nameOf params motives minors minors[sp.firstMinor + q]! fields)
+  return mkAppN casesFn (dparams ++ #[mot] ++ idxs ++ #[major] ++ cminors)
 
 /--
 Open the telescope of `X_i.mutualRec` -- `{params} {motive_1 .. motive_n}
@@ -1437,18 +1842,18 @@ by construction, and a homogeneous block's `mutualRec` is an alias of a native
 recursor, whose motives and minor premises range over the whole block; the
 caller checks that.
 -/
-private def withMutualRecTelescope {α} [Inhabited α] (b : Block) (i : Nat)
+private def withMutualRecTelescope {α} [Inhabited α] (b : Block) (ns : Nests) (i : Nat)
     (k : Array Expr → Array Expr → Array Expr → Array Expr → Array Expr → Expr → MetaM α) :
     MetaM α := do
-  let info ← getConstInfoDefn (b.recName i)
+  let info ← getConstInfoDefn (slotRecName b ns i)
   forallTelescope info.type fun xs _ => do
-    let nfront := b.numParams + b.size + b.allCtors.size
+    let nmot := b.numParams + b.size + ns.numMotives
+    let nfront := nmot + b.allCtors.size + ns.numMinors
     if xs.size ≤ nfront then
       throwError "(internal) multiuniverse lowering: unexpected signature for \
-        `{b.recName i}`:{indentExpr info.type}"
-    k xs (xs.extract 0 b.numParams)
-      (xs.extract b.numParams (b.numParams + b.size))
-      (xs.extract (b.numParams + b.size) nfront)
+        `{slotRecName b ns i}`:{indentExpr info.type}"
+    k xs (xs.extract 0 b.numParams) (xs.extract b.numParams nmot)
+      (xs.extract nmot nfront)
       (xs.extract nfront (xs.size - 1)) xs[xs.size - 1]!
 
 /-- `h : ∀ ys, f ys = g ys` becomes `f = g`, one `funext` per binder. -/
@@ -1460,14 +1865,23 @@ private def mkFunExtN (h : Expr) (n : Nat) : MetaM Expr := do
       p ← mkFunExt (← mkLambdaFVars #[ys[n - 1 - k]!] p)
     return p
 
-/-- The constructors of `group`, as indices into `b.allCtors`, in the order the
-recursor whose motives range over exactly `group` expects its minor premises. -/
-private def groupCtorIndices (b : Block) (group : Array Nat) : Array Nat := Id.run do
+/-- The constructors of the slots in `group`, in the order the recursor whose
+motives range over exactly `group` expects its minor premises, each as its
+position among the block's minor premises, the slot that owns it, and how many
+fields it has. -/
+private def groupCtorIndices (b : Block) (ns : Nests) (group : Array Nat) :
+    MetaM (Array (Nat × Nat × Nat)) := do
   let mut out := #[]
   for j in group do
-    for q in *...b.allCtors.size do
-      if b.allCtors[q]!.owner == j then
-        out := out.push q
+    match ns.spec? j with
+    | some sp =>
+      for t in *...sp.numMinors do
+        let c ← getConstInfoCtor (← getConstInfoInduct sp.head).ctors.toArray[t]!
+        out := out.push (sp.firstMinor + t, j, c.numFields)
+    | none =>
+      for q in *...b.allCtors.size do
+        if b.allCtors[q]!.owner == j then
+          out := out.push (q, j, b.allCtors[q]!.numFields)
   return out
 
 /--
@@ -1488,51 +1902,53 @@ otherwise.  So each minor premise is a chain of congruences over the induction
 hypotheses -- legal because no minor premise's later argument types depend on
 them -- and closes by `rfl` at the head.
 -/
-private def mkImplEqBody (b : Block) (implGroup motiveGroup : Array Nat) (levels : List Level)
-    (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
-  let apply (nm : Name) (jidxs : Array Expr) (t : Expr) : Expr :=
-    mkAppN (mkConst nm levels) (params ++ motives ++ minors ++ jidxs ++ #[t])
-  let implOf (j : Nat) : Name := if implGroup.contains j then b.implName j else b.recName j
+private def mkImplEqBody (b : Block) (ns : Nests) (implGroup motiveGroup : Array Nat)
+    (levels : List Level) (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) :
+    MetaM Expr := do
+  let apply (nm : Name) (zs : Array Expr) : Expr :=
+    mkAppN (mkConst nm levels) (params ++ motives ++ minors ++ zs)
+  let implOf (e : Nat) : Name :=
+    if implGroup.contains e then slotImplName b ns e else slotRecName b ns e
   let mut pmotives := #[]
   for j in motiveGroup do
-    let aj ← instantiateForall b.members[j]!.type params
-    let mot ← forallTelescope aj fun jidxs _ => do
-      let dTy := mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs)
-      withLocalDeclD `t dTy fun tv => do
-        mkLambdaFVars (jidxs ++ #[tv])
-          (← mkEq (apply (b.recName j) jidxs tv) (apply (implOf j) jidxs tv))
-    pmotives := pmotives.push mot
-  let recName := b.members[i]!.name ++ `rec
+    -- a motive's own type says what its slot ranges over, member or nesting
+    pmotives := pmotives.push <| ← forallTelescope (← inferType motives[j]!) fun zs _ => do
+      mkLambdaFVars zs (← mkEq (apply (slotRecName b ns j) zs) (apply (implOf j) zs))
+  let recName := match ns.spec? i with
+    | some sp => sp.nativeRec
+    | none => b.members[i]!.name ++ `rec
   let recFn := mkConst recName (← elimLevelsFor recName .zero b.ownLevels)
   let ty0 ← instantiateForall (← inferType recFn) params
   let ty1 ← instantiateForall ty0 pmotives
-  let ctorIdx := groupCtorIndices b motiveGroup
+  let ctorIdx ← groupCtorIndices b ns motiveGroup
   let pminors ← buildArgs ty1 ctorIdx.size fun q minorTy => do
-    let gq := ctorIdx[q]!
-    let c := b.allCtors[gq]!
+    let (gq, owner, numFields) := ctorIdx[q]!
     forallTelescope minorTy fun args target => do
       let some (_, lhs, _) := (← whnf target).eq?
-        | throwError "(internal) multiuniverse lowering: the induction motive for \
-            `{b.members[c.owner]!.name}` is not an equation"
-      if !implGroup.contains c.owner then
+        | throwError "(internal) multiuniverse lowering: the induction motive for slot \
+            {owner} is not an equation"
+      if !implGroup.contains owner then
         return ← mkLambdaFVars args (← mkEqRefl lhs)
-      let fields := args.extract 0 c.numFields
-      let nih := args.extract c.numFields args.size
+      let fields := args.extract 0 numFields
+      let nih := args.extract numFields args.size
+      -- the block's minor premise says which induction hypotheses the two sides
+      -- differ at; the recursor offers one for each whose slot it has a motive
+      -- for, and only those
+      let bihs ← forallTelescope (← instantiateForall (← inferType minors[gq]!) fields)
+        fun ihs _ => ihs.mapM inferType
       let mut pf ← mkEqRefl (mkAppN minors[gq]! fields)
       let mut p := 0
-      for k in *...c.numFields do
-        if let some rf := c.fields[k]! then
-          -- the recursor offers an induction hypothesis for every field of a
-          -- member it has a motive for, and only those
-          let inMotive := motiveGroup.contains rf.member
-          let h ←
-            if inMotive && implGroup.contains rf.member then
-              mkFunExtN nih[p]! rf.arity
-            else
-              mkEqRefl (← recCallTo b b.recName levels params motives minors rf.member fields[k]!)
-          if inMotive then
-            p := p + 1
-          pf ← mkCongr pf h
+      for ihTy in bihs do
+        let (e, arity) ← ihSlot motives ihTy
+        let inMotive := motiveGroup.contains e
+        let h ←
+          if inMotive && implGroup.contains e then
+            mkFunExtN nih[p]! arity
+          else
+            mkEqRefl (← implIH levels (slotRecName b ns ·) params motives minors ihTy)
+        if inMotive then
+          p := p + 1
+        pf ← mkCongr pf h
       mkLambdaFVars args pf
   return mkAppN recFn (params ++ pmotives ++ pminors ++ idxs ++ #[major])
 
@@ -1545,19 +1961,23 @@ graph, so its implementations are exactly the ones that have to be defined by
 mutual recursion; `motiveGroup` is what the native recursors used to prove the
 theorems range over, which on the native path is the whole block.
 -/
-private def emitImplGroup (b : Block) (implGroup motiveGroup : Array Nat) : TermElabM Unit := do
+private def emitImplGroup (b : Block) (ns : Nests) (implGroup motiveGroup : Array Nat) :
+    TermElabM Unit := do
   if implGroup.isEmpty then return
   let docCtx := (← getLCtx, ← getLocalInstances)
-  let names := implGroup.map b.implName
+  let names := implGroup.map (slotImplName b ns)
   let mut preDefs : Array PreDefinition := #[]
   for i in implGroup do
-    let info ← getConstInfoDefn (b.recName i)
+    let info ← getConstInfoDefn (slotRecName b ns i)
     let levels := info.levelParams.map Level.param
-    let value ← withMutualRecTelescope b i fun xs params motives minors idxs major => do
-      mkLambdaFVars xs (← mkImplBody b implGroup levels i params motives minors idxs major)
+    let value ← withMutualRecTelescope b ns i fun xs params motives minors idxs major => do
+      let body ← match ns.spec? i with
+        | some sp => mkNestImplBody b ns implGroup levels sp params motives minors idxs major
+        | none => mkImplBody b ns implGroup levels i params motives minors idxs major
+      mkLambdaFVars xs body
     preDefs := preDefs.push
       { ref := .missing, kind := .def, levelParams := info.levelParams, modifiers := {},
-        declName := b.implName i, binders := .missing, type := info.type, value,
+        declName := slotImplName b ns i, binders := .missing, type := info.type, value,
         termination := TerminationHints.none }
   -- `structuralRecursion` throws if it cannot see that the definitions
   -- terminate; `addPreDefinitions` would instead fall back to `partial` or
@@ -1569,18 +1989,20 @@ private def emitImplGroup (b : Block) (implGroup motiveGroup : Array Nat) : Term
     for preDef in preDefs do
       addAndCompileNonRec docCtx preDef
   for i in implGroup do
-    let info ← getConstInfoDefn (b.recName i)
+    let info ← getConstInfoDefn (slotRecName b ns i)
     let levels := info.levelParams.map Level.param
-    let value ← withMutualRecTelescope b i fun xs params motives minors idxs major => do
-      let mut pf ← mkImplEqBody b implGroup motiveGroup levels i params motives minors idxs major
+    let value ← withMutualRecTelescope b ns i fun xs params motives minors idxs major => do
+      let mut pf ←
+        mkImplEqBody b ns implGroup motiveGroup levels i params motives minors idxs major
       -- `∀ args, f args = g args` becomes `f = g`, which is `@X_i.mutualRec =
       -- @X_i.mutualRec.impl` up to eta -- the shape `csimp` wants
       for k in *...xs.size do
         pf ← mkFunExt (← mkLambdaFVars #[xs[xs.size - 1 - k]!] pf)
       return pf
-    let type ← mkEq (mkConst (b.recName i) levels) (mkConst (b.implName i) levels)
-    addDecl (.thmDecl { name := b.implEqName i, levelParams := info.levelParams, type, value })
-    Compiler.CSimp.add (b.implEqName i) .global
+    let type ← mkEq (mkConst (slotRecName b ns i) levels) (mkConst (slotImplName b ns i) levels)
+    addDecl (.thmDecl
+      { name := slotImplEqName b ns i, levelParams := info.levelParams, type, value })
+    Compiler.CSimp.add (slotImplEqName b ns i) .global
 
 /--
 Implementations for a homogeneous block, whose `mutualRec`s are aliases of the
@@ -1607,7 +2029,7 @@ private def emitNativeImpls (b : Block) : TermElabM Unit := do
   -- a homogeneous block that is not all-`Prop` has no `Prop` member at all, so
   -- every member is in one of the data SCCs
   for s in *...b.sccs.size do
-    emitImplGroup b b.sccs[s]! (Array.range b.size)
+    emitImplGroup b (Nests.empty b.sccs.size) b.sccs[s]! (Array.range b.size)
 
 /--
 Lower an elaborated multiuniverse block to ordinary declarations.
@@ -1626,18 +2048,25 @@ def lower (inp : Input) : TermElabM Unit := do
     emitPropAliases b
   for s in *...b.sccs.size do
     emitDataSCC b s
+  -- what the kernel denested is only knowable once it has been handed the block
+  let ns ← mkNests b
   if b.hasProp then
     for s in *...b.sccs.size do
       emitSquashSCC b s
     emitPropCtors b
     for i in *...b.size do
       if b.members[i]!.isProp then
-        emitRec b i
+        emitRec b ns i
   -- one SCC at a time, so that an implementation's calls into an earlier
   -- component are already backed by a `@[csimp]` theorem
   for s in *...b.sccs.size do
     for i in b.sccs[s]! do
-      emitRec b i
-    emitImplGroup b b.sccs[s]! b.sccs[s]!
+      emitRec b ns i
+    for sp in ns.forScc s do
+      emitNestRec b ns s sp
+    -- a member's recursion into a type the kernel denested and back is one
+    -- mutual recursion, so their implementations are defined together
+    let group := b.sccs[s]! ++ (ns.forScc s).map (·.motive)
+    emitImplGroup b ns group group
 
 end Lean.Elab.MultiuniverseInductive

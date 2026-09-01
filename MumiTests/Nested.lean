@@ -443,6 +443,11 @@ constants from `List.nil` and `List.cons`, and no equation between the two types
 is true.  So there is no `eq_orig`, and nothing is displayed as anything else --
 the `#check`s above say `N.nested_List_2`, which is the honest answer.
 
+A data copy only ever arises underneath a `Prop` one, as this `List` does.  A
+data nesting on its own is denested by the kernel, which leaves the writer's
+own type in the constructor and nothing to copy; that is what happens to every
+`List` in the blocks further down.
+
 What such a member does get is the isomorphism itself, and a coercion each way,
 so its name need not be written at a use site. -/
 
@@ -500,11 +505,12 @@ set_option mumi.pp.nested false in
 #guard_msgs in
 #check @N.nested_Nonempty_1.eq_orig
 
-/-! ## How far a chain of bridges reaches
+/-! ## How far a denesting reaches
 
-Three deep, with a data copy in the middle: the copies are `List (Option
-(List T))`, `Option (List T)` and `List T`, and each is carried by the one
-inside it. -/
+Three deep: `List (Option (List T3))`, `Option (List T3)` and `List T3`.  Every
+head in the chain is data, so the kernel denests the lot when the widened block
+is handed to it, and the constructor and the recursion are stated in the
+writer's own types all the way down. -/
 
 mutual
 inductive T3 : Type 1 where
@@ -514,25 +520,17 @@ inductive U3 : Type where
   | u : U3
 end
 
-/-- info: T3.nested_List_1.toOrig : T3.nested_List_1 → List (Option (List T3)) -/
+/-- info: T3.mk : List (Option (List T3)) → T3 -/
 #guard_msgs in
-#check @T3.nested_List_1.toOrig
-
-/-- info: T3.nested_Option_2.toOrig : T3.nested_Option_2 → Option (List T3) -/
-#guard_msgs in
-#check @T3.nested_Option_2.toOrig
-
-/-- info: T3.nested_List_3.toOrig : T3.nested_List_3 → List T3 -/
-#guard_msgs in
-#check @T3.nested_List_3.toOrig
+#check @T3.mk
 
 def T3.count : T3 → Nat
   | .tip => 0
-  | .mk xs => ((xs : List (Option (List T3))).filterMap id).length
+  | .mk xs => (xs.filterMap id).length
 
 /-- info: 2 -/
 #guard_msgs in
-#eval T3.count (T3.mk (T3.nested_List_1.ofOrig [some [.tip], none, some []]))
+#eval T3.count (T3.mk [some [.tip], none, some []])
 
 /-- info: 'T3.count' does not depend on any axioms -/
 #guard_msgs in
@@ -561,9 +559,9 @@ info: V3.nested_Nonempty_1.eq_orig : Nonempty (Nonempty (List V3)) = Nonempty (N
 #guard_msgs in
 #check @V3.nested_Nonempty_1.eq_orig
 
-/-! Two nestings sharing one copy.  `List (List C3)` and `List C3` both appear,
-and the inner one is interned *first*, so the order the bridges are built in is
-not the order the copies were made in. -/
+/-! Two nestings sharing one denesting.  `List (List C3)` and `List C3` both
+appear, and the inner one is what the outer one recurses through, so the two
+end up as one denested family rather than two. -/
 
 mutual
 inductive C3 : Type 1 where
@@ -574,22 +572,22 @@ inductive D3 : Type where
   | d : D3
 end
 
-/-- info: C3.nested_List_1.toOrig : C3.nested_List_1 → List C3 -/
+/-- info: C3.one : List C3 → C3 -/
 #guard_msgs in
-#check @C3.nested_List_1.toOrig
+#check @C3.one
 
-/-- info: C3.nested_List_2.toOrig : C3.nested_List_2 → List (List C3) -/
+/-- info: C3.two : List (List C3) → C3 -/
 #guard_msgs in
-#check @C3.nested_List_2.toOrig
+#check @C3.two
 
 def C3.deep : C3 → Nat
   | .tip => 0
-  | .one xs => (xs : List C3).length
-  | .two xss => ((xss : List (List C3)).map (·.length)).sum
+  | .one xs => xs.length
+  | .two xss => (xss.map (·.length)).sum
 
 /-- info: 3 -/
 #guard_msgs in
-#eval C3.deep (C3.two (C3.nested_List_2.ofOrig [[.tip, .tip], [.tip]]))
+#eval C3.deep (C3.two [[.tip, .tip], [.tip]])
 
 /-- info: 'C3.deep' does not depend on any axioms -/
 #guard_msgs in
@@ -626,14 +624,10 @@ info: A3.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Nonempty (Vek3 B3 n) = Nonem
 
 /-! ## Nesting over a mutual family
 
-Nesting `FamRose` copies `FamForest` too, since that is where `FamRose`'s own
-recursion goes.  The two copies then reach each other -- `node` has a field at
-the forest, `cons` one at the tree -- so neither can be crossed before the
-other, and a bridge built one copy at a time never gets off the ground.  The
-copies of a cycle are bridged together instead: every one of them gets a real
-motive, and a single pass of the recursor carries the family across.  The
-compiled companions go in as one mutually recursive block for the same reason,
-so the conversions still run. -/
+Nesting `FamRose` drags in `FamForest` too, since that is where `FamRose`'s own
+recursion goes.  The two reach each other -- `node` has a field at the forest,
+`cons` one at the tree -- so the denesting has to take them together, and the
+recursion the block gets back ranges over the whole family at once. -/
 
 mutual
 inductive FamRose (α : Type u) : Type u where
@@ -659,50 +653,40 @@ inductive Mu1B : Type where
   | b : Mu1B
 end
 
-/-- info: Mu1A.nested_FamRose_1.toOrig : Mu1A.nested_FamRose_1 → FamRose Mu1A -/
+/-- info: Mu1A.mk : FamRose Mu1A → Mu1A -/
 #guard_msgs in
-#check @Mu1A.nested_FamRose_1.toOrig
-
-/-- info: Mu1A.nested_FamForest_2.ofOrig : FamForest Mu1A → Mu1A.nested_FamForest_2 -/
-#guard_msgs in
-#check @Mu1A.nested_FamForest_2.ofOrig
-
-/-- info: Mu1A.nested_FamRose_1.coeToOrig : CoeOut Mu1A.nested_FamRose_1 (FamRose Mu1A) -/
-#guard_msgs in
-#check @Mu1A.nested_FamRose_1.coeToOrig
+#check @Mu1A.mk
 
 /-! The recursor is the whole family's: a motive for the block's own member and
-one for each copy, with the tree's cases and the forest's side by side. -/
+one for each member of the family it nests, with the tree's cases and the
+forest's side by side. -/
 
 /--
 info: @Mu1A.rec : {motive_1 : Mu1A → Sort u_1} →
-  {motive_2 : Mu1A.nested_FamRose_1 → Sort u_1} →
-    {motive_3 : Mu1A.nested_FamForest_2 → Sort u_1} →
+  {motive_2 : FamRose Mu1A → Sort u_1} →
+    {motive_3 : FamForest Mu1A → Sort u_1} →
       motive_1 Mu1A.tip →
-        ((a : Mu1A.nested_FamRose_1) → motive_2 a → motive_1 (Mu1A.mk a)) →
-          ((a : Mu1A) →
-              (a_1 : Mu1A.nested_FamForest_2) →
-                motive_1 a → motive_3 a_1 → motive_2 (Mu1A.nested_FamRose_1.node a a_1)) →
-            motive_3 Mu1A.nested_FamForest_2.nil →
-              ((a : Mu1A.nested_FamRose_1) →
-                  (a_1 : Mu1A.nested_FamForest_2) →
-                    motive_2 a → motive_3 a_1 → motive_3 (Mu1A.nested_FamForest_2.cons a a_1)) →
+        ((a : FamRose Mu1A) → motive_2 a → motive_1 (Mu1A.mk a)) →
+          ((a : Mu1A) → (a_1 : FamForest Mu1A) → motive_1 a → motive_3 a_1 → motive_2 (FamRose.node a a_1)) →
+            motive_3 FamForest.nil →
+              ((a : FamRose Mu1A) →
+                  (a_1 : FamForest Mu1A) → motive_2 a → motive_3 a_1 → motive_3 (FamForest.cons a a_1)) →
                 (t : Mu1A) → motive_1 t
 -/
 #guard_msgs in
 #check @Mu1A.rec
 
-/-! Both directions run, all the way down through the mutual recursion, and on
-nothing but the constructors. -/
+/-! A function written against the family runs on what comes out of the
+constructor, with nothing to convert on the way in or out. -/
 
 def Mu1A.count : Mu1A → Nat
   | .tip => 0
-  | .mk r => FamRose.size (r : FamRose Mu1A)
+  | .mk r => FamRose.size r
 
 /-- info: 3 -/
 #guard_msgs in
-#eval Mu1A.count (Mu1A.mk (Mu1A.nested_FamRose_1.ofOrig
-  (.node .tip (.cons (.node .tip .nil) (.cons (.node .tip .nil) .nil)))))
+#eval Mu1A.count (Mu1A.mk
+  (.node .tip (.cons (.node .tip .nil) (.cons (.node .tip .nil) .nil))))
 
 /-- info: 'Mu1A.count' does not depend on any axioms -/
 #guard_msgs in
@@ -760,13 +744,13 @@ inductive Mu3B : Type where
   | b : Mu3B
 end
 
-/-- info: Mu3A.nested_FamT3_3.toOrig : Mu3A.nested_FamT3_3 → FamT3 Mu3A -/
+/-- info: Mu3A.mk : FamT1 Mu3A → Mu3A -/
 #guard_msgs in
-#check @Mu3A.nested_FamT3_3.toOrig
+#check @Mu3A.mk
 
 /-! Being written in one `mutual` block is not what makes a cycle.  `FamS2` does
-not reach back into `FamS1`, so its copy is bridged first and on its own, and
-`FamS1`'s copy then crosses that field on the bridge already there. -/
+not reach back into `FamS1`, so the two are denested one after the other rather
+than together. -/
 
 mutual
 inductive FamS1 (α : Type u) : Type u where
@@ -783,15 +767,23 @@ inductive Mu4B : Type where
   | b : Mu4B
 end
 
-/-- info: Mu4A.nested_FamS1_1.toOrig : Mu4A.nested_FamS1_1 → FamS1 Mu4A -/
+/-- info: Mu4A.mk : FamS1 Mu4A → Mu4A -/
 #guard_msgs in
-#check @Mu4A.nested_FamS1_1.toOrig
+#check @Mu4A.mk
 
-/-- info: Mu4A.nested_FamS2_2.toOrig : Mu4A.nested_FamS2_2 → FamS2 Mu4A -/
+/--
+info: @Mu4A.rec : {motive_1 : Mu4A → Sort u_1} →
+  {motive_2 : FamS1 Mu4A → Sort u_1} →
+    {motive_3 : FamS2 Mu4A → Sort u_1} →
+      motive_1 Mu4A.tip →
+        ((a : FamS1 Mu4A) → motive_2 a → motive_1 (Mu4A.mk a)) →
+          ((a : Mu4A) → (a_1 : FamS2 Mu4A) → motive_1 a → motive_3 a_1 → motive_2 (FamS1.s a a_1)) →
+            motive_3 FamS2.t → (t : Mu4A) → motive_1 t
+-/
 #guard_msgs in
-#check @Mu4A.nested_FamS2_2.toOrig
+#check @Mu4A.rec
 
-/-! The family may be indexed, and the copies carry the indices. -/
+/-! The family may be indexed, and the denesting carries the indices. -/
 
 mutual
 inductive FamIA (α : Type u) : Nat → Type u where
@@ -809,16 +801,25 @@ inductive Mu5B : Type where
   | b : Mu5B
 end
 
-/-- info: Mu5A.mk : Mu5A.nested_FamIA_1 3 → Mu5A -/
+/-- info: Mu5A.mk : FamIA Mu5A 3 → Mu5A -/
 #guard_msgs in
 #check @Mu5A.mk
 
-/-- info: Mu5A.nested_FamIB_2.toOrig : (a : Nat) → Mu5A.nested_FamIB_2 a → FamIB Mu5A a -/
+/--
+info: @Mu5A.rec : {motive_1 : Mu5A → Sort u_1} →
+  {motive_2 : (a : Nat) → FamIA Mu5A a → Sort u_1} →
+    {motive_3 : (a : Nat) → FamIB Mu5A a → Sort u_1} →
+      motive_1 Mu5A.tip →
+        ((a : FamIA Mu5A 3) → motive_2 3 a → motive_1 (Mu5A.mk a)) →
+          ((a : Mu5A) → motive_1 a → motive_2 0 (FamIA.z a)) →
+            ((n : Nat) → (a : FamIB Mu5A n) → motive_3 n a → motive_2 (n + 1) (FamIA.s n a)) →
+              ((n : Nat) → (a : FamIA Mu5A n) → motive_2 n a → motive_3 n (FamIB.mk n a)) → (t : Mu5A) → motive_1 t
+-/
 #guard_msgs in
-#check @Mu5A.nested_FamIB_2.toOrig
+#check @Mu5A.rec
 
-/-! One family at two different parameters is two cycles, not one: what a group
-shares is the whole nested application, not just its head. -/
+/-! One family at two different parameters is two denestings, not one: what
+they share is the whole nested application, not just its head. -/
 
 mutual
 inductive Mu6A : Type 1 where
@@ -829,30 +830,30 @@ inductive Mu6B : Type where
   | b : Mu6B
 end
 
-/-- info: Mu6A.nested_FamRose_1.toOrig : Mu6A.nested_FamRose_1 → FamRose Mu6A -/
+/-- info: Mu6A.one : FamRose Mu6A → Mu6A -/
 #guard_msgs in
-#check @Mu6A.nested_FamRose_1.toOrig
+#check @Mu6A.one
 
-/-- info: Mu6A.nested_FamRose_3.toOrig : Mu6A.nested_FamRose_3 → FamRose (List Mu6A) -/
+/-- info: Mu6A.two : FamRose (List Mu6A) → Mu6A -/
 #guard_msgs in
-#check @Mu6A.nested_FamRose_3.toOrig
+#check @Mu6A.two
 
 def Mu6A.count : Mu6A → Nat
   | .tip => 0
-  | .one r => FamRose.size (r : FamRose Mu6A)
-  | .two r => FamRose.size (r : FamRose (List Mu6A))
+  | .one r => FamRose.size r
+  | .two r => FamRose.size r
 
 /-- info: 2 -/
 #guard_msgs in
-#eval Mu6A.count
-  (Mu6A.two (Mu6A.nested_FamRose_3.ofOrig (.node [.tip] (.cons (.node [] .nil) .nil))))
+#eval Mu6A.count (Mu6A.two (.node [.tip] (.cons (.node [] .nil) .nil)))
 
 /-- info: 'Mu6A.count' does not depend on any axioms -/
 #guard_msgs in
 #print axioms Mu6A.count
 
-/-! The parameter may be the family's own other member, which makes two cycles
-of two, the outer one crossing on the inner one's bridges. -/
+/-! The parameter may be the family's own other member, which makes two
+denestings of two members each, the outer one over the types the inner one
+introduced. -/
 
 mutual
 inductive Mu7A : Type 1 where
@@ -862,9 +863,9 @@ inductive Mu7B : Type where
   | b : Mu7B
 end
 
-/-- info: Mu7A.nested_FamRose_1.toOrig : Mu7A.nested_FamRose_1 → FamRose (FamForest Mu7A) -/
+/-- info: Mu7A.mk : FamRose (FamForest Mu7A) → Mu7A -/
 #guard_msgs in
-#check @Mu7A.nested_FamRose_1.toOrig
+#check @Mu7A.mk
 
 /-! ## Nesting inside a bundle
 
@@ -899,45 +900,37 @@ inductive Bn2 : Type where
   | b : Bn2
 end
 
-/-- info: Bn1.pr : Bn1.nested_Prod_1 → Bn1 -/
+/-- info: Bn1.pr : BunTree Bn1 × Nat → Bn1 -/
 #guard_msgs in
 #check @Bn1.pr
 
-/-- info: Bn1.nested_Prod_1.toOrig : Bn1.nested_Prod_1 → BunTree Bn1 × Nat -/
+/-- info: Bn1.sg : (n : Nat) × BunVek Bn1 n → Bn1 -/
 #guard_msgs in
-#check @Bn1.nested_Prod_1.toOrig
+#check @Bn1.sg
 
-/-- info: Bn1.nested_Sigma_3.toOrig : Bn1.nested_Sigma_3 → (n : Nat) × BunVek Bn1 n -/
+/-! The `BunVek` under the `Sigma` is a nesting of its own, indexed by the `Nat`
+the `Sigma` supplies, and it is denested along with the bundle that reaches it. -/
+
+/-- info: Bn1.sub : { _t // 0 = 0 } → Bn1 -/
 #guard_msgs in
-#check @Bn1.nested_Sigma_3.toOrig
+#check @Bn1.sub
 
-/-! The `BunVek` under the `Sigma` is a copy of its own, indexed by the `Nat`
-the `Sigma` supplies, and it is bridged before the bundle that reaches it. -/
+/-! A nesting in the codomain of a function is found under the binder. -/
 
-/-- info: Bn1.nested_BunVek_4.toOrig : (a : Nat) → Bn1.nested_BunVek_4 a → BunVek Bn1 a -/
-#guard_msgs in
-#check @Bn1.nested_BunVek_4.toOrig
-
-/-- info: Bn1.nested_Subtype_5.toOrig : Bn1.nested_Subtype_5 → { _t // 0 = 0 } -/
-#guard_msgs in
-#check @Bn1.nested_Subtype_5.toOrig
-
-/-! A copy in the codomain of a function is crossed under the binder. -/
-
-/-- info: Bn1.fn : (Nat → Bn1.nested_BunTree_2) → Bn1 -/
+/-- info: Bn1.fn : (Nat → BunTree Bn1) → Bn1 -/
 #guard_msgs in
 #check @Bn1.fn
 
 def Bn1.weigh : Bn1 → Nat
   | .tip => 0
-  | .pr p => BunTree.size (p : BunTree Bn1 × Nat).1
+  | .pr p => BunTree.size p.1
   | .sg _ => 0
   | .sub _ => 0
   | .fn _ => 0
 
 /-- info: 2 -/
 #guard_msgs in
-#eval Bn1.weigh (.pr (Bn1.nested_Prod_1.ofOrig (BunTree.node (.leaf .tip) (.leaf .tip), 5)))
+#eval Bn1.weigh (.pr (BunTree.node (.leaf .tip) (.leaf .tip), 5))
 
 /-- info: 'Bn1.weigh' does not depend on any axioms -/
 #guard_msgs in
@@ -972,51 +965,47 @@ inductive Nn2 : Type where
   | b : Nn2
 end
 
-/-- info: Nn1.nested_RL_1.toOrig : Nn1.nested_RL_1 → RL Nn1 -/
+/-- info: Nn1.mk : RL Nn1 → Nn1
+-/
 #guard_msgs in
-#check @Nn1.nested_RL_1.toOrig
-
-/-- info: Nn1.nested_List_2.ofOrig : List (RL Nn1) → Nn1.nested_List_2 -/
-#guard_msgs in
-#check @Nn1.nested_List_2.ofOrig
+#check @Nn1.mk
 
 /-! The recursor is the one Lean would have given the block had the universes
-allowed it: a motive for the member, one for `RL`'s copy and one for the copy of
-the `List` it recurses through. -/
+allowed it: a motive for the member, one for `RL` and one for the `List` it
+recurses through, and the `List` cases printed in list notation because that is
+what they are. -/
 
 /--
 info: @Nn1.rec : {motive_1 : Nn1 → Sort u_1} →
-  {motive_2 : Nn1.nested_RL_1 → Sort u_1} →
-    {motive_3 : Nn1.nested_List_2 → Sort u_1} →
+  {motive_2 : RL Nn1 → Sort u_1} →
+    {motive_3 : List (RL Nn1) → Sort u_1} →
       motive_1 Nn1.tip →
-        ((a : Nn1.nested_RL_1) → motive_2 a → motive_1 (Nn1.mk a)) →
-          ((a : Nn1) → (a_1 : Nn1.nested_List_2) → motive_1 a → motive_3 a_1 → motive_2 (Nn1.nested_RL_1.mk a a_1)) →
-            motive_3 Nn1.nested_List_2.nil →
-              ((head : Nn1.nested_RL_1) →
-                  (tail : Nn1.nested_List_2) →
-                    motive_2 head → motive_3 tail → motive_3 (Nn1.nested_List_2.cons head tail)) →
+        ((a : RL Nn1) → motive_2 a → motive_1 (Nn1.mk a)) →
+          ((a : Nn1) → (a_1 : List (RL Nn1)) → motive_1 a → motive_3 a_1 → motive_2 (RL.mk a a_1)) →
+            motive_3 [] →
+              ((head : RL Nn1) → (tail : List (RL Nn1)) → motive_2 head → motive_3 tail → motive_3 (head :: tail)) →
                 (t : Nn1) → motive_1 t
 -/
 #guard_msgs in
 #check @Nn1.rec
 
-/-! Both bridges run, so a value written with the original's constructors goes
-in and comes back out through a function that only ever sees the original. -/
+/-! A value written with the original's constructors goes in and comes back out
+through a function that only ever sees the original. -/
 
 def Nn1.count : Nn1 → Nat
   | .tip => 0
-  | .mk r => RL.size (r : RL Nn1)
+  | .mk r => RL.size r
 
 /-- info: 3 -/
 #guard_msgs in
-#eval Nn1.count (Nn1.mk (Nn1.nested_RL_1.ofOrig (.mk .tip [.mk .tip [], .mk .tip []])))
+#eval Nn1.count (Nn1.mk (.mk .tip [.mk .tip [], .mk .tip []]))
 
 /-- info: 'Nn1.count' does not depend on any axioms -/
 #guard_msgs in
 #print axioms Nn1.count
 
-/-! Nesting twice over gives three copies in the one cycle, and they go in in
-the order their definitions need. -/
+/-! Nesting twice over brings in three types at once -- `LL`, and a `List` at
+each depth -- and they go in in the order their definitions need. -/
 
 inductive LL (α : Type u) : Type u where
   | mk : α → List (List (LL α)) → LL α
@@ -1029,13 +1018,13 @@ inductive Nn4 : Type where
   | b : Nn4
 end
 
-/-- info: Nn3.nested_List_2.toOrig : Nn3.nested_List_2 → List (List (LL Nn3)) -/
+/-- info: Nn3.mk : LL Nn3 → Nn3 -/
 #guard_msgs in
-#check @Nn3.nested_List_2.toOrig
+#check @Nn3.mk
 
-/-- info: Nn3.nested_List_3.toOrig : Nn3.nested_List_3 → List (LL Nn3) -/
+/-- info: @LL.mk : {α : Type u_1} → α → List (List (LL α)) → LL α -/
 #guard_msgs in
-#check @Nn3.nested_List_3.toOrig
+#check @LL.mk
 
 def LL.size {α} : LL α → Nat
   | .mk _ l => 1 + outer l
@@ -1049,11 +1038,11 @@ where
 
 def Nn3.count : Nn3 → Nat
   | .tip => 0
-  | .mk r => LL.size (r : LL Nn3)
+  | .mk r => LL.size r
 
 /-- info: 3 -/
 #guard_msgs in
-#eval Nn3.count (Nn3.mk (Nn3.nested_LL_1.ofOrig (.mk .tip [[.mk .tip [], .mk .tip []]])))
+#eval Nn3.count (Nn3.mk (.mk .tip [[.mk .tip [], .mk .tip []]]))
 
 /-- info: 'Nn3.count' does not depend on any axioms -/
 #guard_msgs in
@@ -1078,9 +1067,9 @@ inductive Nn6 : Type where
   | b : Nn6
 end
 
-/-- info: Nn5.nested_MB_3.toOrig : Nn5.nested_MB_3 → MB Nn5 -/
+/-- info: Nn5.mk : MA Nn5 → Nn5 -/
 #guard_msgs in
-#check @Nn5.nested_MB_3.toOrig
+#check @Nn5.mk
 
 mutual
 def MA.size {α} : MA α → Nat
@@ -1095,23 +1084,23 @@ end
 
 def Nn5.count : Nn5 → Nat
   | .tip => 0
-  | .mk a => MA.size (a : MA Nn5)
+  | .mk a => MA.size a
 
 /-- info: 3 -/
 #guard_msgs in
-#eval Nn5.count (Nn5.mk (Nn5.nested_MA_1.ofOrig (.a .tip [.b (.a .tip []), .b0])))
+#eval Nn5.count (Nn5.mk (.a .tip [.b (.a .tip []), .b0]))
 
 /-- info: 'Nn5.count' does not depend on any axioms -/
 #guard_msgs in
 #print axioms Nn5.count
 
 
-/-! ## The same copy twice over
+/-! ## The same head twice over
 
 `Xrose (Xrose Z)` is two nestings, not one: the outer `Xrose` and the inner one
-are different applications and get different members, and each drags in the
-`List` it recurses through.  Four copies, in two cycles -- outer with its list,
-inner with its -- and the outer cycle crosses on the inner one. -/
+are different applications and get different motives, and each drags in the
+`List` it recurses through.  Four types are denested, in two groups -- outer
+with its list, inner with its -- and the outer group is built over the inner. -/
 
 inductive Xrose (α : Type u) : Type u where
   | node : α → List (Xrose α) → Xrose α
@@ -1130,30 +1119,18 @@ inductive Xn2 : Type where
   | b : Xn2
 end
 
-/-- info: Xn1.nested_Xrose_1.toOrig : Xn1.nested_Xrose_1 → Xrose (Xrose Xn1) -/
+/-- info: Xn1.mk : Xrose (Xrose Xn1) → Xn1 -/
 #guard_msgs in
-#check @Xn1.nested_Xrose_1.toOrig
-
-/-- info: Xn1.nested_Xrose_2.toOrig : Xn1.nested_Xrose_2 → Xrose Xn1 -/
-#guard_msgs in
-#check @Xn1.nested_Xrose_2.toOrig
-
-/-- info: Xn1.nested_List_3.toOrig : Xn1.nested_List_3 → List (Xrose Xn1) -/
-#guard_msgs in
-#check @Xn1.nested_List_3.toOrig
-
-/-- info: Xn1.nested_List_4.toOrig : Xn1.nested_List_4 → List (Xrose (Xrose Xn1)) -/
-#guard_msgs in
-#check @Xn1.nested_List_4.toOrig
+#check @Xn1.mk
 
 def Xn1.count : Xn1 → Nat
   | .tip => 1
-  | .mk r => Xrose.size (Xrose.size (fun _ => 1)) (r : Xrose (Xrose Xn1))
+  | .mk r => Xrose.size (Xrose.size (fun _ => 1)) r
 
 /-- info: 3 -/
 #guard_msgs in
-#eval Xn1.count (Xn1.mk (Xn1.nested_Xrose_1.ofOrig
-  (.node (.node .tip [.node .tip []]) [.node (.node .tip []) []])))
+#eval Xn1.count (Xn1.mk
+  (.node (.node .tip [.node .tip []]) [.node (.node .tip []) []]))
 
 /-- info: 'Xn1.count' does not depend on any axioms -/
 #guard_msgs in
@@ -1161,8 +1138,8 @@ def Xn1.count : Xn1 → Nat
 
 /-! ## Nesting in less usual company
 
-A section variable is a parameter of the block, and so of every copy and of both
-directions of its bridge. -/
+A section variable is a parameter of the block, and so of everything the
+nesting brings in with it. -/
 
 section
 variable (σ : Type)
@@ -1177,17 +1154,29 @@ end
 
 end
 
-/-- info: @Xv1.mk : {σ : Type} → Xv1.nested_Xrose_1 σ → Xv1 σ -/
+/-- info: @Xv1.mk : {σ : Type} → Xrose (Xv1 σ) → Xv1 σ -/
 #guard_msgs in
 #check @Xv1.mk
 
-/-- info: Xv1.nested_Xrose_1.toOrig : (σ : Type) → Xv1.nested_Xrose_1 σ → Xrose (Xv1 σ) -/
+/--
+info: @Xv1.rec : {σ : Type} →
+  {motive_1 : Xv1 σ → Sort u_1} →
+    {motive_2 : Xrose (Xv1 σ) → Sort u_1} →
+      {motive_3 : List (Xrose (Xv1 σ)) → Sort u_1} →
+        ((a : σ) → motive_1 (Xv1.tip a)) →
+          ((a : Xrose (Xv1 σ)) → motive_2 a → motive_1 (Xv1.mk a)) →
+            ((a : Xv1 σ) → (a_1 : List (Xrose (Xv1 σ))) → motive_1 a → motive_3 a_1 → motive_2 (Xrose.node a a_1)) →
+              motive_3 [] →
+                ((head : Xrose (Xv1 σ)) →
+                    (tail : List (Xrose (Xv1 σ))) → motive_2 head → motive_3 tail → motive_3 (head :: tail)) →
+                  (t : Xv1 σ) → motive_1 t
+-/
 #guard_msgs in
-#check @Xv1.nested_Xrose_1.toOrig
+#check @Xv1.rec
 
 /-! A wrapper polymorphic in `Sort` can be nested at a data member and at a
-proposition about it in the one block, and the two copies are told apart by the
-whole application rather than by the head. -/
+proposition about it in the one block, and the two are told apart by the whole
+application rather than by the head. -/
 
 inductive Xbox (α : Sort u) : Sort (max 1 u) where
   | mk : α → Xbox α
@@ -1221,22 +1210,22 @@ inductive Xp2 : Type where
   | b : Xp2
 end
 
-/-- info: Xp1.nested_PProd_1.toOrig : Xp1.nested_PProd_1 → Xp1 ×' Nat -/
+/-- info: Xp1.p : Xp1 ×' Nat → Xp1 -/
 #guard_msgs in
-#check @Xp1.nested_PProd_1.toOrig
+#check @Xp1.p
 
-/-- info: Xp1.nested_PSum_2.toOrig : Xp1.nested_PSum_2 → Xp1 ⊕' Nat -/
+/-- info: Xp1.s : Xp1 ⊕' Nat → Xp1 -/
 #guard_msgs in
-#check @Xp1.nested_PSum_2.toOrig
+#check @Xp1.s
 
 def Xp1.count : Xp1 → Nat
   | .tip => 0
-  | .p q => (q : PProd Xp1 Nat).2
-  | .s q => match (q : PSum Xp1 Nat) with | .inl _ => 1 | .inr n => n
+  | .p q => q.2
+  | .s q => match q with | .inl _ => 1 | .inr n => n
 
 /-- info: 7 -/
 #guard_msgs in
-#eval Xp1.count (Xp1.p (Xp1.nested_PProd_1.ofOrig ⟨.tip, 7⟩))
+#eval Xp1.count (Xp1.p ⟨.tip, 7⟩)
 
 /-- info: 'Xp1.count' does not depend on any axioms -/
 #guard_msgs in
@@ -1256,9 +1245,9 @@ inductive Xu3 : Type where
   | c : Xu3
 end
 
-/-- info: Xu1.nested_Xrose_1.toOrig : Xu1.nested_Xrose_1 → Xrose Xu1 -/
+/-- info: Xu1.mk : Xrose Xu1 → Xu1 -/
 #guard_msgs in
-#check @Xu1.nested_Xrose_1.toOrig
+#check @Xu1.mk
 
 /-- info: inferInstance : Inhabited Xu1 -/
 #guard_msgs in
@@ -1344,8 +1333,8 @@ Nothing below is a special case in the elaborator; the point of pinning them is
 that they are the shapes people write, and a change that breaks one of them
 should say so here rather than downstream.
 
-Several nestings in one member, at different heads, are several copies, numbered
-across the block. -/
+Several nestings in one member, at different heads, are several denestings,
+each stated at what was written. -/
 
 mutual
 inductive Wa1 : Type 1 where
@@ -1357,29 +1346,20 @@ inductive Wa2 : Type where
   | y : Wa2
 end
 
-/-- info: Wa1.a : Wa1.nested_Option_1 → Wa1 -/
+/-- info: Wa1.a : Option Wa1 → Wa1 -/
 #guard_msgs in
 #check @Wa1.a
 
-/-- info: Wa1.c : Wa1.nested_Sum_3 → Wa1 -/
+/-- info: Wa1.b : Except Nat Wa1 → Wa1 -/
+#guard_msgs in
+#check @Wa1.b
+
+/-- info: Wa1.c : Wa1 ⊕ Nat → Wa1 -/
 #guard_msgs in
 #check @Wa1.c
 
-/-- info: Wa1.nested_Option_1.toOrig : Wa1.nested_Option_1 → Option Wa1 -/
-#guard_msgs in
-#check @Wa1.nested_Option_1.toOrig
-
-/-- info: Wa1.nested_Except_2.ofOrig : Except Nat Wa1 → Wa1.nested_Except_2 -/
-#guard_msgs in
-#check @Wa1.nested_Except_2.ofOrig
-
-/-- info: Wa1.nested_Sum_3.coeToOrig : CoeOut Wa1.nested_Sum_3 (Wa1 ⊕ Nat) -/
-#guard_msgs in
-#check @Wa1.nested_Sum_3.coeToOrig
-
 /-! A structure is an inductive, and one of its fields being a proposition
-changes nothing: the copy carries it like any other field, and the bridge is
-still built out of constructors alone. -/
+changes nothing. -/
 
 structure WHolder (α : Type 1) where
   val : α
@@ -1393,16 +1373,16 @@ inductive Wb2 : Type where
   | y : Wb2
 end
 
-/-- info: Wb1.nested_WHolder_1.toOrig : Wb1.nested_WHolder_1 → WHolder Wb1 -/
+/-- info: Wb1.mk : WHolder Wb1 → Wb1 -/
 #guard_msgs in
-#check @Wb1.nested_WHolder_1.toOrig
+#check @Wb1.mk
 
-/-- info: 'Wb1.nested_WHolder_1.toOrig' does not depend on any axioms -/
+/-- info: 'Wb1' does not depend on any axioms -/
 #guard_msgs in
-#print axioms Wb1.nested_WHolder_1.toOrig
+#print axioms Wb1
 
-/-! `Thunk` holds its contents behind a function, so the copy's field is a
-function too and the bridge has to go under the binder. -/
+/-! `Thunk` holds its contents behind a function, so the nesting is under a
+binder rather than at the head of the field. -/
 
 mutual
 inductive Wc1 : Type 1 where
@@ -1412,13 +1392,12 @@ inductive Wc2 : Type where
   | y : Wc2
 end
 
-/-- info: Wc1.nested_Thunk_1.toOrig : Wc1.nested_Thunk_1 → Thunk Wc1 -/
+/-- info: Wc1.mk : Thunk Wc1 → Wc1 -/
 #guard_msgs in
-#check @Wc1.nested_Thunk_1.toOrig
+#check @Wc1.mk
 
-/-! Every member of a block may nest, at three universes.  The copies are the
-block's rather than any one member's, so they are numbered together and named
-under the head of the block. -/
+/-! Every member of a block may nest, at three universes, and each member's
+nesting is denested at that member. -/
 
 mutual
 inductive Wd1 : Type 2 where
@@ -1432,16 +1411,15 @@ inductive Wd3 : Type where
   | mk : List Wd3 → Wd3
 end
 
-/-- info: Wd1.mk : Wd1.nested_List_1 → Wd1 -/
+/-- info: Wd1.mk : List Wd1 → Wd1 -/
 #guard_msgs in
 #check @Wd1.mk
 
-/-- info: Wd3.mk : Wd1.nested_List_3 → Wd3 -/
+/-- info: Wd3.mk : List Wd3 → Wd3 -/
 #guard_msgs in
 #check @Wd3.mk
 
-/-! A nesting may be at a fixed index of an indexed type.  The copy keeps the
-index -- it is one type per index, as the original is -- and the constructor
+/-! A nesting may be at a fixed index of an indexed type, and the constructor
 names the value that was written. -/
 
 inductive WVek (α : Type 1) : Nat → Type 1 where
@@ -1456,16 +1434,12 @@ inductive We2 : Type where
   | y : We2
 end
 
-/-- info: We1.mk : We1.nested_WVek_1 2 → We1 -/
+/-- info: We1.mk : WVek We1 2 → We1 -/
 #guard_msgs in
 #check @We1.mk
 
-/-- info: We1.nested_WVek_1.toOrig : (a : Nat) → We1.nested_WVek_1 a → WVek We1 a -/
-#guard_msgs in
-#check @We1.nested_WVek_1.toOrig
-
 /-! The member need not be in a *parameter* of the nesting type.  `WIdx` takes
-its argument as an index, and the copy is specialised at it all the same. -/
+its argument as an index, and it is denested at it all the same. -/
 
 inductive WIdx : Type 1 → Type 1 where
   | mk : {β : Type 1} → β → WIdx β
@@ -1478,9 +1452,9 @@ inductive Wf2 : Type where
   | y : Wf2
 end
 
-/-- info: Wf1.nested_WIdx_1.toOrig : Wf1.nested_WIdx_1 → WIdx Wf1 -/
+/-- info: Wf1.mk : WIdx Wf1 → Wf1 -/
 #guard_msgs in
-#check @Wf1.nested_WIdx_1.toOrig
+#check @Wf1.mk
 
 /-! A block with a universe parameter of its own may nest over `ULift`, so long
 as the level is written: `ULift`'s own first level is not fixed by its argument,
@@ -1497,9 +1471,9 @@ inductive Wg2 : Type u where
   | y : Wg2
 end
 
-/-- info: Wg1.nested_ULift_1.toOrig : Wg1.nested_ULift_1 → ULift Wg1 -/
+/-- info: Wg1.mk : ULift Wg1 → Wg1 -/
 #guard_msgs in
-#check @Wg1.nested_ULift_1.toOrig
+#check @Wg1.mk
 
 /-! ## Where there is no bridge at all
 
@@ -1560,7 +1534,7 @@ and stays out. -/
 error: Unsupported constructor field in a multiuniverse block: field 1 of `QuZ.mk` mentions a member of the block in a nested position, in the type
   Quot fun x x_1 => True
 
-Note: Nested occurrences are not supported: the shadow of a data member carries no data, so there is nothing to rebuild such a field from without lowering the surrounding type as well
+Note: The head of the occurrence is not an inductive type, so there is nothing to denest and nothing to copy
 -/
 #guard_msgs in
 mutual

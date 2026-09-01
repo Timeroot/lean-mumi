@@ -748,16 +748,20 @@ induction-inductive and so puts it in `Mumi.IndInd`'s hands.  Nest a plain
 `Tree` instead and the enlarged block is heterogeneous and nothing more, so the
 induction-inductive retry declines it and `Mumi.Lowering` is what takes it.
 
-The two routes relate a copy to its original differently, and it shows.
-`Mumi.IndInd` defines the constructors over the originals outright, so `A.mk`
-above reads `WFTree B`.  The lowering leaves the kernel's constructor alone and
-registers a coercion each way instead, so `S.t` reads the copy.  That is the
-honest thing to print: a data copy is only *isomorphic* to what it copies, not
-equal to it, and `Mumi.Bridge` displays a copy as its original only for the
-`Prop` copies, where an equality licenses it.
+The two routes reach the same place by different roads.  `Mumi.IndInd` states
+the constructors over the originals outright, so `A.mk` above reads `WFTree B`.
+The lowering does not have to state anything: a nesting of a type the kernel
+can denest is one the kernel *does* denest, all by itself, when the widened
+block is handed to `addDecl`.  So `S.t` reads `Tree S` because that is what the
+kernel wrote down, not because anything is being displayed as something it is
+not.
 
-What the coercion buys is that nobody has to build a copy.  A `Tree S` goes
-straight into `S.t`, whether it is a value or a variable, and the block computes.
+What the kernel gets in return for denesting is a type of its own for the
+nesting, and a second recursor `S.rec_1` whose major premise is there.  The
+lowering carries both through: the nesting takes a motive and a minor in
+`S.mutualRec`, and gets an `S.mutualRec_1` of its own.  A member's recursion
+into the nesting and back is then one mutual recursion, which is what makes
+`sz`/`szT` below go through.
 -/
 
 namespace LowerNest
@@ -771,7 +775,7 @@ inductive Big : Type 1 where
   | c : S → Big
 end
 
-/-- info: S.t : S.nested_Tree_1 → S -/
+/-- info: S.t : Tree S → S -/
 #guard_msgs in
 #check @S.t
 
@@ -779,28 +783,50 @@ end
 #guard_msgs in
 #check @Big.c
 
+/-! The nesting is the third motive, and the two `Tree` constructors are the
+last two minors -- extras go at the end of their kind, so a block with nothing
+nested reads exactly as it did before. -/
+
 /--
 info: @S.mutualRec : {motive_1 : S → Sort u_1} →
   {motive_2 : Big → Sort u_2} →
-    {motive_3 : S.nested_Tree_1 → Sort u_1} →
+    {motive_3 : Tree S → Sort u_1} →
       motive_1 S.nil →
-        ((a : S.nested_Tree_1) → motive_3 a → motive_1 (S.t a)) →
+        ((a : Tree S) → motive_3 a → motive_1 (S.t a)) →
           ((a : Type) → motive_2 (Big.of a)) →
             ((a : S) → motive_1 a → motive_2 (Big.c a)) →
-              motive_3 S.nested_Tree_1.empty →
-                ((a : S) →
-                    (l r : S.nested_Tree_1) →
-                      motive_1 a → motive_3 l → motive_3 r → motive_3 (S.nested_Tree_1.node a l r)) →
+              motive_3 Tree.empty →
+                ((a : S) → (l r : Tree S) → motive_1 a → motive_3 l → motive_3 r → motive_3 (Tree.node a l r)) →
                   (t : S) → motive_1 t
 -/
 #guard_msgs in
 #check @S.mutualRec
 
--- the field's type is the copy, and what goes into it is a `Tree S`
+/-! The nesting eliminates too, off the same telescope.  This is the recursor
+Lean generates for the member a nesting would be if it had been written as one,
+and it is what a recursion that descends into a `Tree S` and comes back out
+runs on. -/
+
+/--
+info: @S.mutualRec_1 : {motive_1 : S → Sort u_1} →
+  {motive_2 : Big → Sort u_2} →
+    {motive_3 : Tree S → Sort u_1} →
+      motive_1 S.nil →
+        ((a : Tree S) → motive_3 a → motive_1 (S.t a)) →
+          ((a : Type) → motive_2 (Big.of a)) →
+            ((a : S) → motive_1 a → motive_2 (Big.c a)) →
+              motive_3 Tree.empty →
+                ((a : S) → (l r : Tree S) → motive_1 a → motive_3 l → motive_3 r → motive_3 (Tree.node a l r)) →
+                  (t : Tree S) → motive_3 t
+-/
+#guard_msgs in
+#check @S.mutualRec_1
+
+-- a `Tree S` is what the field holds, so a `Tree S` is what goes into it
 def tr : Tree S := .node .nil .empty .empty
 def s1 : S := S.t tr
 
--- not only closed values: a variable of the original type goes in too
+-- not only closed values: a variable goes in too
 example (t : Tree S) : S := S.t t
 
 def S.size (x : S) : Nat :=
@@ -809,8 +835,18 @@ def S.size (x : S) : Nat :=
     0 (fun _ ih => ih + 1) (fun _ => 0) (fun _ ih => ih)
     0 (fun _ _ _ iha ihl ihr => iha + ihl + ihr) x
 
+def sizeT (t : Tree S) : Nat :=
+  S.mutualRec_1 (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat)
+    0 (fun _ ih => ih + 1) (fun _ => 0) (fun _ ih => ih)
+    0 (fun _ _ _ iha ihl ihr => iha + ihl + ihr) t
+
 example : S.nil.size = 0 := rfl
 example : s1.size = 1 := rfl
+
+-- and both iota rules of the nesting's recursor fire
+example : sizeT .empty = 0 := rfl
+example : sizeT tr = 0 := rfl
 
 /-- info: 1 -/
 #guard_msgs in
@@ -826,25 +862,18 @@ example (x : S) : x = .nil ∨ ∃ t, x = .t t := by
   | nil => exact .inl rfl
   | t t => exact .inr ⟨t, rfl⟩
 
-/-
-Structural recursion is where the copy stops being only a matter of display.
-A function that recurses into the nesting needs a companion at the nested
-type, and the companion has to be stated at the copy: `S.t`'s field *is* a
-`S.nested_Tree_1`, and the coercion that lets a `Tree S` be passed in is a
-function, so a `Tree S` argument is not a subterm of anything and no measure
-decreases.  Written at the copy it goes through, and computes.
+/-! Structural recursion is the demanding test, and the one that says the
+nesting is real rather than displayed.  A function that descends into the
+nesting needs a companion at the nested type, and that companion is written at
+`Tree S` -- the type the field actually has, so a `Tree S` argument is a
+subterm and the measure decreases.  The pair is one mutual structural
+recursion, and it compiles and computes. -/
 
-This is the same gap as the signature above, from the other side.  Displaying
-the copy as `Tree S` would not help -- the name would still have to be written
-to make the definition typecheck -- so what it would take is `Mumi.IndInd`'s
-bridge, which states the block over the originals outright.  The lowering has
-no such bridge.
--/
 mutual
 def sz : S → Nat
   | .nil => 1
   | .t t => 1 + szT t
-def szT : S.nested_Tree_1 → Nat
+def szT : Tree S → Nat
   | .empty => 0
   | .node a l r => sz a + szT l + szT r
 end
@@ -853,29 +882,24 @@ end
 #guard_msgs in
 #eval sz s1
 
+/-- info: 'LowerNest.sz' does not depend on any axioms -/
+#guard_msgs in
+#print axioms sz
+
 end LowerNest
 
-/-! ## Limits
+/-! ## A block whose nesting goes away when the block is split
 
-### A nesting the kernel *can* do, in a heterogeneous block
+`A` mentions `B` under a `List`, which in a mutual block is a nesting.  But `A`
+and `B` are not mutually recursive -- `B` does not mention `A` -- so the block
+separates, `B` is declared first and on its own, and by the time `A` is
+declared `B` is an ordinary type that happens to be in scope.  There is no
+nesting left to denest, and `A.rec` is a plain one-motive recursor.
 
-Here lowering succeeds, so the retry never runs, and the copy `List` was
-specialised into is a member of the block under its generated name.  That name
-is visible in the recursor.  It is a wart, not a soundness question: the block
-is the one the kernel would have built for a homogeneous version of the same
-declaration.
-
-The ind-ind route would have stated the block over `List B` itself, and since
-its pre-block goes through the lowering too it could now take this one -- but it
-is a retry, and a retry only runs when the route ahead of it failed.  `BigSmall`
-above is the same shape with a nesting lowering *cannot* do, and there the retry
-does run and the written form survives.  Which of the two you get is decided by
-whether the first route works, not by which reads better.
-
-Nothing can be done about the name in the recursor: the copy is a data member,
-only isomorphic to `List B` and not equal to it, so displaying it as `List B`
-would be a lie.  What *can* be done is to make the name unnecessary anywhere
-else, and that is what the isomorphism and its two coercions are for.
+The universe difference is what brings the block here at all: `A : Type 1` and
+`B : Type` cannot be declared together by Lean, so the block is ours, and it is
+`Mumi.Lowering` that splits it.  `A.mutualRec` still ranges over both members,
+because that is the recursor the written block asks for.
 -/
 
 namespace ListBig
@@ -889,25 +913,25 @@ inductive B : Type where
 end
 
 /--
-info: @A.rec : {motive : A → Sort u_1} → motive A.tip → ((x : A.nested_List_1) → motive (A.mk x)) → (t : A) → motive t
+info: @A.rec : {motive : A → Sort u_1} → motive A.tip → ((x : List B) → motive (A.mk x)) → (t : A) → motive t
 -/
 #guard_msgs in
 #check @A.rec
 
-/-- info: A.nested_List_1.toOrig : A.nested_List_1 → List B -/
+/--
+info: @A.mutualRec : {motive_1 : A → Sort u_2} →
+  {motive_2 : B → Sort u_1} →
+    motive_1 A.tip → ((x : List B) → motive_1 (A.mk x)) → motive_2 B.tip → (t : A) → motive_1 t
+-/
 #guard_msgs in
-#check @A.nested_List_1.toOrig
+#check @A.mutualRec
 
-/-- info: A.nested_List_1.ofOrig : List B → A.nested_List_1 -/
-#guard_msgs in
-#check @A.nested_List_1.ofOrig
-
-/-! A `List B` goes into the constructor, and what comes back out of a match is
-usable as a `List B`.  Neither writes the copy's name, and both run. -/
+/-! A `List B` goes into the constructor and a `List B` comes back out of a
+match, with nothing to convert on either side. -/
 
 def size : A → Nat
   | .tip => 0
-  | .mk x => (x : List B).length
+  | .mk x => x.length
 
 /-- info: 2 -/
 #guard_msgs in
@@ -917,10 +941,10 @@ def size : A → Nat
 #guard_msgs in
 #print axioms size
 
-/-! There is no equation between the two types, and none is claimed. -/
+/-! No copy of `List` was made, so there is no name for one. -/
 
-/-- error: Unknown constant `ListBig.A.nested_List_1.eq_orig` -/
+/-- error: Unknown constant `ListBig.A.nested_List_1` -/
 #guard_msgs in
-#check @A.nested_List_1.eq_orig
+#check @A.nested_List_1
 
 end ListBig

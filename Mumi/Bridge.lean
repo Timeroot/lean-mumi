@@ -20,7 +20,15 @@ nested, so the constructor the user wrote as taking a `Nonempty T` takes a
 `T.nested_Nonempty_1` instead.  That copy is an implementation detail, and this
 module is what keeps it from leaking.
 
-The copy cannot be avoided.  A nested inductive whose denesting is
+Not every nesting needs one.  The kernel denests an occurrence of its own
+accord when the head is data, and `Mumi.Lowering` lets it: the widened block
+goes to `addDecl` with the occurrence still written as `Tree S`, and what comes
+back is a constructor at `Tree S` and an extra recursor for the type the kernel
+introduced.  Nothing there is a copy, so nothing there needs hiding.  What
+brings this module into play is a nesting the kernel will not take -- a head in
+`Prop`, above a member in `Type`.
+
+For those the copy cannot be avoided.  A nested inductive whose denesting is
 universe-heterogeneous is exactly the declaration the kernel refuses, so
 `T.mkT : Nonempty T → T` can never be a kernel constructor here: the field's
 type has to be something other than `Nonempty T`, or there is nothing to
@@ -38,11 +46,12 @@ expected type rather than being elaborated and then adjusted, so it has to be
 sent to the original itself.
 
 Only a member carrying that coercion is displayed this way.  A copy that is
-merely *isomorphic* to what it copies -- any data member -- keeps its own name,
-which is the honest thing to show.  `Mumi.IndInd` deals with those copies the
-other way round: rather than displaying one as its original, it defines the
-constructors and recursor over the originals outright, out of the isomorphism,
-so there is nothing left for a delaborator to hide.
+merely *isomorphic* to what it copies -- a data member, which now arises only
+underneath a `Prop` copy, where the kernel could not have denested -- keeps its
+own name, which is the honest thing to show.  `Mumi.IndInd` deals with those
+copies the other way round: rather than displaying one as its original, it
+defines the constructors and recursor over the originals outright, out of the
+isomorphism, so there is nothing left for a delaborator to hide.
 
 `set_option mumi.pp.nested false` turns the display off, which is what to reach
 for when a mismatch between a copy and its original has to be seen.  It is off

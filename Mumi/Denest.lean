@@ -257,15 +257,20 @@ private structure RwCtx where
   appPs    : Array Expr
   /-- All of the block's parameters, needed to recognise a local. -/
   ps       : Array Expr
+  /-- The copies that are being made. -/
   specs    : Array AuxSpec
+  /-- Keys of the copies that are not, which are left as the writer wrote them. -/
+  dropped  : Array Expr
   auxFVars : Array Expr
 
 /-- Replace a nested application at the head of a strictly-positive position. -/
 private def RwCtx.head (c : RwCtx) (body : Expr) : MetaM Expr := do
   let some (app, _, _, _, params, idxArgs) ← nestedApp? c.members body | return body
   let xs ← extraLocals c.ps c.members params
-  let some k := c.specs.findIdx? (·.key == app.abstract xs)
-    | throwError m!"Cannot denest{indentExpr body}"
+  let key := app.abstract xs
+  let some k := c.specs.findIdx? (·.key == key)
+    | if c.dropped.contains key then return body
+      throwError m!"Cannot denest{indentExpr body}"
         ++ .note "this occurrence was not seen when the block was scanned"
   return mkAppN c.auxFVars[k]! (c.appPs ++ xs ++ idxArgs)
 
@@ -285,6 +290,137 @@ private partial def RwCtx.pi (c : RwCtx) (e : Expr) : MetaM Expr := do
 private def withExtras {α : Type} [Inhabited α] (s : AuxSpec) (k : Array Expr → MetaM α) :
     MetaM α :=
   withLocalDeclsD (s.extras.map fun (n, t) => (n, fun xs => pure (t.instantiateRev xs))) k
+
+/-! ## Which copies are worth making
+
+The kernel denests too, and better than this module can: it leaves the
+constructor stated at the type the writer wrote, so `T.mk : List T → T` really
+does have that type and `T.rec` really does get a motive at `List T`.  Making a
+copy here costs all of that, and is worth paying for only where the kernel
+would refuse -- which is the whole reason a block comes this way.
+
+The clearest case where it would not refuse is a nesting that is not recursive
+at all.  `List B` inside a member `A` names `B`, and if `B` names nothing of
+`A`'s then `B` is declared first; by the time `A` is declared `List B` is an
+ordinary closed type, and there is nothing to denest.  Such an occurrence is
+left exactly as written.
+
+A genuine nesting -- `Tree S` inside `S` -- is left alone too, as long as the
+kernel would put the type it invents in the same universe as the component it
+is invented for, because a mutual block has only one.  What that costs `lower`
+is that its recursors have to range over more than the members it was handed;
+what it buys is a constructor stated at the type the writer wrote.
+-/
+
+/--
+The nodes a strictly-positive position depends on: every member it mentions,
+and the copy it would become if it is a nested occurrence.  Members are numbered
+as the block numbers them, and the copies follow.
+-/
+private def posDeps (members ps : Array Expr) (specs : Array AuxSpec) (ty : Expr) :
+    MetaM (Array Nat) :=
+  forallTelescope ty.headBeta fun _ body => do
+    let mut out : Array Nat := #[]
+    for i in *...members.size do
+      if body.containsFVar members[i]!.fvarId! then out := out.push i
+    if let some (app, _, _, _, params, _) ← nestedApp? members body then
+      let xs ← extraLocals ps members params
+      if let some k := specs.findIdx? (·.key == app.abstract xs) then
+        out := out.push (members.size + k)
+    return out
+
+/-- The universe a member or a copy ends up in. -/
+private def sortOf (ty : Expr) : MetaM Level :=
+  forallTelescope ty fun _ body => do
+    let .sort l := (← whnf body) | return Level.zero
+    return l
+
+/--
+Decide which of the copies the scan found actually have to be made.
+
+A copy can be dropped when nothing it names is being declared alongside it: the
+occurrence is then a closed type where it stands, and leaving it alone hands the
+kernel an ordinary field.  Answering that takes the same condensation `analyze`
+computes, run here on the enlarged block the copies would make.
+
+Three things keep a copy:
+
+* a `Prop` anywhere in the enlarged block.  The shadow copies every constructor
+  field verbatim with the members redirected to their shadows, and a redirected
+  `List B` reads `List B._shadow`, which is not even well-typed.
+* locals among the copy's parameters, which the kernel refuses outright.
+* sharing a component with a member of the block whose universe it does not
+  share.  That is a genuine nesting, so the kernel would have to invent a type
+  and declare it alongside the component -- which it can only do at the
+  component's own universe.  Specialising is what lowers a copy's universe
+  below the original's, and where it does, the copy is the only way through.
+
+Keeping spreads along the copies' own dependencies, in both directions.  A copy
+that stands is written into the fields of the copies above it, and a copy that
+is dropped is written into their text, so two that reach each other have to be
+kept or dropped together.
+-/
+private def keptSpecs (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
+    MetaM (Array Bool) := do
+  let members := inp.memberFVars
+  let n := members.size
+  let m := specs.size
+  let tot := n + m
+  let all := Array.replicate m true
+  let mut isData : Array Bool := #[]
+  let mut lvls : Array Level := #[]
+  for ty in inp.memberTypes do
+    let l := (← sortOf ty).normalize
+    if l == .zero then return all
+    isData := isData.push true
+    lvls := lvls.push l
+  for s in specs do
+    let l ← withExtras s fun xs => sortOf (s.resType.instantiateRev xs)
+    let l := l.normalize
+    if l == .zero then return all
+    isData := isData.push true
+    lvls := lvls.push l
+  let mut edges : Array (Array Bool) := Array.replicate tot (Array.replicate tot false)
+  for i in *...n do
+    for ct in inp.ctorTypes[i]! do
+      let ds ← forallTelescope (← instantiateForall ct ps) fun fields _ => do
+        let mut ds : Array Nat := #[]
+        for x in fields do
+          ds := ds ++ (← posDeps members ps specs (← inferType x))
+        return ds
+      for d in ds do edges := edges.modify i (·.set! d true)
+  for j in *...m do
+    let s := specs[j]!
+    let ds ← withExtras s fun xs => do
+      let params := s.paramsAbs.map (·.instantiateRev xs)
+      let mut ds : Array Nat := #[]
+      for ctor in s.ctors do
+        let cinfo ← getConstInfoCtor ctor
+        let cty ← instantiateForall
+          (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
+        ds := ds ++ (← forallTelescope cty fun fields _ => do
+          let mut inner : Array Nat := #[]
+          for x in fields do
+            inner := inner ++ (← posDeps members ps specs (← inferType x))
+          return inner)
+      return ds
+    for d in ds do edges := edges.modify (n + j) (·.set! d true)
+  let (_, compOf) := computeSCCs tot isData edges
+  let mut kept : Array Bool := #[]
+  for j in *...m do
+    kept := kept.push <| !specs[j]!.extras.isEmpty ||
+      (Array.range n).any fun i =>
+        compOf[i]! == compOf[n + j]! && !lvls[i]!.isEquiv lvls[n + j]!
+  let mut changed := true
+  while changed do
+    changed := false
+    for a in *...m do
+      for b in *...m do
+        if a != b && kept[a]! && !kept[b]! &&
+            (edges[n + a]![n + b]! || edges[n + b]![n + a]!) then
+          kept := kept.set! b true
+          changed := true
+  return kept
 
 /-! ## The bridge
 
@@ -1155,17 +1291,31 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
   forallBoundedTelescope inp.memberTypes[0]! (some inp.numParams) fun ps _ => do
     let (_, st) ← (scanBlock root members ps inp).run {}
     if st.specs.isEmpty then return (← k inp)
+    -- a copy the kernel can do without is not made, and the occurrence stays as
+    -- the writer wrote it; the ones that are made are renumbered so that their
+    -- names have no gaps
+    let keep ← keptSpecs inp ps st.specs
+    let mut dropped : Array Expr := #[]
+    let mut specs : Array AuxSpec := #[]
+    for j in *...st.specs.size do
+      let s := st.specs[j]!
+      if keep[j]! then
+        specs := specs.push { s with
+          name := root ++ Name.mkSimple s!"nested_{shortName s.indName}_{specs.size + 1}" }
+      else
+        dropped := dropped.push s.key
+    if specs.isEmpty then return (← k inp)
     let appPs := ps.extract inp.numVars ps.size
     let mut decls : Array (Name × Expr) := #[]
     let mut auxTypes : Array Expr := #[]
-    for s in st.specs do
+    for s in specs do
       let (full, app) ← withExtras s fun xs => do
         let res := s.resType.instantiateRev xs
         return (← mkForallFVars (ps ++ xs) res, ← mkForallFVars (appPs ++ xs) res)
       decls := decls.push (s.name, app)
       auxTypes := auxTypes.push full
     withLocalDeclsDND decls fun auxFVars => do
-      let c : RwCtx := { members, appPs, ps, specs := st.specs, auxFVars }
+      let c : RwCtx := { members, appPs, ps, specs, dropped, auxFVars }
       let mut memberNames := inp.memberNames
       let mut memberTypes := inp.memberTypes
       let mut memberFVars := inp.memberFVars
@@ -1182,8 +1332,8 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
           cts := cts.push (withLeadingBinderInfo inp.numParams ct
             (← mkForallFVars ps (← c.pi (← instantiateForall ct ps))))
         ctorTypes := ctorTypes.set! i cts
-      for j in *...st.specs.size do
-        let s := st.specs[j]!
+      for j in *...specs.size do
+        let s := specs[j]!
         memberNames := memberNames.push s.name
         memberTypes := memberTypes.push auxTypes[j]!
         memberFVars := memberFVars.push auxFVars[j]!
@@ -1208,7 +1358,7 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
         ctorTypes := ctorTypes.push cts
         bridgeDeps := bridgeDeps.push deps
       let out ← k { inp with memberNames, memberTypes, memberFVars, ctorNames, ctorTypes,
-                             localIndices := st.specs.any (!·.extras.isEmpty) }
+                             localIndices := specs.any (!·.extras.isEmpty) }
       -- the members exist now, so the copies can be identified with the originals
       let ownLevels := inp.levelParams.map Level.param
       let vars := ps.extract 0 inp.numVars
@@ -1221,7 +1371,7 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       -- one family is not enough on its own: two members of a `mutual` block
       -- that do not actually reach each other are still bridged one at a time,
       -- and the second then crosses its field on the first's bridge.
-      let n := st.specs.size
+      let n := specs.size
       let mut reach : Array (Array Bool) := Array.replicate n (Array.replicate n false)
       for j in *...n do
         if let some ds := bridgeDeps[j]! then
@@ -1250,7 +1400,7 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       -- share one member, so `List (List T)` finds its inner copy already
       -- there -- so the order is worked out here instead.  Nesting is well
       -- founded, so taking whichever group is ready next always finishes.
-      let mut built : Array Bool := Array.replicate st.specs.size false
+      let mut built : Array Bool := Array.replicate specs.size false
       let mut done  : Array Bool := Array.replicate groups.size false
       let mut progress := true
       while progress do
@@ -1262,23 +1412,23 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
             match bridgeDeps[j]! with
             | none    => ready := false
             | some ds => unless ds.all (fun k =>
-                k < st.specs.size && (gid[k]! == g || built[k]!)) do ready := false
+                k < specs.size && (gid[k]! == g || built[k]!)) do ready := false
           unless ready do continue
           done := done.set! g true
           progress := true
           let grp := groups[g]!.map fun j =>
-            (inp.memberNames.size + j, ({ spec := st.specs[j]!, members, repl } : Bridge))
+            (inp.memberNames.size + j, ({ spec := specs[j]!, members, repl } : Bridge))
           -- a bridge is a convenience; never let one failing take the block with it
           try
             mkBridges inp ps ctorNames memberNames grp
           catch e =>
-            let s := st.specs[groups[g]![0]!]!
+            let s := specs[groups[g]![0]!]!
             trace[Mumi] "no bridge from `{s.name}` to `{s.indName}`: {e.toMessageData}"
           -- what the copies that lean on these need is the pair of directions,
           -- so whether they can go ahead is exactly whether it is there -- not
           -- whether `mkBridges` was asked to build it
           for j in groups[g]! do
-            if (← getEnv).contains (st.specs[j]!.name ++ `toOrig) then
+            if (← getEnv).contains (specs[j]!.name ++ `toOrig) then
               built := built.set! j true
       return out
 
