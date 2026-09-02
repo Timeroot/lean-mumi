@@ -381,8 +381,12 @@ inductive Iy : Nat → Type where
 /-! ## Nesting inside an already-heterogeneous block
 
 Here it is the hand-written `mutual` block that is heterogeneous, and the
-nesting is incidental.  `List D5B` is at `D5B`'s own universe, so the auxiliary
-member is a data member, with data constructors and a computable recursor.
+nesting is incidental.  `List D5B` is at `D5B`'s own universe, so it is a
+nesting the kernel would have taken had the `Prop` member not been there to
+force a copy.  The copy is made for the shadow and stands in the shadow alone:
+what the kernel is handed reads `List D5B`, and what comes back is the block
+Lean writes for a `mutual` that nests -- constructors at `List D5B`, a native
+recursor with a motive for it, and a `D5B.mutualRec_1` beside `D5B.mutualRec`.
 -/
 
 mutual
@@ -394,13 +398,41 @@ inductive D5B : Type where
   | back : D5A → D5B
 end
 
-/-- info: D5A.nested_List_1 : Type -/
+/-- error: Unknown constant `D5A.nested_List_1` -/
 #guard_msgs in
 #check @D5A.nested_List_1
 
-/-- info: D5A.nested_List_1.cons : D5B → D5A.nested_List_1 → D5A.nested_List_1 -/
+/-- info: D5B.node : List D5B → D5B -/
 #guard_msgs in
-#check @D5A.nested_List_1.cons
+#check @D5B.node
+
+/--
+info: @D5B.rec : {motive_1 : D5B → Sort u_1} →
+  {motive_2 : List D5B → Sort u_1} →
+    ((a : Nat) → motive_1 (D5B.leaf a)) →
+      ((a : List D5B) → motive_2 a → motive_1 (D5B.node a)) →
+        ((a : D5A) → motive_1 (D5B.back a)) →
+          motive_2 [] →
+            ((head : D5B) → (tail : List D5B) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
+              (t : D5B) → motive_1 t
+-/
+#guard_msgs in
+#check @D5B.rec
+
+/--
+info: @D5B.mutualRec_1 : {motive_1 : D5A → Prop} →
+  {motive_2 : D5B → Sort u_1} →
+    {motive_3 : List D5B → Sort u_1} →
+      (∀ (a : D5B) (ih_1 : motive_2 a), motive_1 ⋯) →
+        ((a : Nat) → motive_2 (D5B.leaf a)) →
+          ((a : List D5B) → motive_3 a → motive_2 (D5B.node a)) →
+            ((a : D5A) → motive_1 a → motive_2 (D5B.back a)) →
+              motive_3 [] →
+                ((head : D5B) → (tail : List D5B) → motive_2 head → motive_3 tail → motive_3 (head :: tail)) →
+                  (t : List D5B) → motive_3 t
+-/
+#guard_msgs in
+#check @D5B.mutualRec_1
 
 def D5B.total : D5B → Nat :=
   fun t => D5B.mutualRec (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
@@ -410,7 +442,188 @@ def D5B.total : D5B → Nat :=
 
 /-- info: 7 -/
 #guard_msgs in
-#eval D5B.total (.node (.cons (.leaf 3) (.cons (.leaf 4) .nil)))
+#eval D5B.total (.node [.leaf 3, .leaf 4])
+
+/-- The recursion the block gets back crosses `List D5B` the same way, and it
+computes: the `Prop` member erases, and the list is an ordinary list. -/
+def D5B.sizes : List D5B → Nat :=
+  D5B.mutualRec_1 (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat)
+    (fun _ _ => trivial) (fun _ => 1) (fun _ ih => ih + 1) (fun _ _ => 1)
+    0 (fun _ _ h t => h + t)
+
+example : D5B.sizes [] = 0 := rfl
+
+/-- info: 4 -/
+#guard_msgs in
+#eval D5B.sizes [.leaf 3, .node [.leaf 4], .back (.mk (.leaf 5))]
+
+/-- info: 'D5B.sizes' does not depend on any axioms -/
+#guard_msgs in
+#print axioms D5B.sizes
+
+/-! ### The shapes such a nesting comes in
+
+A nesting the shadow needs a copy of and the kernel does not is a nesting like
+any other, so each of the ways one can be written has to survive the round trip.
+-/
+
+/-! Under the block's own parameters. -/
+
+mutual
+inductive D6A (α : Type) : Prop where
+  | mk : D6B α → D6A α
+inductive D6B (α : Type) : Type where
+  | leaf : α → D6B α
+  | node : List (D6B α) → D6B α
+  | back : D6A α → D6B α
+end
+
+/-- info: @D6B.node : {α : Type} → List (D6B α) → D6B α -/
+#guard_msgs in
+#check @D6B.node
+
+def D6B.size {α : Type} : D6B α → Nat :=
+  D6B.mutualRec (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat)
+    (fun _ _ => trivial) (fun _ => 1) (fun _ ih => ih + 1) (fun _ _ => 1)
+    0 (fun _ _ h t => h + t)
+
+/-- info: 4 -/
+#guard_msgs in
+#eval D6B.size (.node [.leaf true, .node [.leaf false]])
+
+/-! Two of them in one component, which get one recursor each, numbered as the
+kernel numbers its own. -/
+
+inductive D7Rose (α : Type) : Type where
+  | mk : α → List α → D7Rose α
+
+mutual
+inductive D7A : Prop where
+  | mk : D7B → D7A
+inductive D7B : Type where
+  | leaf : Nat → D7B
+  | l : List D7B → D7B
+  | r : D7Rose D7B → D7B
+  | back : D7A → D7B
+end
+
+/-- info: D7B.l : List D7B → D7B -/
+#guard_msgs in
+#check @D7B.l
+
+/-- info: D7B.r : D7Rose D7B → D7B -/
+#guard_msgs in
+#check @D7B.r
+
+def D7B.rsize : D7Rose D7B → Nat :=
+  D7B.mutualRec_2 (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat) (motive_4 := fun _ => Nat)
+    (fun _ _ => trivial) (fun _ => 1) (fun _ ih => ih) (fun _ ih => ih) (fun _ _ => 1)
+    0 (fun _ _ h t => h + t)
+    (fun _ _ h t => h + t)
+
+/-- info: 3 -/
+#guard_msgs in
+#eval D7B.rsize (.mk (.leaf 1) [.l [.leaf 2, .leaf 3]])
+
+/-- info: 'D7B.rsize' does not depend on any axioms -/
+#guard_msgs in
+#print axioms D7B.rsize
+
+/-! At indices of the nested type's own, which the recursion crosses at. -/
+
+inductive D8Vek (α : Type) : Nat → Type where
+  | nil : D8Vek α 0
+  | cons : α → D8Vek α n → D8Vek α (n + 1)
+
+mutual
+inductive D8A : Prop where
+  | mk : D8B → D8A
+inductive D8B : Type where
+  | leaf : Nat → D8B
+  | node : (n : Nat) → D8Vek D8B n → D8B
+  | back : D8A → D8B
+end
+
+/-- info: D8B.node : (n : Nat) → D8Vek D8B n → D8B -/
+#guard_msgs in
+#check @D8B.node
+
+/--
+info: @D8B.mutualRec_1 : {motive_1 : D8A → Prop} →
+  {motive_2 : D8B → Sort u_1} →
+    {motive_3 : (a : Nat) → D8Vek D8B a → Sort u_1} →
+      (∀ (a : D8B) (ih_1 : motive_2 a), motive_1 ⋯) →
+        ((a : Nat) → motive_2 (D8B.leaf a)) →
+          ((n : Nat) → (a : D8Vek D8B n) → motive_3 n a → motive_2 (D8B.node n a)) →
+            ((a : D8A) → motive_1 a → motive_2 (D8B.back a)) →
+              motive_3 0 D8Vek.nil →
+                ({n : Nat} →
+                    (a : D8B) →
+                      (a_1 : D8Vek D8B n) → motive_2 a → motive_3 n a_1 → motive_3 (n + 1) (D8Vek.cons a a_1)) →
+                  {a : Nat} → (t : D8Vek D8B a) → motive_3 a t
+-/
+#guard_msgs in
+#check @D8B.mutualRec_1
+
+/-! One inside another, where the two copies share a head and are told apart by
+the whole type they stand for. -/
+
+mutual
+inductive D9A : Prop where
+  | mk : D9B → D9A
+inductive D9B : Type where
+  | leaf : Nat → D9B
+  | node : List (List D9B) → D9B
+  | back : D9A → D9B
+end
+
+/--
+info: @D9B.rec : {motive_1 : D9B → Sort u_1} →
+  {motive_2 : List (List D9B) → Sort u_1} →
+    {motive_3 : List D9B → Sort u_1} →
+      ((a : Nat) → motive_1 (D9B.leaf a)) →
+        ((a : List (List D9B)) → motive_2 a → motive_1 (D9B.node a)) →
+          ((a : D9A) → motive_1 (D9B.back a)) →
+            motive_2 [] →
+              ((head : List D9B) → (tail : List (List D9B)) → motive_3 head → motive_2 tail → motive_2 (head :: tail)) →
+                motive_3 [] →
+                  ((head : D9B) → (tail : List D9B) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
+                    (t : D9B) → motive_1 t
+-/
+#guard_msgs in
+#check @D9B.rec
+
+def D9B.inner : List D9B → Nat :=
+  D9B.mutualRec_2 (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat) (motive_4 := fun _ => Nat)
+    (fun _ _ => trivial) (fun _ => 1) (fun _ ih => ih) (fun _ _ => 1)
+    0 (fun _ _ h t => h + t)
+    0 (fun _ _ h t => h + t)
+
+/-- info: 4 -/
+#guard_msgs in
+#eval D9B.inner [.leaf 1, .node [[.leaf 2], [.leaf 3, .leaf 4]]]
+
+/-! `match` and `cases` read the block as written, and `induction` refuses a
+nested inductive here exactly as it does one written in plain Lean. -/
+
+def D9B.tag : D9B → Nat
+  | .leaf n => n
+  | .node xs => xs.length
+  | .back _ => 0
+
+/-- info: 2 -/
+#guard_msgs in
+#eval D9B.tag (.node [[.leaf 1], []])
+
+example (t : D9B) : D9B.tag t = D9B.tag t := by
+  cases t with
+  | leaf n => rfl
+  | node xs => rfl
+  | back a => rfl
 
 /-! ## Nesting inside nesting -/
 
@@ -1220,7 +1433,10 @@ info: @Xv1.rec : {σ : Type} →
 
 /-! A wrapper polymorphic in `Sort` can be nested at a data member and at a
 proposition about it in the one block, and the two are told apart by the whole
-application rather than by the head. -/
+application rather than by the head.  They part company after that: `Xbox Xs1`
+is at the member's own universe, so it goes to the kernel and the copy of it
+stands in the shadow alone, while `Xbox (Nonempty Xs1)` lands a universe lower
+and is the one case a copy is the only way through. -/
 
 inductive Xbox (α : Sort u) : Sort (max 1 u) where
   | mk : α → Xbox α
@@ -1234,9 +1450,13 @@ inductive Xs2 : Type where
   | b : Xs2
 end
 
-/-- info: Xs1.nested_Xbox_1.toOrig : Xs1.nested_Xbox_1 → Xbox Xs1 -/
+/-- info: Xs1.d : Xbox Xs1 → Xs1 -/
 #guard_msgs in
-#check @Xs1.nested_Xbox_1.toOrig
+#check @Xs1.d
+
+/-- error: Unknown constant `Xs1.nested_Xbox_1` -/
+#guard_msgs in
+#check @Xs1.nested_Xbox_1
 
 /-- info: Xs1.nested_Xbox_2.toOrig : Xs1.nested_Xbox_2 → Xbox (Nonempty Xs1) -/
 #guard_msgs in
@@ -1524,15 +1744,19 @@ end
 A bridge needs every field of the copy to be one the original also takes, to be
 recursive in the member being bridged, or to be a copy with a bridge of its own.
 A field that mentions a copy anywhere else -- in the domain of one of its own
-binders, or in a nested position -- has nothing to be handed over as. -/
+binders, or in a nested position -- has nothing to be handed over as.
 
-/-- error: Unknown constant `D5A.nested_List_1.eq_orig` -/
-#guard_msgs in
-#check @D5A.nested_List_1.eq_orig
+A data copy has none for a reason of its own.  It is isomorphic to what it
+copies rather than equal to it, so the coercions are there and the equality that
+would license displaying one as the other is not -- which is why the copies that
+survive at all are the ones the writer sees under their own names. -/
 
-/-- info: 1 -/
+/-- error: Unknown constant `Xs1.nested_Xbox_2.eq_orig` -/
 #guard_msgs in
-#eval (D5A.nested_List_1.cons (.leaf 3) .nil : List D5B).length
+#check @Xs1.nested_Xbox_2.eq_orig
+
+-- the coercion still carries a value of the copy where the original is wanted
+example (h : Nonempty Xs1) : Xbox (Nonempty Xs1) := Xs1.nested_Xbox_2.mk h
 
 /-! A nesting is copied by specialising it to the block, and what it is
 specialised at has to be fixed before the constructors are known.  A parameter

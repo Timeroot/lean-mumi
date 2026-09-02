@@ -48,9 +48,10 @@ sent to the original itself.
 Only a member carrying that coercion is displayed this way.  A copy that is
 merely *isomorphic* to what it copies -- a data member -- keeps its own name,
 which is the honest thing to show.  There are few of those left: a data copy
-arises only where the kernel could not have denested, and where the lowering
-cannot make it a ghost either, which takes a copy whose parameters have locals
-in them, or one of a mutual family, or one a data member has a field at.
+arises only where the kernel could not have denested -- a nesting a universe
+below the member it sits in, or one with locals among its parameters -- and
+where the lowering cannot make it a ghost either, which additionally takes a
+copy of a mutual family or of a type that is itself nested.
 `Mumi.IndInd` deals with those
 copies the other way round: rather than displaying one as its original, it
 defines the constructors and recursor over the originals outright, out of the

@@ -62,8 +62,15 @@ do is fail.
    Not every member reaches this step.  A copy that only the shadow needs --
    `Mumi.Denest` calls it a *ghost*, and marks it with a `GhostInfo` -- is
    passed over here, and everything from step 3 on writes the type it copies
-   where the shadow writes the member.  So a ghost's constructors, recursor and
-   `casesOn` are the copied type's, and the writer never meets its name.
+   where the shadow writes the member.  So a ghost's constructors and `casesOn`
+   are the copied type's, and the writer never meets its name.
+
+   Its recursor is the copied type's too where the occurrences it stands for all
+   sit in `Prop` members' constructors, which the lowering emits as definitions.
+   Where a data member has a field at one, the occurrence goes to the kernel
+   written out in full, the kernel denests it as it would have done had no
+   `Prop` forced a copy at all, and the ghost's recursor is the `X.rec_k` that
+   comes back.
 
 3. The `Prop` members' user-facing names (reducible abbreviations for their
    shadows) and constructors, the squash maps `X._squash : X → X._shadow`, and
@@ -148,6 +155,13 @@ real world would have said about it is said about the type it copies instead:
 its constructors are that type's, its recursor is built from that type's, and
 `List B` is what the writer reads.  `Mumi.Denest` decides which copies can be
 treated this way and lists the conditions.
+
+A ghost a *data* member has a field at goes one step further.  There the
+occurrence is not in a definition but in a kernel constructor, so `List B` is
+written into the block the kernel is handed -- and the kernel denests it, which
+is what it would have done had there been no `Prop` member to force a copy in
+the first place.  Such a ghost's recursion is the kernel's own `B.rec_1`, and
+`nativeRec?` is where `mkNests` records it once the kernel has answered.
 -/
 structure GhostInfo where
   /-- `fun params => I p₁ … p_k`: the type the member copies, with the block's
@@ -164,6 +178,10 @@ structure GhostInfo where
   /-- `I`'s constructors, in `I`'s order, which is the order the copy's own
   constructors were made in. -/
   ctors     : Array Name
+  /-- The kernel's recursor at this type, for a ghost the kernel denested, and
+  `none` for one whose occurrences all sit in definitions.  Filled in by
+  `mkNests`, which is the first point at which the kernel has been asked. -/
+  nativeRec? : Option Name := none
   deriving Inhabited
 
 /--
@@ -327,11 +345,17 @@ def Block.userCtorApp (b : Block) (c : CtorInfo) (params fields : Array Expr) : 
 The native recursor member `i`'s component eliminates with, the levels it is
 instantiated at, and the parameters it takes.  A ghost has none of its own, so
 it borrows the copied type's -- which is the whole point of being one.
+
+A ghost the kernel denested borrows nothing: the kernel wrote it a recursor of
+its own, over the component it belongs to, and only that one recurses back into
+the component's members.  `List.rec` would offer an induction hypothesis for the
+tail and none for the head.
 -/
 def Block.memberRecOf (b : Block) (i : Nat) (params : Array Expr) :
     Name × List Level × Array Expr :=
   match b.members[i]!.ghost? with
   | none   => (b.members[i]!.name ++ `rec, b.ownLevels, params)
+  | some { nativeRec? := some r, .. } => (r, b.ownLevels, params)
   | some g => (g.head ++ `rec, g.levels, (b.realTypeAt i params #[]).getAppArgs)
 
 @[inherit_doc Block.memberRecOf]
@@ -356,15 +380,24 @@ answers to `X.rec`.
 
 A ghost is not declared at all, so its cannot be named after it.  It takes the
 name the recursor over a type the *kernel* denested would have taken -- the
-`X.mutualRec_1` that sits beside `X.mutualRec` -- which is always free here,
-because a block with a `Prop` member is one the kernel denested nothing for.
+`X.mutualRec_1` that sits beside `X.mutualRec`.  For a ghost the kernel really
+did denest, that *is* the name: `X` is its component's first declared member and
+the index is the one the kernel gave `X.rec_1`, so the pair reads as it would in
+a block with no `Prop` member.  For a ghost of its own, there is no component to
+name it after and nothing occupying the name either -- the kernel denested
+nothing for that component -- so it hangs off the block's first member.
 -/
 def Block.recName (b : Block) (i : Nat) : Name :=
-  if b.isGhost i then
-    let k := (b.members.extract 0 i).foldl (fun a m => if m.ghost?.isSome then a + 1 else a) 0
-    b.members[0]!.name ++ `mutualRec |>.appendIndexAfter (k + 1)
+  if !b.isGhost i then b.members[i]!.name ++ `mutualRec
   else
-    b.members[i]!.name ++ `mutualRec
+    let base? := do
+      let s ← b.sccOf[i]!
+      let j ← b.sccs[s]!.find? (!b.isGhost ·)
+      return (b.members[j]!.name, (b.sccs[s]!.filter b.isGhost).idxOf i)
+    let (root, k) := base?.getD
+      (b.members[0]!.name,
+        (Array.range i).countP fun j => b.isGhost j && (b.sccOf[j]!.all (b.sccs[·]!.all b.isGhost)))
+    root ++ `mutualRec |>.appendIndexAfter (k + 1)
 
 /-! ## Moving between the three "worlds"
 
@@ -1076,6 +1109,13 @@ def analyze (inp : Input) : MetaM Block := do
   -- 3. condensation of the data-only graph
   let isData := isProp.map not
   let (sccs, sccOf) := computeSCCs n isData edges
+  -- a ghost goes last in its component.  What the kernel is handed is the
+  -- component's other members, with the ghost written out as the type it stands
+  -- for, and what comes back has a motive and minor premises for each of those
+  -- first and for what it denested after; keeping the block's order the same
+  -- lets one list of motives serve both
+  let ghostly := fun (i : Nat) => (inp.memberGhost[i]?.join).isSome
+  let sccs := sccs.map fun c => c.filter (!ghostly ·) ++ c.filter ghostly
   -- `denest` copies every nested occurrence of a block with a `Prop` member, so
   -- one that survived to here is one it could not copy
   if isProp.any id then
@@ -1381,10 +1421,22 @@ private def sccMotiveVals (b : Block) (ns : Nests) (s : Nat) (motives : Array Ex
 /--
 Read off what the kernel denested for each component, by comparing that
 component's native recursor with the component the lowering handed it.  A
-recursor with more motives than its component has members has them for types the
-kernel invented, and there is no other way for one to arise.
+recursor with more motives than its component has *declared* members has them
+for types the kernel invented, and there is no other way for one to arise.
+
+Some of those the block already has a member for: a ghost the kernel denested is
+one of the block's own slots, with its own motive, minor premises and recursor,
+and all it wants from here is the name of the kernel's recursor at it.  Those are
+matched up by the type each stands for and the component reordered to agree with
+the kernel, so that one list of motives serves the block's recursors and the
+native one alike.  What is left over -- a nesting the writer wrote in a block
+with no ghost in it -- becomes a `NestSpec`.
+
+Both cannot happen at once: a ghost exists only in a block with a `Prop` member,
+and there the shadow has no way to follow a nesting it has no member for.
 -/
-private def mkNests (b : Block) : MetaM Nests := do
+private def mkNests (b : Block) : MetaM (Block × Nests) := do
+  let mut b := b
   let mut perScc : Array (Array NestSpec) := #[]
   let mut nMot := 0
   let mut nMin := 0
@@ -1397,41 +1449,69 @@ private def mkNests (b : Block) : MetaM Nests := do
       perScc := perScc.push #[]
       continue
     let info ← getConstInfoRec (name ++ `rec)
-    let sz := b.sccs[s]!.size
-    if info.numMotives == sz then
-      perScc := perScc.push #[]
-      continue
-    if b.hasProp then
-      throwError "(internal) multiuniverse lowering: the kernel denested an occurrence in a \
-        block with a `Prop` member, which its shadow cannot follow"
-    let heads ← forallBoundedTelescope b.members[i]!.type (some b.numParams) fun params _ => do
-      let (_, ty) ← memberRecAt b i params #[]
-      forallBoundedTelescope ty (some info.numMotives) fun ms _ =>
-        (ms.extract sz info.numMotives).mapM fun m => do
-          forallTelescope (← inferType m) fun zs _ => do
-            let some t := zs.back?
-              | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive that \
-                  takes no major premise"
-            let some hd := (← whnf (← inferType t)).getAppFn.constName?
-              | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive over \
-                  something that is not a type constructor"
-            return hd
+    let ghosts := b.sccs[s]!.filter b.isGhost
+    let decl := b.sccs[s]!.size - ghosts.size
+    -- each extra motive's major premise, as `∀ idxs, T idxs` under the
+    -- component's parameters.  That is exactly how a ghost states the type it
+    -- stands for, so which motive is whose is settled by comparing the two and
+    -- not by their heads, which two ghosts may well share
+    let (heads, ordered) ←
+      forallBoundedTelescope b.members[i]!.type (some b.numParams) fun params _ => do
+        let (_, ty) ← memberRecAt b i params #[]
+        forallBoundedTelescope ty (some info.numMotives) fun ms _ => do
+          let extra := ms.extract decl info.numMotives
+          let mut heads : Array Name := #[]
+          let mut ordered : Array Nat := #[]
+          for m in extra do
+            let (hd, majTy) ← forallTelescope (← inferType m) fun zs _ => do
+              let some t := zs.back?
+                | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive that \
+                    takes no major premise"
+              let mty ← inferType t
+              let some hd := (← whnf mty).getAppFn.constName?
+                | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive over \
+                    something that is not a type constructor"
+              return (hd, ← mkForallFVars zs.pop mty)
+            heads := heads.push hd
+            unless extra.size != ghosts.size do
+              let mut found := none
+              for g in ghosts do
+                if found.isNone && !ordered.contains g then
+                  let gTy ← forallTelescope (← instantiateForall b.members[g]!.type params)
+                    fun idxs _ => mkForallFVars idxs (b.realTypeAt g params idxs)
+                  if ← isDefEq gTy majTy then found := some g
+              let some q := found
+                | throwError "(internal) multiuniverse lowering: `{name}.rec` has a motive over \
+                    `{hd}`, which no member of its component stands for"
+              ordered := ordered.push q
+          return (heads, ordered)
     let mut specs : Array NestSpec := #[]
-    for k in *...heads.size do
-      let numMinors := (← getConstInfoInduct heads[k]!).numCtors
-      let nativeRec := name ++ `rec |>.appendIndexAfter (k + 1)
-      discard <| getConstInfoRec nativeRec
-      specs := specs.push
-        { head := heads[k]!, motive := b.size + nMot, firstMinor := b.allCtors.size + nMin,
-          numMinors, nativeRec, recName := name ++ `mutualRec |>.appendIndexAfter (k + 1) }
-      nMot := nMot + 1
-      nMin := nMin + numMinors
+    if heads.size == ghosts.size then
+      for k in *...ordered.size do
+        let nativeRec := name ++ `rec |>.appendIndexAfter (k + 1)
+        discard <| getConstInfoRec nativeRec
+        b := { b with members := b.members.modify ordered[k]! fun m =>
+          { m with ghost? := m.ghost?.map ({ · with nativeRec? := nativeRec }) } }
+      b := { b with sccs := b.sccs.set! s (b.sccs[s]!.filter (!b.isGhost ·) ++ ordered) }
+    else
+      if b.hasProp then
+        throwError "(internal) multiuniverse lowering: the kernel denested an occurrence in a \
+          block with a `Prop` member, which its shadow cannot follow"
+      for k in *...heads.size do
+        let numMinors := (← getConstInfoInduct heads[k]!).numCtors
+        let nativeRec := name ++ `rec |>.appendIndexAfter (k + 1)
+        discard <| getConstInfoRec nativeRec
+        specs := specs.push
+          { head := heads[k]!, motive := b.size + nMot, firstMinor := b.allCtors.size + nMin,
+            numMinors, nativeRec, recName := name ++ `mutualRec |>.appendIndexAfter (k + 1) }
+        nMot := nMot + 1
+        nMin := nMin + numMinors
     unless info.numMinors == (sccCtorIndices b s).size + specs.foldl (· + ·.numMinors) 0 do
       throwError "(internal) multiuniverse lowering: `{name}.rec` asks for {info.numMinors} \
         minor premises, which its component and what the kernel denested for it do not \
         account for"
     perScc := perScc.push specs
-  return { perScc, numMotives := nMot, numMinors := nMin }
+  return (b, { perScc, numMotives := nMot, numMinors := nMin })
 
 /-- The motives a component's native recursor asks for beyond its members'. -/
 private def nestMotiveTypes (b : Block) (ns : Nests) (s : Nat) (params : Array Expr) :
@@ -2210,7 +2290,7 @@ def lower (inp : Input) : TermElabM Unit := do
   for s in *...b.sccs.size do
     emitDataSCC b s
   -- what the kernel denested is only knowable once it has been handed the block
-  let ns ← mkNests b
+  let (b, ns) ← mkNests b
   if b.hasProp then
     for s in *...b.sccs.size do
       emitSquashSCC b s

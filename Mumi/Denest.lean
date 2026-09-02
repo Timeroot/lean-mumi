@@ -351,11 +351,12 @@ Is this copy one that could stand in the shadow alone?
 
 What that asks of the copied type is that everything the real world would have
 said about the copy can be said about it instead.  Its recursor has to be the
-recursor of one type rather than of a family, so that the copy's component --
-which is the copy and nothing else -- has one to be built from; and it must not
-itself be nested, since the kernel's extra recursors for what it denested have
-no counterpart here.  Locals among the copy's parameters rule it out too: those
-are what make a copy differ from the type it copies.
+recursor of one type rather than of a family, since a ghost is one slot of the
+block and one recursor is what a slot gets; and it must not itself be nested,
+since the kernel's extra recursors for what it denested would then have no
+slot to answer to.  Locals among the copy's parameters rule it out too: those
+are what make a copy differ from the type it copies, and a nesting the kernel
+will not take besides.
 
 The rest of the conditions are about the block rather than about the type, and
 `specDecisions` works them out.
@@ -402,15 +403,19 @@ the copied type, three things about the block have to hold, and they depend on
 one another, so they are settled by retracting candidates until nothing more
 gives way:
 
-* nothing that *is* declared may have a field at a ghost.  A `Prop` member's
-  constructors are definitions, so a field of theirs at `List B` is no trouble;
-  a data member's are the kernel's, which would send it back to the kernel to
-  denest -- exactly what could not be done.
+* a field at a ghost has to be one that can be written out in full.  In a `Prop`
+  member's constructor, which the lowering emits as a definition, anything can
+  be; in a data member's, which is the kernel's, `List B` is a nesting and the
+  kernel has to be able to denest it -- so the two have to share a component and
+  a universe, which is what makes it the nesting the kernel would have taken had
+  no `Prop` forced a copy at all.
 * a ghost's own fields have to be the copied type's, so every copy they mention
   must in turn stand for what it copies.
-* its component has to be itself alone.  Two ghosts that recurse into each other
-  would need one recursion defined across both, and neither is declared to
-  define it over.
+* its component has to have something declared in it, or be itself alone.  The
+  recursion a ghost gets is its component's: the kernel's own, over what it
+  denested, where there is a declared member to have handed it to, and the
+  copied type's where the ghost stands by itself.  Two ghosts that recurse into
+  each other and into nothing else have neither.
 -/
 private def specDecisions (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
     MetaM (Array SpecDecision) := do
@@ -473,20 +478,23 @@ private def specDecisions (inp : Input) (ps : Array Expr) (specs : Array AuxSpec
   unless hasProp do
     return kept.map fun k => if k then .keep else .drop
   -- a `Prop` in the block keeps every copy, so from here on nothing is dropped
-  let alone (j : Nat) : Bool :=
-    (Array.range tot).foldl (fun a t => if compOf[t]! == compOf[n + j]! then a + 1 else a) 0 == 1
   let mut ghost : Array Bool := #[]
   for j in *...m do
-    ghost := ghost.push (isData[n + j]! && alone j && (← ghostable specs[j]!))
+    ghost := ghost.push (isData[n + j]! && (← ghostable specs[j]!))
   changed := true
   while changed do
     changed := false
     for j in *...m do
       unless ghost[j]! do continue
       let declared (t : Nat) : Bool := isData[t]! && (t < n || !ghost[t - n]!)
-      let ok := (Array.range tot).all (fun t => !(edges[t]![n + j]! && declared t))
-        && (Array.range m).all fun k => k == j || !edges[n + j]![n + k]! || ghost[k]!
-      unless ok do
+      let sameComp (t : Nat) : Bool := compOf[t]! == compOf[n + j]!
+      let fieldsOk := (Array.range tot).all fun t =>
+        !(edges[t]![n + j]! && declared t) || (sameComp t && lvls[t]!.isEquiv lvls[n + j]!)
+      let ownFieldsOk := (Array.range m).all fun k =>
+        k == j || !edges[n + j]![n + k]! || ghost[k]!
+      let baseOk := (Array.range tot).any (fun t => sameComp t && declared t) ||
+        (Array.range tot).all fun t => t == n + j || !sameComp t
+      unless fieldsOk && ownFieldsOk && baseOk do
         ghost := ghost.set! j false
         changed := true
   return (Array.range m).map fun j => if ghost[j]! then .ghost else .keep
