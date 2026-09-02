@@ -426,72 +426,97 @@ though its field's type had to be replaced twice over. -/
 #guard_msgs in
 #check @N.mkL
 
-/-- info: N.nested_Nonempty_1.intro : ∀ (val : N.nested_List_2), Nonempty (List N) -/
+/-! ## A copy that lives in the shadow alone
+
+The `List N` beneath the `Nonempty` is copied too, and the shadow cannot do
+without it: the shadow redirects every member occurrence to a member, and
+`List N._shadow` is not a thing to write.  But that argument is about the
+shadow.  The real world writes the copy only in the `Prop` member's
+constructor, which the lowering emits as a *definition*, so there it can be
+stated at `List N` itself -- and then the copy need not be declared at all.
+Such a member is a *ghost*: present in the shadow, and standing for `List N`
+everywhere the writer can see. -/
+
+/-- error: Unknown constant `N.nested_List_2` -/
+#guard_msgs in
+#check @N.nested_List_2
+
+/-- info: N.nested_Nonempty_1.intro : ∀ (val : List N), Nonempty (List N) -/
 #guard_msgs in
 #check @N.nested_Nonempty_1.intro
 
-/-- info: N.nested_List_2.cons : N → N.nested_List_2 → N.nested_List_2 -/
+/-! A ghost is still a member, so the block's recursion still crosses it -- with
+`List N` as the type it crosses at.  Its own block-wide recursor takes the name
+a recursor over a type the kernel denested would have taken, which is free here
+precisely because a block with a `Prop` member is one the kernel denested
+nothing for. -/
+
+/--
+info: @N.mutualRec : {motive_1 : N → Sort u_1} →
+  {motive_2 : Nonempty (List N) → Prop} →
+    {motive_3 : List N → Sort u_2} →
+      motive_1 N.mk0 →
+        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N.mkL a)) →
+          (∀ (val : List N) (ih_1 : motive_3 val), motive_2 ⋯) →
+            motive_3 [] →
+              ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
+                (t : N) → motive_1 t
+-/
 #guard_msgs in
-#check @N.nested_List_2.cons
+#check @N.mutualRec
+
+/--
+info: @N.mutualRec_1 : {motive_1 : N → Sort u_1} →
+  {motive_2 : Nonempty (List N) → Prop} →
+    {motive_3 : List N → Sort u_2} →
+      motive_1 N.mk0 →
+        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N.mkL a)) →
+          (∀ (val : List N) (ih_1 : motive_3 val), motive_2 ⋯) →
+            motive_3 [] →
+              ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
+                (t : List N) → motive_3 t
+-/
+#guard_msgs in
+#check @N.mutualRec_1
+
+/-! The ghost's recursor is built from `List.rec`, so its iota rules hold by
+`rfl`, and it computes. -/
+
+def N.count : List N → Nat :=
+  N.mutualRec_1 (motive_1 := fun _ => Nat) (motive_2 := fun _ => True)
+    (motive_3 := fun _ => Nat)
+    0 (fun _ _ => 1) (fun _ _ => trivial) 0 (fun _ _ h t => h + t + 1)
+
+example : N.count [] = 0 := rfl
+
+/-- info: 3 -/
+#guard_msgs in
+#eval N.count [.mk0, .mkL ⟨[]⟩]
+
+/-- info: 'N.count' does not depend on any axioms -/
+#guard_msgs in
+#print axioms N.count
 
 /-! ## Where a copy is only isomorphic
 
 A `Prop` copy is *equal* to what it copies, proof irrelevance and all, so it
-gets an `eq_orig` and `Mumi.Bridge` displays it as the original.  A data member
-is only isomorphic: `N.nested_List_2` has constructors of its own, distinct
-constants from `List.nil` and `List.cons`, and no equation between the two types
-is true.  So there is no `eq_orig`, and nothing is displayed as anything else --
-the `#check`s above say `N.nested_List_2`, which is the honest answer.
+gets an `eq_orig` and `Mumi.Bridge` displays it as the original. -/
 
-A data copy only ever arises underneath a `Prop` one, as this `List` does.  A
-data nesting on its own is denested by the kernel, which leaves the writer's
-own type in the constructor and nothing to copy; that is what happens to every
-`List` in the blocks further down.
-
-What such a member does get is the isomorphism itself, and a coercion each way,
-so its name need not be written at a use site. -/
-
-/-- info: N.nested_List_2.toOrig : N.nested_List_2 → List N -/
+/-- info: N.nested_Nonempty_1.eq_orig : Nonempty (List N) = Nonempty (List N) -/
 #guard_msgs in
-#check @N.nested_List_2.toOrig
-
-/-- info: N.nested_List_2.ofOrig : List N → N.nested_List_2 -/
-#guard_msgs in
-#check @N.nested_List_2.ofOrig
-
-/-- info: N.nested_List_2.coeToOrig : CoeOut N.nested_List_2 (List N) -/
-#guard_msgs in
-#check @N.nested_List_2.coeToOrig
-
-/-- error: Unknown constant `N.nested_List_2.eq_orig` -/
-#guard_msgs in
-#check @N.nested_List_2.eq_orig
-
-/-! Both directions are recursor applications, which the code generator cannot
-take, so each carries a compiled companion and the coercion runs. -/
-
-/-- info: 2 -/
-#guard_msgs in
-#eval (N.nested_List_2.cons .mk0 (.cons .mk0 .nil) : List N).length
-
-/-- info: 3 -/
-#guard_msgs in
-#eval (N.nested_List_2.toOrig (N.nested_List_2.ofOrig [.mk0, .mk0, .mk0])).length
-
-/-- info: 'N.nested_List_2.toOrig' does not depend on any axioms -/
-#guard_msgs in
-#print axioms N.nested_List_2.toOrig
-
-/-! ## A bridge that leans on another bridge
-
-`N.nested_Nonempty_1`'s field is not one `Nonempty` takes: it is the *other*
-copy.  What carries it across is that copy's own bridge, so the outer member
-gets a bridge exactly when the inner one does, and the two are built innermost
-first. -/
+#check @N.nested_Nonempty_1.eq_orig
 
 /-- info: N.nested_Nonempty_1.coeToOrig : CoeOut (Nonempty (List N)) (Nonempty (List N)) -/
 #guard_msgs in
 #check @N.nested_Nonempty_1.coeToOrig
+
+/-! A data member is only isomorphic to what it copies: it has constructors of
+its own, distinct constants from the original's, and no equation between the
+two types is true.  So it gets no `eq_orig` and is displayed as itself, which
+is the honest answer.  What it does get is the isomorphism, and a coercion each
+way, so its name need not be written at a use site.  `MumiTests.NestedIndInd`
+has those: an induction-inductive copy is indexed by a sibling, which is what
+keeps it from being a ghost. -/
 
 /-- info: N.nested_Nonempty_1.eq_orig : Nonempty (List N) = Nonempty (List N) -/
 #guard_msgs in
@@ -593,8 +618,9 @@ def C3.deep : C3 → Nat
 #guard_msgs in
 #print axioms C3.deep
 
-/-! A chain where the inner copy is *indexed*, so the bridge it is carried by
-takes the index too. -/
+/-! A chain where the inner copy is *indexed*.  Its indices are the copied
+type's own, not the block's, so it too can be a ghost, and the recursion the
+block gets back crosses `Vek3 B3` at them. -/
 
 inductive Vek3 (α : Type) : Nat → Type where
   | nil : Vek3 α 0
@@ -612,9 +638,27 @@ end
 #guard_msgs in
 #check @A3.mk
 
-/-- info: A3.nested_Vek3_2.toOrig : (a : Nat) → A3.nested_Vek3_2 a → Vek3 B3 a -/
+/--
+info: @A3.mutualRec_1 : {motive_1 : A3 → Sort u_1} →
+  {motive_2 : B3 → Sort u_2} →
+    {motive_3 : (n : Nat) → Nonempty (Vek3 B3 n) → Prop} →
+      {motive_4 : (a : Nat) → Vek3 B3 a → Sort u_3} →
+        motive_1 A3.tip →
+          ((n : Nat) → (a : Nonempty (Vek3 B3 n)) → motive_3 n a → motive_1 (A3.mk n a)) →
+            motive_2 B3.tip →
+              (∀ (n : Nat) (val : Vek3 B3 n) (ih_2 : motive_4 n val), motive_3 n ⋯) →
+                motive_4 0 Vek3.nil →
+                  ((n : Nat) →
+                      (a : B3) →
+                        (a_1 : Vek3 B3 n) → motive_2 a → motive_4 n a_1 → motive_4 (n + 1) (Vek3.cons n a a_1)) →
+                    {a : Nat} → (t : Vek3 B3 a) → motive_4 a t
+-/
 #guard_msgs in
-#check @A3.nested_Vek3_2.toOrig
+#check @A3.mutualRec_1
+
+/-- info: A3.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Vek3 B3 n), Nonempty (Vek3 B3 n) -/
+#guard_msgs in
+#check @A3.nested_Nonempty_1.intro
 
 /--
 info: A3.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Nonempty (Vek3 B3 n) = Nonempty (Vek3 B3 n)

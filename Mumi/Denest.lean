@@ -335,8 +335,42 @@ private def sortOf (ty : Expr) : MetaM Level :=
     let .sort l := (← whnf body) | return Level.zero
     return l
 
+/-- What is to become of a copy the scan found. -/
+inductive SpecDecision where
+  /-- Not made at all: the occurrence stays as the writer wrote it. -/
+  | drop
+  /-- Made, as a member of the block in the shadow and in the real world alike. -/
+  | keep
+  /-- Made in the shadow only, with the type it copies standing in for it
+  everywhere else.  See `Lean.Elab.MultiuniverseInductive.GhostInfo`. -/
+  | ghost
+  deriving Inhabited, DecidableEq
+
 /--
-Decide which of the copies the scan found actually have to be made.
+Is this copy one that could stand in the shadow alone?
+
+What that asks of the copied type is that everything the real world would have
+said about the copy can be said about it instead.  Its recursor has to be the
+recursor of one type rather than of a family, so that the copy's component --
+which is the copy and nothing else -- has one to be built from; and it must not
+itself be nested, since the kernel's extra recursors for what it denested have
+no counterpart here.  Locals among the copy's parameters rule it out too: those
+are what make a copy differ from the type it copies.
+
+The rest of the conditions are about the block rather than about the type, and
+`specDecisions` works them out.
+-/
+private def ghostable (s : AuxSpec) : MetaM Bool := do
+  unless s.extras.isEmpty do return false
+  let some (.inductInfo info) := (← getEnv).find? s.indName | return false
+  if info.isNested || info.all.length != 1 then return false
+  unless (← getEnv).contains (s.indName ++ `casesOn) do return false
+  let some (.recInfo r) := (← getEnv).find? (s.indName ++ `rec) | return false
+  return r.numMotives == 1 && r.numMinors == s.ctors.size
+
+/--
+Decide which of the copies the scan found actually have to be made, and which
+of those the real world can do without.
 
 A copy can be dropped when nothing it names is being declared alongside it: the
 occurrence is then a closed type where it stands, and leaving it alone hands the
@@ -359,27 +393,43 @@ Keeping spreads along the copies' own dependencies, in both directions.  A copy
 that stands is written into the fields of the copies above it, and a copy that
 is dropped is written into their text, so two that reach each other have to be
 kept or dropped together.
+
+A copy kept for the first of those reasons is kept for the shadow's sake alone,
+and the real world may still be able to do without it -- to write `List B`
+where the shadow writes a member.  Such a copy becomes a *ghost*, which is what
+keeps `Prop` out of the names the writer reads.  Beyond what `ghostable` asks of
+the copied type, three things about the block have to hold, and they depend on
+one another, so they are settled by retracting candidates until nothing more
+gives way:
+
+* nothing that *is* declared may have a field at a ghost.  A `Prop` member's
+  constructors are definitions, so a field of theirs at `List B` is no trouble;
+  a data member's are the kernel's, which would send it back to the kernel to
+  denest -- exactly what could not be done.
+* a ghost's own fields have to be the copied type's, so every copy they mention
+  must in turn stand for what it copies.
+* its component has to be itself alone.  Two ghosts that recurse into each other
+  would need one recursion defined across both, and neither is declared to
+  define it over.
 -/
-private def keptSpecs (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
-    MetaM (Array Bool) := do
+private def specDecisions (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
+    MetaM (Array SpecDecision) := do
   let members := inp.memberFVars
   let n := members.size
   let m := specs.size
   let tot := n + m
-  let all := Array.replicate m true
   let mut isData : Array Bool := #[]
   let mut lvls : Array Level := #[]
   for ty in inp.memberTypes do
     let l := (← sortOf ty).normalize
-    if l == .zero then return all
-    isData := isData.push true
+    isData := isData.push (l != .zero)
     lvls := lvls.push l
   for s in specs do
     let l ← withExtras s fun xs => sortOf (s.resType.instantiateRev xs)
     let l := l.normalize
-    if l == .zero then return all
-    isData := isData.push true
+    isData := isData.push (l != .zero)
     lvls := lvls.push l
+  let hasProp := isData.any (!·)
   let mut edges : Array (Array Bool) := Array.replicate tot (Array.replicate tot false)
   for i in *...n do
     for ct in inp.ctorTypes[i]! do
@@ -408,7 +458,7 @@ private def keptSpecs (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
   let (_, compOf) := computeSCCs tot isData edges
   let mut kept : Array Bool := #[]
   for j in *...m do
-    kept := kept.push <| !specs[j]!.extras.isEmpty ||
+    kept := kept.push <| hasProp || !specs[j]!.extras.isEmpty ||
       (Array.range n).any fun i =>
         compOf[i]! == compOf[n + j]! && !lvls[i]!.isEquiv lvls[n + j]!
   let mut changed := true
@@ -420,7 +470,26 @@ private def keptSpecs (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
             (edges[n + a]![n + b]! || edges[n + b]![n + a]!) then
           kept := kept.set! b true
           changed := true
-  return kept
+  unless hasProp do
+    return kept.map fun k => if k then .keep else .drop
+  -- a `Prop` in the block keeps every copy, so from here on nothing is dropped
+  let alone (j : Nat) : Bool :=
+    (Array.range tot).foldl (fun a t => if compOf[t]! == compOf[n + j]! then a + 1 else a) 0 == 1
+  let mut ghost : Array Bool := #[]
+  for j in *...m do
+    ghost := ghost.push (isData[n + j]! && alone j && (← ghostable specs[j]!))
+  changed := true
+  while changed do
+    changed := false
+    for j in *...m do
+      unless ghost[j]! do continue
+      let declared (t : Nat) : Bool := isData[t]! && (t < n || !ghost[t - n]!)
+      let ok := (Array.range tot).all (fun t => !(edges[t]![n + j]! && declared t))
+        && (Array.range m).all fun k => k == j || !edges[n + j]![n + k]! || ghost[k]!
+      unless ok do
+        ghost := ghost.set! j false
+        changed := true
+  return (Array.range m).map fun j => if ghost[j]! then .ghost else .keep
 
 /-! ## The bridge
 
@@ -1086,17 +1155,27 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
           if inp.levelParams.contains p then .param p else mlvl
         let recTy ← instantiateForall
           (recInfo.type.instantiateLevelParams recInfo.levelParams recLevels) ps
-        let mIdxs ← forallBoundedTelescope recTy (some ctorNames.size) fun mvs _ => do
-          let mut out : Array Nat := #[]
-          for m in mvs do
-            let k? ← forallTelescope (← inferType m) fun ys c => do
-              unless c.isSort do return none
-              let some last := ys.back? | return none
-              let some hd := (← inferType last).getAppFn.constName? | return none
-              return memberNames.idxOf? hd
-            let some k := k? | break
-            out := out.push k
-          return out
+        -- Which motive is whose is read off what it quantifies over, since a
+        -- native recursor's motives run over its own block and then over whatever
+        -- the kernel denested, and only their domains tell those apart.  The
+        -- block-wide recursor the lowering builds needs no guessing -- it has one
+        -- motive per member, in member order -- and must not be guessed at: a
+        -- ghost's motive is at the type it stands for, which names no member.
+        let mIdxs ←
+          if recInfo matches .recInfo _ then
+            forallBoundedTelescope recTy (some ctorNames.size) fun mvs _ => do
+              let mut out : Array Nat := #[]
+              for m in mvs do
+                let k? ← forallTelescope (← inferType m) fun ys c => do
+                  unless c.isSort do return none
+                  let some last := ys.back? | return none
+                  let some hd := (← inferType last).getAppFn.constName? | return none
+                  return memberNames.idxOf? hd
+                let some k := k? | break
+                out := out.push k
+              return out
+          else
+            pure (Array.range ctorNames.size)
         unless mIdxs.contains jm do
           throwError "the copy's recursor has no motive for it"
         let mtypes ← forallBoundedTelescope recTy (some mIdxs.size) fun mvs _ =>
@@ -1294,16 +1373,18 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
     -- a copy the kernel can do without is not made, and the occurrence stays as
     -- the writer wrote it; the ones that are made are renumbered so that their
     -- names have no gaps
-    let keep ← keptSpecs inp ps st.specs
+    let decisions ← specDecisions inp ps st.specs
     let mut dropped : Array Expr := #[]
     let mut specs : Array AuxSpec := #[]
+    let mut isGhost : Array Bool := #[]
     for j in *...st.specs.size do
       let s := st.specs[j]!
-      if keep[j]! then
+      match decisions[j]! with
+      | .drop => dropped := dropped.push s.key
+      | d =>
         specs := specs.push { s with
           name := root ++ Name.mkSimple s!"nested_{shortName s.indName}_{specs.size + 1}" }
-      else
-        dropped := dropped.push s.key
+        isGhost := isGhost.push (d == .ghost)
     if specs.isEmpty then return (← k inp)
     let appPs := ps.extract inp.numVars ps.size
     let mut decls : Array (Name × Expr) := #[]
@@ -1322,6 +1403,23 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       let mut ctorNames   := inp.ctorNames
       let mut ctorTypes   := inp.ctorTypes
       let mut bridgeDeps  : Array (Option (Array Nat)) := #[]
+      let mut memberGhost : Array (Option GhostInfo) :=
+        Array.replicate inp.memberNames.size none
+      -- A ghost's free variable stands for the type it copies, so a field at
+      -- one is an ordinary field of that type and needs no bridge; taking it
+      -- for a copy would leave the copies above it waiting for a bridge that is
+      -- never built.  What the block itself is handed keeps the free variable:
+      -- the ghost is still a member there, and `lower` substitutes.
+      let ghostFVars := (Array.range specs.size).filterMap fun j =>
+        if isGhost[j]! then some auxFVars[j]! else none
+      let ghostVals ← (Array.range specs.size).filterMapM fun j =>
+        if isGhost[j]! then
+          return some (← mkLambdaFVars appPs specs[j]!.origAbs)
+        else
+          return none
+      let unghost (e : Expr) : MetaM Expr :=
+        if ghostFVars.isEmpty then pure e
+        else Core.betaReduce (e.replaceFVars ghostFVars ghostVals)
       -- any of the block's own constructors will do: they all carry the same
       -- parameters, and an auxiliary member only exists because one of them
       -- nests something, so there is always at least one
@@ -1346,7 +1444,7 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
             let cty ← instantiateForall
               (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
             let rw ← c.pi cty
-            match ← fieldsBridgeable auxFVars j rw with
+            match ← fieldsBridgeable auxFVars j (← unghost rw) with
             | none    => deps := none
             | some ds => if let some acc := deps then deps := some (acc ++ ds)
             let full ← mkForallFVars (ps ++ xs) rw
@@ -1356,8 +1454,19 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
           return (cts, deps)
         ctorNames := ctorNames.push (s.ctors.map (reroot s.indName s.name))
         ctorTypes := ctorTypes.push cts
-        bridgeDeps := bridgeDeps.push deps
+        -- a ghost is its own original, so there is nothing to bridge to
+        bridgeDeps := bridgeDeps.push (if isGhost[j]! then none else deps)
+        let ghost? : Option GhostInfo ←
+          if isGhost[j]! then do
+            let value ← mkLambdaFVars ps s.origAbs
+            let numParams := (← getConstInfoInduct s.indName).numParams
+            pure (some { value, head := s.indName, levels := s.levels, numParams,
+                         ctors := s.ctors })
+          else
+            pure none
+        memberGhost := memberGhost.push ghost?
       let out ← k { inp with memberNames, memberTypes, memberFVars, ctorNames, ctorTypes,
+                             memberGhost,
                              localIndices := specs.any (!·.extras.isEmpty) }
       -- the members exist now, so the copies can be identified with the originals
       let ownLevels := inp.levelParams.map Level.param

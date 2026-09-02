@@ -46,9 +46,12 @@ expected type rather than being elaborated and then adjusted, so it has to be
 sent to the original itself.
 
 Only a member carrying that coercion is displayed this way.  A copy that is
-merely *isomorphic* to what it copies -- a data member, which now arises only
-underneath a `Prop` copy, where the kernel could not have denested -- keeps its
-own name, which is the honest thing to show.  `Mumi.IndInd` deals with those
+merely *isomorphic* to what it copies -- a data member -- keeps its own name,
+which is the honest thing to show.  There are few of those left: a data copy
+arises only where the kernel could not have denested, and where the lowering
+cannot make it a ghost either, which takes a copy whose parameters have locals
+in them, or one of a mutual family, or one a data member has a field at.
+`Mumi.IndInd` deals with those
 copies the other way round: rather than displaying one as its original, it
 defines the constructors and recursor over the originals outright, out of the
 isomorphism, so there is nothing left for a delaborator to hide.

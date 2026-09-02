@@ -59,6 +59,12 @@ do is fail.
    necessarily universe-homogeneous -- an edge `i → j` forces `l_j ≤ l_i`, so a
    cycle forces equality -- hence each is an ordinary mutual block.
 
+   Not every member reaches this step.  A copy that only the shadow needs --
+   `Mumi.Denest` calls it a *ghost*, and marks it with a `GhostInfo` -- is
+   passed over here, and everything from step 3 on writes the type it copies
+   where the shadow writes the member.  So a ghost's constructors, recursor and
+   `casesOn` are the copied type's, and the writer never meets its name.
+
 3. The `Prop` members' user-facing names (reducible abbreviations for their
    shadows) and constructors, the squash maps `X._squash : X → X._shadow`, and
    a block-wide recursor `X.mutualRec` for every member.
@@ -126,6 +132,41 @@ private def rep {α : Type _} (n : Nat) (a : α) : Array α := (List.replicate n
 /-! ## Input -/
 
 /--
+What a member that exists only in the *shadow* stands for in the real world.
+
+A nesting under a `Prop` head has to become a member of the block: the shadow
+copies every constructor field with the members redirected to their shadows, and
+a redirected `List B` would read `List B._shadow`, which is not even well-typed,
+so the shadow needs a `Prop` analogue of `List B` of its own.  But that argument
+is about the shadow alone.  In the real world the occurrence sits in a `Prop`
+member's constructor, which the lowering emits as a *definition* rather than as
+a kernel constructor, so nothing there stops it from being stated at `List B`
+itself.
+
+So such a member is declared in the shadow and nowhere else, and everything the
+real world would have said about it is said about the type it copies instead:
+its constructors are that type's, its recursor is built from that type's, and
+`List B` is what the writer reads.  `Mumi.Denest` decides which copies can be
+treated this way and lists the conditions.
+-/
+structure GhostInfo where
+  /-- `fun params => I p₁ … p_k`: the type the member copies, with the block's
+  own members still free variables.  The member's indices are `I`'s own, so its
+  type at some indices is this applied to the parameters and then to them. -/
+  value     : Expr
+  /-- `I` itself, whose recursor, `casesOn` and constructors do the work. -/
+  head      : Name
+  levels    : List Level
+  /-- How many parameters `I` takes, so that the indices of a value of this
+  member's type can be read off it -- the block's own parameter count says
+  nothing about them. -/
+  numParams : Nat
+  /-- `I`'s constructors, in `I`'s order, which is the order the copy's own
+  constructors were made in. -/
+  ctors     : Array Name
+  deriving Inhabited
+
+/--
 The elaborated block, as the elaborator hands it to the lowering.  This
 is exactly the information `Lean.Elab.Command.mkInductiveDeclCore` has already
 computed, with the members still represented by free variables.
@@ -154,6 +195,9 @@ structure Input where
   datatypes parameters cannot contain local variables* -- so a block that needed
   it is one Lean could not have elaborated, however homogeneous it came out. -/
   localIndices : Bool := false
+  /-- Set by `denest` for a copy that is to exist in the shadow only; `none` at
+  every member the writer declared.  Empty when there is nothing to say. -/
+  memberGhost : Array (Option GhostInfo) := #[]
 
 /-! ## Block description -/
 
@@ -187,6 +231,9 @@ structure MemberInfo where
   level  : Level
   isProp : Bool
   ctors  : Array CtorInfo
+  /-- Set when the member is declared in the shadow and nowhere else; see
+  `GhostInfo`. -/
+  ghost? : Option GhostInfo := none
   deriving Inhabited
 
 /-- The elaborated block plus the results of the analysis. -/
@@ -208,6 +255,10 @@ structure Block where
   /-- Whether any member is a `Prop`, i.e. whether a shadow is needed. -/
   hasProp     : Bool
   isClass     : Bool
+  /-- Each member as the real world names it: the constant it is declared as,
+  or, for a ghost, `fun params => I p₁ … p_k` -- the type it stands for, with
+  the other members already substituted.  `Block.realTypeAt` reads it. -/
+  userTargets : Array Expr
   deriving Inhabited
 
 def Block.size (b : Block) : Nat := b.members.size
@@ -219,6 +270,30 @@ own names and are honest inductives; only `Prop` members are mangled.
 def Block.realName (b : Block) (i : Nat) : Name :=
   let m := b.members[i]!
   if m.isProp then shadowName m.name else m.name
+
+/-- Does this member exist in the shadow only?  See `GhostInfo`. -/
+def Block.isGhost (b : Block) (i : Nat) : Bool := b.members[i]!.ghost?.isSome
+
+/-- Does any member? -/
+def Block.hasGhost (b : Block) : Bool := b.members.any (·.ghost?.isSome)
+
+/--
+Member `j`'s type as the real world states it, at the block's parameters and
+that member's own indices: the member itself, or, for a ghost, the type it
+stands for.
+-/
+def Block.realTypeAt (b : Block) (j : Nat) (params idxs : Array Expr) : Expr :=
+  b.userTargets[j]!.beta (params ++ idxs)
+
+/--
+The indices in a type of the form `X_j params idxs`.  A ghost's are the copied
+type's, which start after *its* parameters and not after the block's.
+-/
+def Block.memberIdxs (b : Block) (j : Nat) (ty : Expr) : Array Expr :=
+  let args := ty.getAppArgs
+  match b.members[j]!.ghost? with
+  | some g => args.extract g.numParams args.size
+  | none   => args.extract b.numParams args.size
 
 /--
 The universe of `X_i`'s motive: `Prop` for a `Prop` member, the member's SCC
@@ -233,6 +308,39 @@ def Block.motiveLevel (b : Block) (i : Nat) : Level :=
 
 def Block.ownLevels (b : Block) : List Level := b.levelParams.map .param
 
+/--
+Constructor `c` as the real world writes it, at the block's parameters and the
+constructor's own fields.  A ghost's constructors are the copied type's, taken
+at that type's parameters -- which is well-typed exactly because the copy's
+fields were the original's with nothing but ghosts and members rewritten into
+them.
+-/
+def Block.userCtorApp (b : Block) (c : CtorInfo) (params fields : Array Expr) : Expr :=
+  match b.members[c.owner]!.ghost? with
+  | none   => mkAppN (mkConst c.name b.ownLevels) (params ++ fields)
+  | some g =>
+    let q := (b.members[c.owner]!.ctors.findIdx? (·.name == c.name)).getD 0
+    let oparams := (b.realTypeAt c.owner params #[]).getAppArgs
+    mkAppN (mkConst g.ctors[q]! g.levels) (oparams ++ fields)
+
+/--
+The native recursor member `i`'s component eliminates with, the levels it is
+instantiated at, and the parameters it takes.  A ghost has none of its own, so
+it borrows the copied type's -- which is the whole point of being one.
+-/
+def Block.memberRecOf (b : Block) (i : Nat) (params : Array Expr) :
+    Name × List Level × Array Expr :=
+  match b.members[i]!.ghost? with
+  | none   => (b.members[i]!.name ++ `rec, b.ownLevels, params)
+  | some g => (g.head ++ `rec, g.levels, (b.realTypeAt i params #[]).getAppArgs)
+
+@[inherit_doc Block.memberRecOf]
+def Block.memberCasesOf (b : Block) (i : Nat) (params : Array Expr) :
+    Name × List Level × Array Expr :=
+  match b.members[i]!.ghost? with
+  | none   => (b.members[i]!.name ++ `casesOn, b.ownLevels, params)
+  | some g => (g.head ++ `casesOn, g.levels, (b.realTypeAt i params #[]).getAppArgs)
+
 /-- Every generated recursor carries one extra universe parameter per data SCC,
 ahead of the block's own parameters, as Lean puts elimination universes first. -/
 def Block.recLevelParams (b : Block) : List Name := b.sccLevel.toList ++ b.levelParams
@@ -245,8 +353,18 @@ block.  Data members already have a native `X.rec`, whose motives range over
 their own SCC only, so the block-wide one needs a name of its own.  A `Prop`
 member has no native recursor under its user-facing name, so it additionally
 answers to `X.rec`.
+
+A ghost is not declared at all, so its cannot be named after it.  It takes the
+name the recursor over a type the *kernel* denested would have taken -- the
+`X.mutualRec_1` that sits beside `X.mutualRec` -- which is always free here,
+because a block with a `Prop` member is one the kernel denested nothing for.
 -/
-def Block.recName (b : Block) (i : Nat) : Name := b.members[i]!.name ++ `mutualRec
+def Block.recName (b : Block) (i : Nat) : Name :=
+  if b.isGhost i then
+    let k := (b.members.extract 0 i).foldl (fun a m => if m.ghost?.isSome then a + 1 else a) 0
+    b.members[0]!.name ++ `mutualRec |>.appendIndexAfter (k + 1)
+  else
+    b.members[i]!.name ++ `mutualRec
 
 /-! ## Moving between the three "worlds"
 
@@ -258,24 +376,47 @@ telescope, because a member free variable stands for the member applied to the
 section variables.
 -/
 
-private def Block.substMembers (b : Block) (targets : Array Name) (ctorType : Expr) :
+def Block.substIn (b : Block) (targets vars : Array Expr) (body : Expr) : MetaM Expr := do
+  let mut m : ExprMap Expr := {}
+  for h : i in *...b.memberFVars.size do
+    m := m.insert b.memberFVars[i] (targets[i]!.beta vars)
+  let body := body.replace fun e =>
+    if !e.isFVar then none else m[e]?
+  -- a ghost's replacement is a lambda, so substituting it leaves the
+  -- applications it stood in for as redexes
+  if b.hasGhost then Core.betaReduce body else return body
+
+@[inherit_doc Block.substIn]
+private def Block.substMembers (b : Block) (targets : Array Expr) (ctorType : Expr) :
     MetaM Expr :=
   forallBoundedTelescope ctorType b.numParams fun params body => do
-    let vars := params.extract 0 b.numVars
-    let mut m : ExprMap Expr := {}
-    for h : i in *...b.memberFVars.size do
-      m := m.insert b.memberFVars[i] (mkAppN (mkConst targets[i]! b.ownLevels) vars)
-    let body := body.replace fun e =>
-      if !e.isFVar then none else m[e]?
-    mkForallFVars params body
+    mkForallFVars params (← b.substIn targets (params.extract 0 b.numVars) body)
 
-/-- Substitute the shadow names of all members. -/
+/-- Substitute the shadow names of all members.  A ghost has a shadow like any
+other member; it is only the real world it is missing from. -/
 def Block.toShadow (b : Block) (e : Expr) : MetaM Expr :=
-  b.substMembers (b.members.map fun m => shadowName m.name) e
+  b.substMembers (b.members.map fun m => mkConst (shadowName m.name) b.ownLevels) e
 
-/-- Substitute the user-facing names of all members. -/
+/-- Substitute what the real world calls each member: its own name, or, for a
+ghost, the type it stands for. -/
 def Block.toUser (b : Block) (e : Expr) : MetaM Expr :=
-  b.substMembers (b.members.map (·.name)) e
+  b.substMembers b.userTargets e
+
+/--
+What `toUser` substitutes, worked out once, when the block is analysed.
+
+A ghost's stand-in is stated in the writer's terms and so mentions the block's
+members, which have to be substituted into it in turn.  One pass is enough:
+being in the writer's terms is also why it never mentions another copy.
+-/
+private def Block.computeUserTargets (b : Block) : MetaM (Array Expr) := do
+  let mut targets : Array Expr := b.members.map fun m => mkConst m.name b.ownLevels
+  for h : i in *...b.members.size do
+    if let some g := b.members[i].ghost? then
+      targets := targets.set! i <| ←
+        lambdaBoundedTelescope g.value b.numParams fun ps body => do
+          mkLambdaFVars ps (← b.substIn targets (ps.extract 0 b.numVars) body)
+  return targets
 
 /-! ## Small helpers -/
 
@@ -702,14 +843,21 @@ Condensation of the data-only dependency graph, in topological order
 (dependencies first).  Returns the components and, for each member, its
 component index (`none` for a `Prop` member).
 
+A `Prop` member is a sink: the shadow declares every member of the block before
+any data member is, and a data member's field at a `Prop` sibling is a field at
+that shadow, already a constant.  So a path that leaves the data members is a
+path that does not come back, and closing over one would group components that
+can perfectly well be declared one after another.
+
 `n` is the number of members of one `mutual` block, so the cubic reachability
 closure is not worth optimising.
 -/
 def computeSCCs (n : Nat) (isData : Array Bool) (edges : Array (Array Bool)) :
     Array (Array Nat) × Array (Option Nat) := Id.run do
-  -- transitive closure
+  -- transitive closure, relaying through the data members alone
   let mut r := edges
   for k in *...n do
+    if !isData[k]! then continue
     for i in *...n do
       if r[i]![k]! then
         for j in *...n do
@@ -918,7 +1066,8 @@ def analyze (inp : Input) : MetaM Block := do
       allCtors := allCtors.push c
     members := members.push
       { name := inp.memberNames[i]!, type := inp.memberTypes[i]!,
-        level := levels[i]!, isProp := isProp[i]!, ctors }
+        level := levels[i]!, isProp := isProp[i]!, ctors,
+        ghost? := inp.memberGhost[i]?.join }
   -- an inert field recurses into nothing, but the member it names still has to
   -- exist by the time this one is declared
   for (i, d, _) in inert do
@@ -933,9 +1082,12 @@ def analyze (inp : Input) : MetaM Block := do
     for (_, _, why) in inert do
       throwError why
   let sccLevel := freshLevelNames inp.levelParams sccs.size
-  return { levelParams := inp.levelParams, numVars := inp.numVars, numParams := inp.numParams,
-           memberFVars := inp.memberFVars, members, allCtors,
-           sccs, sccOf, sccLevel, hasProp := isProp.any id, isClass := inp.isClass }
+  let b : Block :=
+    { levelParams := inp.levelParams, numVars := inp.numVars, numParams := inp.numParams,
+      memberFVars := inp.memberFVars, members, allCtors,
+      sccs, sccOf, sccLevel, hasProp := isProp.any id, isClass := inp.isClass,
+      userTargets := #[] }
+  return { b with userTargets := ← b.computeUserTargets }
 
 /-- Is every member at the same universe?  Then the block is an ordinary
 `mutual` block and the lowering should not touch it. -/
@@ -1039,22 +1191,28 @@ Its members are necessarily at the same universe (an edge `i → j` forces
 homogeneous mutual block.  Fields of `Prop`-member type refer to the aliases,
 which the kernel unfolds to the shadow; being outside the block, they impose no
 positivity obligation.
+
+A ghost is passed over: the real world says nothing about it, and a component
+of nothing but ghosts declares nothing at all.
 -/
 private def emitDataSCC (b : Block) (s : Nat) : MetaM Unit := do
   let mut indTypes : Array InductiveType := #[]
   for i in b.sccs[s]! do
+    if b.isGhost i then continue
     let m := b.members[i]!
     let ctors ← m.ctors.mapM fun c =>
       return ({ name := c.name, type := ← b.toUser c.type } : Constructor)
     indTypes := indTypes.push { name := m.name, type := m.type, ctors := ctors.toList }
+  if indTypes.isEmpty then return
   addInd b.levelParams b.numParams indTypes b.isClass
 
 /-- `X_j._squash params idxs v`, lifted pointwise through any leading `∀`s of
 `v`'s type. -/
-private def squashApply (b : Block) (j : Nat) (v : Expr) : MetaM Expr := do
+private def squashApply (b : Block) (params : Array Expr) (j : Nat) (v : Expr) :
+    MetaM Expr := do
   forallTelescope (← inferType v) fun ys body => do
     let sq := mkConst (squashName b.members[j]!.name) b.ownLevels
-    mkLambdaFVars ys (mkAppN sq (body.getAppArgs ++ #[mkAppN v ys]))
+    mkLambdaFVars ys (mkAppN sq (params ++ b.memberIdxs j body ++ #[mkAppN v ys]))
 
 /-- Minor premise for `X_i._squash`: rebuild the constructor in the shadow. -/
 private def mkSquashMinor (b : Block) (s : Nat) (params : Array Expr) (c : CtorInfo)
@@ -1077,7 +1235,7 @@ private def mkSquashMinor (b : Block) (s : Nat) (params : Array Expr) (c : CtorI
           p := p + 1
         else
           -- an earlier SCC: its squash map is already defined
-          gs := gs.push (← squashApply b rf.member fields[k]!)
+          gs := gs.push (← squashApply b params rf.member fields[k]!)
     let m := b.members[c.owner]!
     let sctor := mkConst (reroot m.name (shadowName m.name) c.name) b.ownLevels
     mkLambdaFVars args (mkAppN sctor (params ++ gs))
@@ -1087,29 +1245,28 @@ private def emitSquashSCC (b : Block) (s : Nat) : MetaM Unit := do
   for i in b.sccs[s]! do
     let m := b.members[i]!
     forallBoundedTelescope m.type (some b.numParams) fun params _ => do
-      let dataOf (j : Nat) (jidxs : Array Expr) : Expr :=
-        mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs)
       let shadowOf (j : Nat) (jidxs : Array Expr) : Expr :=
         mkAppN (mkConst (shadowName b.members[j]!.name) b.ownLevels) (params ++ jidxs)
       let mut motives := #[]
       for j in b.sccs[s]! do
         let aj ← instantiateForall b.members[j]!.type params
         let mot ← forallTelescope aj fun jidxs _ =>
-          withLocalDeclD `t (dataOf j jidxs) fun tv =>
+          withLocalDeclD `t (b.realTypeAt j params jidxs) fun tv =>
             mkLambdaFVars (jidxs ++ #[tv]) (shadowOf j jidxs)
         motives := motives.push mot
-      let recName := m.name ++ `rec
-      let recFn := mkConst recName (← elimLevelsFor recName .zero b.ownLevels)
-      let ty0 ← instantiateForall (← inferType recFn) params
+      let (recName, base, rparams) := b.memberRecOf i params
+      let recFn := mkConst recName (← elimLevelsFor recName .zero base)
+      let ty0 ← instantiateForall (← inferType recFn) rparams
       let ty1 ← instantiateForall ty0 motives
       let minors ← buildArgs ty1 ctorIdx.size fun q minorTy =>
         mkSquashMinor b s params b.allCtors[ctorIdx[q]!]! minorTy
       let ai ← instantiateForall m.type params
       forallTelescope ai fun idxs _ =>
-        withLocalDeclD `t (dataOf i idxs) fun tv => do
+        withLocalDeclD `t (b.realTypeAt i params idxs) fun tv => do
           let all := params ++ idxs ++ #[tv]
           let ty ← mkForallFVars all (shadowOf i idxs)
-          let val ← mkLambdaFVars all (mkAppN recFn (params ++ motives ++ minors ++ idxs ++ #[tv]))
+          let val ← mkLambdaFVars all
+            (mkAppN recFn (rparams ++ motives ++ minors ++ idxs ++ #[tv]))
           addDef (squashName m.name) b.levelParams ty val
 
 /--
@@ -1132,7 +1289,7 @@ private def emitPropCtors (b : Block) : MetaM Unit := do
               if b.members[rf.member]!.isProp then
                 gs := gs.push fields[k]!
               else
-                gs := gs.push (← squashApply b rf.member fields[k]!)
+                gs := gs.push (← squashApply b params rf.member fields[k]!)
             | none => gs := gs.push fields[k]!
           let realCtor := mkConst (reroot m.name (b.realName i) c.name) b.ownLevels
           -- reuse the elaborated type verbatim, so the constructor keeps the
@@ -1199,13 +1356,13 @@ def NestSpec.implName (sp : NestSpec) : Name := sp.recName ++ `impl
 @[inherit_doc NestSpec.implName]
 def NestSpec.implEqName (sp : NestSpec) : Name := sp.recName ++ `eq_impl
 
-/-- `X_i.rec`, at the block's parameters and at motive values of the caller's
+/-- `X_i.rec`, at its own parameters and at motive values of the caller's
 choosing, with the type that is left over. -/
 private def memberRecAt (b : Block) (i : Nat) (params vals : Array Expr) :
     MetaM (Expr × Expr) := do
-  let recName := b.members[i]!.name ++ `rec
-  let recFn := mkConst recName (← elimLevelsFor recName (b.motiveLevel i) b.ownLevels)
-  let ty ← instantiateForall (← inferType recFn) params
+  let (recName, base, rparams) := b.memberRecOf i params
+  let recFn := mkConst recName (← elimLevelsFor recName (b.motiveLevel i) base)
+  let ty ← instantiateForall (← inferType recFn) rparams
   return (recFn, ← instantiateForall ty vals)
 
 /-- The motive values a component's native recursor is applied at, in its own
@@ -1234,6 +1391,11 @@ private def mkNests (b : Block) : MetaM Nests := do
   for s in *...b.sccs.size do
     let i := b.sccs[s]![0]!
     let name := b.members[i]!.name
+    -- a component of ghosts was never handed to the kernel, so it has nothing
+    -- to report; the type a ghost stands for is one the kernel already knows
+    if b.isGhost i then
+      perScc := perScc.push #[]
+      continue
     let info ← getConstInfoRec (name ++ `rec)
     let sz := b.sccs[s]!.size
     if info.numMotives == sz then
@@ -1366,16 +1528,14 @@ private def mkMinorType (b : Block) (ns : Nests) (params motives : Array Expr) (
   let nested ← nestIHs b ns params motives c
   let inner ← instantiateForall (← b.toUser c.type) params
   forallTelescope inner fun fields result => do
-    let args := result.getAppArgs
-    let idxs := args.extract b.numParams args.size
-    let ctorApp := mkAppN (mkConst c.name b.ownLevels) (params ++ fields)
+    let idxs := b.memberIdxs c.owner result
+    let ctorApp := b.userCtorApp c params fields
     let mut concl := mkAppN motives[c.owner]! (idxs ++ #[ctorApp])
     let mut ihs : Array (Name × Expr) := #[]
     for k in *...c.numFields do
       if let some rf := c.fields[k]! then
         let ih ← forallTelescope (← inferType fields[k]!) fun ys fbody => do
-          let fargs := fbody.getAppArgs
-          let fidxs := fargs.extract b.numParams fargs.size
+          let fidxs := b.memberIdxs rf.member fbody
           mkForallFVars ys (mkAppN motives[rf.member]! (fidxs ++ #[mkAppN fields[k]! ys]))
         ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
       else if let some ih := nestIH? nested k fields then
@@ -1404,7 +1564,7 @@ private def withRecFront {α} [Inhabited α] (b : Block) (ns : Nests) (params : 
   for j in *...b.size do
     let aj ← instantiateForall b.members[j]!.type params
     motiveTys := motiveTys.push <| ← forallTelescope aj fun jidxs _ =>
-      withLocalDeclD `t (mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs))
+      withLocalDeclD `t (b.realTypeAt j params jidxs)
         fun tv => mkForallFVars (jidxs ++ #[tv]) (mkSort (b.motiveLevel j))
   for s in *...b.sccs.size do
     motiveTys := motiveTys ++ (← nestMotiveTypes b ns s params)
@@ -1433,8 +1593,7 @@ private def withRecTelescope (b : Block) (ns : Nests) (i : Nat)
     withRecFront b ns params fun motives minors => do
       let ai ← instantiateForall b.members[i]!.type params
       forallTelescope ai fun idxs _ =>
-        withLocalDeclD `t (mkAppN (mkConst b.members[i]!.name b.ownLevels) (params ++ idxs))
-            fun major => do
+        withLocalDeclD `t (b.realTypeAt i params idxs) fun major => do
           let body ← mkBody params motives minors idxs major
           let all := params ++ motives ++ minors ++ idxs ++ #[major]
           let ty ← mkForallFVars all (mkAppN motives[i]! (idxs ++ #[major]))
@@ -1465,8 +1624,7 @@ the ones we already have are exactly the ones it wants. -/
 private def recCallTo (b : Block) (nameOf : Nat → Name) (levels : List Level)
     (params motives minors : Array Expr) (j : Nat) (v : Expr) : MetaM Expr := do
   forallTelescope (← inferType v) fun ys body => do
-    let allArgs := body.getAppArgs
-    let jidxs := allArgs.extract b.numParams allArgs.size
+    let jidxs := b.memberIdxs j body
     let r := mkConst (nameOf j) levels
     mkLambdaFVars ys (mkAppN r (params ++ motives ++ minors ++ jidxs ++ #[mkAppN v ys]))
 
@@ -1497,7 +1655,7 @@ private partial def propMinorBody (b : Block) (params motives minors : Array Exp
       -- repackage as `⟨⟨X_m.c realF, case realF realIH⟩⟩`
       let sigTy := target.appArg!
       let sargs := sigTy.getAppArgs
-      let ctorApp := mkAppN (mkConst c.name b.ownLevels) (params ++ realF)
+      let ctorApp := b.userCtorApp c params realF
       let mk ← mkAppOptM ``PSigma.mk
         #[some sargs[0]!, some sargs[1]!, some ctorApp, some minorApp]
       mkAppOptM ``Nonempty.intro #[some sigTy, some mk]
@@ -1549,7 +1707,7 @@ private def mkPropRecBody (b : Block) (i : Nat)
           if b.members[j]!.isProp then
             pure (mkAppN motives[j]! (jidxs ++ #[tv]))
           else
-            let dTy := mkAppN (mkConst b.members[j]!.name b.ownLevels) (params ++ jidxs)
+            let dTy := b.realTypeAt j params jidxs
             withLocalDeclD `w dTy fun wv => do
               mkNESig dTy (← mkLambdaFVars #[wv] (mkAppN motives[j]! (jidxs ++ #[wv])))
         mkLambdaFVars (jidxs ++ #[tv]) body
@@ -1572,8 +1730,10 @@ The body of a data recursor: one application of the kernel's own recursor for
 the component, at the block's motives.
 
 `recName` says which one -- a member's `rec`, or the `rec_k` the kernel gave a
-type it denested for the component.  Both have the same motives and minor
-premises, so the same body serves for either; only the major premise differs.
+type it denested for the component -- and `base` and `rparams` are the levels
+and parameters it takes, which for a ghost's are the copied type's.  All of them
+have the same motives and minor premises, so the same body serves for any; only
+the major premise differs.
 
 The minor premises for the component's own constructors are the block's,
 supplied with an induction hypothesis for every field: the kernel's own where it
@@ -1582,11 +1742,12 @@ component.  The ones the kernel added for what it denested are passed through
 untouched, since the block asks for them in exactly the form the kernel does.
 -/
 private def mkSccRecBody (b : Block) (ns : Nests) (s : Nat) (recName : Name)
+    (base : List Level) (rparams : Array Expr)
     (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
   let nmotives := sccMotiveVals b ns s motives
   let lvl := b.motiveLevel b.sccs[s]![0]!
-  let recFn := mkConst recName (← elimLevelsFor recName lvl b.ownLevels)
-  let ty0 ← instantiateForall (← inferType recFn) params
+  let recFn := mkConst recName (← elimLevelsFor recName lvl base)
+  let ty0 ← instantiateForall (← inferType recFn) rparams
   let ty1 ← instantiateForall ty0 nmotives
   let ctorIdx := sccCtorIndices b s
   let specs := ns.forScc s
@@ -1619,7 +1780,7 @@ private def mkSccRecBody (b : Block) (ns : Nests) (s : Nat) (recName : Name)
           userIH := userIH.push nih[p]!
           p := p + 1
       mkLambdaFVars args (mkAppN minors[gq]! (fields ++ userIH))
-  return mkAppN recFn (params ++ nmotives ++ nminors ++ idxs ++ #[major])
+  return mkAppN recFn (rparams ++ nmotives ++ nminors ++ idxs ++ #[major])
 
 private def emitRec (b : Block) (ns : Nests) (i : Nat) : MetaM Unit := do
   let m := b.members[i]!
@@ -1629,7 +1790,8 @@ private def emitRec (b : Block) (ns : Nests) (i : Nat) : MetaM Unit := do
     else
       let some s := b.sccOf[i]!
         | throwError "(internal) multiuniverse lowering: data member without an SCC"
-      mkSccRecBody b ns s (m.name ++ `rec) params motives minors idxs major
+      let (recName, base, rparams) := b.memberRecOf i params
+      mkSccRecBody b ns s recName base rparams params motives minors idxs major
   -- a data member's recursor is left uncompiled: its body is a recursor
   -- application, so compiling it here would fail and mark it `noncomputable`,
   -- and its code comes instead from the implementation emitted afterwards.  A
@@ -1654,7 +1816,7 @@ Lean declares one of these for every mutual block that nests, so a block lowered
 here has them too, under the names a `mutual` block's would have. -/
 private def emitNestRec (b : Block) (ns : Nests) (s : Nat) (sp : NestSpec) : MetaM Unit := do
   let (ty, val) ← withNestRecTelescope b ns s sp fun params motives minors idxs major =>
-    mkSccRecBody b ns s sp.nativeRec params motives minors idxs major
+    mkSccRecBody b ns s sp.nativeRec b.ownLevels params params motives minors idxs major
   addDef sp.recName b.recLevelParams ty val (compile := false)
   markElabAsElim sp.recName
 
@@ -1776,13 +1938,12 @@ which differ between the lowered and the native path.
 -/
 private def mkImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
     (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
-  let m := b.members[i]!
   let mot ← forallTelescope (← inferType motives[i]!) fun zs _ =>
     mkLambdaFVars zs (mkAppN motives[i]! zs)
-  let casesName := m.name ++ `casesOn
+  let (casesName, base, cparams) := b.memberCasesOf i params
   let elim ← getLevel (mkAppN motives[i]! (idxs ++ #[major]))
-  let casesFn := mkConst casesName (← elimLevelsFor casesName elim b.ownLevels)
-  let ty0 ← instantiateForall (← inferType casesFn) params
+  let casesFn := mkConst casesName (← elimLevelsFor casesName elim base)
+  let ty0 ← instantiateForall (← inferType casesFn) cparams
   let ty1 ← instantiateForall ty0 #[mot]
   let ty2 ← instantiateForall ty1 (idxs ++ #[major])
   -- outside the group -- an earlier SCC, or a `Prop` member, whose recursor is a
@@ -1801,7 +1962,7 @@ private def mkImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : Li
     forallBoundedTelescope minorTy (some b.allCtors[gq]!.numFields) fun fields _ => do
       mkLambdaFVars fields
         (← applyMinor levels nameOf params motives minors minors[gq]! fields)
-  return mkAppN casesFn (params ++ #[mot] ++ idxs ++ #[major] ++ cminors)
+  return mkAppN casesFn (cparams ++ #[mot] ++ idxs ++ #[major] ++ cminors)
 
 /--
 The same, for the implementation of a recursor over a type the kernel denested.
@@ -1914,11 +2075,11 @@ private def mkImplEqBody (b : Block) (ns : Nests) (implGroup motiveGroup : Array
     -- a motive's own type says what its slot ranges over, member or nesting
     pmotives := pmotives.push <| ← forallTelescope (← inferType motives[j]!) fun zs _ => do
       mkLambdaFVars zs (← mkEq (apply (slotRecName b ns j) zs) (apply (implOf j) zs))
-  let recName := match ns.spec? i with
-    | some sp => sp.nativeRec
-    | none => b.members[i]!.name ++ `rec
-  let recFn := mkConst recName (← elimLevelsFor recName .zero b.ownLevels)
-  let ty0 ← instantiateForall (← inferType recFn) params
+  let (recName, base, rparams) := match ns.spec? i with
+    | some sp => (sp.nativeRec, b.ownLevels, params)
+    | none => b.memberRecOf i params
+  let recFn := mkConst recName (← elimLevelsFor recName .zero base)
+  let ty0 ← instantiateForall (← inferType recFn) rparams
   let ty1 ← instantiateForall ty0 pmotives
   let ctorIdx ← groupCtorIndices b ns motiveGroup
   let pminors ← buildArgs ty1 ctorIdx.size fun q minorTy => do
@@ -1950,7 +2111,7 @@ private def mkImplEqBody (b : Block) (ns : Nests) (implGroup motiveGroup : Array
           p := p + 1
         pf ← mkCongr pf h
       mkLambdaFVars args pf
-  return mkAppN recFn (params ++ pmotives ++ pminors ++ idxs ++ #[major])
+  return mkAppN recFn (rparams ++ pmotives ++ pminors ++ idxs ++ #[major])
 
 /--
 The implementations of one group of members' recursors, and their `@[csimp]`
