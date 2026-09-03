@@ -6155,6 +6155,50 @@ def checkFreeProps (b : Block) (ps : Array Expr) (free : Array Nat) : MetaM Unit
               The recursion over the whole block cannot cover both."
 
 /--
+Open member `i`'s pre-type: its indices, the values its well-formedness
+predicate is stated at, a hypothesis for each index the pre-type deleted, a
+pre-term, and a proof that the pre-term is well-formed.
+
+That is what both recursions over the block run under, the grand one and the
+split ones.  The predicate is stated in the pre-world, so an index the pre-type
+deleted reaches it at its value; and since such an index is not in the term the
+recursion runs on, there is nothing there to recurse at, so the caller is handed
+a hypothesis about it instead, of whatever shape `ihTypeAt` gives it.
+-/
+def withPreRec {α} [Inhabited α] (b : Block) (i : Nat) (ps : Array Expr)
+    (ihTypeAt : Expr → MetaM Expr)
+    (k : Array Expr → Array Expr → Array Expr → Expr → Expr → TermElabM α) : TermElabM α := do
+  forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ => do
+    let vargs ← b.valArgs i (ps ++ idxs)
+    let delDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+      (b.dropIdxs i idxs).map fun d => (`ih, fun _ => ihTypeAt d)
+    withLocalDeclsD delDecls fun delIhs =>
+      withLocalDeclD `t (b.preApp i (ps ++ idxs)) fun t0 =>
+        withLocalDeclD `w (mkApp (b.wfApp i vargs) t0) fun w =>
+          k idxs vargs delIhs t0 w
+
+/--
+The auxiliary recursion at member `i`, as a type and a value: everything a
+`withPreRec` opened, abstracted over `concl`, with the value one `casesOn` on
+the pre-term taking `alts` at the constructors.
+
+A deleted index is not read off the pre-term, so the `casesOn` stands under
+everything the pre-type dropped -- those indices, the hypotheses at them, and
+the well-formedness proof -- and is applied to them again afterwards.
+-/
+def recAuxOver (b : Block) (i : Nat) (ps motives minors idxs delIhs : Array Expr)
+    (t0 w concl : Expr) (alts : Array Expr) : MetaM (Expr × Expr) := do
+  let all := ps ++ motives ++ minors ++ idxs ++ delIhs ++ #[t0, w]
+  let dropped := b.dropIdxs i idxs ++ delIhs ++ #[w]
+  let inner ← mkForallFVars dropped concl
+  let casesMotive ← mkLambdaFVars (b.keptIdxs i idxs ++ #[t0]) inner
+  let cases := mkAppN (mkConst (preName b.members[i]!.name ++ `casesOn)
+      ((← getLevel inner) :: b.lvls))
+    (ps ++ #[casesMotive] ++ b.keptIdxs i idxs ++ #[t0] ++ alts)
+  return (implicitPrefix ps.size (← mkForallFVars all concl),
+          implicitPrefix ps.size (← mkLambdaFVars all (mkAppN cases dropped)))
+
+/--
 `X.rec` for every member of an induction-inductive block, over one set of
 motives and minors: see the section header for the shape and why it is one
 recursion.  Throws if the block is not one this can be done for, and the caller
@@ -6631,34 +6675,12 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
         -- the recursion, one mutual group over the data pre-types
         let mut auxs : Array (Expr × Expr) := #[]
         for i in dIdxs do
-          let m := b.members[i]!
-          auxs := auxs.push <| ← forallTelescope (← instantiateForall m.type ps) fun idxs _ => do
-            -- the well-formedness predicate is stated in the pre-world, so an
-            -- index the pre-type deleted reaches it at its value
-            let vargs ← b.valArgs i (ps ++ idxs)
-            let delDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (b.dropIdxs i idxs).map fun d => (`ih, fun _ => ihTypeAt d)
-            withLocalDeclsD delDecls fun delIhs =>
-             withLocalDeclD `t (b.preApp i (ps ++ idxs)) fun t0 =>
-              withLocalDeclD `w (mkApp (b.wfApp i vargs) t0) fun w => do
-                let bTy ← bundleType i idxs vargs t0 w
-                let recAuxType := implicitPrefix ps.size <| ←
-                  mkForallFVars (ps ++ motives ++ minors ++ idxs ++ delIhs ++ #[t0, w]) bTy
-                -- the motive of the `casesOn`: what the pre-type deleted stays
-                -- under it, with the well-formedness proof.  The recursion runs
-                -- on the pre-term alone, and a deleted index is not read off it
-                let inner ← mkForallFVars (b.dropIdxs i idxs ++ delIhs ++ #[w]) bTy
-                let elim ← getLevel inner
-                let casesMotive ← mkLambdaFVars (b.keptIdxs i idxs ++ #[t0]) inner
-                let mut alts : Array Expr := #[]
-                for c in m.ctors do
-                  alts := alts.push (← altFor i c)
-                let cases := mkAppN (mkConst (preName m.name ++ `casesOn) (elim :: b.lvls))
-                  (ps ++ #[casesMotive] ++ b.keptIdxs i idxs ++ #[t0] ++ alts)
-                let body := mkAppN cases (b.dropIdxs i idxs ++ delIhs ++ #[w])
-                let recAuxValue := implicitPrefix ps.size <|
-                  ← mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ delIhs ++ #[t0, w]) body
-                return (recAuxType, recAuxValue)
+          auxs := auxs.push <| ← withPreRec b i ps ihTypeAt fun idxs vargs delIhs t0 w => do
+            let mut alts : Array Expr := #[]
+            for c in b.members[i]!.ctors do
+              alts := alts.push (← altFor i c)
+            recAuxOver b i ps motives minors idxs delIhs t0 w
+              (← bundleType i idxs vargs t0 w) alts
         -- both kinds of `X.rec` are stated over the same prefix, and everything
         -- ahead of the target is left implicit for `induction .. using`
         let sig (idxs : Array Expr) (t goal val : Expr) : MetaM (Expr × Expr) := do
@@ -7564,101 +7586,81 @@ def emit (p : Plan) : TermElabM Unit := do
         let mut out : Array SplitRec := #[]
         for i in dIdxs do
           let m := b.members[i]!
-          let r ← forallTelescope (← instantiateForall m.type ps) fun idxs _ => do
-            -- the well-formedness predicate is stated in the pre-world, so an
-            -- index the pre-type deleted reaches it at its value
-            let vargs ← b.valArgs i (ps ++ idxs)
-            let delDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (b.dropIdxs i idxs).map fun d => (`ih, fun _ => ihTypeAt d)
-            withLocalDeclsD delDecls fun delIhs =>
-             withLocalDeclD `t (b.preApp i (ps ++ idxs)) fun t0 =>
-              withLocalDeclD `w (mkApp (b.wfApp i vargs) t0) fun w => do
-                let concl := mkAppN motives[dpos[i]!]! (idxs ++ #[b.sMk i vargs t0 w])
-                let recAuxType := implicitPrefix ps.size <| ←
-                  mkForallFVars (ps ++ motives ++ minors ++ idxs ++ delIhs ++ #[t0, w]) concl
-                -- the motive of the `casesOn`: what the pre-type deleted stays
-                -- under it, with the well-formedness proof.  The recursion runs
-                -- on the pre-term alone, and a deleted index is not read off it
-                let inner ← mkForallFVars (b.dropIdxs i idxs ++ delIhs ++ #[w]) concl
-                let elim ← getLevel inner
-                let casesMotive ← mkLambdaFVars (b.keptIdxs i idxs ++ #[t0]) inner
-                let mut alts : Array Expr := #[]
-                for c in m.ctors do
-                  let alt ← b.withAlt i c ps fun a => do
-                        let { kinds, xs, imgs, wc, conjs, real, recPos, dels, .. } := a
-                        -- a deleted index arrives with its own hypothesis, which
-                        -- is what a recursive call under it will be handed
-                        let dDecls : Array (Name × (Array Expr → MetaM Expr)) :=
-                          dels.map fun d => (`ih, fun _ => ihTypeAt d)
-                        withLocalDeclsD dDecls fun dIhs => do
-                          -- everything here is built over the fields as the
-                          -- constructor bound them and moved to the alternative's
-                          -- own binders at the end, because an induction
-                          -- hypothesis is found by the shape of the index term
-                          let mut ihAt : Array (FVarId × Expr) :=
-                            dels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
-                          let mut ihs : Array Expr := #[]
-                          for k in ihPositions kinds do
-                            -- a deleted field is not a field of the pre-term, so
-                            -- there is nothing here to recurse at.  It is one of
-                            -- the indices instead, and the hypothesis the minor
-                            -- wants about it is the one the recursion was handed
-                            -- when it was called, already in scope and already
-                            -- at this very term
-                            if kinds[k]!.isDeleted then
-                              let some q := dels.findIdx? (· == xs[k]!)
-                                | throwError "The deleted field `{xs[k]!}` of `{c.name}` is \
-                                    not one of the alternative's indices"
-                              ihs := ihs.push dIhs[q]!
-                              continue
-                            let some q := recPos.findIdx? (· == k)
-                              | throwError "Not a recursive field of `{c.name}`"
-                            let y := (imgs[k]!).get!
-                            let pr := projConj conjs wc q
-                            let ih? ← b.withRecTarget? (← inferType xs[k]!) fun ys mm args => do
-                              let dihs ← (b.dropArgs mm args).mapM
-                                (ihOfTerm b dCtors rawCtorName FieldKind.hasIh
-                                  minors ihAt ·)
-                              let call := mkAppN (mkConst (recAuxName mm) (lvl :: b.lvls))
-                                (ps ++ motives ++ minors ++ b.idxArgs args ++ dihs ++
-                                  #[mkAppN y ys, mkAppN pr ys])
-                              mkLambdaFVars ys call
-                            let some ih := ih?
-                              | throwError "Not a recursive field of `{c.name}`"
-                            ihs := ihs.push ih
-                            ihAt := ihAt.push (xs[k]!.fvarId!, ih)
-                          let core := mkAppN minors[b.minorIdx dIdxs c.name]!
-                            (real ++ ihs.map (·.replaceFVars xs real))
-                          mkLambdaFVars (keptImages imgs ++ dels ++ dIhs ++ #[wc])
-                            (← b.transportBuilt i a
-                              (fun mIdxs vargs w =>
-                                return mkAppN motives[dpos[i]!]!
-                                  (mIdxs ++ #[b.sMk i vargs a.head w]))
-                              (fun _ _ _ => return core))
-                  alts := alts.push alt
-                let cases := mkAppN (mkConst (preName m.name ++ `casesOn) (elim :: b.lvls))
-                  (ps ++ #[casesMotive] ++ b.keptIdxs i idxs ++ #[t0] ++ alts)
-                let body := mkAppN cases (b.dropIdxs i idxs ++ delIhs ++ #[w])
-                let recAuxValue := implicitPrefix ps.size <|
-                  ← mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ delIhs ++ #[t0, w]) body
-                let (recType, recValue) ←
-                  withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun t => do
-                    let hide := hideRecBinders ps.size (motives.size + minors.size) idxs.size
-                    let ty := hide <| ←
-                      mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
-                        (mkAppN motives[dpos[i]!]! (idxs ++ #[t]))
-                    -- `X.rec` is not inside the recursion, so the hypothesis at a
-                    -- deleted index is a recursion of its own, at that index
-                    let dihs ← (b.dropIdxs i idxs).mapM
-                      (valueIh b recAuxName lvl ps motives minors ·)
-                    let val := hide <| ←
-                      mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
-                        (mkAppN (mkConst (recAuxName i) (lvl :: b.lvls))
-                          (ps ++ motives ++ minors ++ idxs ++ dihs ++
-                            #[b.sVal i vargs t, b.sProp i vargs t]))
-                    return (ty, val)
-                return { auxType := recAuxType, auxValue := recAuxValue,
-                         type := recType, value := recValue }
+          let r ← withPreRec b i ps ihTypeAt fun idxs vargs delIhs t0 w => do
+            let mut alts : Array Expr := #[]
+            for c in m.ctors do
+              let alt ← b.withAlt i c ps fun a => do
+                let { kinds, xs, imgs, wc, conjs, real, recPos, dels, .. } := a
+                -- a deleted index arrives with its own hypothesis, which
+                -- is what a recursive call under it will be handed
+                let dDecls : Array (Name × (Array Expr → MetaM Expr)) :=
+                  dels.map fun d => (`ih, fun _ => ihTypeAt d)
+                withLocalDeclsD dDecls fun dIhs => do
+                  -- everything here is built over the fields as the
+                  -- constructor bound them and moved to the alternative's
+                  -- own binders at the end, because an induction
+                  -- hypothesis is found by the shape of the index term
+                  let mut ihAt : Array (FVarId × Expr) :=
+                    dels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
+                  let mut ihs : Array Expr := #[]
+                  for k in ihPositions kinds do
+                    -- a deleted field is not a field of the pre-term, so
+                    -- there is nothing here to recurse at.  It is one of
+                    -- the indices instead, and the hypothesis the minor
+                    -- wants about it is the one the recursion was handed
+                    -- when it was called, already in scope and already
+                    -- at this very term
+                    if kinds[k]!.isDeleted then
+                      let some q := dels.findIdx? (· == xs[k]!)
+                        | throwError "The deleted field `{xs[k]!}` of `{c.name}` is \
+                            not one of the alternative's indices"
+                      ihs := ihs.push dIhs[q]!
+                      continue
+                    let some q := recPos.findIdx? (· == k)
+                      | throwError "Not a recursive field of `{c.name}`"
+                    let y := (imgs[k]!).get!
+                    let pr := projConj conjs wc q
+                    let ih? ← b.withRecTarget? (← inferType xs[k]!) fun ys mm args => do
+                      let dihs ← (b.dropArgs mm args).mapM
+                        (ihOfTerm b dCtors rawCtorName FieldKind.hasIh
+                          minors ihAt ·)
+                      let call := mkAppN (mkConst (recAuxName mm) (lvl :: b.lvls))
+                        (ps ++ motives ++ minors ++ b.idxArgs args ++ dihs ++
+                          #[mkAppN y ys, mkAppN pr ys])
+                      mkLambdaFVars ys call
+                    let some ih := ih?
+                      | throwError "Not a recursive field of `{c.name}`"
+                    ihs := ihs.push ih
+                    ihAt := ihAt.push (xs[k]!.fvarId!, ih)
+                  let core := mkAppN minors[b.minorIdx dIdxs c.name]!
+                    (real ++ ihs.map (·.replaceFVars xs real))
+                  mkLambdaFVars (keptImages imgs ++ dels ++ dIhs ++ #[wc])
+                    (← b.transportBuilt i a
+                      (fun mIdxs vargs w =>
+                        return mkAppN motives[dpos[i]!]!
+                          (mIdxs ++ #[b.sMk i vargs a.head w]))
+                      (fun _ _ _ => return core))
+              alts := alts.push alt
+            let (recAuxType, recAuxValue) ← recAuxOver b i ps motives minors idxs delIhs t0 w
+              (mkAppN motives[dpos[i]!]! (idxs ++ #[b.sMk i vargs t0 w])) alts
+            let (recType, recValue) ←
+              withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun t => do
+                let hide := hideRecBinders ps.size (motives.size + minors.size) idxs.size
+                let ty := hide <| ←
+                  mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
+                    (mkAppN motives[dpos[i]!]! (idxs ++ #[t]))
+                -- `X.rec` is not inside the recursion, so the hypothesis at a
+                -- deleted index is a recursion of its own, at that index
+                let dihs ← (b.dropIdxs i idxs).mapM
+                  (valueIh b recAuxName lvl ps motives minors ·)
+                let val := hide <| ←
+                  mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
+                    (mkAppN (mkConst (recAuxName i) (lvl :: b.lvls))
+                      (ps ++ motives ++ minors ++ idxs ++ dihs ++
+                        #[b.sVal i vargs t, b.sProp i vargs t]))
+                return (ty, val)
+            return { auxType := recAuxType, auxValue := recAuxValue,
+                     type := recType, value := recValue }
           out := out.push r
         return out
   unless grandOnly do
@@ -8105,13 +8107,14 @@ private def applyDeriving (views : Array InductiveView) : CommandElabM Unit := d
         if declNames.isEmpty then continue
         let pres := declNames.filterMap fun n =>
           if env.contains (preName n) then some (preName n) else none
-        if pres.size > 1 then
+        -- all of them at once is what a handler wants for a family it can see is
+        -- one, but a handler that cannot do one of them takes the rest down with
+        -- it, so what it turns down as a group is offered again one at a time
+        unless pres.isEmpty do
           unless ← tentatively (classView.applyHandlers pres) do
             for p in pres do
-              discard <| tentatively (classView.applyHandlers #[p])
-        else if let some p := pres[0]? then
-          unless ← tentatively (classView.applyHandlers #[p]) do
-            trace[Mumi.indind] "nothing to derive `{className}` for on `{p}`"
+              unless ← tentatively (classView.applyHandlers #[p]) do
+                trace[Mumi.indind] "nothing to derive `{className}` for on `{p}`"
         withRef classView.ref do
           try
             runTermElabM fun _ => for n in declNames do
@@ -8121,6 +8124,14 @@ private def applyDeriving (views : Array InductiveView) : CommandElabM Unit := d
               block is the subtype of its pre-type, so `deriving` reaches it only through an \
               instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that \
               does not has to be instanced by hand"
+
+/-- The views of the members of a `mutual` block, with their modifiers elaborated. -/
+def elemViews (elems : Array Syntax) : CommandElabM (Array InductiveView) := do
+  let inductives ← elems.mapM fun stx => do
+    let modifiers ← elabModifiers ⟨stx[0]⟩
+    pure (modifiers, stx[1])
+  let elabs ← runTermElabM fun _ => inductives.mapM fun (m, s) => mkInductiveView m s
+  return elabs.map (·.view)
 
 /--
 Elaborate an induction-inductive block by erasing its proof fields.
@@ -8148,11 +8159,7 @@ otherwise the block failed for its own reasons and they are the ones to report.
 -/
 def elabInductionInductive (elems : Array Syntax) (requireIndInd := false) :
     CommandElabM Unit := do
-  let inductives ← elems.mapM fun stx => do
-    let modifiers ← elabModifiers ⟨stx[0]⟩
-    pure (modifiers, stx[1])
-  let elabs ← runTermElabM fun _ => inductives.mapM fun (m, s) => mkInductiveView m s
-  let views := elabs.map (·.view)
+  let views ← elemViews elems
   if requireIndInd && !viewsAreInductionInductive views then
     throwError "No member's arity names a sibling, so reading this block as an \
       induction-induction would not change what it means"
@@ -8234,11 +8241,7 @@ the good case first, fall back to lowering, and come back here without it.
 -/
 def elabNestedInductive (elems : Array Syntax) (requireBridge := false) :
     CommandElabM Unit := do
-  let inductives ← elems.mapM fun stx => do
-    let modifiers ← elabModifiers ⟨stx[0]⟩
-    pure (modifiers, stx[1])
-  let elabs ← runTermElabM fun _ => inductives.mapM fun (m, s) => mkInductiveView m s
-  let views := elabs.map (·.view)
+  let views ← elemViews elems
   -- one `runTermElabM`, as in `elabInductionInductive`: the plan is built with
   -- the members stubbed as scratch axioms, and the info trees that come out of
   -- that world have to be merged in the same pass as the ones `emit` records,
