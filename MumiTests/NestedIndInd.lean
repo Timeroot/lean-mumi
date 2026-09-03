@@ -259,6 +259,36 @@ example (t : nested_Tree_2) (h : nested_WF_3 t) : True := by
   cases h with
   | intro l t hw => trivial
 
+/-! ### The bridge is an isomorphism
+
+Nothing above needs these -- the recursor is stated over the originals, so a
+recursion never meets a copy.  They are here because the bridge is what makes
+that restatement legitimate, and an equivalence that is only claimed is worth
+less than one that is checked.  `nested_WF_3` and `nested_WFWith_4` have no
+`.rec` of their own and do not need one: they are inverted through `Tree.WF.rec`
+and the round trip. -/
+
+theorem ofOrig_toOrig (a : nested_Tree_2) : nested_Tree_2.ofOrig a.toOrig = a :=
+  nested_Tree_2.rec
+    (motive_1 := fun _ => True) (motive_2 := fun _ => True)
+    (motive_3 := fun a => nested_Tree_2.ofOrig a.toOrig = a)
+    (fun _ _ => trivial) (fun _ _ _ => trivial)
+    rfl
+    (fun k v l r _ ihl ihr => by
+      show nested_Tree_2.ofOrig (Tree.node k v l.toOrig r.toOrig) = _
+      show nested_Tree_2.node k v (nested_Tree_2.ofOrig l.toOrig) (nested_Tree_2.ofOrig r.toOrig) = _
+      rw [ihl, ihr])
+    a
+
+theorem nested_WF_3.inversion {a : nested_Tree_2} (h : nested_WF_3 a) :
+    ∃ l, Tree.WFWith RecWFTree a.toOrig l := by
+  obtain ⟨l, t, hw⟩ := h.toOrig
+  exact ⟨l, hw⟩
+
+theorem nested_WF_3.of {a : nested_Tree_2} (l) (hw : Tree.WFWith RecWFTree a.toOrig l) :
+    nested_WF_3 a :=
+  ofOrig_toOrig a ▸ nested_WF_3.ofOrig (.intro l a.toOrig hw)
+
 end RecWFTree
 
 /-! ## Parameters, carried into every copy -/

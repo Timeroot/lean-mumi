@@ -259,17 +259,22 @@ end MumiTests.Roundtrip
 
 /-! ## The same, for the denested nested type
 
-A block that denests into copies keeps the older split recursors, so `RecWFTree.rec`
-carries motives for `RecWFTree`, `WFTree RecWFTree` and `Tree RecWFTree` and none for
-`Tree.WF` or `Tree.WFWith`.  Nothing is missing.  The only type the block introduces
-is `RecWFTree`; `Tree`,
-`Tree.WFWith`, `Tree.WF` and `WFTree` are ordinary Lean inductives declared before it,
-and the recursor mentions them at the parameter `α := RecWFTree`.  Lean generated
-`Tree.WF.rec` and `Tree.WFWith.rec` itself and they apply there verbatim.
+`RecWFTree` denests into copies, but its recursor is stated over the types the
+block was written with: motives for `RecWFTree`, `WFTree RecWFTree` and
+`Tree RecWFTree`, and motives for `Tree.WF` and `Tree.WFWith` that each take the
+value the data motive produced.  So the same two questions can be asked of it as
+of `Ctx`, and answered the same way -- out of the recursor alone, with no copy
+name anywhere below.
 
-The recursion goes through `WFTree` and `Tree` because a `RecWFTree` really does
-contain them; it does not go through the proofs, and could not, since they are `Prop`
-and no `Sort u` motive may look inside one.
+That the predicate motives are there is the whole point.  Without them a
+recursion can rebuild the tree but cannot carry its well-formedness across, and
+the map to a second copy of the block is not merely hard to write but
+impossible: the residual obligation is false.  `MumiTests.NestedIndInd` shows
+the rebuild; this shows the isomorphism.
+
+`Tree`, `Tree.WFWith`, `Tree.WF` and `WFTree` are ordinary Lean inductives
+declared before the block, so Lean's own recursors apply at `α := RecWFTree`
+and are used freely.
 -/
 
 namespace RecWFTree
@@ -287,38 +292,11 @@ theorem wfWith_size {t : Tree RecWFTree} {l : List Nat} (h : Tree.WFWith RecWFTr
     simp [ihl, ihr, List.length_append]
     omega
 
-/-! Denesting also leaves internal copies behind.  `nested_WF_3` and
-`nested_WFWith_4` have no `.rec`, and do not need one: the bridge is an isomorphism, so
-they are inverted through `Tree.WF.rec`. -/
-
-theorem ofOrig_toOrig (a : nested_Tree_2) : nested_Tree_2.ofOrig a.toOrig = a :=
-  nested_Tree_2.rec
-    (motive_1 := fun _ => True) (motive_2 := fun _ => True)
-    (motive_3 := fun a => nested_Tree_2.ofOrig a.toOrig = a)
-    (fun _ _ => trivial) (fun _ _ _ => trivial)
-    rfl
-    (fun k v l r _ ihl ihr => by
-      show nested_Tree_2.ofOrig (Tree.node k v l.toOrig r.toOrig) = _
-      show nested_Tree_2.node k v (nested_Tree_2.ofOrig l.toOrig) (nested_Tree_2.ofOrig r.toOrig) = _
-      rw [ihl, ihr])
-    a
-
-theorem nested_WF_3.inversion {a : nested_Tree_2} (h : nested_WF_3 a) :
-    ∃ l, Tree.WFWith RecWFTree a.toOrig l := by
-  obtain ⟨l, t, hw⟩ := h.toOrig
-  exact ⟨l, hw⟩
-
-theorem nested_WF_3.of {a : nested_Tree_2} (l) (hw : Tree.WFWith RecWFTree a.toOrig l) :
-    nested_WF_3 a :=
-  ofOrig_toOrig a ▸ nested_WF_3.ofOrig (.intro l a.toOrig hw)
-
-private def someRec : RecWFTree :=
-  RecWFTree._nested_mk (nested_WFTree_1.mk nested_Tree_2.empty (nested_WF_3.of [] .empty))
-
-/-- and so the copy is provably not the trivial predicate -/
-example : ¬ nested_WF_3 (.node 0 someRec (.node 5 someRec .empty .empty) .empty) := by
-  intro h
-  obtain ⟨l, hw⟩ := h.inversion
+/-- The predicate is the least fixed point and not the trivial one: a tree whose
+left child holds a larger key is not well-formed. -/
+example : ¬ Tree.WF RecWFTree
+    (.node 0 bottom (.node 5 bottom .empty .empty) .empty) := by
+  rintro ⟨l, t, hw⟩
   cases hw with
   | node k v tl tr hl hr hl' hr' =>
     cases hl with
@@ -327,3 +305,97 @@ example : ¬ nested_WF_3 (.node 0 someRec (.node 5 someRec .empty .empty) .empty
       exact absurd (hl' 5 (by simp)) (by omega)
 
 end RecWFTree
+
+/-! ## A second copy of the block, and the map both ways
+
+Written out again under other names, so that the two blocks share nothing but
+their shape.  The maps are one recursor application each: `motive_4` and
+`motive_5` say that the rebuilt tree is well-formed in the *other* copy, and the
+`Tree.WF` and `Tree.WFWith` minors are what discharge that.  This is the
+definition that cannot be written when the recursor stops at the data members.
+-/
+
+namespace Copy
+
+inductive Tree (α : Type u) where
+  | empty
+  | node (key : Nat) (value : α) (l r : Tree α)
+
+inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where
+  | empty : Tree.WFWith α .empty []
+  | node {llist rlist} (key : Nat) (value : α) (l r : Tree α)
+      (hl : Tree.WFWith α l llist) (hr : Tree.WFWith α r rlist)
+      (hl' : ∀ a ∈ llist, a < key) (hr' : ∀ a ∈ rlist, key < a) :
+      Tree.WFWith α (.node key value l r) (llist ++ key :: rlist)
+
+inductive Tree.WF (α : Type u) : Tree α → Prop where
+  | intro (l : List Nat) (t : Tree α) (h : Tree.WFWith α t l) : Tree.WF α t
+
+inductive WFTree (α : Type u) : Type u where
+  | mk (x : Tree α) (h : x.WF)
+
+inductive RecWFTree where
+  | mk (x : WFTree RecWFTree)
+
+end Copy
+
+/-- Both maps are named at the root: inside `namespace Copy.RecWFTree` the
+return type `RecWFTree` would resolve to `Copy.RecWFTree` and the map would
+quietly become an endomap. -/
+noncomputable def toCopy : RecWFTree → Copy.RecWFTree :=
+  RecWFTree.rec
+    (motive_1 := fun _ => Copy.RecWFTree)
+    (motive_2 := fun _ => Copy.WFTree Copy.RecWFTree)
+    (motive_3 := fun _ => Copy.Tree Copy.RecWFTree)
+    (motive_4 := fun _ ih _ => Copy.Tree.WF Copy.RecWFTree ih)
+    (motive_5 := fun _ l ih _ => Copy.Tree.WFWith Copy.RecWFTree ih l)
+    (fun _ ih => .mk ih)
+    (fun _ _ ih hih => .mk ih hih)
+    .empty
+    (fun key _ _ _ vih lih rih => .node key vih lih rih)
+    (fun l _ _ tih hih => .intro l tih hih)
+    .empty
+    (fun key _ _ _ _ _ hl' hr' vih lih rih ihl ihr =>
+      .node key vih lih rih ihl ihr hl' hr')
+
+noncomputable def ofCopy : Copy.RecWFTree → RecWFTree :=
+  Copy.RecWFTree.rec
+    (motive_1 := fun _ => RecWFTree)
+    (motive_2 := fun _ => WFTree RecWFTree)
+    (motive_3 := fun _ => Tree RecWFTree)
+    (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
+    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (fun _ ih => .mk ih)
+    (fun _ _ ih hih => .mk ih hih)
+    .empty
+    (fun key _ _ _ vih lih rih => .node key vih lih rih)
+    (fun l _ _ tih hih => .intro l tih hih)
+    .empty
+    (fun key _ _ _ _ _ hl' hr' vih lih rih ihl ihr =>
+      .node key vih lih rih ihl ihr hl' hr')
+
+/-- info: toCopy : RecWFTree → Copy.RecWFTree -/
+#guard_msgs in
+#check @toCopy
+
+/-- info: ofCopy : Copy.RecWFTree → RecWFTree -/
+#guard_msgs in
+#check @ofCopy
+
+-- and the round trip is definitional, so the two blocks really are the same one
+open RecWFTree in
+example : ofCopy (toCopy bottom) = bottom := rfl
+
+open RecWFTree in
+example : ofCopy (toCopy (wrap bottom)) = wrap bottom := rfl
+
+open RecWFTree in
+example : ofCopy (toCopy (wrap (wrap bottom))) = wrap (wrap bottom) := rfl
+
+/-- info: 'toCopy' does not depend on any axioms -/
+#guard_msgs in
+#print axioms toCopy
+
+/-- info: 'ofCopy' does not depend on any axioms -/
+#guard_msgs in
+#print axioms ofCopy
