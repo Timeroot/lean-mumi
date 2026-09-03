@@ -2669,8 +2669,15 @@ where
             built := built.push p
             continue
           let .recur m := kinds[k]!
-            | throwError "The resulting type of `{c.name}` gives index {p + 1} as the field \
-                `{a}`, which is not a value of a member of the block"
+            | if kinds[k]! == .erased then
+                throwError "`{c.name}` gives index {p + 1} as the field `{a}`, which is a \
+                  proof.  A member indexed by a proposition of this block is not supported: \
+                  the proof is erased, so there is nothing left to index by -- and since \
+                  `Prop` is proof-irrelevant, such an index says nothing that dropping it \
+                  would not say as well"
+              else
+                throwError "The resulting type of `{c.name}` gives index {p + 1} as the field \
+                  `{a}`, which is not a value of a member of the block"
           kinds := kinds.set! k (.deleted m p)
       -- an index taken as a field, but stated at one the constructor built,
       -- cannot stay a field: the alternative binds the built index, so the field
