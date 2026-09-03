@@ -334,35 +334,6 @@ private def headersAreHeterogeneous (elabs : Array InductiveElabStep1) : TermEla
       catch _ =>
         return true
 
-/--
-Whether this `mutual` block is one we should take over: every element a plain
-`inductive`, and the members not all in one universe.
-
-Anything that goes wrong while finding out -- an ill-formed header, a missing
-name, an unrelated elaboration failure -- answers `false`, so that the stock
-elaborator runs and reports it.  All state touched here is rolled back.
--/
-def blockNeedsLowering (elems : Array Syntax) : CommandElabM Bool := do
-  unless elems.all (·[1].getKind == ``Lean.Parser.Command.«inductive») do
-    return false
-  if elems.size ≤ 1 then
-    return false
-  let saved ← get
-  let res ←
-    try
-      let inductives ← elems.mapM fun stx => do
-        let modifiers ← elabModifiers ⟨stx[0]⟩
-        pure (modifiers, stx[1])
-      runTermElabM fun _ => do
-        let elabs ← inductives.mapM fun (modifiers, stx) => mkInductiveView modifiers stx
-        if elabs.any (·.view.isCoinductive) then
-          return false
-        headersAreHeterogeneous elabs
-    catch _ =>
-      pure false
-  set saved
-  return res
-
 /-- Which of the three elaborators a `mutual` block should go to. -/
 inductive Route where
   /-- Lean's own; we step aside. -/
@@ -388,8 +359,8 @@ private def routeFromHeaders (elabs : Array InductiveElabStep1) : TermElabM Rout
 /--
 Which elaborator this block belongs to.
 
-`heterogeneous` is decided exactly as `blockNeedsLowering` decides it, by asking
-`Lean.Elab.Command.checkHeaders` about headers that did elaborate.
+`heterogeneous` is decided by asking `Lean.Elab.Command.checkHeaders` about
+headers that did elaborate.
 
 `indind` needs the headers to have *failed*, since that is what
 induction-induction does to them -- Lean elaborates every arity before any

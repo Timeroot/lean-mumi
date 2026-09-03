@@ -104,20 +104,6 @@ private def mentionsAny (members : Array Expr) (e : Expr) : Bool :=
   members.any fun f => e.containsFVar f.fvarId!
 
 /--
-Unfold definitions at the head of `e` until an inductive type constructor is
-exposed, so that a nested occurrence behind an `abbrev` is still seen.  Gives up
-after a few steps, and on anything that is not a definition.
--/
-private def exposeInduct (e : Expr) : MetaM Expr := do
-  let mut e := e
-  for _ in *...8 do
-    let .const n _ := e.getAppFn | return e
-    if let some (.inductInfo _) := (← getEnv).find? n then return e
-    let some e' ← unfoldDefinition? e | return e
-    e := e'
-  return e
-
-/--
 Recognise a nested occurrence at the head of a strictly-positive position.
 
 Answers `none` for anything that is not one: a position with no member in it at
@@ -178,14 +164,6 @@ private def extraLocals (ps members : Array Expr) (es : Array Expr) : MetaM (Arr
   let lctx ← getLCtx
   let idx (fv : FVarId) : Nat := match lctx.find? fv with | some d => d.index | none => 0
   return (order.qsort fun a b => idx a < idx b).map mkFVar
-
-/-- The last component of a name, for building a readable auxiliary name.  A
-component the elaborator added rather than the writer -- `T._shadow`, which is
-what `lower` leaves behind a member of a block it took over -- is stepped past,
-so that nesting over a lowered type still names the type the writer wrote. -/
-private def shortName : Name → String
-  | .str p s => if s.startsWith "_" then shortName p else s
-  | _        => "nested"
 
 mutual
 

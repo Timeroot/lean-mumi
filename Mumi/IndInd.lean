@@ -335,7 +335,7 @@ namespace Mumi.IndInd
 open Lean Lean.Meta Lean.Elab Lean.Elab.Command
 open Lean.Elab.MultiuniverseInductive
   (addDef addInd reroot motiveNames markElabAsElim addSoloElim attempt?
-    attempted freshLevelNames)
+    attempted freshLevelNames shortName exposeInduct)
 
 /-- Why a block fell back from the recursor it would rather have had. -/
 initialize registerTraceClass `Mumi.indind (inherited := true)
@@ -615,21 +615,6 @@ def ihPositions (kinds : Array FieldKind) : Array Nat := Id.run do
   for i in *...kinds.size do
     if kinds[i]!.hasIh then out := out.push i
   return out
-
-/--
-The positions of a constructor's deleted fields, ordered by the index each of
-them fills rather than by where the telescope binds it.
-
-Everything downstream reads a member's deleted indices off its *arity* -- that
-is the order `Block.dropIdxs` hands them back in, and the order the motives
-`_wf` recurses with end in -- so a constructor whose fields happen to be written
-the other way round still has to present them arity-first.
--/
-def deletedPositions (kinds : Array FieldKind) : Array Nat := Id.run do
-  let mut out : Array (Nat × Nat) := #[]
-  for i in *...kinds.size do
-    if let .deleted _ p := kinds[i]! then out := out.push (p, i)
-  return (out.qsort (fun x y => x.1 < y.1)).map (·.2)
 
 /--
 The field the constructor deleted along with the index at position `pos`, if the
@@ -1067,14 +1052,10 @@ def Block.propsBehind (b : Block) (recInfo : RecursorVal) : MetaM (Array Nat) :=
 def Block.ctorsOf (b : Block) (idxs : Array Nat) : Array (Nat × CtorSpec) :=
   idxs.flatMap fun j => b.members[j]!.ctors.map fun cc => (j, cc)
 
-/-- `∀ ys, X._wf args (y ys)`, from a pre-world field `y : ∀ ys, X._pre args`. -/
-def Block.wfOfPre (b : Block) (y preTy : Expr) : MetaM Expr :=
-  b.withPreTarget preTy fun ys i args =>
-    mkForallFVars ys (mkApp (b.wfApp i args) (mkAppN y ys))
-
 /--
-The same, read from `Block.subTy`'s reading of the field, which is the only one
-in which a deleted index is still there to be said.
+`∀ ys, X._wf args (y ys)`, from a recursive field `y : ∀ ys, X args`, read from
+`Block.subTy`'s reading of it -- which is the only one in which a deleted index
+is still there to be said.
 -/
 def Block.wfOfSub (b : Block) (y subTy : Expr) : MetaM Expr :=
   b.withRecTarget subTy fun ys i args =>
@@ -3040,26 +3021,6 @@ private def stripLevels (names : Array Name) (e : Expr) : Expr :=
     | _ => none
 
 /--
-Unfold definitions at the head of `e` until an inductive type constructor is
-exposed, so that a nested occurrence behind an `abbrev` is still seen.  Gives up
-after a few steps, and on anything that is not a definition.
--/
-private def exposeInduct (e : Expr) : MetaM Expr := do
-  let mut e := e
-  for _ in *...8 do
-    let .const n _ := e.getAppFn | return e
-    if let some (.inductInfo _) := (← getEnv).find? n then return e
-    let some e' ← unfoldDefinition? e | return e
-    e := e'
-  return e
-
-/-- The last component of a name, for building a readable auxiliary name. -/
-private def shortName (n : Name) : String :=
-  match n with
-  | .str _ s => s
-  | _        => "nested"
-
-/--
 Recognise a nested occurrence: an inductive type applied to parameters that
 mention the block.  A member applied to its own arguments is not one, and
 neither is an inductive that mentions the block only outside its parameters.
@@ -3459,9 +3420,10 @@ def Copy.ofName (c : Copy) : Name := c.name ++ `ofOrig
 /--
 The copy's own arguments for `e`, if `e` is this copy's original applied.
 
-Those are the locals the family member is at, followed by the original's real
-indices.  A copy of a single original has no locals, and this is the old
-question of whether the parameters agree.
+Those are the locals the family member is at -- read off the occurrence, since
+they are what says *which* member of the family it is -- followed by the
+original's real indices.  A copy of a single original has no locals, and then
+this is just the old question of whether the parameters agree.
 -/
 def Copy.argsOf? (cp : Copy) (e : Expr) : MetaM (Option (Array Expr)) := do
   -- a nesting whose parameter is a lambda -- `Sigma`'s second one -- leaves the
@@ -3471,12 +3433,6 @@ def Copy.argsOf? (cp : Copy) (e : Expr) : MetaM (Option (Array Expr)) := do
   let some hd := e.getAppFn.constName? | return none
   unless hd == cp.indName do return none
   let args := e.getAppArgs
-  if cp.numLocals == 0 then
-    let n := cp.app.getAppNumArgs
-    if args.size < n then return none
-    unless ← isDefEq (mkAppN e.getAppFn (args.extract 0 n)) cp.app do return none
-    return some (args.extract n args.size)
-  -- the locals are read off the occurrence: which member of the family this is
   let s ← saveState
   let (ls, _, _) ← forallMetaBoundedTelescope (← inferType cp.app) cp.numLocals
   let app := cp.app.beta ls
@@ -3683,9 +3639,7 @@ def order (c : BridgeCtx) : MetaM (Array (Array Nat)) := do
 def ofType (c : BridgeCtx) (k : Nat) : MetaM Expr := do
   let cp := c.copies[k]!
   forallTelescope (← inferType cp.app) fun jdxs _ => do
-    let mut imgs : Array Expr := #[]
-    for y in jdxs do
-      imgs := imgs.push (← c.ofImage y (← inferType y))
+    let imgs ← c.ofImages jdxs
     withLocalDeclD `x (cp.origAt jdxs) fun x =>
       return implicitPrefix (c.ps.size + jdxs.size) (←
         mkForallFVars (c.ps ++ jdxs ++ #[x]) (mkAppN (c.b.cst cp.name) (c.ps ++ imgs)))
@@ -3705,10 +3659,7 @@ def ofValueData (c : BridgeCtx) (k : Nat) : MetaM Expr := do
     let params := orig.getAppArgs
     let lvls := orig.getAppFn.constLevels!
     let idxs := jdxs.extract cp.numLocals jdxs.size
-    let mut imgs : Array Expr := #[]
-    for y in jdxs do
-      imgs := imgs.push (← c.ofImage y (← inferType y))
-    let resTy := mkAppN (c.b.cst cp.name) (c.ps ++ imgs)
+    let resTy := mkAppN (c.b.cst cp.name) (c.ps ++ (← c.ofImages jdxs))
     withLocalDeclD `x (mkAppN orig idxs) fun x => do
       let motive ← mkLambdaFVars (idxs ++ #[x]) resTy
       let elim ← getLevel resTy
@@ -3717,9 +3668,7 @@ def ofValueData (c : BridgeCtx) (k : Nat) : MetaM Expr := do
         let ci ← getConstInfoCtor cn
         let cty ← instantiateForall (ci.type.instantiateLevelParams ci.levelParams lvls) params
         alts := alts.push <| ← forallTelescope cty fun xs _ => do
-          let mut fimgs : Array Expr := #[]
-          for y in xs do
-            fimgs := fimgs.push (← c.ofImage y (← inferType y))
+          let fimgs ← c.ofImages xs
           mkLambdaFVars xs <|
             mkAppN (mkConst (reroot cp.indName cp.name cn) c.b.lvls)
               (c.ps ++ jdxs.extract 0 cp.numLocals ++ fimgs)
@@ -3727,21 +3676,30 @@ def ofValueData (c : BridgeCtx) (k : Nat) : MetaM Expr := do
         (params ++ #[motive] ++ idxs ++ #[x] ++ alts)
       return implicitPrefix (c.ps.size + jdxs.size) (← mkLambdaFVars (c.ps ++ jdxs ++ #[x]) body)
 
+/-- What one minor premise of a recursor is about. -/
+structure MinorPlan where
+  /-- The motive the minor concludes at. -/
+  motive : Nat
+  /-- The constructor it concludes with. -/
+  ctor : Name
+  /-- How many fields that constructor takes. -/
+  numFields : Nat
+  /-- For each field, the hypothesis the recursor supplies about it, if there is
+  one, as its position among the minor's arguments and the motive it is for. -/
+  ihs : Array (Option (Nat × Nat))
+  deriving Inhabited
+
 /--
 What each minor premise of `recTy`, a recursor's type at its parameters, is
-about: the motive it concludes at, the constructor it concludes with, how many
-fields that takes, and for each of those fields the hypothesis the recursor
-supplies about it, if there is one, as its position among the minor's arguments
-and the motive it is for.
+about.
 
-`recInfo.rules` would answer the middle two, but only for the constructors of
-the member whose recursor this is, and the minors run over the whole block.
+`recInfo.rules` would answer the constructor and its arity, but only for the
+member whose recursor this is, and the minors run over the whole block.
 -/
-def recPlan (recInfo : RecursorVal) (recTy : Expr) :
-    MetaM (Array (Nat × Name × Nat × Array (Option (Nat × Nat)))) :=
+def recPlan (recInfo : RecursorVal) (recTy : Expr) : MetaM (Array MinorPlan) :=
   forallBoundedTelescope recTy recInfo.numMotives fun ms rest =>
     forallBoundedTelescope rest recInfo.numMinors fun mins _ => do
-      let mut out : Array (Nat × Name × Nat × Array (Option (Nat × Nat))) := #[]
+      let mut out : Array MinorPlan := #[]
       for mi in mins do
         out := out.push <| ← forallTelescope (← inferType mi) fun args concl => do
           let some cn := concl.getAppArgs.back?.bind (·.getAppFn.constName?)
@@ -3757,8 +3715,91 @@ def recPlan (recInfo : RecursorVal) (recTy : Expr) :
               let some z := fields.findIdx? (major.containsFVar ·.fvarId!) | return none
               return some (z, j, mq)
             if let some (z, j, mq) := hit? then fplan := fplan.set! z (some (j, mq))
-          return ((ms.findIdx? (· == concl.getAppFn)).getD 0, cn, nf, fplan)
+          return { motive := (ms.findIdx? (· == concl.getAppFn)).getD 0
+                   ctor := cn, numFields := nf, ihs := fplan }
       return out
+
+/--
+An original's own recursor, set up to prove something of a whole group of copies
+at once.
+
+Both `ofValueProp` and `backValue` are one application of it, and they agree on
+everything but what a motive says and what a minor premise proves.
+-/
+structure GroupElim where
+  /-- The recursor. -/
+  recInfo : RecursorVal
+  /-- Its levels: the original's, with the motives' in front where it takes one. -/
+  recLvls : List Level
+  /-- Its type, at the original's parameters. -/
+  recTy : Expr
+  /-- What each of its minor premises is about. -/
+  plan : Array MinorPlan
+  /-- The motives, one per member the recursor eliminates. -/
+  motives : Array Expr
+  /-- Which copy each motive is for, where it is one the group is proving. -/
+  targets : Array (Option Nat)
+
+/--
+Set the recursor of `cp`'s original, at `params` and `lvls`, up to eliminate all
+of `grp` at once.
+
+`motive` says what is being proved of a member of the group, and is given which
+copy it is, the arguments that copy is at, and the major premise.  Everything
+else the recursor eliminates -- the other members of the original's own block,
+and the types that block nests into -- is sent to `True`, whose hypotheses are
+worth nothing and whose minor premises `GroupElim.minors` discharges.
+-/
+def groupElim (c : BridgeCtx) (grp : Array Nat) (cp : Copy) (params : Array Expr)
+    (lvls : List Level) (motive : Nat → Array Expr → Expr → MetaM Expr) :
+    MetaM GroupElim := do
+  let recInfo ← getConstInfoRec (mkRecName cp.indName)
+  -- every motive here lands in `Prop` -- a copy of a proposition is a
+  -- proposition, and an equation is one too -- so where the recursor takes a
+  -- level of its own it is given zero
+  let recLvls := if recInfo.levelParams.length == (← getConstInfoInduct cp.indName).levelParams.length
+    then lvls else .zero :: lvls
+  let recTy ← instantiateForall
+    (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) params
+  let plan ← recPlan recInfo recTy
+  let (motives, targets) ← forallBoundedTelescope recTy recInfo.numMotives fun ms _ => do
+    let mut motives : Array Expr := #[]
+    let mut targets : Array (Option Nat) := #[]
+    for m in ms do
+      let (mot, tgt) ← forallTelescope (← inferType m) fun ys _ => do
+        let trivial := (← mkLambdaFVars ys (mkConst ``True), none)
+        let some major := ys.back? | return trivial
+        let some (k', jdxs') ← c.copyOf? (← inferType major) | return trivial
+        unless grp.contains k' do return trivial
+        return (← mkLambdaFVars ys (← motive k' jdxs' major), some k')
+      motives := motives.push mot
+      targets := targets.push tgt
+    return (motives, targets)
+  return { recInfo, recLvls, recTy, plan, motives, targets }
+
+/--
+The minor premises: `body` at each one that is about a copy in the group, and
+`trivial` at each one that is not.
+
+`body` is given the copy the minor is about, what the minor is about it, the
+minor's own arguments and the conclusion it has to reach; the abstraction over
+those arguments is taken here rather than by `body`.
+-/
+def GroupElim.minors (ge : GroupElim)
+    (body : Nat → MinorPlan → Array Expr → Expr → MetaM Expr) : MetaM (Array Expr) := do
+  forallBoundedTelescope (← instantiateForall ge.recTy ge.motives) ge.recInfo.numMinors
+    fun mins _ => do
+      let mut out : Array Expr := #[]
+      for q in *...mins.size do
+        let mp := ge.plan[q]!
+        out := out.push <| ← forallTelescope (← inferType mins[q]!) fun args concl => do
+          let some k' := ge.targets[mp.motive]! | mkLambdaFVars args (mkConst ``True.intro)
+          mkLambdaFVars args (← body k' mp args concl)
+      return out
+
+/-- The recursor applied to everything: `params`, the motives, `minors`, and a major premise. -/
+def GroupElim.app (ge : GroupElim) (params minors idxs : Array Expr) (x : Expr) : Expr :=
+  mkAppN (mkConst ge.recInfo.name ge.recLvls) (params ++ ge.motives ++ minors ++ idxs ++ #[x])
 
 /--
 `X.ofOrig` for a `Prop` copy: one application of the original's own recursor.
@@ -3780,67 +3821,34 @@ both the motive it is for and the field it is about.
 -/
 def ofValueProp (c : BridgeCtx) (grp : Array Nat) (k : Nat) : MetaM Expr := do
   let cp := c.copies[k]!
-  let info ← getConstInfoInduct cp.indName
-  let recInfo ← getConstInfoRec (mkRecName cp.indName)
   -- a copy standing for a family recurses one member at a time, so the whole
   -- recursor application is built under the locals that say which member it is
   forallTelescope (← inferType cp.app) fun jdxs _ => do
   let orig := cp.orig jdxs
   let params := orig.getAppArgs
-  let lvls := orig.getAppFn.constLevels!
   let idxs := jdxs.extract cp.numLocals jdxs.size
-  -- every motive lands in `Prop`, a copy of a proposition being a proposition
-  let recLvls := if recInfo.levelParams.length == info.levelParams.length then lvls
-    else .zero :: lvls
-  let recTy ← instantiateForall
-    (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) params
-  let plan ← recPlan recInfo recTy
-  -- the motives, and which copy each is for
-  let (motives, targets) ← forallBoundedTelescope recTy recInfo.numMotives fun ms _ => do
-    let mut motives : Array Expr := #[]
-    let mut targets : Array (Option Nat) := #[]
-    for m in ms do
-      let (mot, tgt) ← forallTelescope (← inferType m) fun ys _ => do
-        let trivial := (← mkLambdaFVars ys (mkConst ``True), none)
-        let some major := ys.back? | return trivial
-        let some (k', jdxs') ← c.copyOf? (← inferType major) | return trivial
-        unless grp.contains k' do return trivial
-        let mut imgs : Array Expr := #[]
-        for y in jdxs' do
-          imgs := imgs.push (← c.ofImage y (← inferType y))
-        return (← mkLambdaFVars ys (mkAppN (c.b.cst c.copies[k']!.name) (c.ps ++ imgs)), some k')
-      motives := motives.push mot
-      targets := targets.push tgt
-    return (motives, targets)
-  let minors ← forallBoundedTelescope (← instantiateForall recTy motives) recInfo.numMinors
-    fun mins _ => do
-      let mut out : Array Expr := #[]
-      for q in *...mins.size do
-        let (mq, cn, nf, fplan) := plan[q]!
-        out := out.push <| ← forallTelescope (← inferType mins[q]!) fun args concl => do
-          let some k' := targets[mq]! | mkLambdaFVars args (mkConst ``True.intro)
-          let cp' := c.copies[k']!
-          -- the minor concludes at the motive, which is the copy at its own
-          -- arguments, so the locals this constructor is built at are read off it
-          let cargs := concl.headBeta.getAppArgs
-          unless cargs.size ≥ c.ps.size + cp'.numLocals do
-            throwError "the recursor's minor premise does not conclude at the copy"
-          let ls := cargs.extract c.ps.size (c.ps.size + cp'.numLocals)
-          let ihs := args.extract nf args.size
-          let mut fimgs : Array Expr := #[]
-          for z in *...nf do
-            if let some (j, mq') := fplan[z]! then
-              if targets[mq']!.isSome then
-                fimgs := fimgs.push ihs[j]!
-                continue
-            fimgs := fimgs.push (← c.ofImage args[z]! (← inferType args[z]!))
-          mkLambdaFVars args <|
-            mkAppN (mkConst (reroot cp'.indName cp'.name cn) c.b.lvls) (c.ps ++ ls ++ fimgs)
-      return out
+  let ge ← c.groupElim grp cp params orig.getAppFn.constLevels! fun k' jdxs' _ => do
+    return mkAppN (c.b.cst c.copies[k']!.name) (c.ps ++ (← c.ofImages jdxs'))
+  let minors ← ge.minors fun k' mp args concl => do
+    let cp' := c.copies[k']!
+    -- the minor concludes at the motive, which is the copy at its own
+    -- arguments, so the locals this constructor is built at are read off it
+    let cargs := concl.headBeta.getAppArgs
+    unless cargs.size ≥ c.ps.size + cp'.numLocals do
+      throwError "the recursor's minor premise does not conclude at the copy"
+    let ls := cargs.extract c.ps.size (c.ps.size + cp'.numLocals)
+    let ihs := args.extract mp.numFields args.size
+    let mut fimgs : Array Expr := #[]
+    for z in *...mp.numFields do
+      if let some (j, mq') := mp.ihs[z]! then
+        if ge.targets[mq']!.isSome then
+          fimgs := fimgs.push ihs[j]!
+          continue
+      fimgs := fimgs.push (← c.ofImage args[z]! (← inferType args[z]!))
+    return mkAppN (mkConst (reroot cp'.indName cp'.name mp.ctor) c.b.lvls) (c.ps ++ ls ++ fimgs)
   withLocalDeclD `x (mkAppN orig idxs) fun x => do
-    let body := mkAppN (mkConst recInfo.name recLvls)
-      (params ++ motives ++ minors ++ idxs ++ #[x])
-    return implicitPrefix (c.ps.size + jdxs.size) (← mkLambdaFVars (c.ps ++ jdxs ++ #[x]) body)
+    return implicitPrefix (c.ps.size + jdxs.size)
+      (← mkLambdaFVars (c.ps ++ jdxs ++ #[x]) (ge.app params minors idxs x))
 
 /--
 Add `X.ofOrig` for every copy, each group after the ones its own bodies call.
@@ -3872,28 +3880,21 @@ def addOfOrig (c : BridgeCtx) (docCtx : LocalContext × LocalInstances) : TermEl
     else if grp.any isProp then
       throwError "The types denesting copies are nested in one another, and only some \
         of them are propositions"
-    else if grp.size == 1 then
-      let k := grp[0]!
-      let cp := c.copies[k]!
-      let value ← instantiateMVars (← c.ofValueData k)
-      let preDef : PreDefinition :=
-        { ref := .missing, kind := .def, levelParams := c.b.us, modifiers := {},
-          declName := cp.ofName, binders := .missing, value,
-          type := ← instantiateMVars (← c.ofType k),
-          termination := TerminationHints.none }
-      if value.getUsedConstants.contains cp.ofName then
-        Structural.structuralRecursion docCtx #[preDef] #[none]
-      else
-        addAndCompileNonRec docCtx preDef
     else
+      let names := grp.map (c.copies[·]!.ofName)
       let preDefs ← grp.mapM fun k => do
-        let cp := c.copies[k]!
         return { ref := .missing, kind := .def, levelParams := c.b.us, modifiers := {},
-                 declName := cp.ofName, binders := .missing,
+                 declName := c.copies[k]!.ofName, binders := .missing,
                  type := ← instantiateMVars (← c.ofType k),
                  value := ← instantiateMVars (← c.ofValueData k),
                  termination := TerminationHints.none : PreDefinition }
-      Structural.structuralRecursion docCtx preDefs (Array.replicate grp.size none)
+      -- a group of two is mutually recursive by construction, but a group of one
+      -- need not recurse at all -- a copy of a type that nests nothing --  and
+      -- `structuralRecursion` has no argument to recurse on then
+      if preDefs.any fun d => d.value.getUsedConstants.any names.contains then
+        Structural.structuralRecursion docCtx preDefs (Array.replicate grp.size none)
+      else
+        for d in preDefs do addAndCompileNonRec docCtx d
 
 /--
 Give every renamed member the arity it was declared with.
@@ -3934,10 +3935,7 @@ def niceCtors (c : BridgeCtx) (rawOf : Name → Name) : TermElabM Unit := do
       let niceBody ← c.unCopy (← instantiateForall ctor.type c.ps)
       let type := implicitPrefix c.ps.size (← mkForallFVars c.ps niceBody)
       let inner ← forallTelescope niceBody fun xs _ => do
-        let mut imgs : Array Expr := #[]
-        for x in xs do
-          imgs := imgs.push (← c.ofImage x (← inferType x))
-        mkLambdaFVars xs (mkAppN (mkConst raw c.b.lvls) (c.ps ++ imgs))
+        mkLambdaFVars xs (mkAppN (mkConst raw c.b.lvls) (c.ps ++ (← c.ofImages xs)))
       let value := implicitPrefix c.ps.size (← mkLambdaFVars c.ps inner)
       let type ← instantiateMVars type
       let value ← instantiateMVars value
@@ -4044,7 +4042,6 @@ def niceIdxArgs (c : BridgeCtx) (i : Nat) (app : Expr) : MetaM (Array Expr) := d
   | none   => return c.b.idxArgs app.getAppArgs
   | some k =>
     let cp := c.copies[k]!
-    if cp.numLocals == 0 then return app.getAppArgs.extract cp.numOrigParams app.getAppArgs.size
     let some args ← cp.argsOf? app
       | throwError "`{cp.name}` stands for a family of originals, and{indentExpr app} is not \
           one of them"
@@ -4968,9 +4965,7 @@ half of the round trip to get anything out of it.
 /-- `X.toOrig (X.ofOrig x)`, for `x` the original at `jdxs`. -/
 def backLhs (c : BridgeCtx) (k : Nat) (jdxs : Array Expr) (x : Expr) : MetaM Expr := do
   let cp := c.copies[k]!
-  let mut imgs : Array Expr := #[]
-  for y in jdxs do
-    imgs := imgs.push (← c.ofImage y (← inferType y))
+  let imgs ← c.ofImages jdxs
   return mkAppN (mkConst cp.toName c.b.lvls)
     (c.ps ++ imgs ++ #[mkAppN (mkConst cp.ofName c.b.lvls) (c.ps ++ jdxs ++ #[x])])
 
@@ -4984,117 +4979,91 @@ left, for the caller to prove and come back with.
 def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Array Nat)) :
     TermElabM (Expr × Expr) := do
   let cp := c.copies[k]!
-  let info ← getConstInfoInduct cp.indName
-  let recInfo ← getConstInfoRec (mkRecName cp.indName)
   forallTelescope (← inferType cp.app) fun jdxs _ => do
   let orig := cp.orig jdxs
   let params := orig.getAppArgs
   let lvls := orig.getAppFn.constLevels!
   let idxs := jdxs.extract cp.numLocals jdxs.size
-  -- every motive is an equation, so this eliminates into `Prop`
-  let recLvls := if recInfo.levelParams.length == info.levelParams.length then lvls
-    else .zero :: lvls
-  let recTy ← instantiateForall
-    (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) params
-  let plan ← recPlan recInfo recTy
-  let (motives, targets) ← forallBoundedTelescope recTy recInfo.numMotives fun ms _ => do
-    let mut motives : Array Expr := #[]
-    let mut targets : Array (Option Nat) := #[]
-    for m in ms do
-      let (mot, tgt) ← forallTelescope (← inferType m) fun ys _ => do
-        let trivial := (← mkLambdaFVars ys (mkConst ``True), none)
-        let some major := ys.back? | return trivial
-        let some (k', jdxs') ← c.copyOf? (← inferType major) | return trivial
-        unless grp.contains k' do return trivial
-        return (← mkLambdaFVars ys (← mkEq (← c.backLhs k' jdxs' major) major), some k')
-      motives := motives.push mot
-      targets := targets.push tgt
-    return (motives, targets)
-  let minors ← forallBoundedTelescope (← instantiateForall recTy motives) recInfo.numMinors
-    fun mins _ => do
-      let mut out : Array Expr := #[]
-      for q in *...mins.size do
-        let (mq, cn, nf, fplan) := plan[q]!
-        out := out.push <| ← forallTelescope (← inferType mins[q]!) fun args _ => do
-          if (targets[mq]!).isNone then
-            return ← mkLambdaFVars args (mkConst ``True.intro)
-          let fields := args.extract 0 nf
-          let ihs := args.extract nf args.size
-          -- what the left side holds at each field, and the equation saying it
-          -- comes back to the right side's, where there is one to be had
-          let mut lhss : Array Expr := #[]
-          let mut steps : Array (Option Expr) := #[]
-          for z in *...nf do
-            let ty ← inferType fields[z]!
-            let nzs ← forallTelescope ty fun zs _ => pure zs.size
-            let mut step : Option Expr := none
-            let mut lhs := fields[z]!
-            if let some (j, mq') := fplan[z]! then
-              if (targets[mq']!).isSome then
-                -- a field that is a function into the group is given a
-                -- hypothesis for each of its values, and the equation wanted is
-                -- of the two functions
-                step := some (← funExtN ihs[j]! nzs)
-            if step.isNone then
-              (lhs, step) ← forallTelescope ty fun zs concl => do
-                let some (k', jdxs') ← c.copyOf? concl | return (fields[z]!, none)
-                let fz := mkAppN fields[z]! zs
-                let side ← c.backLhs k' jdxs' fz
-                -- the round trip at a field may come back on its own -- through
-                -- a structure it does, by eta, and between two proofs of one
-                -- proposition it does too -- and then there is nothing to say
-                if ← isDefEq side fz then return (fields[z]!, none)
-                if c.b.members[c.copies[k']!.idx]!.isProp then
-                  -- two proofs of two propositions that differ only in what has
-                  -- moved underneath them: no equation is wanted or available,
-                  -- and `proof_irrel_heq` closes the step below
-                  let cpn := c.copies[k']!.name
-                  unless nzs == 0 do
-                    throwError "field {z} of `{cn}` is a family of proofs at `{cpn}`"
-                  return (side, none)
-                -- otherwise it is that copy's own round trip that says so, and if
-                -- that has not been proved then saying which one it was is what
-                -- gets it proved and this pass run again
-                unless (← getEnv).contains c.copies[k']!.backName do
-                  wanted.modify fun w => if w.contains k' then w else w.push k'
-                  throwError "no round trip out of `{c.copies[k']!.name}` to use at `{cn}`"
-                let e := mkAppN (mkConst c.copies[k']!.backName c.b.lvls)
-                  (c.ps ++ jdxs' ++ #[fz])
-                return (← mkLambdaFVars zs side, some (← funExtN (← mkLambdaFVars zs e) nzs))
-            -- the equation's own left side is the one to use, so that what the
-            -- steps are taken at is exactly what they are stated about
-            if let some e := step then
-              let some (_, l, _) := (← whnf (← inferType e)).eq?
-                | throwError "field {z} of `{cn}` was given something that is not an equation"
-              lhs := l
-            lhss := lhss.push lhs
-            steps := steps.push step
-          -- a field a later field's type mentions cannot be moved on its own, so
-          -- the congruence is taken heterogeneously: at such a field the two
-          -- sides are of two different types, and only a `Prop` one is reachable
-          let ct ← mkHCongrWithArity (mkAppN (mkConst cn lvls) params) nf
-          let mut prf := ct.proof
-          let mut cty := ct.type
-          for z in *...nf do
-            let a := lhss[z]!
-            let b := fields[z]!
-            let rest := (cty.bindingBody!.instantiate1 a).bindingBody!.instantiate1 b
-            let e ← match steps[z]!, rest.bindingDomain!.isAppOf ``Eq with
-              | some s, true  => pure s
-              | some s, false => mkHEqOfEq s
-              | none,   true  => mkEqRefl b
-              | none,   false =>
-                if a == b then mkHEqRefl b else mkAppM ``proof_irrel_heq #[a, b]
-            prf := mkApp3 prf a b e
-            cty := rest.bindingBody!.instantiate1 e
-          mkLambdaFVars args (← mkEqOfHEq prf)
-      return out
+  let ge ← c.groupElim grp cp params lvls fun k' jdxs' major => do
+    mkEq (← c.backLhs k' jdxs' major) major
+  let minors ← ge.minors fun _ mp args _ => do
+    let cn := mp.ctor
+    let nf := mp.numFields
+    let fields := args.extract 0 nf
+    let ihs := args.extract nf args.size
+    -- what the left side holds at each field, and the equation saying it
+    -- comes back to the right side's, where there is one to be had
+    let mut lhss : Array Expr := #[]
+    let mut steps : Array (Option Expr) := #[]
+    for z in *...nf do
+      let ty ← inferType fields[z]!
+      let nzs ← forallTelescope ty fun zs _ => pure zs.size
+      let mut step : Option Expr := none
+      let mut lhs := fields[z]!
+      if let some (j, mq') := mp.ihs[z]! then
+        if ge.targets[mq']!.isSome then
+          -- a field that is a function into the group is given a
+          -- hypothesis for each of its values, and the equation wanted is
+          -- of the two functions
+          step := some (← funExtN ihs[j]! nzs)
+      if step.isNone then
+        (lhs, step) ← forallTelescope ty fun zs concl => do
+          let some (k', jdxs') ← c.copyOf? concl | return (fields[z]!, none)
+          let fz := mkAppN fields[z]! zs
+          let side ← c.backLhs k' jdxs' fz
+          -- the round trip at a field may come back on its own -- through
+          -- a structure it does, by eta, and between two proofs of one
+          -- proposition it does too -- and then there is nothing to say
+          if ← isDefEq side fz then return (fields[z]!, none)
+          if c.b.members[c.copies[k']!.idx]!.isProp then
+            -- two proofs of two propositions that differ only in what has
+            -- moved underneath them: no equation is wanted or available,
+            -- and `proof_irrel_heq` closes the step below
+            let cpn := c.copies[k']!.name
+            unless nzs == 0 do
+              throwError "field {z} of `{cn}` is a family of proofs at `{cpn}`"
+            return (side, none)
+          -- otherwise it is that copy's own round trip that says so, and if
+          -- that has not been proved then saying which one it was is what
+          -- gets it proved and this pass run again
+          unless (← getEnv).contains c.copies[k']!.backName do
+            wanted.modify fun w => if w.contains k' then w else w.push k'
+            throwError "no round trip out of `{c.copies[k']!.name}` to use at `{cn}`"
+          let e := mkAppN (mkConst c.copies[k']!.backName c.b.lvls)
+            (c.ps ++ jdxs' ++ #[fz])
+          return (← mkLambdaFVars zs side, some (← funExtN (← mkLambdaFVars zs e) nzs))
+      -- the equation's own left side is the one to use, so that what the
+      -- steps are taken at is exactly what they are stated about
+      if let some e := step then
+        let some (_, l, _) := (← whnf (← inferType e)).eq?
+          | throwError "field {z} of `{cn}` was given something that is not an equation"
+        lhs := l
+      lhss := lhss.push lhs
+      steps := steps.push step
+    -- a field a later field's type mentions cannot be moved on its own, so
+    -- the congruence is taken heterogeneously: at such a field the two
+    -- sides are of two different types, and only a `Prop` one is reachable
+    let ct ← mkHCongrWithArity (mkAppN (mkConst cn lvls) params) nf
+    let mut prf := ct.proof
+    let mut cty := ct.type
+    for z in *...nf do
+      let a := lhss[z]!
+      let b := fields[z]!
+      let rest := (cty.bindingBody!.instantiate1 a).bindingBody!.instantiate1 b
+      let e ← match steps[z]!, rest.bindingDomain!.isAppOf ``Eq with
+        | some s, true  => pure s
+        | some s, false => mkHEqOfEq s
+        | none,   true  => mkEqRefl b
+        | none,   false =>
+          if a == b then mkHEqRefl b else mkAppM ``proof_irrel_heq #[a, b]
+      prf := mkApp3 prf a b e
+      cty := rest.bindingBody!.instantiate1 e
+    mkEqOfHEq prf
   withLocalDeclD `x (mkAppN orig idxs) fun x => do
     let all := c.ps ++ jdxs ++ #[x]
     let n := c.ps.size + jdxs.size
     return (implicitPrefix n (← mkForallFVars all (← mkEq (← c.backLhs k jdxs x) x)),
-            implicitPrefix n (← mkLambdaFVars all
-              (mkAppN (mkConst recInfo.name recLvls) (params ++ motives ++ minors ++ idxs ++ #[x]))))
+            implicitPrefix n (← mkLambdaFVars all (ge.app params minors idxs x)))
 
 /-- `X.ofOrig_inj`, which is the round trip read as a left inverse. -/
 def ofInjValue (c : BridgeCtx) (k : Nat) : TermElabM (Expr × Expr) := do
@@ -5103,9 +5072,7 @@ def ofInjValue (c : BridgeCtx) (k : Nat) : TermElabM (Expr × Expr) := do
     let ofOrig (t : Expr) := mkAppN (mkConst cp.ofName c.b.lvls) (c.ps ++ jdxs ++ #[t])
     let back (t : Expr) := mkAppN (mkConst cp.backName c.b.lvls) (c.ps ++ jdxs ++ #[t])
     withLocalDeclD `a (cp.origAt jdxs) fun a => withLocalDeclD `b (cp.origAt jdxs) fun b => do
-      let mut imgs : Array Expr := #[]
-      for y in jdxs do
-        imgs := imgs.push (← c.ofImage y (← inferType y))
+      let imgs ← c.ofImages jdxs
       let toFn ← withLocalDeclD `t (← inferType (ofOrig a)) fun t =>
         mkLambdaFVars #[t] (mkAppN (mkConst cp.toName c.b.lvls) (c.ps ++ imgs ++ #[t]))
       withLocalDeclD `h (← mkEq (ofOrig a) (ofOrig b)) fun h => do

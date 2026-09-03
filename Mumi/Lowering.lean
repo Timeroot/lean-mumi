@@ -133,6 +133,28 @@ def squashName (n : Name) : Name := n ++ `_squash
 def reroot (memberName newRoot ctorName : Name) : Name :=
   ctorName.replacePrefix memberName newRoot
 
+/-- The last component of a name, for building a readable auxiliary name.  A
+component the elaborator added rather than the writer -- `T._shadow`, which is
+what `lower` leaves behind a member of a block it took over -- is stepped past,
+so that nesting over a lowered type still names the type the writer wrote. -/
+def shortName : Name → String
+  | .str p s => if s.startsWith "_" then shortName p else s
+  | _        => "nested"
+
+/--
+Unfold definitions at the head of `e` until an inductive type constructor is
+exposed, so that a nested occurrence behind an `abbrev` is still seen.  Gives up
+after a few steps, and on anything that is not a definition.
+-/
+def exposeInduct (e : Expr) : MetaM Expr := do
+  let mut e := e
+  for _ in *...8 do
+    let .const n _ := e.getAppFn | return e
+    if let some (.inductInfo _) := (← getEnv).find? n then return e
+    let some e' ← unfoldDefinition? e | return e
+    e := e'
+  return e
+
 /-- `List.replicate` as an `Array`. -/
 private def rep {α : Type _} (n : Nat) (a : α) : Array α := (List.replicate n a).toArray
 
