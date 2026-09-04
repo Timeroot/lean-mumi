@@ -8443,25 +8443,29 @@ theorem R.elim {h : P} {q : Q h} (r : R h q) : ∃ h' q', r = R.mk h' q' := by
 
 end PeelAllProps
 
-/-! ## When one proposition's recursor cannot be stated
+/-! ## A proposition whose constructor forgets one of its fields
 
-The propositions of a block share one erased recursion, so the recursors that
-come out of it come out together.  A constructor with a data field its
-conclusion does not reach has no well-formedness to put that field back at its
-subtype with, and there is no minor premise to be had for it -- but the members
-that reach that constructor are the only ones that need one.  So the group is
-asked again without them, and everything else keeps its recursor.
+A data field that a `Prop` constructor's conclusion does not reach is a field
+with no well-formedness in reach to put it back at its subtype with: the
+constructor carries no `_wf` of its own, and its own type says nothing about
+where the field came from.  What rescues it is that such a field is exactly what
+stops the proposition from being a subsingleton, so the recursor eliminates only
+into `Prop` and every minor premise for it is a proof.  Two proofs of one
+proposition are definitionally equal, so any element of the field's type serves
+as well as the one that was meant, and the recursion is stated with whichever one
+the search behind `Inhabited` turns up.
 -/
 
-namespace HeldBack
+namespace Forgotten
 
-/-! `Big` is the member that cannot be stated: `hs` is a `List T` its conclusion
-says nothing about.  `Watch` recurses into `Big`, so its own recursor would want
-`Big`'s motive and it goes down with it.  `Ok` recurses into nothing but itself
-and is unaffected.
+/-! `Big` is the member with the forgotten field: `hs` is a `List T` its
+conclusion says nothing about.  `Watch` recurses into `Big`, so it would go down
+with it.  Both keep their recursors, and so does `Ok`, which recurses into
+nothing but itself.
 
-`Big` cannot leave the block the way a peeled proposition does, either -- `Watch`
-names it, so it is still something the block is stated with. -/
+None of the three leaves the block the way a peeled proposition does -- `Watch`
+names `Big`, so they are still what the block is stated with, and they share the
+one erased recursion. -/
 
 mutual
 inductive T : Type where
@@ -8478,32 +8482,84 @@ inductive Watch : T → Prop where
 end
 
 /--
-info: @Ok.rec : ∀ {motive : (a : List T) → Ok a → Prop},
-  motive [] Ok.nil →
-    (∀ (t : T) (ts : List T) (a : Ok ts), motive ts a → motive (t :: ts) ⋯) → ∀ {a : List T} (h : Ok a), motive a h
+info: @Ok.rec : ∀ {motive_1 : (a : List T) → Ok a → Prop} {motive_2 : (a : T) → Big a → Prop}
+  {motive_3 : (a : T) → Watch a → Prop},
+  motive_1 [] Ok.nil →
+    (∀ (t : T) (ts : List T) (a : Ok ts), motive_1 ts a → motive_1 (t :: ts) ⋯) →
+      (∀ (cs hs : List T) (h : Ok cs), motive_1 cs h → motive_2 (T.node cs h) ⋯) →
+        motive_2 T.leaf Big.leaf →
+          (∀ (t : T) (h : Big t), motive_2 t h → motive_3 t ⋯) → ∀ {a : List T} (h : Ok a), motive_1 a h
 -/
 #guard_msgs in
 #check @Ok.rec
 
-/-- error: Unknown constant `HeldBack.Big.rec` -/
-#guard_msgs in
-#check HeldBack.Big.rec
+/-! `Big` and `Watch` get the recursor over the whole block, the one whose `Prop`
+motives can mention the value the recursion produced at the data member.  Its
+minor for `Big.node` binds `hs` and offers no `hs_ih`: that is the one thing the
+forgotten field costs. -/
 
-/-- error: Unknown constant `HeldBack.Watch.rec` -/
+/--
+info: @Big.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Big a → Prop}
+  {motive_3 : (a : T) → motive_1 a → Watch a → Prop} {motive_4 : List T → Sort u_1}
+  {motive_5 : (a : List T) → motive_4 a → Ok a → Prop}
+  (node : (cs : List T) → (a : Ok cs) → (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_1 (T.node cs a))
+  (leaf : motive_1 T.leaf)
+  (node_1 :
+    ∀ (cs hs : List T) (h : Ok cs) (cs_ih : motive_4 cs) (h_ih : motive_5 cs cs_ih h),
+      motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯)
+  (leaf_1 : motive_2 T.leaf leaf Big.leaf)
+  (mk : ∀ (t : T) (h : Big t) (t_ih : motive_1 t), motive_2 t t_ih h → motive_3 t t_ih ⋯) (nil : motive_4 [])
+  (cons : (head : T) → (tail : List T) → motive_1 head → motive_4 tail → motive_4 (head :: tail))
+  (nil_1 : motive_5 [] nil Ok.nil)
+  (cons_1 :
+    ∀ (t : T) (ts : List T) (a : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_4 ts),
+      motive_5 ts ts_ih a → motive_5 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
+  {a : T} (t : Big a), motive_2 a (T.rec node leaf node_1 leaf_1 mk nil cons nil_1 cons_1 a) t
+-/
 #guard_msgs in
-#check HeldBack.Watch.rec
+#check @Big.rec
 
-/-! The data member is untouched by any of this, and so are the constructors of
-the propositions that lost their recursor. -/
+/--
+info: @Watch.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Big a → Prop}
+  {motive_3 : (a : T) → motive_1 a → Watch a → Prop} {motive_4 : List T → Sort u_1}
+  {motive_5 : (a : List T) → motive_4 a → Ok a → Prop}
+  (node : (cs : List T) → (a : Ok cs) → (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_1 (T.node cs a))
+  (leaf : motive_1 T.leaf)
+  (node_1 :
+    ∀ (cs hs : List T) (h : Ok cs) (cs_ih : motive_4 cs) (h_ih : motive_5 cs cs_ih h),
+      motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯)
+  (leaf_1 : motive_2 T.leaf leaf Big.leaf)
+  (mk : ∀ (t : T) (h : Big t) (t_ih : motive_1 t), motive_2 t t_ih h → motive_3 t t_ih ⋯) (nil : motive_4 [])
+  (cons : (head : T) → (tail : List T) → motive_1 head → motive_4 tail → motive_4 (head :: tail))
+  (nil_1 : motive_5 [] nil Ok.nil)
+  (cons_1 :
+    ∀ (t : T) (ts : List T) (a : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_4 ts),
+      motive_5 ts ts_ih a → motive_5 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
+  {a : T} (t : Watch a), motive_3 a (T.rec node leaf node_1 leaf_1 mk nil cons nil_1 cons_1 a) t
+-/
+#guard_msgs in
+#check @Watch.rec
+
+/-! The data member and the constructors are untouched by any of this. -/
 
 /--
 info: @T.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : List T → Sort u_1} →
-    ((cs : List T) → (a : Ok cs) → motive_2 cs → motive_1 (T.node cs a)) →
-      motive_1 T.leaf →
-        motive_2 [] →
-          ((head : T) → (tail : List T) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-            (t : T) → motive_1 t
+  {motive_2 : (a : T) → motive_1 a → Big a → Prop} →
+    {motive_3 : (a : T) → motive_1 a → Watch a → Prop} →
+      {motive_4 : List T → Sort u_1} →
+        {motive_5 : (a : List T) → motive_4 a → Ok a → Prop} →
+          (node : (cs : List T) → (a : Ok cs) → (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_1 (T.node cs a)) →
+            (leaf : motive_1 T.leaf) →
+              (∀ (cs hs : List T) (h : Ok cs) (cs_ih : motive_4 cs) (h_ih : motive_5 cs cs_ih h),
+                  motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯) →
+                motive_2 T.leaf leaf Big.leaf →
+                  (∀ (t : T) (h : Big t) (t_ih : motive_1 t), motive_2 t t_ih h → motive_3 t t_ih ⋯) →
+                    (nil : motive_4 []) →
+                      (cons : (head : T) → (tail : List T) → motive_1 head → motive_4 tail → motive_4 (head :: tail)) →
+                        motive_5 [] nil Ok.nil →
+                          (∀ (t : T) (ts : List T) (a : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_4 ts),
+                              motive_5 ts ts_ih a → motive_5 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
+                            (t : T) → motive_1 t
 -/
 #guard_msgs in
 #check @T.rec
@@ -8516,7 +8572,32 @@ info: @T.rec : {motive_1 : T → Sort u_1} →
 #guard_msgs in
 #check @Watch.mk
 
-end HeldBack
+/-! The recursors are the ones the tactics reach for, so `induction` and `cases`
+work on the member with the forgotten field.  Both bind it -- it is a field like
+any other to whoever is taking the constructor apart; what the recursion cannot
+do is hand back an induction hypothesis at it, and neither does Lean's own
+recursor for such a proposition. -/
+
+theorem Big.elim {t : T} (h : Big t) : t = .leaf ∨ ∃ cs, ∃ hc : Ok cs, t = .node cs hc := by
+  induction h with
+  | node cs hs hc => exact .inr ⟨cs, hc, rfl⟩
+  | leaf => exact .inl rfl
+
+theorem Watch.toBig {t : T} (h : Watch t) : Big t := by
+  induction h with
+  | mk t hb => exact hb
+
+/-! `Ok` keeps the recursion over the propositions alone, which is the one to
+reach for when there is no data to produce -- and taken by hand it wants every
+proposition's motive at once, which is what sharing one erased recursion means. -/
+
+theorem Ok.elim {cs : List T} (h : Ok cs) : cs = [] ∨ cs ≠ [] :=
+  Ok.rec (motive_2 := fun _ _ => True) (motive_3 := fun _ _ => True)
+    (motive_1 := fun cs _ => cs = [] ∨ cs ≠ [])
+    (.inl rfl) (fun t ts _ _ => .inr (by simp))
+    (fun _ _ _ _ => trivial) trivial (fun _ _ _ => trivial) h
+
+end Forgotten
 
 /-! ## Injectivity of the constructors
 

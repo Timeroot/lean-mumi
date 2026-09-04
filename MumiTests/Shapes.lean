@@ -721,15 +721,20 @@ end Twin
 
 `Chain.Pair.cons` has a field `u : Chain α` that the conclusion never mentions.
 A `Prop` constructor carries no well-formedness of its own -- only what its
-indices bring it -- so there is nothing to put `u` back at its subtype with, and
-hence nothing to state that minor premise with.
+indices bring it -- so there is nothing to put `u` back at its subtype with.
 
-This is the expensive failure.  The `Prop` members share one erased recursion,
-so one such constructor costs the block every `Prop` recursor; and the map back
-to the originals goes through those recursors, so the copies stay visible too.
-The writer's own type still works, and the block is still sound -- it is the
-*presentation* that degrades.  Note in particular that `R.mk` is not the name of
-`R`'s second constructor here.
+What the field can be put back at instead is any element of its type at all.  A
+field the conclusion forgets is exactly what makes the proposition fail to be a
+subsingleton, so every motive over it is `Prop`-valued and everything the
+recursion has to build for it is a proof; two proofs of one proposition are
+definitionally equal, so the element that was meant and the element that was
+found are interchangeable.
+
+What the recursion cannot do is say anything *about* the substitute, so the minor
+premise binds `u` and offers no induction hypothesis at it -- which is what Lean's
+own recursor for such a proposition does too, having no motive to offer one from.
+Everything else survives: the `Prop` recursors are stated, the map back to the
+originals goes through, and the recursor over the whole block is stated as well.
 -/
 
 namespace Stray
@@ -745,29 +750,50 @@ inductive Chain.Pair (α : Type) : Chain α → Prop where
 inductive PChain (α : Type) where
   | mk (c : Chain α) (h : c.Pair)
 
-/--
-trace: [Mumi.indind] no recursor over the whole block: `MumiTests.Shapes.Stray.R.nested_Pair_3.cons` has a field `u` whose type is a data member of the block, and its conclusion does not say that `u` is well formed.  A `Prop` constructor carries no well-formedness of its own -- only what its indices bring -- so there is nothing to state the recursor's minor premise with.
-[Mumi.indind] no bridge back to the originals: `MumiTests.Shapes.Stray.R.nested_Pair_3.cons` has a field `u` whose type is a data member of the block, and its conclusion does not say that `u` is well formed.  A `Prop` constructor carries no well-formedness of its own -- only what its indices bring -- so there is nothing to state the recursor's minor premise with.
--/
-#guard_msgs(whitespace := lax) in
+-- nothing is held back any more, so the trace has nothing to say
+#guard_msgs in
 set_option trace.Mumi.indind true in
 inductive R where
   | tip
   | mk (x : PChain R)
 
+-- the minor for `cons` binds `u` and stops there: there is no `u_ih`
 /--
 info: @R.rec : {motive_1 : R → Sort u_1} →
-  {motive_2 : R.nested_PChain_1 → Sort u_1} →
-    {motive_3 : R.nested_Chain_2 → Sort u_1} →
-      motive_1 R.tip →
-        ((x : R.nested_PChain_1) → motive_2 x → motive_1 (R._nested_mk x)) →
-          ((c : R.nested_Chain_2) → (h : R.nested_Pair_3 c) → motive_3 c → motive_2 (R.nested_PChain_1.mk c h)) →
-            motive_3 R.nested_Chain_2.nil →
-              ((a : R) → (t : R.nested_Chain_2) → motive_1 a → motive_3 t → motive_3 (R.nested_Chain_2.cons a t)) →
-                (t : R) → motive_1 t
+  {motive_2 : PChain R → Sort u_1} →
+    {motive_3 : Chain R → Sort u_1} →
+      {motive_4 : (a : Chain R) → motive_3 a → Chain.Pair R a → Prop} →
+        motive_1 R.tip →
+          ((x : PChain R) → motive_2 x → motive_1 (R.mk x)) →
+            ((c : Chain R) →
+                (h : Chain.Pair R c) → (c_ih : motive_3 c) → motive_4 c c_ih h → motive_2 (PChain.mk c h)) →
+              (nil : motive_3 Chain.nil) →
+                (cons : (a : R) → (t : Chain R) → motive_1 a → motive_3 t → motive_3 (Chain.cons a t)) →
+                  motive_4 Chain.nil nil ⋯ →
+                    (∀ (a : R) (t u : Chain R) (h : Chain.Pair R t) (a_ih : motive_1 a) (t_ih : motive_3 t),
+                        motive_4 t t_ih h → motive_4 (Chain.cons a t) (cons a t a_ih t_ih) ⋯) →
+                      (t : R) → motive_1 t
 -/
 #guard_msgs in
 #check @R.rec
+
+/-! The constructor is the writer's own, and so is what it takes. -/
+
+/-- info: R.mk : PChain R → R -/
+#guard_msgs in
+#check @R.mk
+
+/--
+info: @Chain.Pair.cons : ∀ {α : Type} (a : α) (t u : Chain α), Chain.Pair α t → Chain.Pair α (Chain.cons a t)
+-/
+#guard_msgs in
+#check @Chain.Pair.cons
+
+/-! And the stand-in is invisible, because it is a proof: `cons` at one `u` and
+`cons` at another are the same term. -/
+
+example (a : R) (t u v : Chain R) (h : Chain.Pair R t) :
+    Chain.Pair.cons a t u h = Chain.Pair.cons a t v h := rfl
 
 end Stray
 

@@ -4364,6 +4364,56 @@ def atParts (parts : Array (Expr × Expr)) (ih fieldTy : Expr) : MetaM Expr := d
       mkLambdaFVars zs (mkAppN ih (zs ++ fnd))
 
 /--
+Some element of a field's type, if a constructor can be applied to make one.
+
+This is what stands in for a *stray* field -- a data field of a `Prop`
+constructor that the conclusion says nothing about, and so has no
+well-formedness in reach to put it back at its subtype with.  Standing in for it
+is sound because everything built out of such a field is a proof, and two proofs
+of one proposition are definitionally equal: the constructor applied to any
+element of the field's type *is* the constructor applied to the element that was
+meant.  Callers are the ones who know they are building a proof, so they are the
+ones who ask for this.
+
+The search is the one `Inhabited` would do -- a constructor whose own fields can
+be filled in turn -- with the block's own members included, since their visible
+constructors are `def`s into the subtype and are in the environment by the time
+any of this runs.  It is bounded by `fuel` rather than by anything cleverer: a
+member that needs a deep term to reach is a member the writer is unlikely to
+have meant as a throwaway, and answering `none` costs only the recursor that
+would have been built.
+
+An infinitary field is a function into the member, and is answered under its own
+binders by a constant function.
+-/
+partial def someElem? (b : Block) (ty : Expr) (fuel : Nat) : MetaM (Option Expr) := do
+  if let .some inst ← trySynthInstance (← mkAppM ``Inhabited #[ty]) then
+    return some (← mkAppOptM ``Inhabited.default #[ty, inst])
+  if fuel == 0 then return none
+  forallTelescope ty fun ys concl => do
+    let .const n _ := concl.getAppFn | return none
+    let some i := b.memberIdx? n | return none
+    let args := concl.getAppArgs
+    if args.size < b.numParams then return none
+    for cc in b.members[i]!.ctors do
+      unless (← getEnv).contains cc.name do continue
+      -- the parameters are the ones the field's own type is at; only the fields
+      -- after them are looked for, and a later one's type may name an earlier
+      let mut ty ← instantiateForall cc.type (args.extract 0 b.numParams)
+      let mut vals := args.extract 0 b.numParams
+      let mut ok := true
+      repeat
+        let .forallE _ d body _ := ← whnf ty | break
+        let some a ← someElem? b d (fuel - 1) | ok := false; break
+        vals := vals.push a
+        ty := body.instantiate1 a
+      -- an indexed family is inhabited at some indices and not others, so what
+      -- the constructor happens to conclude at has to be the index in hand
+      if ok && (← isDefEq ty concl) then
+        return some (← mkLambdaFVars ys (mkAppN (b.cst cc.name) vals))
+    return none
+
+/--
 Put back a data field of a `Prop` constructor at its subtype, or say why there
 is none to put back.
 
@@ -4400,12 +4450,65 @@ premise the caller is building is stated over the writer's own types, so the
 field has to be paired back up with its well-formedness before it can be passed
 on.  An infinitary field is a function into the member, and is rebuilt under its
 own binders.
+
+`strayOk` says that what is being built is a proof, and so that a field with no
+well-formedness in reach may be answered with `someElem?` instead of the value
+the recursion was handed.  Only a caller can know that -- it is the caller that
+holds the term's type -- and a caller that does not say so gets the failure and
+the reason for it, as before.
 -/
 def rebuiltField (b : Block) (cc : CtorSpec) (parts : Array (Expr × Expr))
-    (x subTy : Expr) : MetaM Expr := do
-  let pf ← dataFieldPart b cc parts x subTy
-  b.withRecTarget subTy fun zs mm args =>
-    mkLambdaFVars zs (b.sMk mm args (mkAppN x zs) (mkAppN pf zs))
+    (x subTy : Expr) (strayOk := false) : MetaM Expr := do
+  let rebuild (pf : Expr) : MetaM Expr :=
+    b.withRecTarget subTy fun zs mm args =>
+      mkLambdaFVars zs (b.sMk mm args (mkAppN x zs) (mkAppN pf zs))
+  if strayOk then
+    if let some pf ← observing? (dataFieldPart b cc parts x subTy) then
+      return ← rebuild pf
+    if let some e ← someElem? b subTy 4 then
+      return e
+  rebuild (← dataFieldPart b cc parts x subTy)
+
+/--
+Which of a `Prop` constructor's fields nothing else in the constructor mentions.
+
+A field like this is one the recursion has to stand an arbitrary element in for:
+its well-formedness would have to come from the conclusion, and the conclusion
+does not know it exists.  Standing one in costs the minor premise its induction
+hypothesis at that field, since the substitute is not the value the recursion was
+handed and there is nothing to be said about it.
+
+The positions are worked out here, once, because the minor premise's *type* and
+the term that fills it are built far apart and have to agree about them down to
+the last one.  Disagreeing is not a type error where the mistake is: it is an
+application at the wrong arity, a long way from either half.
+
+Hence the test is what it is.  Asking `dataFieldPart` directly would name more
+fields, but it is asked under a substitution on one side and not on the other and
+does not always give the same answer twice; occurring in the constructor's own
+type is a property of the constructor and of nothing else.  A field the
+conclusion mentions in a way `dataFieldPart` still cannot use falls through to
+the failure it always had.
+
+A field a *later field's type* mentions is not stray either, even if the
+conclusion forgets it: substituting for it would leave that later field's type
+talking about a value no longer there.
+-/
+def strayFields (b : Block) (i : Nat) (c : CtorSpec) (ps : Array Expr) :
+    MetaM (Array Nat) := do
+  unless b.members[i]!.isProp do return #[]
+  let kinds := b.fieldKinds c.kinds
+  forallTelescope (← b.ctorType c ps) fun xs concl => do
+    let mut out : Array Nat := #[]
+    for z in *...kinds.size do
+      let .recur mm := kinds[z]! | continue
+      -- a proof field is never put back at a subtype, so it is never in question
+      if b.members[mm]!.isProp then continue
+      let fv := xs[z]!.fvarId!
+      if concl.hasAnyFVar (· == fv) then continue
+      if ← xs.anyM fun y => return (← inferType y).hasAnyFVar (· == fv) then continue
+      out := out.push z
+    return out
 
 /--
 `X.toOrigPre` and `X.toOrig` for a `Prop` copy.
@@ -4495,7 +4598,8 @@ def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
                   -- says which original index the deleted one stands for
                   unless b.members[m]!.dropped.isEmpty do
                     throwError "A deleted index reached the denesting bridge"
-                  let real ← rebuiltField b cc parts xs[z]! subTys[z]!
+                  -- the bridge is a theorem, so a stray field may be stood in for
+                  let real ← rebuiltField b cc parts xs[z]! subTys[z]! (strayOk := true)
                   let realTy ← b.withRecTarget subTys[z]! fun zs mm args =>
                     mkForallFVars zs (mkAppN (b.memberCst mm) args)
                   vals := vals.push (← c.toImage real realTy)
@@ -5545,7 +5649,11 @@ def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
                     | .recur m =>
                       if !b.members[m]!.isProp then
                         -- a data field, rebuilt at the subtype from the proof in hand
-                        vals := vals.push (← rebuiltField b cc parts xs[z]! subTys[z]!)
+                        -- a minor lands in the motive's universe, and a stray
+                        -- field may be stood in for exactly when that is `Prop`
+                        vals := vals.push <| ←
+                          rebuiltField b cc parts xs[z]! subTys[z]!
+                            (strayOk := s.lvl == .zero)
                       else
                         -- the field itself passes through; its hypothesis is the
                         -- raw one at the well-formedness the rebuild used
@@ -6268,6 +6376,15 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
     let mpos (i : Nat) : Nat := (ord.findIdx? (· == i)).getD 0
     let ctors := b.ctorsOf ord
     let minorPos (n : Name) : Nat := (ctors.findIdx? (·.2.name == n)).getD 0
+    -- a field a `Prop` constructor's conclusion forgets has no well-formedness to
+    -- be put back at its subtype with, so the recursion stands an arbitrary
+    -- element of its type in.  That is sound here because every `Prop` member of
+    -- this recursor has a slot, and a member with a slot gets a `Prop`-valued
+    -- motive, so the minor is building a proof -- and two proofs of one
+    -- proposition are definitionally equal, which is exactly what says the
+    -- substitute does as well as the value that was meant
+    let strayList : Array (Array Nat) ← ctors.mapM fun (i, c) => BridgeCtx.strayFields b i c ps
+    let strayAt (n : Name) : Array Nat := strayList[minorPos n]!
     -- this is a recursor over the whole block, one motive per member and one
     -- minor per constructor, so it is named the way Lean names its own: two
     -- members can share a constructor's short name, and a repeated binder is
@@ -6314,9 +6431,12 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
           forallTelescope (← b.ctorType c ps) fun xs concl => do
             let kinds := b.fieldKinds c.kinds
             -- a data constructor's proof fields get a hypothesis too, which is
-            -- the whole point; a `Prop` constructor has none to give one to
+            -- the whole point; a `Prop` constructor has none to give one to, and
+            -- a field its conclusion forgets gets none either -- see `strayFields`
+            let stray := strayAt c.name
             let ihPos := (Array.range kinds.size).filter fun k =>
-              if b.members[i]!.isProp then kinds[k]! matches .recur _ else hasIh kinds[k]!
+              !stray.contains k &&
+                if b.members[i]!.isProp then kinds[k]! matches .recur _ else hasIh kinds[k]!
             let mut names : Array Name := #[]
             for k in ihPos do
               names := names.push (ihName (← xs[k]!.fvarId!.getUserName))
@@ -6476,6 +6596,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
           unless fields.size == kinds.size do
             throwError "The inversion gave {fields.size} fields for `{cc.name}`"
           let parts ← BridgeCtx.wfParts (sg.subst.apply wc)
+          let strayHere := strayAt cc.name
           let delS := delAt.map fun (pre, d, ih) => (sg.subst.apply pre, d, ih)
           -- the fields line up one for one with the constructor's own, which is
           -- what the count above has just made sure of
@@ -6530,8 +6651,19 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
               else if let some (_, d, dih) := delS.find? (·.1 == f) then
                 -- the field is the deleted index itself, so it is already real
                 -- and already has its hypothesis; there is no call to find it at
+                if strayHere.contains z then
+                  throwError "`{cc.name}` has a field `{f}` that the minor premise was \
+                    stated without a hypothesis for, and that the recursion has one for \
+                    after all"
                 vals := vals.push d
                 ihs := ihs.push (← ihValOf dih)
+              else if strayHere.contains z then
+                -- the conclusion forgets the field, so there is no putting it back
+                -- at its subtype and no hypothesis to offer at it; the minor was
+                -- stated without one, and what goes in its place is sound because
+                -- the minor is building a proof
+                vals := vals.push <| ←
+                  BridgeCtx.rebuiltField b cc parts f subTys[z]! (strayOk := true)
               else
                 let pf ← BridgeCtx.dataFieldPart b cc parts f subTys[z]!
                 -- the *sub* reading, which is the one that still names an index
