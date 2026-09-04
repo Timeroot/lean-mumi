@@ -797,12 +797,21 @@ example (a : R) (t u v : Chain R) (h : Chain.Pair R t) :
 
 end Stray
 
-/-! ## Not rescued: a `Prop` indexed by another `Prop`
+/-! ## A `Prop` indexed by another `Prop`
 
-`A.Q` is indexed by a proof of `A.P`.  Erasure sends the data members to one
-mutual inductive and the propositions to a second one, and no member of a mutual
-inductive may appear in another's arity -- so the erasure buys one crossing,
-from data to `Prop`, and not a second one from `Prop` to `Prop`.
+`A.Q` is indexed by a proof of `A.P`, and no member of a mutual inductive may
+appear in another's arity.  But nothing says the propositions have to be one
+mutual inductive: they are erased, and nothing is defined by recursion across
+the whole of them, so they are declared as several, one after another, and one
+indexed by another comes second and names its pre-type as freely as it names
+the data.  The only shape still refused is the genuine cycle, two propositions
+each in the other's arity.
+
+The constructor carries both proofs, and the second is about the first, so the
+well-formedness has to say something that mentions a field the pre-term does
+not keep.  What it says is `P._pre x ∧ ∀ h, Q._pre x h`, which is the
+existential the pair really is, written so that proof irrelevance closes both
+directions definitionally.
 -/
 
 namespace PropIdx
@@ -820,22 +829,35 @@ inductive A.Q (α : Type) : (x : A α) → A.P α x → Prop where
 inductive QA (α : Type) where
   | mk (x : A α) (h : x.P) (q : A.Q α x h)
 
-/--
-error: (kernel) unknown constant 'MumiTests.Shapes.PropIdx.R'
-
-Hint: The arity of `MumiTests.Shapes.PropIdx.R.nested_Q_4` mentions `MumiTests.Shapes.PropIdx.R.nested_P_3`, which is another proposition of the block.  Erasure sends the data members to one mutual inductive and the propositions to a second one, and a mutual inductive's members may not appear in one another's arities -- so a proposition may be indexed by the block's data, but not by another of its propositions.  One that nothing else in the block is stated with leaves the block before this rule reaches it; this one is named by something that stays
----
-trace: [Mumi.rescue] the induction-inductive retry, over the originals did not take: The arity of `MumiTests.Shapes.PropIdx.R.nested_Q_4` mentions `MumiTests.Shapes.PropIdx.R.nested_P_3`, which is another proposition of the block.  Erasure sends the data members to one mutual inductive and the propositions to a second one, and a mutual inductive's members may not appear in one another's arities -- so a proposition may be indexed by the block's data, but not by another of its propositions.  One that nothing else in the block is stated with leaves the block before this rule reaches it; this one is named by something that stays
-[Mumi.rescue] lowering the denested block did not take: Cannot denest
-      A.P R x
-
-    Note: the type of `MumiTests.Shapes.PropIdx.A.P` still mentions a member of the block once its parameters are fixed
-[Mumi.rescue] the induction-inductive retry did not take: The arity of `MumiTests.Shapes.PropIdx.R.nested_Q_4` mentions `MumiTests.Shapes.PropIdx.R.nested_P_3`, which is another proposition of the block.  Erasure sends the data members to one mutual inductive and the propositions to a second one, and a mutual inductive's members may not appear in one another's arities -- so a proposition may be indexed by the block's data, but not by another of its propositions.  One that nothing else in the block is stated with leaves the block before this rule reaches it; this one is named by something that stays
--/
-#guard_msgs(whitespace := lax) in
-set_option trace.Mumi.rescue true in
 inductive R where
   | mk (x : QA R)
+
+/-! Both propositions get a motive, and both are stated over the originals: the
+copies denesting made of `A`, `A.P` and `A.Q` are gone by the time the recursor
+is named. -/
+
+/--
+info: @R.rec : {motive_1 : R → Sort u_1} →
+  {motive_2 : QA R → Sort u_1} →
+    {motive_3 : A R → Sort u_1} →
+      {motive_4 : (a : A R) → motive_3 a → A.P R a → Prop} →
+        {motive_5 : (x : A R) → (a : A.P R x) → motive_3 x → A.Q R x a → Prop} →
+          ((x : QA R) → motive_2 x → motive_1 (R.mk x)) →
+            ((x : A R) →
+                (h : A.P R x) →
+                  (q : A.Q R x h) →
+                    (x_ih : motive_3 x) → motive_4 x x_ih h → motive_5 x h x_ih q → motive_2 (QA.mk x h q)) →
+              (mk_2 : (a : R) → motive_1 a → motive_3 (A.mk a)) →
+                motive_3 A.nil →
+                  (∀ (a : R) (a_ih : motive_1 a), motive_4 (A.mk a) (mk_2 a a_ih) ⋯) →
+                    (∀ (a : R) (a_ih : motive_1 a), motive_5 (A.mk a) ⋯ (mk_2 a a_ih) ⋯) → (t : R) → motive_1 t
+-/
+#guard_msgs in
+#check @R.rec
+
+/-! And the `Prop`-typed index says nothing, `Prop` being proof-irrelevant. -/
+
+example (x : A R) (h h' : A.P R x) : A.Q R x h = A.Q R x h' := rfl
 
 end PropIdx
 

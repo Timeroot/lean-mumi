@@ -1062,6 +1062,56 @@ def Block.wfOfSub (b : Block) (y subTy : Expr) : MetaM Expr :=
     mkForallFVars ys (mkApp (b.wfApp i args) (mkAppN y ys))
 
 /--
+The earlier erased fields that field `k`'s conjunct still names, in field order.
+
+A proposition of the block may be indexed by another, and then a constructor
+that carries a proof of the second carries a proof of the first for it to be
+about: `QA.mk (x : A α) (h : x.P) (q : A.Q α x h)`.  Both fields are erased, so
+neither is a binder of the pre-term, and `q`'s conjunct is left naming `h` with
+nothing to bind it.  These are the fields that have to be quantified away, and
+the type of one may name another, so the answer is closed under that too.
+-/
+def erasedDeps (kinds : Array FieldKind) (imgs : Array (Option Expr))
+    (subTys : Array Expr) (conj : Expr) (k : Nat) : Array Nat := Id.run do
+  let mut out : Array Nat := #[]
+  for q in *...k do
+    let j := k - 1 - q
+    if kinds[j]! == .erased then
+      if let some x := imgs[j]! then
+        if x.isFVar && (conj.containsFVar x.fvarId! ||
+            out.any (subTys[·]!.containsFVar x.fvarId!)) then
+          out := out.push j
+  return out.reverse
+
+/-- The binders `Block.erasedConj` puts on, one at a time so each is at the ones before it. -/
+partial def Block.closeErased (b : Block) (imgs : Array (Option Expr)) (subTys : Array Expr)
+    (deps : Array Nat) (q : Nat) (olds news : Array Expr) (conj : Expr) : MetaM Expr := do
+  if h : q < deps.size then
+    let x := imgs[deps[q]]!.get!
+    let ty := (← b.preTy subTys[deps[q]]!).replaceFVars olds news
+    withLocalDeclD (← x.fvarId!.getUserName) ty fun y =>
+      b.closeErased imgs subTys deps (q + 1) (olds.push x) (news.push y) conj
+  else
+    mkForallFVars news (conj.replaceFVars olds news)
+
+/--
+What an erased field's conjunct says: the proposition the field carried, closed
+over the earlier erased fields it names.
+
+`h : x.P` and `q : A.Q α x h` give `P._pre x ∧ ∀ h, Q._pre x h`, which is the
+existential the two fields really are -- `∃ h, Q._pre x h` -- written so that
+both directions hold definitionally rather than by an elimination.  Proof
+irrelevance is what buys that: the constructor proves the second conjunct with
+`fun _ => q`, since its own `h` and the bound one are proofs of the same
+proposition and so the same proof, and a recursor's alternative gets its `q`
+back by applying the conjunct to the `h` it has already recovered.
+-/
+def Block.erasedConj (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Expr))
+    (subTys : Array Expr) (k : Nat) : MetaM Expr := do
+  let conj ← b.preTy subTys[k]!
+  b.closeErased imgs subTys (erasedDeps kinds imgs subTys conj k) 0 #[] #[] conj
+
+/--
 The conjuncts of a constructor's well-formedness, in the order `_wf` states
 them: the recursive fields first, each saying its sub-term is well formed, then
 the erased fields, each being the proposition that field carried, and last the
@@ -1069,8 +1119,8 @@ equations `eqs`, one for each index the constructor builds rather than takes as
 a field.  `projConj` reads positions off this order, so it is the same one
 `recPositions` and the erased fields come out in.
 
-`imgs` is indexed by field and only has to be filled in at the recursive
-positions; that is the shape `withPreFields` hands over.
+`imgs` is indexed by field and only has to be filled in at the recursive and
+erased positions; that is the shape `withPreFields` hands over.
 -/
 def Block.wfConjs (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Expr))
     (subTys : Array Expr) (eqs : Array Expr := #[]) : MetaM (Array Expr) := do
@@ -1078,7 +1128,7 @@ def Block.wfConjs (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Ex
   for k in recPositions kinds do
     conjs := conjs.push (← b.wfOfSub imgs[k]!.get! subTys[k]!)
   for k in *...kinds.size do
-    if kinds[k]! == .erased then conjs := conjs.push (← b.preTy subTys[k]!)
+    if kinds[k]! == .erased then conjs := conjs.push (← b.erasedConj kinds imgs subTys k)
   return conjs ++ eqs
 
 /--
@@ -1192,7 +1242,11 @@ partial def withPreFieldsAux {α} [Inhabited α] (b : Block) (kinds : Array Fiel
     let ty ← inferType x
     let sub ← b.subTy olds news ty
     if kinds[i]!.isDropped then
-      withPreFieldsAux b kinds xs (i + 1) olds news (imgs.push none) (subTys.push sub) k
+      -- an erased field is its own image: nothing of it survives into the
+      -- pre-term, but a later field's type may name it and the well-formedness
+      -- has to be able to say which field that was
+      let img := if kinds[i]! == .erased then some x else none
+      withPreFieldsAux b kinds xs (i + 1) olds news (imgs.push img) (subTys.push sub) k
     else
       let pre ← b.preTy sub
       if pre == ty then
@@ -1212,7 +1266,8 @@ def withPreFields {α} [Inhabited α] (b : Block) (kinds : Array FieldKind) (xs 
   withPreFieldsAux b kinds xs 0 olds news #[] #[] k
 
 /-- The pre-world stand-ins of the fields a constructor keeps, in order. -/
-def keptImages (imgs : Array (Option Expr)) : Array Expr := imgs.filterMap id
+def keptImages (kinds : Array FieldKind) (imgs : Array (Option Expr)) : Array Expr :=
+  (keptPositions kinds).map (imgs[·]!.get!)
 
 /--
 The real terms an alternative reads a member's deleted indices at, in arity
@@ -1361,7 +1416,7 @@ def Block.withAlt {α} [Inhabited α] (b : Block) (i : Nat) (c : CtorSpec) (ps :
         let mut cIdxs := cconcl.getAppArgs.map (·.replaceFVars olds news)
         for q in *...dropped.size do
           cIdxs := cIdxs.set! (b.numParams + dropped[q]!) dvals[q]!
-        let head := mkAppN (b.cst (b.preOf c.name)) (ps ++ keptImages imgs)
+        let head := mkAppN (b.cst (b.preOf c.name)) (ps ++ keptImages kinds imgs)
         withLocalDeclD `w (mkApp (b.wfApp i cIdxs) head) fun wc => do
           let recPos := recPositions kinds
           let eqs ← b.builtEqs i kinds cconcl olds news dvals
@@ -1390,7 +1445,11 @@ def Block.withAlt {α} [Inhabited α] (b : Block) (i : Nat) (c : CtorSpec) (ps :
             | .plain => real := real.push (imgs[j]!).get!
             | .deleted .. => real := real.push xs[j]!
             | .erased =>
-              real := real.push (projConj conjs wc (recPos.size + nera))
+              -- the conjunct was closed over the earlier erased fields it
+              -- named, and those have just been recovered, so it opens again
+              let pr := projConj conjs wc (recPos.size + nera)
+              let deps := erasedDeps kinds imgs subTys (← b.preTy subTys[j]!) j
+              real := real.push (mkAppN pr (deps.map (real[·]!)))
               nera := nera + 1
           let realIdxs := cconcl.getAppArgs.map (·.replaceFVars xs real)
           k { kinds, xs, olds, news, imgs, subTys, cIdxs, realIdxs, head, wc, conjs, real,
@@ -1710,8 +1769,15 @@ structure Plan where
   where that difference is spent.
   -/
   preIsHeterogeneous : Bool := false
-  /-- The `Prop` members' pre-types, as one mutual inductive. -/
-  prePropInds : Array InductiveType
+  /--
+  The `Prop` members' pre-types, in the layers `propLayers` worked out: one
+  mutual inductive per layer, declared in this order, so that a proposition
+  indexed by another has the other's pre-type in scope already.  Almost always
+  one layer, which is every block in which no proposition indexes another.
+  -/
+  prePropInds : Array (Array InductiveType)
+  /-- Which members each of those layers holds, in the same order. -/
+  propLayers : Array (Array Nat) := #[]
   /-- `X._wf`, per data member: its name, type and `X._pre.rec` body. -/
   wfDecls : Array (Name × Expr × Expr)
   /-- The members denesting added, and the original application each copies. -/
@@ -1932,39 +1998,82 @@ def markPeeled (r : Raw) : TermElabM Raw := do
   return { r with peeled := cand }
 
 /--
-The arity checks that depend on which members are still in the block.
+The arity check that depends on which members are still in the block, and the
+order the propositions' pre-types are declared in.
 
-Both of them are about the propositions, and both are things the peel can carry
-away, so unlike the rest of the arity checks they wait until the constructors
-have been read -- whether anything else is stated with a member is a fact about
-those.  What is left over by then really is out of reach.
+It is about the propositions, and it is a thing the peel can carry away, so
+unlike the rest of the arity checks it waits until the constructors have been
+read -- whether anything else is stated with a member is a fact about those.
+What is left over by then really is out of reach.
 
-The second one is the interesting one.  The `Prop` members' erased pre-types are
-one mutual inductive too, and no member of a mutual inductive may appear in
-another's arity, so a `Prop` indexed by a `Prop` runs into the very rule the
-block as a whole is here to lift, one level up: the erasure buys one crossing,
-from the data to the propositions, and not a second from the propositions to
-themselves.
+The interesting part is the order.  No member of a mutual inductive may appear
+in another's arity, so a `Prop` indexed by another `Prop` cannot share a pre-type
+block with it -- but it does not have to.  The propositions are erased and
+nothing is defined by recursion across the whole of them, so they may be
+declared as *several* mutual inductives one after another, and one declared
+later may name an earlier one's pre-type in its arity as freely as any of them
+may name the data.  So this works out which proposition has to be declared
+before which and hands back the layers.
+
+A member's arity naming another puts it in a strictly later layer; a member's
+*constructors* naming another only puts it no earlier, since a mutual inductive's
+members may mention each other in their constructors and an earlier layer is in
+scope anyway.  Two propositions that are genuinely induction-inductive with each
+other -- each arity naming the other, or one arity naming a proposition whose
+constructors name it back -- want both at once, and that is the one thing refused.
 -/
-def checkStayingArities (names : Array Name) (arities : Array Expr)
-    (isProp : Array Bool) : TermElabM Unit := owning do
+def propLayers (names : Array Name) (arities : Array Expr) (ctorTypes : Array (Array Expr))
+    (isProp : Array Bool) : TermElabM (Array (Array Nat)) := owning do
   -- erasure keeps the data and rebuilds it as a subtype of what it kept, so a
   -- block with nothing but propositions gives it nothing to work on
   if isProp.all id then
     throwError "Every member of this induction-inductive block is a proposition; there is \
       nothing for the erasure to keep"
   let propIdxs := (Array.range names.size).filter (isProp[·]!)
-  for j in propIdxs do
-    for c in arities[j]!.getUsedConstants do
-      if c != names[j]! then
-        if let some k := propIdxs.find? (names[·]! == c) then
-          throwError "The arity of `{names[j]!}` mentions `{names[k]!}`, which is another \
-            proposition of the block.  Erasure sends the data members to one mutual \
-            inductive and the propositions to a second one, and a mutual inductive's \
-            members may not appear in one another's arities -- so a proposition may be \
-            indexed by the block's data, but not by another of its propositions.  One \
-            that nothing else in the block is stated with leaves the block before this \
-            rule reaches it; this one is named by something that stays"
+  if propIdxs.isEmpty then return #[]
+  let propAt (c : Name) : Option Nat := propIdxs.find? (names[·]! == c)
+  -- `j` must be strictly later than everything its arity names, and no earlier
+  -- than everything its constructors name
+  let after : Array (Array Nat) := propIdxs.map fun j =>
+    arities[j]!.getUsedConstants.filterMap fun c =>
+      if c == names[j]! then none else propAt c
+  let notBefore : Array (Array Nat) := propIdxs.map fun j =>
+    ctorTypes[j]!.foldl (init := #[]) fun acc t =>
+      t.getUsedConstants.foldl (init := acc) fun acc c =>
+        match propAt c with
+        | some k => if k == j || acc.contains k then acc else acc.push k
+        | none   => acc
+  let pos (j : Nat) : Nat := (propIdxs.findIdx? (· == j)).getD 0
+  let mut layer : Array Nat := Array.replicate propIdxs.size 0
+  -- each round can only lift a member above one more of the ones it waits for,
+  -- so a chain of `n` settles in `n` rounds and anything still moving is a cycle
+  for _ in *...(propIdxs.size + 1) do
+    let mut grew := false
+    for q in *...propIdxs.size do
+      let mut l := layer[q]!
+      for k in after[q]! do
+        l := max l (layer[pos k]! + 1)
+      for k in notBefore[q]! do
+        l := max l layer[pos k]!
+      if l != layer[q]! then
+        layer := layer.set! q l
+        grew := true
+    unless grew do
+      let depth := layer.foldl max 0
+      return (Array.range (depth + 1)).map fun d =>
+        (Array.range propIdxs.size).filterMap fun q =>
+          if layer[q]! == d then some propIdxs[q]! else none
+  -- name a member that is still moving, and the one it is waiting for
+  let q := ((Array.range propIdxs.size).find? (!after[·]!.isEmpty)).getD 0
+  let j := propIdxs[q]!
+  let k := after[q]![0]!
+  throwError "The arity of `{names[j]!}` mentions `{names[k]!}`, which is another \
+    proposition of the block, and `{names[k]!}` cannot be declared first: the two are \
+    induction-inductive with each other.  Erasure sends the data members to one mutual \
+    inductive and the propositions to a series of them, so a proposition may be indexed \
+    by the block's data and by any proposition that can be declared before it -- but the \
+    erasure buys one crossing, from the data to the propositions, and not a second \
+    from the propositions to themselves"
 
 /--
 The checks the arities alone settle.
@@ -2422,7 +2531,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     let levels := keep.map (levels[·]!)
     let dataIdxs := (Array.range n).filter (!isProp[·]!)
     let propIdxs := (Array.range n).filter (isProp[·]!)
-    checkStayingArities r.names arities isProp
+    let propLayers ← propLayers r.names arities ctorTypes isProp
     restub r us arities ctorTypes
     -- a skeleton is enough for `Block.mentions`, `Block.preOf` and `Block.memberIdx?`
     let skeleton : Block :=
@@ -2491,7 +2600,9 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     discard <| ctorOrder b (← dataOrder b)
     -- the pre-world, still against scratch axioms
     let preDataInds ← preInds b us b.dataIdxs (stubCtors := true)
-    let prePropInds ← preInds b us b.propIdxs (stubCtors := false)
+    -- one layer at a time, so that a layer's arities find the pre-types of the
+    -- ones before it already stubbed
+    let prePropInds ← propLayers.mapM fun layer => preInds b us layer (stubCtors := false)
     -- `X._wf`, one conjunct per recursive field and one per erased proof field.
     -- All the data members share one set of motives and minors, so each `X._wf`
     -- is a different projection of the very same recursion.
@@ -2550,10 +2661,10 @@ def prepareCore (r : Raw) : TermElabM Plan := do
                     conjs := conjs.push (← b.ihConj ihs[q]! padVal subTys[recPos[q]!]!)
                   for k in *...xs.size do
                     if kinds[k]! == .erased then
-                      conjs := conjs.push (← b.preTy subTys[k]!)
+                      conjs := conjs.push (← b.erasedConj kinds imgs subTys k)
                   for (_, eq) in ← b.builtEqs i kinds concl olds news dels do
                     conjs := conjs.push eq
-                  mkLambdaFVars (keptImages imgs ++ ihs) <|
+                  mkLambdaFVars (keptImages kinds imgs ++ ihs) <|
                     ← mkLambdaFVars (dels ++ pads) (foldConj conjs 0)
           wfMinors := wfMinors.push minor
       let mut wfDecls : Array (Name × Expr × Expr) := #[]
@@ -2580,8 +2691,8 @@ def prepareCore (r : Raw) : TermElabM Plan := do
               return (type, value)
         wfDecls := wfDecls.push (wfName m.name, type, value)
       return wfDecls
-    return { block := b, preDataInds, prePropInds, wfDecls, preIsHeterogeneous, peeled
-             peeledIdxs := r.peeled
+    return { block := b, preDataInds, prePropInds, propLayers, wfDecls, preIsHeterogeneous,
+             peeled, peeledIdxs := r.peeled
              copies := r.copies.map fun (n, e) => (n, normLevels blockNames lvls e) }
 where
   /-- Every field of a data constructor is `plain`, `recur` or `erased`. -/
@@ -2831,8 +2942,23 @@ def withRaw {α} (views : Array InductiveView) (vars : Array Expr := #[])
       ctorTypes := ctorTypes.set! i tys
       for j in *...tys.size do
         stubAxiom views[i]!.ctors[j]!.declName tys[j]!
-    for i in propIdxs do
-      ctorTypes := ctorTypes.set! i (← views[i]!.ctors.mapM (elabCtorType views views[i]! ·))
+    -- then the propositions, each stubbed as it is read, and one indexed by
+    -- another read second: `Better : (Γ : C) → Ok Γ → Prop` has `Better.nil :
+    -- Better .nil .nil`, whose second index is `Ok.nil` and resolves to
+    -- nothing until `Ok`'s own constructors are there.  A cycle of arities is
+    -- refused later, by `propLayers`; here it just keeps the written order
+    let mut pending := propIdxs
+    while !pending.isEmpty do
+      let ready := pending.filter fun i =>
+        !arities'[i]!.getUsedConstants.any fun c =>
+          pending.any fun j => j != i && names[j]! == c
+      let ready := if ready.isEmpty then #[pending[0]!] else ready
+      for i in ready do
+        let tys ← views[i]!.ctors.mapM (elabCtorType views views[i]! ·)
+        ctorTypes := ctorTypes.set! i tys
+        for j in *...tys.size do
+          stubAxiom views[i]!.ctors[j]!.declName tys[j]!
+      pending := pending.filter (!ready.contains ·)
     -- a member whose resulting type was left out was guessed at `Type`.  Now
     -- that the fields are known, check the guess was big enough: a field the
     -- guess does not fit would have been elaborated against the wrong universe,
@@ -5480,11 +5606,19 @@ def addNiceGrandRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawGrand : Nat → Na
           mkLambdaFVars zs (mkAppN nmots[iq]! args)
         c.addRestated i lp (niceOf i) nmots nmins goal recCst rmotives rminors
 
-/-- The positions of the fields a `Prop` member's recursor gets a hypothesis for. -/
-def propRecPositions (b : Block) (kinds : Array FieldKind) : Array Nat :=
+/--
+The positions of the fields a `Prop` member's recursor gets a hypothesis for.
+
+`grp` is the layer the recursion runs over.  A proposition indexed by another is
+declared in a layer of its own, after it, and a field of that earlier layer's
+type is a field of some other inductive as far as this recursion is concerned --
+so there is no hypothesis to be had about it, exactly as there is none about a
+field of any type outside the block.
+-/
+def propRecPositions (b : Block) (grp : Array Nat) (kinds : Array FieldKind) : Array Nat :=
   (recPositions kinds).filter fun z =>
     match kinds[z]! with
-    | .recur m => b.members[m]!.isProp
+    | .recur m => b.members[m]!.isProp && grp.contains m
     | _        => false
 
 /--
@@ -5515,15 +5649,17 @@ structure PropRecs where
   us : List Name
 
 /--
-Read that off the block, or `none` if there is nothing here to build.
+Read that off one layer of the block's propositions, or `none` if there is
+nothing there to build.  `rep` is any member of the layer, which is how the
+layer is named: what the pre-block's recursor runs over is the rest of it.
 
 `lp` is a level parameter the writer cannot have taken; the recursor carries one
 of its own exactly when the pre-block's does, which is to say when it eliminates
 large.
 -/
-def propRecs? (b : Block) (lp : Name) (keep : Array Nat) : MetaM (Option PropRecs) := do
-  if b.propIdxs.isEmpty then return none
-  let info ← getConstInfoRec (mkRecName (preName b.members[b.propIdxs[0]!]!.name))
+def propRecs? (b : Block) (lp : Name) (rep : Nat) (keep : Array Nat) :
+    MetaM (Option PropRecs) := do
+  let info ← getConstInfoRec (mkRecName (preName b.members[rep]!.name))
   let pIdxs ← b.propsBehind info
   let kIdxs := pIdxs.filter (keep.contains ·)
   if kIdxs.isEmpty then return none
@@ -5583,7 +5719,7 @@ def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
           forallTelescope (← instantiateForall (b.toRaw cc.type) ps) fun xs concl => do
             let kinds := b.fieldKinds cc.kinds
             let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (propRecPositions b kinds).map fun z => (`ih, fun _ => do
+              (propRecPositions b s.pIdxs kinds).map fun z => (`ih, fun _ => do
                 let r? ← b.withRecTarget? (← inferType xs[z]!) fun ys m args =>
                   mkForallFVars ys
                     (mkAppN motives[ppos m]! (b.idxArgs args ++ #[mkAppN xs[z]! ys]))
@@ -5628,7 +5764,7 @@ def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
                 mkLambdaFVars args (mkConst ``PUnit.unit [lvl])
               continue
           let kinds := b.fieldKinds cc.kinds
-          let ihPos := propRecPositions b kinds
+          let ihPos := propRecPositions b s.pIdxs kinds
           out := out.push <| ←
             forallBoundedTelescope (← inferType ms[q]!) (kinds.size + ihPos.size)
               fun args concl => do
@@ -5656,9 +5792,12 @@ def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
                             (strayOk := s.lvl == .zero)
                       else
                         -- the field itself passes through; its hypothesis is the
-                        -- raw one at the well-formedness the rebuild used
+                        -- raw one at the well-formedness the rebuild used -- and
+                        -- there is one only if this recursion runs over that
+                        -- member, which an earlier layer's it does not
                         vals := vals.push xs[z]!
-                        nihs := nihs.push (← atParts parts ihs[nihs.size]! ty)
+                        if s.pIdxs.contains m then
+                          nihs := nihs.push (← atParts parts ihs[nihs.size]! ty)
                   mkLambdaFVars (args ++ ws) (mkAppN minors[qm]! (vals ++ nihs))
         return out
       for q in *...kIdxs.size do
@@ -5727,7 +5866,7 @@ def addNicePropRec (c : BridgeCtx) (s : PropRecs) (j : Nat) (rawRec : Nat → Na
           forallTelescope (← c.unCopy (← instantiateForall cc.type ps)) fun xs concl => do
             let kinds := b.fieldKinds cc.kinds
             let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (propRecPositions b kinds).map fun z => (`ih, fun _ => do
+              (propRecPositions b s.pIdxs kinds).map fun z => (`ih, fun _ => do
                 let .recur mm := kinds[z]! | throwError "Not a recursive field"
                 forallTelescope (← inferType xs[z]!) fun zs tgt => do
                   mkForallFVars zs (mkAppN nmotives[ppos mm]!
@@ -5764,7 +5903,7 @@ def addNicePropRec (c : BridgeCtx) (s : PropRecs) (j : Nat) (rawRec : Nat → Na
             let nf := kinds.size
             out := out.push <| ←
               forallBoundedTelescope (← inferType ms[q]!)
-                  (nf + (propRecPositions b kinds).size) fun args concl => do
+                  (nf + (propRecPositions b s.pIdxs kinds).size) fun args concl => do
                 let xs := args.extract 0 nf
                 let body := mkAppN nminors[q]!
                   ((← c.toImages xs) ++ args.extract nf args.size)
@@ -6786,7 +6925,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
                   -- one the alternative was handed a binder for instead: what
                   -- comes out is the constructor's reading and what is owed is
                   -- the binder's, and the transport carries the whole of it
-                  mkLambdaFVars (keptImages imgs ++ dels ++ dIhs ++ #[wc])
+                  mkLambdaFVars (keptImages kinds imgs ++ dels ++ dIhs ++ #[wc])
                     (← b.transportBuilt i a
                       (fun mIdxs vargs w => bundleType i mIdxs vargs head w)
                       fun mIdxs vargs w => do
@@ -7554,9 +7693,12 @@ def emit (p : Plan) : TermElabM Unit := do
   -- 1. the data members' pre-types
   let preRecUnivs ← emitPreData p
 
-  -- 2. the `Prop` members' pre-types
-  unless p.prePropInds.isEmpty do
-    addInd b.us b.numParams p.prePropInds
+  -- 2. the `Prop` members' pre-types, layer by layer: a proposition indexed by
+  -- another is declared after it, since no member of one mutual inductive may
+  -- appear in another's arity
+  for layer in p.prePropInds do
+    unless layer.isEmpty do
+      addInd b.us b.numParams layer
 
   -- 3. the well-formedness predicates
   for (name, type, value) in p.wfDecls do
@@ -7598,7 +7740,11 @@ def emit (p : Plan) : TermElabM Unit := do
       for k in recPositions c.kinds do
         proofs := proofs.push (← b.propImage xs[k]! (← inferType xs[k]!))
       for k in *...xs.size do
-        if c.kinds[k]! == .erased then proofs := proofs.push xs[k]!
+        if c.kinds[k]! == .erased then
+          -- the field proves its conjunct at whatever the closure binds, since
+          -- those are proofs of the very propositions the fields it names are
+          let deps := erasedDeps c.kinds (imgs.map some) subTys (← b.preTy subTys[k]!) k
+          proofs := proofs.push (← mkLambdaFVars (deps.map (xs[·]!)) xs[k]!)
       for (_, eq) in eqs do
         proofs := proofs.push (← mkEqRefl eq.appFn!.appArg!)
       let kept := (keptPositions c.kinds).map (imgs[·]!)
@@ -7773,7 +7919,7 @@ def emit (p : Plan) : TermElabM Unit := do
                     ihAt := ihAt.push (xs[k]!.fvarId!, ih)
                   let core := mkAppN minors[b.minorIdx dIdxs c.name]!
                     (real ++ ihs.map (·.replaceFVars xs real))
-                  mkLambdaFVars (keptImages imgs ++ dels ++ dIhs ++ #[wc])
+                  mkLambdaFVars (keptImages kinds imgs ++ dels ++ dIhs ++ #[wc])
                     (← b.transportBuilt i a
                       (fun mIdxs vargs w =>
                         return mkAppN motives[dpos[i]!]!
@@ -7824,7 +7970,17 @@ def emit (p : Plan) : TermElabM Unit := do
   -- a group of `Prop` members has to be closed under recursion into another of
   -- them: the recursion is one recursion, and a member left out of it has only
   -- the trivial motive, which is nothing to state an induction hypothesis with
-  let closeUp (seed : Array Nat) : Array Nat := Id.run do
+  --
+  -- the propositions are not always one mutual inductive either: one indexed by
+  -- another is declared in a layer after it, and each layer recurses on its
+  -- own.  Which members share a layer is read back off the pre-recursors, so
+  -- that nothing here has to be told how the plan split them
+  let mut propGroups : Array (Array Nat) := #[]
+  for j in b.propIdxs do
+    unless propGroups.any (·.contains j) do
+      propGroups := propGroups.push
+        (← b.propsBehind (← getConstInfoRec (mkRecName (preName b.members[j]!.name))))
+  let closeUp (grp seed : Array Nat) : Array Nat := Id.run do
     let mut keep := seed
     let mut grew := true
     while grew do
@@ -7833,10 +7989,10 @@ def emit (p : Plan) : TermElabM Unit := do
         for cc in b.members[j]!.ctors do
           for k in b.fieldKinds cc.kinds do
             if let .recur m := k then
-              if b.members[m]!.isProp && !keep.contains m then
+              if b.members[m]!.isProp && grp.contains m && !keep.contains m then
                 keep := keep.push m; grew := true
     return keep
-  let propKeep : Array Nat := closeUp <| b.propIdxs.filter fun j =>
+  let wanted (j : Nat) : Bool :=
     !copyNames.contains b.members[j]!.name && (!grandOnly || grandFree.contains j)
   -- not every `Prop` member has a derivable recursor: a constructor with a data
   -- field the conclusion's indices do not reach cannot have that field put back
@@ -7844,31 +8000,35 @@ def emit (p : Plan) : TermElabM Unit := do
   -- constructor costs the whole group its recursor -- but the group does not
   -- have to be all of them.  The data members are unaffected and the `Prop`
   -- members keep their constructors either way
-  let buildProps (keep : Array Nat) : TermElabM (Option BridgeCtx.PropRecs) := do
-    let some s ← BridgeCtx.propRecs? b lp keep | return none
+  let buildProps (rep : Nat) (keep : Array Nat) : TermElabM (Option BridgeCtx.PropRecs) := do
+    let some s ← BridgeCtx.propRecs? b lp rep keep | return none
     let ok ← attempted `Mumi.indind "no recursor for the `Prop` members" <|
       forallBoundedTelescope b.members[0]!.type b.numParams fun ps _ =>
         BridgeCtx.addPropRecs { b, ps, copies := #[] } s rawRecName
     return if ok then some s else none
-  let propRecs? ← match ← buildProps propKeep with
-    | some s => pure (some s)
-    | none => do
+  let mut propRecs : Array BridgeCtx.PropRecs := #[]
+  for grp in propGroups do
+    let gKeep := closeUp grp (grp.filter wanted)
+    if gKeep.isEmpty then continue
+    match ← buildProps grp[0]! gKeep with
+    | some s => propRecs := propRecs.push s
+    | none =>
       -- whose fault it was, asked one member at a time and with the environment
       -- put back after each, so that asking costs nothing.  What fails is a
       -- constructor of a kept member and nothing else, so a member that stands
       -- on its own stands in any group it is closed in, and the ones that stand
       -- can simply be unioned back together and built once
       let mut ok : Array Nat := #[]
-      for j in propKeep do
+      for j in gKeep do
         if ok.contains j then continue
-        let grp := closeUp #[j]
+        let sub := closeUp grp #[j]
         let env ← getEnv
-        let stands := (← buildProps grp).isSome
+        let stands := (← buildProps grp[0]! sub).isSome
         setEnv env
-        if stands then ok := ok ++ grp.filter (!ok.contains ·)
-      if ok.isEmpty || ok.size == propKeep.size then pure none
-      else buildProps ok
-  let propBuilt := propRecs?.isSome
+        if stands then ok := ok ++ sub.filter (!ok.contains ·)
+      unless ok.isEmpty || ok.size == gKeep.size do
+        if let some s ← buildProps grp[0]! ok then propRecs := propRecs.push s
+  let propBuilt := !propRecs.isEmpty
 
   -- 10. the bridge back to the originals
   unless p.copies.isEmpty do
@@ -7941,19 +8101,18 @@ def emit (p : Plan) : TermElabM Unit := do
         -- exactly when their recursion runs into one.  Each is a leaf: nothing
         -- else is stated in terms of it, so one that will not go across costs
         -- only its own plain name and the block keeps everything else
-        if propBuilt then
-          if let some s := propRecs? then
-            for j in s.kIdxs do
-              if (c.copyAt? j).isSome || grandDone.contains j then continue
-              discard <| attempted `Mumi.indind
-                s!"`{recName j}` does not restate over the originals" <|
-                c.addNicePropRec s j rawRecName (recName j)
+        for s in propRecs do
+          for j in s.kIdxs do
+            if (c.copyAt? j).isSome || grandDone.contains j then continue
+            discard <| attempted `Mumi.indind
+              s!"`{recName j}` does not restate over the originals" <|
+              c.addNicePropRec s j rawRecName (recName j)
     unless built do
       -- a `Prop` recursor that never mentioned a copy is already the one that was
       -- wanted, and only owes the plain name; one that does mention a copy has no
       -- statement over the originals to fall back on, and stays unnamed
       if propBuilt then
-        for j in (propRecs?.map (·.kIdxs)).getD #[] do
+        for j in propRecs.flatMap (·.kIdxs) do
           if copyNames.contains b.members[j]!.name then continue
           if rawRecName j == recName j then continue
           let info ← getConstInfo (rawRecName j)

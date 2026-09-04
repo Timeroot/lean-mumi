@@ -5359,15 +5359,14 @@ inductive Tm10 : (Γ : Ctx10) → Ty10 Γ → Type where
 end
 
 -- induction-induction through `Prop` twice over.  Erasure buys the one crossing
--- from data to `Prop`; the propositions it lands on are a mutual block of their
--- own, and that block is subject to the same arity rule the whole exercise is
--- here to get around.  `Ctx6.dep` is what keeps `Sub6` in the block: without it
--- nothing else is stated with `Sub6` and it would leave rather than be refused,
--- which is the `PeelPropOnProp` case below.
-/--
-error: The arity of `Sub6` mentions `Ty6`, which is another proposition of the block.  Erasure sends the data members to one mutual inductive and the propositions to a second one, and a mutual inductive's members may not appear in one another's arities -- so a proposition may be indexed by the block's data, but not by another of its propositions.  One that nothing else in the block is stated with leaves the block before this rule reaches it; this one is named by something that stays
--/
-#guard_msgs in
+-- from data to `Prop`, and the propositions it lands on are subject to the same
+-- arity rule the whole exercise is here to get around -- but only if they are
+-- one mutual inductive, and nothing makes them one.  Nothing recurses across
+-- the whole of them, so they are declared in layers instead, and `Sub6._pre`
+-- comes after `Ty6._pre` and may name it in its arity as freely as it names the
+-- data.  `Ctx6.dep` is what keeps `Sub6` in the block at all: without it
+-- nothing else is stated with `Sub6` and it would be peeled, which is the
+-- `PeelPropOnProp` case below.
 mutual
 inductive Ctx6 : Type where
   | nil : Ctx6
@@ -5378,6 +5377,22 @@ inductive Ty6 : Ctx6 → Prop where
 inductive Sub6 : (Γ : Ctx6) → Ty6 Γ → Prop where
   | id : Sub6 Γ A
 end
+
+-- each layer recurses on its own, so each proposition still gets its recursor.
+-- What a later layer does not get is an induction hypothesis for a field of an
+-- earlier one: `A` is a field of another inductive as far as `Sub6._pre.rec` is
+-- concerned, and Lean's own recursor for a pair of inductives declared one
+-- after the other says no more
+/--
+info: @Sub6.rec : {motive : (Γ : Ctx6) → (a : Ty6 Γ) → Sub6 Γ a → Sort u_1} →
+  ({Γ : Ctx6} → {A : Ty6 Γ} → motive Γ A ⋯) → {Γ : Ctx6} → {a : Ty6 Γ} → (h : Sub6 Γ a) → motive Γ a h
+-/
+#guard_msgs in
+#check @Sub6.rec
+
+-- and the index says nothing, `Prop` being proof-irrelevant: two readings of
+-- `Sub6` at the same context are the same type, definitionally
+example (Γ : Ctx6) (A A' : Ty6 Γ) : Sub6 Γ A = Sub6 Γ A' := rfl
 
 -- nothing but propositions.  Erasure keeps the data and rebuilds it as a
 -- subtype of what it kept, so a block with no data member gives it nothing to
