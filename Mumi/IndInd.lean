@@ -416,12 +416,26 @@ structure MemberSpec where
   Which of the member's indices the pre-type drops, counting from the first one
   after the parameters: exactly those whose type mentions the block.
 
-  Empty unless the block indexes data by data, which is the one thing that puts
-  a member of the erased pre-block into another's arity.  A `Prop` member's
-  indices are never dropped -- the propositions become a *second* pre-block,
-  declared after the data one, so their arities may name it freely.
+  Empty unless the block indexes data by something of the block: by data, which
+  puts a member of the erased pre-block into another's arity, or by one of the
+  propositions, whose pre-types are declared after the data pre-block and so are
+  not there to be named either.  A `Prop` member's indices are never dropped --
+  the propositions become a *second* pre-block, declared after the data one, so
+  their arities may name it freely.
   -/
   dropped : Array Nat := #[]
+  /--
+  Which of the deleted indices a recursion hands a hypothesis about: those at a
+  *data* member's type, in the same numbering as `dropped` and a subset of it.
+
+  A deleted index is not in the pre-term the recursion runs on, so a hypothesis
+  about it could not have been computed and is handed in instead.  One at a
+  proposition gets none: the recursion is over the data, and a proof is no more
+  something to recurse at than a field of a type outside the block -- just as a
+  proposition of a later layer gets no hypothesis about a field of an earlier
+  one.
+  -/
+  dropIhs : Array Nat := #[]
   ctors  : Array CtorSpec
   deriving Inhabited
 
@@ -630,6 +644,51 @@ def deletedField? (kinds : Array FieldKind) (pos : Nat) : Option Nat := Id.run d
       if p == pos then return some k
   return none
 
+/--
+`FieldKind.ihTarget?` with the propositions taken out: the member a minor
+premise's hypothesis about this field is stated at, and `none` where there is
+none.
+
+A deleted index at one of the block's propositions is the difference.  It is
+still a field the pre-constructor drops, but the recursion has no hypothesis to
+hand about it -- see `MemberSpec.dropIhs` -- so the minor is given none either.
+-/
+def Block.ihTarget? (b : Block) (k : FieldKind) : Option Nat :=
+  match k.ihTarget? with
+  | some m => if b.members[m]!.isProp then none else some m
+  | none   => none
+
+@[inherit_doc Block.ihTarget?]
+def Block.hasIh (b : Block) (k : FieldKind) : Bool := (b.ihTarget? k).isSome
+
+/-- `ihPositions` with the propositions taken out; see `Block.ihTarget?`. -/
+def Block.ihPositions (b : Block) (kinds : Array FieldKind) : Array Nat := Id.run do
+  let mut out := #[]
+  for i in *...kinds.size do
+    if b.hasIh kinds[i]! then out := out.push i
+  return out
+
+/-- Which entries of `Block.dropIdxs` and `Block.dropArgs` carry a hypothesis:
+see `MemberSpec.dropIhs`. -/
+def Block.ihSlots (b : Block) (i : Nat) : Array Nat := Id.run do
+  let m := b.members[i]!
+  let mut out : Array Nat := #[]
+  for q in *...m.dropped.size do
+    if m.dropIhs.contains m.dropped[q]! then out := out.push q
+  return out
+
+/-- The deleted indices that carry a hypothesis, out of all of them in arity
+order; `dels` is a `Block.dropIdxs` or `Block.dropArgs`. -/
+def Block.ihDrops (b : Block) (i : Nat) (dels : Array Expr) : Array Expr :=
+  (b.ihSlots i).map (dels[·]!)
+
+/-- Whether the deleted index at arity position `p` of member `i` is one of the
+block's propositions, which is the same question as whether it goes without a
+hypothesis; see `MemberSpec.dropIhs`.  Asked only of positions that really are
+deleted, since every other one answers `true` for want of an entry. -/
+def Block.dropAtProp (b : Block) (i p : Nat) : Bool :=
+  !b.members[i]!.dropIhs.contains p
+
 /-- Whether the pre-type of the member `i` keeps the argument at position `k`. -/
 def Block.keepsArg (b : Block) (i k : Nat) : Bool :=
   k < b.numParams || !b.members[i]!.dropped.contains (k - b.numParams)
@@ -767,20 +826,44 @@ still `Ctx._pre n` -- and the readers do not agree about what binder `n` is, so
 what comes back is abstracted over the kept indices and every reader says which
 ones it means.  `Block.dropTysAt` is that, and is what everyone actually calls.
 
-They may name nothing *else*, which is what `checkDropped` is for and why one
-lambda over the kept indices is the whole of the dependency: no dropped index
-binds for another, so this stays an array and never becomes a telescope.
+A dropped index's pre-type may equally name a dropped index *before* it, and
+then the array is a telescope: `Tm : (Γ : Ctx) → Ok Γ → Type` drops both of its
+indices, and the second is stated at the first.  So each entry is abstracted
+over the earlier dropped indices as well, and stays a function of them after
+`Block.dropTysAt` has said which kept ones it means.  `withDropTele` and
+`mkDropForall` are for readers that want them as binders; a reader that has
+their values applies each entry to the ones before it.
 -/
 def Block.dropTys (b : Block) (i : Nat) (ps : Array Expr) : MetaM (Array Expr) := do
   if b.members[i]!.dropped.isEmpty then return #[]
-  forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ =>
-    (b.dropIdxs i idxs).mapM fun x => do
-      mkLambdaFVars (b.keptIdxs i idxs) (b.tr (← inferType x))
+  forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ => do
+    let ds := b.dropIdxs i idxs
+    ds.mapIdxM fun q x => do
+      mkLambdaFVars (b.keptIdxs i idxs ++ ds.extract 0 q) (b.tr (← inferType x))
 
 /-- `Block.dropTys` read at a member's indices, of which only the kept ones are
-looked at.  `idxs` counts from the member's first index, not its first argument. -/
+looked at; each entry is still a function of the dropped indices before it.
+`idxs` counts from the member's first index, not its first argument. -/
 def Block.dropTysAt (b : Block) (i : Nat) (ps idxs : Array Expr) : MetaM (Array Expr) := do
   return (← b.dropTys i ps).map (·.beta (b.keptIdxs i idxs))
+
+/--
+Bind a member's dropped indices, one at a time, each at its type read at the
+ones before it.
+
+`Block.dropTysAt` leaves that dependency standing, so anything that wants the
+dropped indices as binders rather than as values has to put them on in order.
+-/
+partial def withDropTele {α} [Inhabited α] (dts : Array Expr) (q : Nat) (acc : Array Expr)
+    (k : Array Expr → MetaM α) : MetaM α := do
+  if h : q < dts.size then
+    withLocalDeclD `d (dts[q].beta acc) fun d => withDropTele dts (q + 1) (acc.push d) k
+  else
+    k acc
+
+/-- `∀ dropped, e`, the dropped indices bound in order; see `withDropTele`. -/
+def mkDropForall (dts : Array Expr) (e : Expr) : MetaM Expr :=
+  withDropTele dts 0 #[] fun ds => mkForallFVars ds e
 
 /-- `ts[0] → .. → ts[n-1] → e`, with nothing depending on anything. -/
 def mkArrows (ts : Array Expr) (e : Expr) : Expr :=
@@ -800,7 +883,8 @@ def Block.wfMotiveLevel (b : Block) (ps : Array Expr) : MetaM Level := do
   for i in b.dataIdxs do
     -- a level names no binder, so the arity's own are as good as anyone's
     let ls ← forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ => do
-      (← b.dropTysAt i ps idxs).mapM getLevel
+      withDropTele (← b.dropTysAt i ps idxs) 0 #[] fun ds =>
+        ds.mapM fun d => do getLevel (← inferType d)
     for x in ls do
       l := (mkLevelMax l x).normalize
   return l
@@ -820,12 +904,13 @@ def wfPad (l : Level) : Array Expr × Array Expr :=
   else (#[mkConst ``PUnit [l]], #[mkConst ``PUnit.unit [l]])
 
 /--
-A member's indices as `X._wf` binds them: a deleted one at its pre-type, and
-every other one the arity's own binder, unchanged.
+A member's indices with each deleted one rebound at its pre-type, and every other
+one the arity's own binder, unchanged.
 
 Only the deleted ones are rebound, at the kept ones the arity already gave.  The
 rest are left alone so that no substitution is needed: what they might have
 mentioned is a deleted index, and `prepareCore` refuses that.
+
 -/
 def Block.withValIdxs {α} [Inhabited α] (b : Block) (i : Nat) (ps idxs : Array Expr)
     (k : Array Expr → MetaM α) : MetaM α := do
@@ -835,7 +920,7 @@ def Block.withValIdxs {α} [Inhabited α] (b : Block) (i : Nat) (ps idxs : Array
   let mut decls : Array (Name × (Array Expr → MetaM Expr)) := #[]
   for q in *...dropped.size do
     let n ← idxs[dropped[q]!]!.fvarId!.getUserName
-    decls := decls.push (n, fun _ => pure dts[q]!)
+    decls := decls.push (n, fun prev => pure (dts[q]!.beta prev))
   withLocalDeclsD decls fun ds => do
     let mut out := idxs
     for q in *...dropped.size do
@@ -1121,12 +1206,21 @@ a field.  `projConj` reads positions off this order, so it is the same one
 
 `imgs` is indexed by field and only has to be filled in at the recursive and
 erased positions; that is the shape `withPreFields` hands over.
+
+A recursive field is closed over the erased fields it names for the same reason
+an erased one is: `Tm.wk (Γ) (h : Ok Γ) (t : Tm Γ h)` recurses at a context an
+erased proof is part of, and the pre-constructor does not bind that proof, so the
+conjunct about `t` would name nothing.  Quantifying is not a weakening -- the
+proposition the proof was of is a conjunct of its own, and past that any two
+proofs of it are the same proof.
 -/
 def Block.wfConjs (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Expr))
     (subTys : Array Expr) (eqs : Array Expr := #[]) : MetaM (Array Expr) := do
   let mut conjs : Array Expr := #[]
   for k in recPositions kinds do
-    conjs := conjs.push (← b.wfOfSub imgs[k]!.get! subTys[k]!)
+    let conj ← b.wfOfSub imgs[k]!.get! subTys[k]!
+    conjs := conjs.push <|
+      ← b.closeErased imgs subTys (erasedDeps kinds imgs subTys conj k) 0 #[] #[] conj
   for k in *...kinds.size do
     if kinds[k]! == .erased then conjs := conjs.push (← b.erasedConj kinds imgs subTys k)
   return conjs ++ eqs
@@ -1145,6 +1239,17 @@ it to get from the argument the recursion was given back to the term the
 constructor wrote, and at a real `Tm.lam` the two are the same term, so the
 proof is `rfl` and the transport computes away.
 
+A built index at one of the block's *propositions* gets no equation, and wants
+none.  `Tm.top : Tm .nil .nil` builds both, and the second is a proof: the
+argument `Tm._wf` was handed and the term the constructor wrote are two proofs of
+one proposition, so they are equal already, and definitionally so.  The equation
+could not even be stated -- the argument's type is the proposition read at the
+*first* argument, and the term's is the proposition read at the term the first
+equation is about, and an `And` is not a `Σ`, so the one conjunct cannot lean on
+the other.  Nothing is lost by leaving it out: proof irrelevance makes that
+argument of `X._wf` invisible, which is the same reason `Tm Γ h` and `Tm Γ h'`
+are the same type.
+
 `dvals` are the pre-world readings of the member's deleted indices in arity
 order, and `olds`/`news` move the constructor's fields across.  Each answer says
 which of those indices it is about.
@@ -1155,7 +1260,7 @@ def Block.builtEqs (b : Block) (i : Nat) (kinds : Array FieldKind) (concl : Expr
   let idxArgs := b.idxArgs concl.getAppArgs
   let mut out : Array (Nat × Expr) := #[]
   for q in *...dropped.size do
-    if (deletedField? kinds dropped[q]!).isSome then continue
+    if (deletedField? kinds dropped[q]!).isSome || b.dropAtProp i dropped[q]! then continue
     out := out.push (q, ← mkEq ((b.tr idxArgs[dropped[q]!]!).replaceFVars olds news) dvals[q]!)
   return out
 
@@ -1170,7 +1275,7 @@ contexts it could be read in, and nothing here has said which one is meant yet.
 def Block.ihTy (b : Block) (ps pad : Array Expr) (subTy : Expr) : MetaM Expr :=
   b.withRecTarget subTy fun ys mm args => do
     let dts ← b.dropTysAt mm ps (b.idxArgs args)
-    mkForallFVars ys (mkArrows (dts ++ pad) (mkSort Level.zero))
+    mkForallFVars ys (← mkDropForall dts (mkArrows pad (mkSort Level.zero)))
 
 /-- `∀ ys, ih ys dels`, the same conjunct written with a recursor's own hypothesis. -/
 def Block.ihConj (b : Block) (ih : Expr) (padVal : Array Expr) (subTy : Expr) : MetaM Expr :=
@@ -2123,42 +2228,54 @@ mentions the block.
 
 That is the whole rule, and it is forced.  The data members become a single
 mutual inductive, and no member of a mutual inductive may appear in another's
-arity, so `Ty : Ctx → Type` is an arity the pre-block cannot state.  Deleting
-the index is what lifts the rule; `X._wf`, which is a definition and under no
-such rule, is where it goes.
+arity, so `Ty : Ctx → Type` is an arity the pre-block cannot state.  An index at
+one of the *propositions* is no better off, for a different reason: their
+pre-types are declared after the data pre-block, so `Ok._pre` is not yet a
+constant when `Tm._pre` is being stated.  Deleting the index is what lifts both;
+`X._wf`, which is a definition and comes after every pre-type, is where it goes.
 
 A `Prop` member never deletes anything.  Its pre-type is declared *after* the
 data one and is a separate mutual inductive, so it may name the data pre-types
 in its arity as freely as it likes.
+
+Along with them, which of them a recursion can hand a hypothesis about: see
+`MemberSpec.dropIhs`.
 -/
-def droppedIndices (b : Block) : MetaM (Array (Array Nat)) := do
-  let mut out : Array (Array Nat) := #[]
+def droppedIndices (b : Block) : MetaM (Array (Array Nat × Array Nat)) := do
+  let mut out : Array (Array Nat × Array Nat) := #[]
   for m in b.members do
     if m.isProp then
-      out := out.push #[]
+      out := out.push (#[], #[])
     else
       out := out.push <| ← forallBoundedTelescope m.type b.numParams fun _ rest =>
         forallTelescope rest fun idxs _ => do
           let mut ds : Array Nat := #[]
+          let mut hs : Array Nat := #[]
           for p in *...idxs.size do
-            if b.mentions (← inferType idxs[p]!) then ds := ds.push p
-          return ds
+            let ty ← inferType idxs[p]!
+            if b.mentions ty then
+              ds := ds.push p
+              -- the head is what settles it: only an index at a data member's
+              -- own type is something the recursion could say anything about
+              let atData ← b.withRecTarget? ty fun _ j _ => pure !b.members[j]!.isProp
+              if atData.getD false then hs := hs.push p
+          return (ds, hs)
   return out
 
 /--
 Whether the deletions `droppedIndices` asks for can be carried out.
 
-Three things have to hold, and each of them is the price of a decision made
-elsewhere.  A deleted index's type must *be* a data member's, because the
-pre-world has to have a type to state it at, and only a member has a pre-type.
-What is left of that type after the deletion -- `Ty._pre`, from `Ty Γ` -- may
-name the indices that stayed but not the ones that went, because the deleted
-indices are handed round as an array rather than as a telescope, and an array
-has nowhere for one of its own entries to have been bound.  A `Ctx` carrying its
-own length is fine, then: `Ty : (n : Nat) → Ctx n → Type` deletes a `Ctx n`
-whose pre-reading `Ctx._pre n` names `n`, and `n` is an index that stayed.  And
-an index that stays must not mention one that goes, because the one that stays
-is left at the binder the arity gave it, and the one that goes is not.
+Two things have to hold, and each of them is the price of a decision made
+elsewhere.  A deleted index's type must *be* a member's, because the pre-world
+has to have a type to state it at, and only a member has a pre-type.  And an
+index that stays must not mention one that goes, because the one that stays is
+left at the binder the arity gave it, and the one that goes is not.
+
+What a deleted index's type may name is not restricted: `Ty : (n : Nat) → Ctx n
+→ Type` deletes a `Ctx n` whose pre-reading `Ctx._pre n` names an index that
+stayed, and `Tm : (Γ : Ctx) → Ok Γ → Type` deletes both of its own, the second
+stated at the first.  `Block.dropTys` hands them round as a telescope for
+exactly that.
 
 Like the other arity checks these are `Mumi.owning`: the block really is an
 induction-induction and really is outside what the erasure can state.
@@ -2178,7 +2295,10 @@ def checkDropped (b : Block) : TermElabM Unit := owning do
               throwError "The index `{idxs[p]!}` of `{m.name}` mentions an index the erasure \
                 has to delete, so it cannot be left where it is:{indentExpr ty}"
             continue
-          let some j ← b.withRecTarget? ty fun ys j _ => do
+          -- a proof is as good an index as anything else: the proposition has a
+          -- pre-type of its own, declared before `X._wf` is, so `Tm._wf` can be
+          -- stated at an `Ok._pre` like any other deleted index
+          let some _ ← b.withRecTarget? ty fun ys j _ => do
               unless ys.isEmpty do
                 throwError "The index `{idxs[p]!}` of `{m.name}` binds arguments before \
                   reaching a member of the block, and the erasure has no pre-type to state \
@@ -2187,31 +2307,21 @@ def checkDropped (b : Block) : TermElabM Unit := owning do
             | throwError "The index `{idxs[p]!}` of `{m.name}` mentions the block without \
                 being a member's type, so the erasure has no pre-type to state it \
                 at:{indentExpr ty}"
-          if b.members[j]!.isProp then
-            throwError "The index `{idxs[p]!}` of `{m.name}` is a proof of \
-              `{b.members[j]!.name}`, and the erasure keeps a proposition's proofs nowhere: \
-              it is the propositions that are erased, so there would be nothing left to \
-              index by{indentExpr ty}"
-          if mentionsIdx (b.tr ty) (b.dropIdxs i idxs) then
-            throwError "The index `{idxs[p]!}` of `{m.name}` still depends on another index \
-              the erasure deletes, and the deleted indices are handed round as an array, in \
-              which there is nowhere for one of them to have bound another:\
-              {indentExpr (b.tr ty)}"
 
 /--
-The data members in an order in which each can be defined.
+The members `which` selects, in an order in which each can be defined.
 
 A member indexed by another mentions it by name -- `Ty G` is a subtype whose
-predicate is applied to `G.val` -- so it has to be declared second.  Two members
-each indexed by the other are a block no order would help, and that is the one
-thing refused here.
+predicate is applied to `G.val`, and `Tm : (Γ : Ctx) → Ok Γ → Type` says `Ok`
+outright -- so it has to be declared second.  Two members each indexed by the
+other are a block no order would help, and that is the one thing refused here.
 -/
-def dataOrder (b : Block) : TermElabM (Array Nat) := owning do
+def memberOrder (b : Block) (which : Array Nat) : TermElabM (Array Nat) := owning do
   let needs (i : Nat) : Array Nat :=
-    b.dataIdxs.filter fun j =>
+    which.filter fun j =>
       j != i && b.members[i]!.type.getUsedConstants.contains b.members[j]!.name
   let mut out : Array Nat := #[]
-  let mut left := b.dataIdxs
+  let mut left := which
   while !left.isEmpty do
     let ready := left.filter fun i => (needs i).all (out.contains ·)
     if ready.isEmpty then
@@ -2221,6 +2331,11 @@ def dataOrder (b : Block) : TermElabM (Array Nat) := owning do
     out := out ++ ready
     left := left.filter (!ready.contains ·)
   return out
+
+/-- `memberOrder` over the data members, which is what the constructors are sorted
+against: a constructor's indices are built out of the block's own constructors,
+and every member is a definition before any constructor is. -/
+def dataOrder (b : Block) : TermElabM (Array Nat) := memberOrder b b.dataIdxs
 
 /--
 The data constructors in an order in which each can be defined.
@@ -2296,6 +2411,29 @@ partial def reachableIh (b : Block) (c : CtorSpec) (kinds : Array FieldKind) (xs
         pure (mkAppN args[z]! ys))
 
 /--
+The refusal for a constructor that *builds* an index at one of the block's
+propositions rather than taking the proof as a field.
+
+Taking it as a field is fine, and is the shape the whole exercise is for: the
+index is deleted like any other and handed back to `X._wf`, where being a proof
+only means the predicate never looks at it, which is what makes `Tm Γ h` and
+`Tm Γ h'` the same type.  Building one is a different matter.  The alternative of
+the recursion binds the deleted index, and for a built index it is the equation
+in the well-formedness that ties that binder back to the term the constructor
+wrote -- and there is no such equation to be had here, because the two sides are
+proofs and the pre-world dropped the parts they were built from.  So the
+alternative has a proof it cannot relate to anything and the recursion has
+nothing to recurse under.
+-/
+def throwBuiltProof {α} (b : Block) (i : Nat) (c : CtorSpec) (p : Nat) (a : Expr) :
+    TermElabM α :=
+  throwError "The resulting type of `{c.name}` builds the index{indentExpr a}\nwhich is a \
+    proof, at index {p + 1} of `{b.members[i]!.name}`.  Erasure deletes an index at one of \
+    the block's propositions and hands it back to the well-formedness, where proof \
+    irrelevance leaves nothing to say which proof it was, so a constructor has to take \
+    that index as a field rather than build it"
+
+/--
 An index a constructor builds rather than takes as a field, checked to be a term
 the erasure can state.
 
@@ -2331,10 +2469,20 @@ partial def statableIdx (b : Block) (c : CtorSpec) (kinds : Array FieldKind) (xs
     if e.getAppNumArgs != (← forallTelescope cs.type fun ys _ => pure ys.size) then
       bad m!"`{n}` is not fully applied in it"
     else
-      e.getAppArgs.forM (statableIdx b c kinds xs top)
+      -- the arguments erasure keeps, and only those: `Ctx._pre.snoc` has no
+      -- proof to take, so `Ctx.snoc Γ h` is a term the pre-world can say
+      -- whatever the proof `h` was made of
+      let args := e.getAppArgs
+      forallTelescope cs.type fun ys _ =>
+        for z in *...args.size do
+          let ty := (← inferType ys[z]!).headBeta
+          unless b.mentionsProp ty && (← isProp ty) do
+            statableIdx b c kinds xs top args[z]!
   | _ => bad m!"it is not built out of the constructor's fields and the block's constructors"
 
-/-- `reachableIh` at every deleted index every data constructor recurses under. -/
+/-- `reachableIh` at every deleted index every data constructor recurses under
+that a hypothesis is wanted at; one at a proposition is not, having none to
+want -- see `MemberSpec.dropIhs`. -/
 def checkIhReachable (b : Block) : TermElabM Unit := owning do
   if b.members.all (·.dropped.isEmpty) then return
   for i in b.dataIdxs do
@@ -2346,7 +2494,7 @@ def checkIhReachable (b : Block) : TermElabM Unit := owning do
             if let .recur mm := kinds[k]! then
               unless b.members[mm]!.dropped.isEmpty do
                 discard <| b.withRecTarget? (← inferType xs[k]!) fun _ _ args =>
-                  (b.dropArgs mm args).forM (reachableIh b c kinds xs)
+                  (b.ihDrops mm (b.dropArgs mm args)).forM (reachableIh b c kinds xs)
 
 /--
 Re-declare the scratch axioms at the block's own universe parameters.
@@ -2547,7 +2695,8 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     let drops ← droppedIndices skeleton
     let skeleton : Block :=
       { skeleton with
-        members := skeleton.members.mapIdx fun i m => { m with dropped := drops[i]! } }
+        members := skeleton.members.mapIdx fun i m =>
+          { m with dropped := drops[i]!.1, dropIhs := drops[i]!.2 } }
     -- a *data* member's index of that shape is refused rather than denested.
     -- Denesting is what makes the proposition above work -- `GOk : GWrap GVec →
     -- Prop` becomes `GOk : GVec.nested_GWrap_1 → Prop`, and since the whole
@@ -2617,7 +2766,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
       for i in b.dataIdxs do
         motives := motives.push <| ←
           forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ => do
-            let res := mkArrows ((← b.dropTysAt i ps idxs) ++ pad) (mkSort Level.zero)
+            let res ← mkDropForall (← b.dropTysAt i ps idxs) (mkArrows pad (mkSort Level.zero))
             withLocalDeclD `t (b.preApp i (ps ++ idxs)) fun t =>
               mkLambdaFVars (b.keptIdxs i idxs ++ #[t]) res
       let mut wfMinors : Array Expr := #[]
@@ -2640,7 +2789,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
               let n ← match deletedField? kinds dropped[q]! with
                 | some j => xs[j]!.fvarId!.getUserName
                 | none => pure `d
-              dDecls := dDecls.push (n, fun _ => pure dts[q]!)
+              dDecls := dDecls.push (n, fun prev => pure (dts[q]!.beta prev))
             let padDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
               pad.map fun t => (`_pad, fun _ => pure t)
             withLocalDeclsD dDecls fun dels =>
@@ -2658,7 +2807,11 @@ def prepareCore (r : Raw) : TermElabM Plan := do
                 withLocalDeclsD ihDecls fun ihs => do
                   let mut conjs : Array Expr := #[]
                   for q in *...recPos.size do
-                    conjs := conjs.push (← b.ihConj ihs[q]! padVal subTys[recPos[q]!]!)
+                    -- closed over the erased fields it names, exactly as
+                    -- `Block.wfConjs` closes the conjunct this one has to match
+                    let conj ← b.ihConj ihs[q]! padVal subTys[recPos[q]!]!
+                    conjs := conjs.push <| ← b.closeErased imgs subTys
+                      (erasedDeps kinds imgs subTys conj recPos[q]!) 0 #[] #[] conj
                   for k in *...xs.size do
                     if kinds[k]! == .erased then
                       conjs := conjs.push (← b.erasedConj kinds imgs subTys k)
@@ -2762,6 +2915,7 @@ where
         let a := idxArgs[p]!
         match (Array.range xs.size).find? (a == xs[·]!) with
         | none =>
+          if b.dropAtProp i p then throwBuiltProof b i c p a
           statableIdx b c kinds xs a a
           built := built.push p
         | some k =>
@@ -2776,19 +2930,19 @@ where
           let keep := (ps.find? fun p' =>
             dropped.any fun r => !ps.contains r && statedAt[r]!.contains p').getD ps[0]!
           if p != keep then
+            if b.dropAtProp i p then throwBuiltProof b i c p a
             statableIdx b c kinds xs a a
             built := built.push p
             continue
-          let .recur m := kinds[k]!
-            | if kinds[k]! == .erased then
-                throwError "`{c.name}` gives index {p + 1} as the field `{a}`, which is a \
-                  proof.  A member indexed by a proposition of this block is not supported: \
-                  the proof is erased, so there is nothing left to index by -- and since \
-                  `Prop` is proof-irrelevant, such an index says nothing that dropping it \
-                  would not say as well"
-              else
-                throwError "The resulting type of `{c.name}` gives index {p + 1} as the field \
-                  `{a}`, which is not a value of a member of the block"
+          -- a proof field given as an index is deleted like any other.  Erasure
+          -- would have dropped it anyway; being an index as well only means the
+          -- well-formedness takes it back, at the proposition's pre-type, rather
+          -- than asserting it as a conjunct of its own
+          let m ← match kinds[k]!, ← recTargetOf? b (← inferType xs[k]!).headBeta with
+            | .recur m, _ | .erased, some (m, true) => pure m
+            | _, _ =>
+              throwError "The resulting type of `{c.name}` gives index {p + 1} as the field \
+                `{a}`, which is not a value of a member of the block"
           kinds := kinds.set! k (.deleted m p)
       -- an index taken as a field, but stated at one the constructor built,
       -- cannot stay a field: the alternative binds the built index, so the field
@@ -2802,6 +2956,10 @@ where
       -- it, so one pass in arity order settles every promotion this sets off
       for p in dropped do
         let some k := deletedField? kinds p | continue
+        -- a proof index is not promoted: erasure drops the field whatever else
+        -- happens to it, so there is no reading of it for the field to be left
+        -- at, and no equation for the two to be said to agree by
+        if b.dropAtProp i p then continue
         unless statedAt[p]!.any built.contains do continue
         let .deleted m _ := kinds[k]! | continue
         kinds := kinds.set! k (.recur m)
@@ -2934,20 +3092,18 @@ def withRaw {α} (views : Array InductiveView) (vars : Array Expr := #[])
             withRef c.ref <| throwError "Missing resulting type for constructor \
               `{c.declName}`.  It must be given because `{views[i]!.declName}` is an \
               inductive family"
-    -- the constructors: the data members' first, so that their constructors are
-    -- in scope for the `Prop` members' -- that is where `.snoc` has to resolve
+    -- the constructors, a member at a time, each after the members its arity
+    -- names.  A constructor says what its indices are, and an index is built out
+    -- of the indexing member's own constructors: `Ok : Ctx → Prop` has `Ok.snoc :
+    -- Ok (.snoc Γ h)`, where `.snoc` is `Ctx`'s and resolves to nothing until
+    -- `Ctx` has been read, and `Tm : (Γ : Ctx) → Ok Γ → Type` has `Tm.top : Tm
+    -- .nil .nil`, whose second `.nil` is `Ok`'s.  The dependency runs both ways
+    -- between the data and the propositions, so both go in the one pass.  Data
+    -- first among those equally ready, which is the order a block without any
+    -- such indexing was read in before.  A cycle of arities is refused later, by
+    -- `propLayers`; here it just keeps the written order
     let mut ctorTypes : Array (Array Expr) := (List.replicate n (#[] : Array Expr)).toArray
-    for i in dataIdxs do
-      let tys ← views[i]!.ctors.mapM (elabCtorType views views[i]! ·)
-      ctorTypes := ctorTypes.set! i tys
-      for j in *...tys.size do
-        stubAxiom views[i]!.ctors[j]!.declName tys[j]!
-    -- then the propositions, each stubbed as it is read, and one indexed by
-    -- another read second: `Better : (Γ : C) → Ok Γ → Prop` has `Better.nil :
-    -- Better .nil .nil`, whose second index is `Ok.nil` and resolves to
-    -- nothing until `Ok`'s own constructors are there.  A cycle of arities is
-    -- refused later, by `propLayers`; here it just keeps the written order
-    let mut pending := propIdxs
+    let mut pending := dataIdxs ++ propIdxs
     while !pending.isEmpty do
       let ready := pending.filter fun i =>
         !arities'[i]!.getUsedConstants.any fun c =>
@@ -4275,7 +4431,7 @@ def withRawMinors (c : BridgeCtx) (recCst : Expr) (motives : Array Expr)
         let kinds := b.fieldKinds cc.kinds
         let nf := kinds.size
         out := out.push <| ←
-          forallBoundedTelescope (← inferType ms[q]!) (nf + (ihPositions kinds).size)
+          forallBoundedTelescope (← inferType ms[q]!) (nf + (b.ihPositions kinds).size)
             fun args concl => do
               mkLambdaFVars args
                 (← mk i cc (args.extract 0 nf) (args.extract nf args.size) concl)
@@ -4341,7 +4497,7 @@ def toValueData (c : BridgeCtx) (grp : Array Nat) (k : Nat) (rawRec : Nat → Na
           | .deleted .. => vals := vals.push xs[z]!
           -- a deleted field arrives with a hypothesis of its own, so the count
           -- has to step over it even though nothing here reads it
-          if kinds[z]!.hasIh then nih := nih + 1
+          if b.hasIh kinds[z]! then nih := nih + 1
         return c.copies[j]!.origCtor cc.name vals
       return implicitPrefix (c.ps.size + idxs.size) (← mkLambdaFVars (c.ps ++ idxs ++ #[x])
         (mkAppN recCst (c.ps ++ motives ++ minors ++ idxs ++ #[x])))
@@ -5148,7 +5304,7 @@ def addRoundTrips (c : BridgeCtx) (needed : Array Nat) (rawRec : Nat → Name) :
       if (c.copyAt? i).isNone then
         return mkConst ``True.intro
       let kinds := b.fieldKinds cc.kinds
-      let ihPos := ihPositions kinds
+      let ihPos := b.ihPositions kinds
       c.valCongr cc xs fun z => do
         let .recur m := kinds[z]! | return none
         if (c.copyAt? m).isNone then return none
@@ -5417,8 +5573,8 @@ def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
           forallTelescope (← c.unCopy (← instantiateForall cc.type c.ps)) fun ys concl => do
             let kinds := b.fieldKinds cc.kinds
             let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (ihPositions kinds).map fun z => (`ih, fun _ => do
-                let some mm := kinds[z]!.ihTarget? | throwError "Not a recursive field"
+              (b.ihPositions kinds).map fun z => (`ih, fun _ => do
+                let some mm := b.ihTarget? kinds[z]! | throwError "Not a recursive field"
                 forallTelescope (← inferType ys[z]!) fun zs tgt => do
                   mkForallFVars zs (mkAppN nmotives[c.dpos mm]!
                     ((← c.niceIdxArgs mm tgt) ++ #[mkAppN ys[z]! zs])))
@@ -6246,7 +6402,7 @@ partial def valueIh (b : Block) (recAuxName : Nat → Name) (lvl : Level)
     (answer : Nat → Array Expr → Expr → Expr → Expr → MetaM Expr :=
       fun _ _ _ _ e => pure e) : MetaM Expr := do
   let r? ← b.withRecTarget? (← inferType v) fun _ mm args => do
-    let dihs ← (b.dropArgs mm args).mapM
+    let dihs ← (b.ihDrops mm (b.dropArgs mm args)).mapM
       (valueIh b recAuxName lvl ps motives minors · answer)
     let vargs ← b.valArgs mm args
     let p := b.sVal mm vargs v
@@ -6425,7 +6581,7 @@ def withPreRec {α} [Inhabited α] (b : Block) (i : Nat) (ps : Array Expr)
   forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ => do
     let vargs ← b.valArgs i (ps ++ idxs)
     let delDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-      (b.dropIdxs i idxs).map fun d => (`ih, fun _ => ihTypeAt d)
+      (b.ihDrops i (b.dropIdxs i idxs)).map fun d => (`ih, fun _ => ihTypeAt d)
     withLocalDeclsD delDecls fun delIhs =>
       withLocalDeclD `t (b.preApp i (ps ++ idxs)) fun t0 =>
         withLocalDeclD `w (mkApp (b.wfApp i vargs) t0) fun w =>
@@ -6478,6 +6634,15 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
   let dIdxs := b.dataIdxs
   if dIdxs.isEmpty || b.propIdxs.isEmpty then
     throwError "Not an induction-inductive block"
+  -- a deleted index at a proposition gets no hypothesis, and everything here
+  -- reads the hypotheses off a list as long as the deleted indices are.  The
+  -- split recursors do not, so the block still gets its eliminators, one member
+  -- at a time, and the propositions still get theirs from their own layers
+  for i in dIdxs do
+    let m := b.members[i]!
+    if m.dropIhs.size != m.dropped.size then
+      throwError "`{m.name}` is indexed by a proposition of the block, which the recursion \
+        over the whole of it has no hypothesis to offer about"
   let lvl := Level.param lp
   let ihName (n : Name) : Name := if n.hasMacroScopes then `ih else n.appendAfter "_ih"
   -- everything below is stated in the raw world, where the copies are the types
@@ -7704,24 +7869,35 @@ def emit (p : Plan) : TermElabM Unit := do
   for (name, type, value) in p.wfDecls do
     addDef name b.us type (widenPreRecLevels p preRecUnivs value) (compile := false)
 
-  -- 4. the data members themselves, each after the ones it is indexed by: `Ty Γ`
-  -- is a subtype whose predicate is applied to `Γ.val`, and that names `Ctx`
-  let dOrder ← dataOrder b
-  for i in dOrder do
+  -- 4. the members themselves, each after the ones its arity names: `Ty Γ` is a
+  -- subtype whose predicate is applied to `Γ.val`, and that names `Ctx`.  Data
+  -- and propositions go in one pass because the dependency runs both ways -- `Ok
+  -- : Ctx → Prop` wants the data first, `Tm : (Γ : Ctx) → Ok Γ → Type` wants the
+  -- proposition first -- and only a cycle is refused
+  for i in ← memberOrder b (b.dataIdxs ++ b.propIdxs) do
     let m := b.members[i]!
-    let value ← forallTelescope m.type fun idxs _ =>
-      return ← mkLambdaFVars idxs (b.subtype i (← b.valArgs i idxs))
-    addDef m.name b.us m.type value (compile := false)
+    if m.isProp then
+      let value ← forallTelescope m.type fun idxs _ => do
+        mkLambdaFVars idxs (mkAppN (b.cst (preName m.name)) (← b.preImages idxs))
+      addDef (rawMemberName m.name) b.us m.type value (compile := false)
+    else
+      let value ← forallTelescope m.type fun idxs _ =>
+        return ← mkLambdaFVars idxs (b.subtype i (← b.valArgs i idxs))
+      addDef m.name b.us m.type value (compile := false)
 
-  -- 5. the `Prop` members, at the subtypes
-  for j in b.propIdxs do
-    let m := b.members[j]!
-    let value ← forallTelescope m.type fun idxs _ => do
-      mkLambdaFVars idxs (mkAppN (b.cst (preName m.name)) (← b.preImages idxs))
-    addDef (rawMemberName m.name) b.us m.type value (compile := false)
-
-  -- 6. the data constructors, each after the ones its own type names
-  for (i, c) in ← ctorOrder b dOrder do
+  -- 5. the constructors, each after the ones its own type names.  Data and
+  -- propositions go in the one pass for the reason their members did: a data
+  -- constructor may build an index at a proposition -- `Tm.top : Tm .nil .nil`
+  -- names `Ok.nil` -- and a proposition's constructor is routinely indexed by a
+  -- data term
+  for (i, c) in ← ctorOrder b (← memberOrder b (b.dataIdxs ++ b.propIdxs)) do
+    if b.members[i]!.isProp then
+      let cty := toRaw c.type
+      let value ← forallTelescope cty fun xs _ => do
+        mkLambdaFVars xs (mkAppN (b.cst (b.preOf c.name)) (← b.preImages xs))
+      addDecl (.thmDecl
+        { name := rawCtorName c.name, levelParams := b.us, type := cty, value })
+      continue
     let cty := toRaw c.type
     let value ← forallTelescope cty fun xs concl => do
       let imgs ← b.preImages xs
@@ -7738,7 +7914,12 @@ def emit (p : Plan) : TermElabM Unit := do
       let conjs ← b.wfConjs c.kinds (imgs.map some) subTys (eqs.map (·.2))
       let mut proofs : Array Expr := #[]
       for k in recPositions c.kinds do
-        proofs := proofs.push (← b.propImage xs[k]! (← inferType xs[k]!))
+        -- closed over the same erased fields `Block.wfConjs` closed the conjunct
+        -- over, and the field's own proof serves at each of them
+        let deps := erasedDeps c.kinds (imgs.map some) subTys
+          (← b.wfOfSub imgs[k]! subTys[k]!) k
+        proofs := proofs.push <| ← mkLambdaFVars (deps.map (xs[·]!))
+          (← b.propImage xs[k]! (← inferType xs[k]!))
       for k in *...xs.size do
         if c.kinds[k]! == .erased then
           -- the field proves its conjunct at whatever the closure binds, since
@@ -7752,16 +7933,7 @@ def emit (p : Plan) : TermElabM Unit := do
         (mkAppN (b.cst (b.preOf c.name)) kept) (introConj conjs proofs 0)
     addDef (rawCtorName c.name) b.us cty value
 
-  -- 7. the `Prop` constructors
-  for j in b.propIdxs do
-    for c in b.members[j]!.ctors do
-      let cty := toRaw c.type
-      let value ← forallTelescope cty fun xs _ => do
-        mkLambdaFVars xs (mkAppN (b.cst (b.preOf c.name)) (← b.preImages xs))
-      addDecl (.thmDecl
-        { name := rawCtorName c.name, levelParams := b.us, type := cty, value })
-
-  -- 8. the recursors, one mutual group by structural recursion on the pre-types
+  -- 6. the recursors, one mutual group by structural recursion on the pre-types
   -- the motive's universe, under a name the writer cannot have taken
   let lp := (freshLevelNames b.us 1)[0]!
   let lvl := Level.param lp
@@ -7846,7 +8018,7 @@ def emit (p : Plan) : TermElabM Unit := do
           minorDecls := minorDecls.push (Name.mkSimple c.name.getString!, fun _ => do
             forallTelescope (← b.ctorType c ps) fun xs concl => do
               let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-                (ihPositions kinds).map fun k =>
+                (b.ihPositions kinds).map fun k =>
                   (`ih, fun _ => do
                     let r? ← b.withRecTarget? (← inferType xs[k]!) fun ys m args =>
                       mkForallFVars ys
@@ -7877,18 +8049,20 @@ def emit (p : Plan) : TermElabM Unit := do
               let alt ← b.withAlt i c ps fun a => do
                 let { kinds, xs, imgs, wc, conjs, real, recPos, dels, .. } := a
                 -- a deleted index arrives with its own hypothesis, which
-                -- is what a recursive call under it will be handed
+                -- is what a recursive call under it will be handed --
+                -- unless it is a proof, and then there is none to arrive
+                let ihDels := b.ihDrops i dels
                 let dDecls : Array (Name × (Array Expr → MetaM Expr)) :=
-                  dels.map fun d => (`ih, fun _ => ihTypeAt d)
+                  ihDels.map fun d => (`ih, fun _ => ihTypeAt d)
                 withLocalDeclsD dDecls fun dIhs => do
                   -- everything here is built over the fields as the
                   -- constructor bound them and moved to the alternative's
                   -- own binders at the end, because an induction
                   -- hypothesis is found by the shape of the index term
                   let mut ihAt : Array (FVarId × Expr) :=
-                    dels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
+                    ihDels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
                   let mut ihs : Array Expr := #[]
-                  for k in ihPositions kinds do
+                  for k in b.ihPositions kinds do
                     -- a deleted field is not a field of the pre-term, so
                     -- there is nothing here to recurse at.  It is one of
                     -- the indices instead, and the hypothesis the minor
@@ -7896,7 +8070,7 @@ def emit (p : Plan) : TermElabM Unit := do
                     -- when it was called, already in scope and already
                     -- at this very term
                     if kinds[k]!.isDeleted then
-                      let some q := dels.findIdx? (· == xs[k]!)
+                      let some q := ihDels.findIdx? (· == xs[k]!)
                         | throwError "The deleted field `{xs[k]!}` of `{c.name}` is \
                             not one of the alternative's indices"
                       ihs := ihs.push dIhs[q]!
@@ -7906,8 +8080,8 @@ def emit (p : Plan) : TermElabM Unit := do
                     let y := (imgs[k]!).get!
                     let pr := projConj conjs wc q
                     let ih? ← b.withRecTarget? (← inferType xs[k]!) fun ys mm args => do
-                      let dihs ← (b.dropArgs mm args).mapM
-                        (ihOfTerm b dCtors rawCtorName FieldKind.hasIh
+                      let dihs ← (b.ihDrops mm (b.dropArgs mm args)).mapM
+                        (ihOfTerm b dCtors rawCtorName b.hasIh
                           minors ihAt ·)
                       let call := mkAppN (mkConst (recAuxName mm) (lvl :: b.lvls))
                         (ps ++ motives ++ minors ++ b.idxArgs args ++ dihs ++
@@ -7936,7 +8110,7 @@ def emit (p : Plan) : TermElabM Unit := do
                     (mkAppN motives[dpos[i]!]! (idxs ++ #[t]))
                 -- `X.rec` is not inside the recursion, so the hypothesis at a
                 -- deleted index is a recursion of its own, at that index
-                let dihs ← (b.dropIdxs i idxs).mapM
+                let dihs ← (b.ihDrops i (b.dropIdxs i idxs)).mapM
                   (valueIh b recAuxName lvl ps motives minors ·)
                 let val := hide <| ←
                   mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
@@ -7955,7 +8129,7 @@ def emit (p : Plan) : TermElabM Unit := do
       addDef (rawRecName dIdxs[q]!) (lp :: b.us) results[q]!.type results[q]!.value
       markElabAsElim (rawRecName dIdxs[q]!)
 
-  -- 9. `X.rec` for the `Prop` members the writer declared, out of the pre-block's
+  -- 7. `X.rec` for the `Prop` members the writer declared, out of the pre-block's
   -- own recursor.  A copy is not a name anyone reaches for, and the type it
   -- copies has a real recursor of Lean's own already, so a copy gets none of its
   -- own -- but a member whose recursion runs into one is recursing over the
@@ -8030,7 +8204,7 @@ def emit (p : Plan) : TermElabM Unit := do
         if let some s ← buildProps grp[0]! ok then propRecs := propRecs.push s
   let propBuilt := !propRecs.isEmpty
 
-  -- 10. the bridge back to the originals
+  -- 8. the bridge back to the originals
   unless p.copies.isEmpty do
     let built ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
       let copies : Array Copy := p.copies.filterMap fun (n, e) => do
@@ -8142,7 +8316,7 @@ def emit (p : Plan) : TermElabM Unit := do
           (mkConst (rawRecName i) (lvl :: b.lvls))
         markElabAsElim (recName i)
 
-  -- 11. the members that left the block rather than being erased with it, as the
+  -- 9. the members that left the block rather than being erased with it, as the
   -- ordinary inductive types they already were.  After the bridge, because what
   -- they are stated over is the block the writer reads and step 10 is where that
   -- becomes something the environment holds.  They come out of `addInd` with
@@ -8240,7 +8414,7 @@ def emit (p : Plan) : TermElabM Unit := do
             widenWithPeeled b p.peeled p.peeledIdxs pubRec (peelIndName n ++ `rec) (n ++ `rec)
               coreAt p.peeledIdxs[k]! (compile := false)
 
-  -- 12. one recursor per member with the other members' motives discharged,
+  -- 10. one recursor per member with the other members' motives discharged,
   -- which is the shape `induction` can drive, and the same one without its
   -- hypotheses, which is the shape `cases` can drive.  Both are asked for
   -- `evenIfWeaker`: a member here is a `def`, so a tactic that finds no
@@ -8271,7 +8445,7 @@ def emit (p : Plan) : TermElabM Unit := do
         addSoloElim b.numParams #[lp] false (t.name ++ `rec) (t.name ++ `casesD)
           (forCases := true)
 
-  -- 13. injectivity of the data constructors, which has to come after the
+  -- 11. injectivity of the data constructors, which has to come after the
   -- bridge: what is stated is stated about the type the writer wrote, and
   -- until step 10 has run that is not yet what the constructor's own type
   -- says.  A `Prop` member's constructors are proofs and there is nothing to

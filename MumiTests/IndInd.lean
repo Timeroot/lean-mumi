@@ -5314,6 +5314,146 @@ def len : Ctx13 → Nat :=
 
 end FnIndex
 
+/-! ### A data member indexed by one of the propositions
+
+`Tm15 : (Γ : Ctx15) → Ok15 Γ → Type` is a term layer over well-formed contexts,
+and the well-formedness is the block's own `Prop`.  The index is deleted like any
+other index at a member of the block and handed back to `Tm15._wf`; that it is a
+proof only means the argument is one the predicate never looks at, which is
+exactly what proof irrelevance wants -- `Tm15 Γ h` and `Tm15 Γ h'` are the same
+type by `rfl`, as they would be of a real inductive family.
+
+A proof of such an index taken as a constructor field is then nothing special: it
+is a deleted field like a deleted context, and the recursion is handed the
+hypothesis it arrived with.  What the block may not do is *build* one, and the
+`Tm16` case below the accepted blocks says why.
+-/
+
+namespace PropIndex
+
+mutual
+inductive Ctx15 : Type where
+  | nil  : Ctx15
+  | snoc : (Γ : Ctx15) → Ok15 Γ → Ctx15
+inductive Ok15 : Ctx15 → Prop where
+  | nil  : Ok15 Ctx15.nil
+  | snoc : (Γ : Ctx15) → (h : Ok15 Γ) → Ok15 (Ctx15.snoc Γ h)
+inductive Tm15 : (Γ : Ctx15) → Ok15 Γ → Type where
+  | var : (Γ : Ctx15) → (h : Ok15 Γ) → Tm15 Γ h
+  | wk  : (Γ : Ctx15) → (h : Ok15 Γ) → Tm15 Γ h → Tm15 Γ h
+end
+
+/--
+info: def PropIndex.Tm15 : (Γ : Ctx15) → Ok15 Γ → Type :=
+fun Γ a => Subtype (Tm15._wf Γ.val a)
+-/
+#guard_msgs in
+#print Tm15
+
+-- the constructor says what the user wrote, proof index and all
+/-- info: Tm15.var : (Γ : Ctx15) → (h : Ok15 Γ) → Tm15 Γ h -/
+#guard_msgs in
+#check @Tm15.var
+
+/--
+info: @Tm15.rec : {motive_1 : Ctx15 → Sort u_1} →
+  {motive_2 : (Γ : Ctx15) → (a : Ok15 Γ) → Tm15 Γ a → Sort u_1} →
+    motive_1 Ctx15.nil →
+      ((Γ : Ctx15) → (a : Ok15 Γ) → motive_1 Γ → motive_1 (Γ.snoc a)) →
+        ((Γ : Ctx15) → (h : Ok15 Γ) → motive_1 Γ → motive_2 Γ h (Tm15.var Γ h)) →
+          ((Γ : Ctx15) → (h : Ok15 Γ) → (a : Tm15 Γ h) → motive_1 Γ → motive_2 Γ h a → motive_2 Γ h (Tm15.wk Γ h a)) →
+            {Γ : Ctx15} → {a : Ok15 Γ} → (t : Tm15 Γ a) → motive_2 Γ a t
+-/
+#guard_msgs in
+#check @Tm15.rec
+
+/--
+info: @Ctx15.rec : {motive_1 : Ctx15 → Sort u_1} →
+  {motive_2 : (Γ : Ctx15) → (a : Ok15 Γ) → Tm15 Γ a → Sort u_1} →
+    motive_1 Ctx15.nil →
+      ((Γ : Ctx15) → (a : Ok15 Γ) → motive_1 Γ → motive_1 (Γ.snoc a)) →
+        ((Γ : Ctx15) → (h : Ok15 Γ) → motive_1 Γ → motive_2 Γ h (Tm15.var Γ h)) →
+          ((Γ : Ctx15) → (h : Ok15 Γ) → (a : Tm15 Γ h) → motive_1 Γ → motive_2 Γ h a → motive_2 Γ h (Tm15.wk Γ h a)) →
+            (t : Ctx15) → motive_1 t
+-/
+#guard_msgs in
+#check @Ctx15.rec
+
+-- the proposition keeps its own recursion, small-eliminating as a two
+-- constructor `Prop` must be
+/--
+info: @Ok15.rec : ∀ {motive : (a : Ctx15) → Ok15 a → Prop},
+  motive Ctx15.nil Ok15.nil →
+    (∀ (Γ : Ctx15) (h : Ok15 Γ), motive Γ h → motive (Γ.snoc h) ⋯) → ∀ {a : Ctx15} (h : Ok15 a), motive a h
+-/
+#guard_msgs in
+#check @Ok15.rec
+
+-- the index says nothing, and the erasure is what makes that hold definitionally
+example (Γ : Ctx15) (h h' : Ok15 Γ) : Tm15 Γ h = Tm15 Γ h' := rfl
+
+def depth {Γ : Ctx15} {h : Ok15 Γ} (t : Tm15 Γ h) : Nat :=
+  Tm15.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => Nat)
+    () (fun _ _ _ => ()) (fun _ _ _ => 0) (fun _ _ _ _ n => n + 1) t
+
+example : depth (Tm15.wk .nil .nil (.var .nil .nil)) = 1 := rfl
+
+/-- info: 1 -/
+#guard_msgs in
+#eval depth (Tm15.wk .nil .nil (.var .nil .nil))
+
+end PropIndex
+
+/-! ### A built index whose argument is a proof
+
+`Tm10.mk` builds the index `Ty10.wit Γ h`, and `h` is an erased proof.  What a
+constructor builds, the well-formedness has to restate in the pre-world, so each
+part of the term needs a pre-world reading -- but only the parts the pre-world
+still has.  `Ty10._pre.wit` does not take the proof, because erasure drops it, so
+the equation `Ty10._pre.wit Γ = d` is statable and the proof never has to be
+crossed over at all.  The upshot is that a witness type is as good a built index
+as any other.
+-/
+
+namespace WitnessIndex
+
+mutual
+inductive Ctx10 : Type where
+  | nil  : Ctx10
+  | snoc : (Γ : Ctx10) → Ty10 Γ → Ctx10
+inductive Ty10 : Ctx10 → Type where
+  | base : (Γ : Ctx10) → Ty10 Γ
+  | wit  : (Γ : Ctx10) → Ok10 Γ → Ty10 Γ
+inductive Ok10 : Ctx10 → Prop where
+  | nil : Ok10 Ctx10.nil
+inductive Tm10 : (Γ : Ctx10) → Ty10 Γ → Type where
+  | mk : (Γ : Ctx10) → (h : Ok10 Γ) → Tm10 Γ (Ty10.wit Γ h)
+end
+
+/-- info: Tm10.mk : (Γ : Ctx10) → (h : Ok10 Γ) → Tm10 Γ (Ty10.wit Γ h) -/
+#guard_msgs in
+#check @Tm10.mk
+
+/--
+info: @Tm10.rec : {motive_1 : Ctx10 → Sort u_1} →
+  {motive_2 : (a : Ctx10) → Ty10 a → Sort u_1} →
+    {motive_3 : (Γ : Ctx10) → (a : Ty10 Γ) → Tm10 Γ a → Sort u_1} →
+      motive_1 Ctx10.nil →
+        ((Γ : Ctx10) → (a : Ty10 Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
+          ((Γ : Ctx10) → motive_1 Γ → motive_2 Γ (Ty10.base Γ)) →
+            ((Γ : Ctx10) → (a : Ok10 Γ) → motive_1 Γ → motive_2 Γ (Ty10.wit Γ a)) →
+              ((Γ : Ctx10) → (h : Ok10 Γ) → motive_1 Γ → motive_3 Γ (Ty10.wit Γ h) (Tm10.mk Γ h)) →
+                {Γ : Ctx10} → {a : Ty10 Γ} → (t : Tm10 Γ a) → motive_3 Γ a t
+-/
+#guard_msgs in
+#check @Tm10.rec
+
+-- and the proof the type was built from is not one of the things that tell two
+-- of them apart
+example (Γ : Ctx10) (h h' : Ok10 Γ) : Ty10.wit Γ h = Ty10.wit Γ h' := rfl
+
+end WitnessIndex
+
 /-! ## Outside the narrow class
 
 Every one of these is rejected with an explanation of what erasure could not do,
@@ -5336,26 +5476,25 @@ inductive Ty14 : List Ctx14 → Type where
   | base : (Γs : List Ctx14) → Ty14 Γs
 end
 
--- what the constructor builds, the well-formedness has to restate in the
--- pre-world, so every part of it needs a pre-world reading.  An erased proof
--- has none: the pre-constructor drops it
+-- a proof index a constructor *builds* rather than takes as a field.  Taking one
+-- is the `PropIndex` case above; building one leaves the alternative with a
+-- proof it cannot relate to the one the constructor wrote, since the equation
+-- that does that job for every other built index cannot be stated about proofs
 /--
-error: The resulting type of `Tm10.mk` builds the index
-  Ty10.wit Γ h
-which the erasure has to delete, and the field `h` in it is an erased proof, which the pre-world drops
+error: The resulting type of `Tm16.top` builds the index
+  Ok16.nil
+which is a proof, at index 2 of `Tm16`.  Erasure deletes an index at one of the block's propositions and hands it back to the well-formedness, where proof irrelevance leaves nothing to say which proof it was, so a constructor has to take that index as a field rather than build it
 -/
 #guard_msgs in
 mutual
-inductive Ctx10 : Type where
-  | nil  : Ctx10
-  | snoc : (Γ : Ctx10) → Ty10 Γ → Ctx10
-inductive Ty10 : Ctx10 → Type where
-  | base : (Γ : Ctx10) → Ty10 Γ
-  | wit  : (Γ : Ctx10) → Ok10 Γ → Ty10 Γ
-inductive Ok10 : Ctx10 → Prop where
-  | nil : Ok10 Ctx10.nil
-inductive Tm10 : (Γ : Ctx10) → Ty10 Γ → Type where
-  | mk : (Γ : Ctx10) → (h : Ok10 Γ) → Tm10 Γ (Ty10.wit Γ h)
+inductive Ctx16 : Type where
+  | nil  : Ctx16
+  | snoc : (Γ : Ctx16) → Ok16 Γ → Ctx16
+inductive Ok16 : Ctx16 → Prop where
+  | nil : Ok16 Ctx16.nil
+inductive Tm16 : (Γ : Ctx16) → Ok16 Γ → Type where
+  | top : Tm16 Ctx16.nil Ok16.nil
+  | var : (Γ : Ctx16) → (h : Ok16 Γ) → Tm16 Γ h
 end
 
 -- induction-induction through `Prop` twice over.  Erasure buys the one crossing

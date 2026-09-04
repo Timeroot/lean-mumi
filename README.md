@@ -348,12 +348,19 @@ which recursor a block got, and which ones took `@[elab_as_elim]`.
 
 Any number of members of either kind are allowed, with parameters, universe
 parameters, indices on either kind, infinitary recursive fields, and members
-named under one another. What erasure cannot reach is rejected with an
-explanation rather than lowered wrongly: a *data* member's arity mentioning the
-block, a field that is neither a member's type nor a proof of one of the block's
-propositions (`(h : Γ = Γ')`, where erasing would have to transport between
-`Γ = Γ'` and `Γ.val = Γ'.val`), a field that *binds* a member (`(f : Ctx → Ctx)`),
-and a `Prop` index that merely contains one (`List Ctx`). We only claim a block
+named under one another. A data member may be indexed by one of the propositions
+— `Tm : (Γ : Ctx) → Ok Γ → Type` — and the index is deleted like any other and
+handed back to the well-formedness, where being a proof only means the predicate
+never looks at it: `Tm Γ h` and `Tm Γ h'` are then the same type by `rfl`, as
+they are of a real inductive family. What erasure cannot reach is rejected with
+an explanation rather than lowered wrongly: a *data* member's arity mentioning
+the block, a field that is neither a member's type nor a proof of one of the
+block's propositions (`(h : Γ = Γ')`, where erasing would have to transport
+between `Γ = Γ'` and `Γ.val = Γ'.val`), a field that *binds* a member
+(`(f : Ctx → Ctx)`), a `Prop` index that merely contains one (`List Ctx`), and a
+proof index a constructor *builds* rather than takes as a field
+(`Tm.top : Tm .nil .nil`), for which there is no equation the pre-world could
+state. We only claim a block
 whose headers Lean has *already* failed to elaborate and one of whose arities
 names a sibling; `MumiTests/IndInd.lean` pins all of it.
 

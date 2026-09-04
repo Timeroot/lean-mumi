@@ -381,33 +381,4 @@ info: @Even.rec : ∀ {motive_1 : Tm → Sort u_1} {motive_2 : (a : Tm) → moti
 
 end EvenOdd
 
-/-! ## What a member indexed by a proposition costs
-
-A data member may be indexed by a `Prop` member of the same block only if no
-constructor gives that index as a field of its own.  The field would be a
-proof, which the erasure drops, and there would be nothing left to index by.
-
-Nothing is lost by writing the block without the index: `Prop` is
-proof-irrelevant, so `Tm Γ h₁` and `Tm Γ h₂` are the same type whatever the two
-proofs are, and an index that cannot tell them apart says nothing.
--/
-
-namespace PropIdx
-
-/--
-error: `MumiTests.Boundary.PropIdx.Tm.var` gives index 2 as the field `h`, which is a proof.  A member indexed by a proposition of this block is not supported: the proof is erased, so there is nothing left to index by -- and since `Prop` is proof-irrelevant, such an index says nothing that dropping it would not say as well
--/
-#guard_msgs in
-mutual
-inductive Ctx : Type where
-  | nil
-  | snoc (Γ : Ctx) (h : Ok Γ) : Ctx
-inductive Ok : Ctx → Prop where
-  | nil : Ok .nil
-inductive Tm : (Γ : Ctx) → Ok Γ → Type where
-  | var (Γ : Ctx) (h : Ok Γ) : Tm Γ h
-end
-
-end PropIdx
-
 end MumiTests.Boundary
