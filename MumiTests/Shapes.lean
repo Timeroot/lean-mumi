@@ -861,19 +861,21 @@ example (x : A R) (h h' : A.P R x) : A.Q R x h = A.Q R x h' := rfl
 
 end PropIdx
 
-/-! ## Not rescued: a `Prop` member with no constructors
+/-! ## A `Prop` member with no constructors
 
-Lean infers an inductive's parameters from its constructors, and
-`Box.Never` has none, so its index counts as a parameter and Lean's own
-nesting check rejects the block before any of this gets a look in.
+Which of an inductive's binders are parameters is read off its constructors, and
+`Box.Never` has none: every binder is fixed across all zero of them, so the index
+it was written with arrives promoted to a parameter.  That is what Lean's own
+nesting check trips over -- the occurrence `Box.Never R b` then has a parameter
+holding `b`, a field of the constructor it sits in, and the kernel takes no
+nesting whose parameters are not closed.
 
-Denesting turns a nesting parameter that mentions a field of the constructor
-into an extra index of the copy, which is what the next two sections rest on.
-The field's own type may mention the block -- the copy is then indexed by a
-member, and the induction-inductive route erases it with the rest.  What it may
-not do is mention the block through something that is *not* a member: here
-`b : Box R` is the field, and `Box R` has no erased counterpart to index the copy
-by, so that route stops one step further along than the plain denesting does.
+Denesting specialises only as far as the block reaches.  `R` is the last
+parameter that mentions it, so the promoted index stays an index of the copy,
+where it is rewritten along with everything else and comes out at the copy of
+`Box`; the bridge then carries it back.  What the writer reads is the same block
+they would get if the proposition had a constructor and Lean had left its index
+alone.
 -/
 
 namespace Empty
@@ -887,23 +889,26 @@ inductive Box.Never (α : Type) : Box α → Prop
 inductive NBox (α : Type) where
   | mk (b : Box α) (h : b.Never)
 
-/--
-error: (kernel) invalid nested inductive datatype 'MumiTests.Shapes.Empty.Box.Never', nested inductive datatypes parameters cannot contain local variables.
----
-trace: [Mumi.rescue] the induction-inductive retry, over the originals did not take: The index `b` of `MumiTests.Shapes.Empty.R.nested_Never_3` mentions the block without being a member's type, so it has no counterpart on the erased types:
-      Box R
-[Mumi.rescue] lowering the denested block did not take: Cannot denest
-      Box.Never R b
-
-    Note: `MumiTests.Shapes.Empty.Box.Never` is applied to something depending on `b`, whose own type mentions a member of the block
-[Mumi.rescue] the induction-inductive retry did not take: The index `b` of `MumiTests.Shapes.Empty.R.nested_Never_3` mentions the block without being a member's type, so it has no counterpart on the erased types:
-      Box R
--/
-#guard_msgs(whitespace := lax) in
-set_option trace.Mumi.rescue true in
 inductive R where
   | tip
   | mk (x : NBox R)
+
+/-- info: MumiTests.Shapes.Empty.R.mk (x : NBox R) : R -/
+#guard_msgs in
+#check R.mk
+
+/--
+info: @R.rec : {motive_1 : R → Sort u_1} →
+  {motive_2 : NBox R → Sort u_1} →
+    {motive_3 : Box R → Sort u_1} →
+      {motive_4 : (a : Box R) → motive_3 a → Box.Never R a → Prop} →
+        motive_1 R.tip →
+          ((x : NBox R) → motive_2 x → motive_1 (R.mk x)) →
+            ((b : Box R) → (h : Box.Never R b) → (b_ih : motive_3 b) → motive_4 b b_ih h → motive_2 (NBox.mk b h)) →
+              ((a : R) → motive_1 a → motive_3 (Box.mk a)) → motive_3 Box.nil → (t : R) → motive_1 t
+-/
+#guard_msgs in
+#check @R.rec
 
 end Empty
 

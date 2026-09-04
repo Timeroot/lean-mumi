@@ -3273,6 +3273,8 @@ private structure AuxSpec where
   indName   : Name
   /-- The levels `I` was applied at. -/
   levels    : List Level
+  /-- How many of `I`'s arguments were specialised, which is `params.size`.  Not
+  always `I`'s own parameter count -- see `specParams`. -/
   numParams : Nat
   ctors     : Array Name
   deriving Inhabited
@@ -3310,6 +3312,39 @@ private def stripLevels (names : Array Name) (e : Expr) : Expr :=
     | _ => none
 
 /--
+How far into an occurrence's arguments the parameters a copy specialises reach.
+
+Which of an inductive's binders are parameters is read off its constructors, and
+one with *no* constructors has nothing to read: every binder is fixed across all
+zero of them, so
+
+```lean
+inductive Box.Never (α : Type) : Box α → Prop
+```
+
+arrives with two parameters where it was written with one.  Specialising both
+would fix the copy at whatever the occurrence's `Box α` happened to be -- a
+constructor's own field, in `Box.Never R b` -- and a copy taken at a field is a
+copy of a family, indexed by that field with the type it was written at.  For a
+field at `Box R` there is no such type: the block is being declared, so `Box R`
+is itself denested, and the index would have to be the copy of `Box` rather than
+`Box` at anything.
+
+Taking the shorter prefix says the same thing without the detour.  What is not
+specialised stays an index of the copy, where it is rewritten along with the
+rest, and `Box.Never R b` becomes `nested_Never ..` indexed by `nested_Box ..`
+-- exactly what the same block gets once its proposition has a constructor and
+Lean stops promoting the index.
+-/
+private def specParams (names : Array Name) (info : InductiveVal) (args : Array Expr) : Nat :=
+  Id.run do
+    if !info.ctors.isEmpty then return info.numParams
+    let mut k := 0
+    for p in *...info.numParams do
+      if mentionsNames names args[p]! then k := p + 1
+    return if k == 0 then info.numParams else k
+
+/--
 Recognise a nested occurrence: an inductive type applied to parameters that
 mention the block.  A member applied to its own arguments is not one, and
 neither is an inductive that mentions the block only outside its parameters.
@@ -3324,10 +3359,11 @@ private def nestedApp? (names : Array Name) (e : Expr) :
   let some (.inductInfo info) := (← getEnv).find? iname | return none
   let args := e.getAppArgs
   if args.size < info.numParams then return none
-  let params := args.extract 0 info.numParams
+  let np := specParams names info args
+  let params := args.extract 0 np
   if !params.any (mentionsNames names ·) then return none
   return some (mkAppN (.const iname lvls) params, info, lvls, params,
-    args.extract info.numParams args.size)
+    args.extract np args.size)
 
 mutual
 
@@ -3386,7 +3422,7 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
     let name := root ++ Name.mkSimple s!"nested_{shortName fi.name}_{(← get).size + 1}"
     modify (·.push { key := stripLevels names (mkAppN (.const fi.name lvls) params)
                      name, params, localTys, indName := fi.name, levels := lvls,
-                     numParams := fi.numParams, ctors := fi.ctors.toArray })
+                     numParams := params.size, ctors := fi.ctors.toArray })
   -- the copies' own arities and constructors are fresh telescopes, so nothing
   -- this scan is under is a binder of theirs -- except the fields the parameters
   -- were abstracted over, which a nesting inside them may mention in turn
@@ -3574,9 +3610,19 @@ def denestRaw (r : Raw) : TermElabM Raw := do
     -- what each copy stands for, kept for the bridge back to it
     let mut copies : Array (Name × Expr) := #[]
     for s in specs do
+      let ci ← getConstInfoInduct s.indName
       let app ← withHoles s.localTys #[] fun ls => do
-        instantiateMVars (← mkLambdaFVars (ps ++ ls)
-          (mkAppN (.const s.indName s.levels) (s.params.map (fillHoles ls))))
+        let params := s.params.map (fillHoles ls)
+        -- a parameter `specParams` left unspecialised is a leading index of the
+        -- copy, and the original still wants it where its own parameters go, so
+        -- it is abstracted here alongside the fields -- at the type the original
+        -- gives it rather than the copy's, which is the one the bridge has to
+        -- start from.  That makes it a local like any other, and the machinery
+        -- that copies a *family* one member at a time is what carries it
+        let res ← instantiateForall (ci.instantiateTypeLevelParams s.levels) params
+        forallBoundedTelescope res (ci.numParams - s.numParams) fun ds _ => do
+          instantiateMVars (← mkLambdaFVars (ps ++ ls ++ ds)
+            (mkAppN (.const s.indName s.levels) (params ++ ds)))
       copies := copies.push (s.name, app)
     return { r with
       names := r.names ++ auxNames
@@ -3848,14 +3894,22 @@ private partial def usesCopies (c : BridgeCtx) (e : Expr) (acc : Array Nat) :
           (args.extract 0 ci.numParams)
         if let some (k, _) ← c.copyOf? ind then
           unless acc.contains k do acc := acc.push k
+  -- the body of a binder is entered with a real local rather than as it stands:
+  -- `copyOf?` decides by unifying against the copy's parameters, and a copy of a
+  -- family is at a *field*, so `Box.Never R b` has to be asked about with a `b`
+  -- that unification can be shown
   match e with
-  | .app f a         => c.usesCopies a (← c.usesCopies f acc)
-  | .forallE _ d b _ => c.usesCopies b (← c.usesCopies d acc)
-  | .lam _ d b _     => c.usesCopies b (← c.usesCopies d acc)
-  | .letE _ t v b _  => c.usesCopies b (← c.usesCopies v (← c.usesCopies t acc))
-  | .mdata _ b       => c.usesCopies b acc
-  | .proj _ _ b      => c.usesCopies b acc
-  | _                => return acc
+  | .app f a          => c.usesCopies a (← c.usesCopies f acc)
+  | .forallE n d b bi
+  | .lam n d b bi     => do
+    let acc' ← c.usesCopies d acc
+    withLocalDecl n bi d fun x => c.usesCopies (b.instantiate1 x) acc'
+  | .letE n t v b _   => do
+    let acc' ← c.usesCopies v (← c.usesCopies t acc)
+    withLetDecl n t v fun x => c.usesCopies (b.instantiate1 x) acc'
+  | .mdata _ b        => c.usesCopies b acc
+  | .proj _ _ b       => c.usesCopies b acc
+  | _                 => return acc
 
 /--
 The copies, grouped and ordered so that each group comes after every copy the
@@ -3881,12 +3935,17 @@ def order (c : BridgeCtx) : MetaM (Array (Array Nat)) := do
   for cp in c.copies do
     -- a copy standing for a family is looked at with its locals opened, so that
     -- what its members mention is what any one of them mentions
-    let ks ← lambdaBoundedTelescope cp.app cp.numLocals fun _ orig => do
+    let ks ← lambdaBoundedTelescope cp.app cp.numLocals fun ls orig => do
       let lvls := orig.getAppFn.constLevels!
       let params := orig.getAppArgs
       let info ← getConstInfoInduct cp.indName
-      let mut ks ← c.usesCopies
-        (← instantiateForall (info.instantiateTypeLevelParams lvls) params) #[]
+      -- a local's own type counts: the copy is indexed by it, and where that
+      -- type is itself copied the index has to cross that copy's bridge before
+      -- this one can be stated
+      let mut ks : Array Nat := #[]
+      for l in ls do ks ← c.usesCopies (← inferType l) ks
+      ks ← c.usesCopies
+        (← instantiateForall (info.instantiateTypeLevelParams lvls) params) ks
       for cn in info.ctors do
         let ci ← getConstInfoCtor cn
         ks ← c.usesCopies

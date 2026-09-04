@@ -627,11 +627,12 @@ Stock behaviour returns immediately, including the stock error message.
   writer's own type still works and the block is still sound; it is the
   presentation that degrades. `set_option trace.Mumi.indind true` names the
   constructor and the field.
-* A `Prop` member indexed by another `Prop` member of the same block is out of
-  scope. Erasure sends the data members to one mutual inductive and the
-  propositions to a second, and no member of a mutual inductive may appear in
-  another's arity — so the erasure buys one crossing, from data to `Prop`, and
-  not a second one from `Prop` to `Prop`.
+* Two `Prop` members each in the other's arity are out of scope, and that is all
+  that is left of the restriction. No member of a mutual inductive may appear in
+  another's arity, but nothing says the propositions have to be *one* mutual
+  inductive: nothing is defined by recursion across the whole of them, so they
+  are declared in layers, and one indexed by an earlier one names its pre-type
+  as freely as it names the data. A genuine cycle admits no such order.
 * A copy's parameters are fixed before its constructors are known, so a nesting
   applied to something that mentions a field of the constructor it appears in
   cannot be copied at one parameter. Both routes abstract the field out and make
@@ -639,8 +640,11 @@ Stock behaviour returns immediately, including the stock error message.
   `mk (n : Nat) (x : WFTree (R n)) : R n` gets a copy
   `R.nested_WFTree_1 : Nat → Type`, and the recursor's motive for it is over
   `WFTree (R n)` with the `n` in front. The field's own type has to be free of
-  the block for that telescope to be writable, so
-  `mk (b : Box R) (h : b.Never)` is still out. The sharpest form of that is a
+  the block for that telescope to be writable. In `mk (b : Box R) (h : b.Never)`
+  it is not, so that one turns on where `Never` puts its `Box α` binder: an
+  *index* is never specialised in the first place and the block goes through,
+  while a declared *parameter* wants a copy indexed by `Box R`, which is itself
+  a member. The sharpest form of that is a
   nesting over an equation between two fields — `mk (a b : Z) (h : a = b)` —
   where the abstracted field is of block type, so the copy would have to be
   *indexed by* a member and the block would have to be routed back through the
@@ -657,12 +661,12 @@ Stock behaviour returns immediately, including the stock error message.
 * A nested inductive whose denesting is induction-inductive is rescued from a
   standalone `inductive` and from a `mutual` block of data members alike, the
   nesting type may itself be a member of a mutual family, and the nesting's
-  parameters may mention a field of the constructor they sit in.
-  A family whose `Prop` member has *no constructors*
-  never reaches us at all: Lean infers an inductive's parameters from its
-  constructors, so with none it reads that member's index as a parameter and its
-  own nesting check rejects the block first. A declaration we decline reports
-  *Lean's* error and
+  parameters may mention a field of the constructor they sit in. A `Prop` member
+  with *no constructors* is asked for its parameters with no constructors to
+  read them off, so Lean promotes the index it was written with to one;
+  denesting specialises only as far as the block reaches, which leaves the
+  promotion an index of the copy again and gets the writer the block they wrote.
+  A declaration we decline reports *Lean's* error and
   drops ours, which is right for a block that was never ours and unhelpful for
   one that was: `set_option trace.Mumi.rescue true` keeps every retry's reason.
 * Importing this library changes the formatting of a few kernel error messages
