@@ -6449,23 +6449,11 @@ end
 #guard_msgs in
 #eval decide (EVec.nil = EVec.nil)
 
-/-! A class `Subtype` has nothing to lift cannot come across, and says so.  The
-block is in the environment by then, so the complaint costs the writer the
-instance and not the type. -/
+/-! `Inhabited` is not a class the subtype lifts, so the delta route cannot
+reach it -- and does not have to.  A member's visible constructors are ordinary
+functions into it, so the instance is written from whichever of them can be
+applied, which is the instance the writer would have written by hand. -/
 
-/--
-error: failed to synthesize instance of type class
-  Inhabited (Subtype FVec._wf)
-
-Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
----
-error: Failed to delta derive `Inhabited` instance for `FVec`.
-
-Note: Delta deriving tries the following strategies: (1) inserting the definition into each explicit non-out-param parameter of a class and (2) unfolding definitions further.
-
-Note: A data member of an induction-inductive block is the subtype of its pre-type, so `deriving` reaches it only through an instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand
--/
-#guard_msgs in
 mutual
 inductive FVec : Type where
   | nil : FVec
@@ -6482,6 +6470,60 @@ end
 /-- info: FOk.nil : FOk FVec.nil -/
 #guard_msgs in
 #check @FOk.nil
+
+/-- info: FVec.instInhabited : Inhabited FVec -/
+#guard_msgs in
+#check @FVec.instInhabited
+
+example : (default : FVec) = FVec.nil := rfl
+
+/-! A field is filled with whatever `Inhabited` says its own type is, so a
+constructor with fields serves as well as a nullary one, and a parameter that is
+a type gets a hypothesis apiece -- the same instance Lean's own handler states
+for an ordinary inductive. -/
+
+mutual
+inductive F2Vec (β : Type) : Type where
+  | tip (b : β) (n : Nat) : F2Vec β
+  | cons (v : F2Vec β) (h : F2Ok v) : F2Vec β
+  deriving Inhabited
+inductive F2Ok {β : Type} : F2Vec β → Prop where
+  | tip (b : β) (n : Nat) : F2Ok (.tip b n)
+end
+
+/-- info: @F2Vec.instInhabited : {β : Type} → [inst : Inhabited β] → Inhabited (F2Vec β) -/
+#guard_msgs in
+#check @F2Vec.instInhabited
+
+/-! A member no constructor can fill gets nothing, and the delta route it falls
+through to says why.  The block is in the environment by then, so the complaint
+costs the writer the instance and not the type -- and the type may in any case
+be the empty one they wrote. -/
+
+/--
+error: failed to synthesize instance of type class
+  Inhabited (Subtype F3Vec._wf)
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+---
+error: Failed to delta derive `Inhabited` instance for `F3Vec`.
+
+Note: Delta deriving tries the following strategies: (1) inserting the definition into each explicit non-out-param parameter of a class and (2) unfolding definitions further.
+
+Note: A data member of an induction-inductive block is the subtype of its pre-type, so `deriving` reaches it only through an instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand
+-/
+#guard_msgs in
+mutual
+inductive F3Vec : Type where
+  | cons : (v : F3Vec) → F3Ok v → F3Vec
+  deriving Inhabited
+inductive F3Ok : F3Vec → Prop where
+  | cons : (v : F3Vec) → (h : F3Ok v) → F3Ok (.cons v h)
+end
+
+/-- info: F3Vec.cons : (v : F3Vec) → F3Ok v → F3Vec -/
+#guard_msgs in
+#check @F3Vec.cons
 
 /-! A block that is only induction-inductive once it has been denested takes
 `deriving` the same way.  The copy denesting added is a member like any other,
@@ -7488,22 +7530,60 @@ inductive HVec where
 #guard_msgs in
 #eval decide (HVec.tip = HVec.mk 0 [])
 
-/-! Ask that one for a class the subtype does not lift and the block goes the
-other way instead: lowering leaves the copy visible, but `Inhabited` is a class
-an ordinary inductive has a handler for, so the writer gets what they asked
-for.  Neither route is better at everything, and this is the one that answers
-the whole declaration. -/
+/-! Ask that one for `Inhabited` and it stays where it was.  It used to not:
+the class was one only lowering could answer, a failure to derive is how a route
+declines, and the block came back with `JVec.nested_List_1` visible in the
+constructor it had been written with `List (HWrap JVec n)` in.  Deriving the
+class from a constructor settles it on the route that keeps the written type. -/
 
 inductive JVec where
   | tip
   | mk (n : Nat) (v : List (HWrap JVec n)) : JVec
   deriving Inhabited
 
-/-- info: JVec.mk : (n : Nat) → JVec.nested_List_1 n → JVec -/
+/-- info: JVec.mk : (n : Nat) → List (HWrap JVec n) → JVec -/
 #guard_msgs in
 #check @JVec.mk
 
-example : JVec := default
+example : (default : JVec) = JVec.tip := rfl
+
+/-! Both classes at once, to check the constructor route and the delta route do
+not tread on each other: `Inhabited` is taken off the list before the rest of it
+is delta derived. -/
+
+inductive KVec where
+  | tip
+  | mk (n : Nat) (v : List (HWrap KVec n)) : KVec
+  deriving Inhabited, DecidableEq
+
+/-- info: KVec.mk : (n : Nat) → List (HWrap KVec n) → KVec -/
+#guard_msgs in
+#check @KVec.mk
+
+/-- info: false -/
+#guard_msgs in
+#eval decide ((default : KVec) = KVec.mk 0 [])
+
+/-! And a block of this shape that nothing inhabits keeps its type all the same.
+The class cannot be derived on any of the three routes, so the last of them --
+which has no fourth to hand the block on to -- warns instead of failing, since
+a block with a class missing beats no block at all. -/
+
+/--
+warning: Failed to delta derive `Inhabited` instance for `LVec`.
+
+Note: Delta deriving tries the following strategies: (1) inserting the definition into each explicit non-out-param parameter of a class and (2) unfolding definitions further.
+
+Note: A data member of an induction-inductive block is the subtype of its pre-type, so `deriving` reaches it only through an instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand
+-/
+#guard_msgs in
+inductive LVec where
+  | mk (n : Nat) (v : List (HWrap LVec n)) (w : LVec) : LVec
+  deriving Inhabited
+
+/-- info: LVec.mk : (n : Nat) → List (HWrap LVec n) → LVec → LVec -/
+#guard_msgs in
+#check @LVec.mk
 
 
 /-! ## Universes the block does not share, and nestings that are not inductive

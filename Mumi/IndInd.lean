@@ -8061,6 +8061,88 @@ private def tentatively (x : CommandElabM Unit) : CommandElabM Bool := do
     return false
 
 /--
+As `tentatively`, but handing back what went wrong rather than only that
+something did.
+
+The reason has to be read out of the log before the state that holds the log is
+put back, which is the whole difficulty: a handler that logged its complaint
+instead of throwing it says nothing to a caller that only restores.
+-/
+private def tentatively? (x : CommandElabM Unit) : CommandElabM (Option MessageData) := do
+  let s ← get
+  let n := s.messages.reportedPlusUnreported.size
+  try
+    x
+    let logged := ((← get).messages.reportedPlusUnreported.toList.drop n).filterMap fun m =>
+      if m.severity matches .error then some m.data else none
+    if logged.isEmpty then return none
+    set s
+    return some (MessageData.joinSep logged ", ")
+  catch ex =>
+    set s
+    return some ex.toMessageData
+
+/--
+Instance the member from a constructor that can be applied, if one can.
+
+`Inhabited` is not a class the `Subtype` a data member comes back as can lift,
+so the delta route below cannot reach it the way `DecidableEq` and `Repr` are
+reached.  It does not need to.  A type is inhabited as soon as one of its
+constructors can be applied, and a member's visible constructors are ordinary
+functions into it, subtype or not -- so the instance the writer would have had
+to write by hand can be written here instead, and it is the same one they would
+have written.
+
+A field is filled by whatever `Inhabited` says its own type is, so a
+constructor with no fields always serves and one whose fields are inhabited
+serves too.  A field of the block is not, since the instance being built is the
+one that would have answered, so a member whose every constructor needs a value
+of the block declines, and the delta route gets it after all and reports the
+failure the way it reports any other.  Declining is the right answer rather
+than a wrong one: such a member may genuinely be empty.
+
+Parameters that are types get an `Inhabited` hypothesis apiece, which is what
+Lean's own handler does for an ordinary inductive, and what makes the instance
+useful at a parameter that is not itself inhabited.
+-/
+def inhabitedFromCtor? (declName : Name) (ctors : Array Name) : MetaM (Option Declaration) := do
+  let info ← getConstInfo declName
+  let lvls := info.levelParams.map Level.param
+  forallTelescopeReducing info.type fun ps concl => do
+    -- an indexed family is inhabited at some indices and not others, so there
+    -- is no one instance to state; `Inhabited` is for the members without them
+    let .sort u := concl | return none
+    let hyps ← ps.filterMapM fun p => do
+      return if (← inferType p).isSort then some (`inst, BinderInfo.instImplicit,
+        fun (_ : Array Expr) => mkAppM ``Inhabited #[p]) else none
+    withLocalDecls hyps fun hs => do
+      let target := mkAppN (mkConst declName lvls) ps
+      for c in ctors do
+        let cinfo ← getConstInfo c
+        -- the fields are filled one at a time rather than all at once: a
+        -- constructor may state a later field's type in terms of an earlier
+        -- field, and then the value chosen for the earlier one is part of it
+        let mut ty ← instantiateForall
+          (cinfo.type.instantiateLevelParams cinfo.levelParams lvls) ps
+        let mut args : Array Expr := #[]
+        let mut ok := true
+        repeat
+          let .forallE _ d body _ := ← whnf ty | break
+          let .some inst ← trySynthInstance (← mkAppM ``Inhabited #[d]) | ok := false; break
+          let a ← mkAppOptM ``Inhabited.default #[d, inst]
+          args := args.push a
+          ty := body.instantiate1 a
+        unless ok && (← isDefEq ty target) do continue
+        let value ← mkLambdaFVars (ps ++ hs)
+          (mkApp2 (mkConst ``Inhabited.mk [u]) target (mkAppN (mkConst c lvls) (ps ++ args)))
+        let type ← mkForallFVars (ps ++ hs) (mkApp (mkConst ``Inhabited [u]) target)
+        return some (.defnDecl {
+          name := declName ++ `instInhabited, levelParams := info.levelParams
+          type := implicitPrefix ps.size type, value := implicitPrefix ps.size value
+          hints := .abbrev, safety := .safe })
+      return none
+
+/--
 `deriving` on an induction-inductive block, asked for twice over.
 
 A data member `X` of one of these is not an inductive but a `def`: the subtype
@@ -8074,16 +8156,28 @@ really are.
 Hence: ask on the pre-types first, quietly, and then delta derive the members.
 `DecidableEq` and `Repr` come across that way -- `Repr` showing the pre-term,
 constructor names and all, since that is the value it is handed.  A class with
-no `Subtype` instance to lift, `Inhabited` among them, does not come across,
-and says so -- but by then the block is already in the environment, which is
-the part worth keeping, so the complaint is logged rather than thrown.
+no `Subtype` instance to lift does not come across, and says so -- but by then
+the block is already in the environment, which is the part worth keeping, so
+the complaint is logged rather than thrown.
+
+`Inhabited` used to be the headline member of that unlucky class.  It no longer
+is: a member's visible constructors are ordinary functions into it, so
+`inhabitedFromCtor?` writes the instance the writer would have written and the
+delta route is never asked.
+
+Whether what is left over failing is an error or a warning is the caller's to
+say.  A caller with another route to try wants the error, since a logged one is
+how a route declines and lets the next one have the block; the caller of last
+resort wants the warning, because by then the choice is between a block with a
+class missing and no block at all, and the first is plainly better.
 
 The pre-types are asked for as one array first, since a class that recurses
 needs to see a whole mutual inductive at once, and singly after that: the data
 members' pre-types are one block and the `Prop` members' another, so a block
 with `deriving` on both would not go through together.
 -/
-private def applyDeriving (views : Array InductiveView) : CommandElabM Unit := do
+private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool) :
+    CommandElabM Unit := do
   let mut processed : NameSet := {}
   for view in views do
     for classView in view.derivingClasses do
@@ -8122,15 +8216,41 @@ private def applyDeriving (views : Array InductiveView) : CommandElabM Unit := d
             for p in pres do
               unless ← tentatively (classView.applyHandlers #[p]) do
                 trace[Mumi.indind] "nothing to derive `{className}` for on `{p}`"
+        -- a member a constructor can instance is instanced from it, and only
+        -- what is left over goes the delta route.  `Inhabited` is the class
+        -- this comes up for, and it is the one a constructor answers directly
+        let declNames ← if className != ``Inhabited then pure declNames else
+          declNames.filterM fun n => do
+            let some view := views.find? (·.declName == n) | return true
+            let ctors := view.ctors.map (·.declName)
+            let some decl ← runTermElabM fun _ => inhabitedFromCtor? n ctors | return true
+            liftCoreM <| addAndCompile decl
+            -- `registerInstance`, not `addInstance`: the former also sets the
+            -- instance-reducible transparency that the `instance` command sets,
+            -- and a plain `def` of a class type is warned about without it
+            runTermElabM fun _ =>
+              Lean.Meta.registerInstance (n ++ `instInhabited) .global (eval_prio default)
+            return false
+        if declNames.isEmpty then continue
+        let note := m!"A data member of an induction-inductive block is the subtype of its \
+          pre-type, so `deriving` reaches it only through an instance `Subtype` already has \
+          -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand"
+        -- the delta route reports by logging as readily as by throwing, and a
+        -- logged error is how a route declines, so a caller that has said it
+        -- would rather have the block runs it where the log can be undone
+        let delta (ns : Array Name) : CommandElabM Unit :=
+          runTermElabM fun _ => for n in ns do
+            Term.processDefDeriving classView (← mkConstWithLevelParams n)
         withRef classView.ref do
-          try
-            runTermElabM fun _ => for n in declNames do
-              Term.processDefDeriving classView (← mkConstWithLevelParams n)
-          catch ex =>
-            logError m!"{ex.toMessageData}\n\nNote: A data member of an induction-inductive \
-              block is the subtype of its pre-type, so `deriving` reaches it only through an \
-              instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that \
-              does not has to be instanced by hand"
+          if requireDeriving then
+            try delta declNames
+            catch ex => logError m!"{ex.toMessageData}\n\nNote: {note}"
+          else
+            -- one member at a time: putting the state back to swallow the error
+            -- would otherwise take back the members that did derive with it
+            for n in declNames do
+              if let some why ← tentatively? (delta #[n]) then
+                logWarning m!"{why}\n\nNote: {note}"
 
 /-- The views of the members of a `mutual` block, with their modifiers elaborated. -/
 def elemViews (elems : Array Syntax) : CommandElabM (Array InductiveView) := do
@@ -8164,8 +8284,8 @@ agree with the arities.  Reading it again with the members in scope throughout
 is what it must have meant, but only if some arity names a sibling at all;
 otherwise the block failed for its own reasons and they are the ones to report.
 -/
-def elabInductionInductive (elems : Array Syntax) (requireIndInd := false) :
-    CommandElabM Unit := do
+def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
+    (requireDeriving := true) : CommandElabM Unit := do
   let views ← elemViews elems
   if requireIndInd && !viewsAreInductionInductive views then
     throwError "No member's arity names a sibling, so reading this block as an \
@@ -8201,7 +8321,7 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false) :
           pure r
         prepareCore r)
       addViewDocStrings views
-    applyDeriving views
+    applyDeriving views requireDeriving
   -- peeling is an improvement and not a requirement, so a block it does not
   -- suit is read again without it.  What it can cost is a member stated over
   -- something the bridge did not manage to restate -- the peeled type is
@@ -8246,8 +8366,8 @@ bridge does not go through it leaves the copies visible, and lowering's own
 `eq_orig` is then the better answer.  So `requireBridge` lets a caller ask for
 the good case first, fall back to lowering, and come back here without it.
 -/
-def elabNestedInductive (elems : Array Syntax) (requireBridge := false) :
-    CommandElabM Unit := do
+def elabNestedInductive (elems : Array Syntax) (requireBridge := false)
+    (requireDeriving := true) : CommandElabM Unit := do
   let views ← elemViews elems
   -- one `runTermElabM`, as in `elabInductionInductive`: the plan is built with
   -- the members stubbed as scratch axioms, and the info trees that come out of
@@ -8274,6 +8394,6 @@ def elabNestedInductive (elems : Array Syntax) (requireBridge := false) :
           throwError "This block came out with `{n}` visible rather than the type it \
             copies; `set_option trace.Mumi.indind true` says why"
     addViewDocStrings views
-  applyDeriving views
+  applyDeriving views requireDeriving
 
 end Mumi.IndInd

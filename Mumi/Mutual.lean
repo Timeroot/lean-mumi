@@ -70,7 +70,8 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
         ("lowering the denested block",
           elabHeterogeneousInductive elems (requireHeterogeneous := true)),
         ("the induction-inductive retry, with the members shadowing the globals",
-          IndInd.elabInductionInductive elems (requireIndInd := true))]
+          IndInd.elabInductionInductive elems (requireIndInd := true)
+            (requireDeriving := false))]
     return
   withExporting (isExporting := (← getScope).isPublic) do
   withoutCommandIncrementality true do

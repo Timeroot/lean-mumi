@@ -83,6 +83,14 @@ the two with `eq_orig`.  So the good case is asked for first, by way of
 `requireBridge`, lowering gets the block if that is declined, and the third retry
 is the same route with the bridge no longer required -- reached only when
 lowering will not have the block either.
+
+The third retry drops one more demand along with the bridge.  A `deriving` clause
+that cannot be honoured is a logged error, and a logged error is how a route
+declines -- rightly, while there is another route that might honour it, since a
+class the writer asked for is worth the copies becoming visible.  By the third
+there is no other route, and the choice is between a block with a class missing
+and no block at all, so `requireDeriving` is off and what could not be derived is
+a warning.
 -/
 
 public section
@@ -114,6 +122,6 @@ meta def elabDeclarationRescuingNested : CommandElab := fun stx => do
     ("lowering the denested block",
       elabHeterogeneousInductive #[stx] (requireHeterogeneous := true)),
     ("the induction-inductive retry",
-      IndInd.elabNestedInductive #[stx])]
+      IndInd.elabNestedInductive #[stx] (requireDeriving := false))]
 
 end Mumi
