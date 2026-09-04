@@ -644,8 +644,8 @@ Stock behaviour returns immediately, including the stock error message.
   it is not, so that one turns on where `Never` puts its `Box α` binder: an
   *index* is never specialised in the first place and the block goes through,
   while a declared *parameter* wants a copy indexed by `Box R`, which is itself
-  a member. The sharpest form of that is a
-  nesting over an equation between two fields — `mk (a b : Z) (h : a = b)` —
+  a member. The sharpest form of that is a nesting over an equation between two
+  fields — `mk (a b : Z) (h : a = b)` —
   where the abstracted field is of block type, so the copy would have to be
   *indexed by* a member and the block would have to be routed back through the
   induction-inductive path it came out of. It reports *Cannot denest `a = b`*.
@@ -666,9 +666,9 @@ Stock behaviour returns immediately, including the stock error message.
   read them off, so Lean promotes the index it was written with to one;
   denesting specialises only as far as the block reaches, which leaves the
   promotion an index of the copy again and gets the writer the block they wrote.
-  A declaration we decline reports *Lean's* error and
-  drops ours, which is right for a block that was never ours and unhelpful for
-  one that was: `set_option trace.Mumi.rescue true` keeps every retry's reason.
+  A declaration we decline reports *Lean's* error and drops ours, which is right
+  for a block that was never ours and unhelpful for one that was:
+  `set_option trace.Mumi.rescue true` keeps every retry's reason.
 * Importing this library changes the formatting of a few kernel error messages
   (some gain a `(kernel)` prefix). This affects declarations the library never
   touches, and `set_option mumi.enabled false` does not suppress it.
