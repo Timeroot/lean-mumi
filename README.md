@@ -422,8 +422,11 @@ which drops the constructor fields that pinned them, exactly as Lean's own
 written, and one given a name is bound on the right-hand side to what the
 discriminant's type says it is. What it cannot do is let a pattern *constrain*
 one. And a view is one layer deep, so a constructor written inside another
-pattern has to be reached by a `match` of its own. `MumiTests/Match.lean` pins
-all of it.
+pattern has to be reached by a `match` of its own. One thing the rewrite does
+not reach is what the equation compiler says about a `match` that leaves an
+alternative out: it counts the alternatives it was handed, which are the
+view's, so `Missing cases: _, Ctx.View.nil` is the member's `Ctx.nil` under the
+name the view knows it by. `MumiTests/Match.lean` pins all of it.
 
 ### A nested type that denests to one
 
@@ -653,7 +656,10 @@ Stock behaviour returns immediately, including the stock error message.
   quadratically many declarations, and the one simproc pushes the equation
   through `Subtype.val` and asks the erased pre-block's own `noConfusion` — so
   `Ctx.nil ≠ Ctx.snoc Γ A` and the rest of that family go by `simp` as well, at
-  a denested copy included. `induction` and `cases` work,
+  a denested copy included. What does *not* work on a constructor equation is
+  `injection` and `contradiction`, which reduce the type in hand until they
+  reach an inductive and so reach `Subtype`; `simp`, `cases` on the equation,
+  and `X.c.inj` cover the same ground. `induction` and `cases` work,
   on the `X.recD`/`X.recP` and
   `X.casesD`/`X.casesP` registered as their defaults; where the block had to
   discharge a motive of the same kind to get one — two data members, or two
@@ -667,6 +673,9 @@ Stock behaviour returns immediately, including the stock error message.
   `Subtype`, since a data member there *is* one. The class is derived for the
   pre-type, where the constructors are, and lifted; `DecidableEq` and `Repr`
   come across that way, `Repr` printing the pre-term, constructor names and all.
+  It is the clause on the block that does this, not a later
+  `deriving instance C for X`, which goes the way anything else that reduces a
+  member's type goes and finds `Subtype`.
   A class with nothing to lift, `Inhabited` among them, says so and leaves the
   block standing. For a block that was rescued rather than written as a
   `mutual`, the clause helps pick the route: a class this path can answer keeps

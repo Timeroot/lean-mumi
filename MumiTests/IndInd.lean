@@ -8803,6 +8803,16 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B
 
 example (Γ : Ctx) (A : Ty Γ) : (Ctx.snoc Γ A = Ctx.snoc Γ A) = True := by simp
 
+-- `injection` and `contradiction` reduce the type in hand until they reach an
+-- inductive, so on a member they reach `Subtype` and are of no use.  These are
+-- the three that cover the same ground
+example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ :=
+  (Ctx.snoc.inj h).1
+
+example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by cases h
+
+example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by simp at h
+
 end Inj
 
 /-! An indexed block, with a field at neither `Prop` nor the block, and a
