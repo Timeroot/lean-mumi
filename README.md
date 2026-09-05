@@ -364,6 +364,60 @@ state. We only claim a block
 whose headers Lean has *already* failed to elaborate and one of whose arities
 names a sibling; `MumiTests/IndInd.lean` pins all of it.
 
+### Matching on a member
+
+A data member is a `def` over a subtype, and the equation compiler reduces a
+discriminant's type until it reaches an inductive, so left to itself it reaches
+`Subtype` and offers `Subtype.mk`. Each data member is therefore given a *view*
+— a real inductive over the member itself, with one constructor per the
+member's own — and `match` is rewritten to go through it. Neither name has to
+be written:
+
+```lean
+def len (c : Ctx) : Nat :=
+  match c with
+  | .nil      => 0
+  | .snoc Γ _ => len Γ + 1
+
+#eval len (.snoc (.snoc .nil .nil) (.snoc .nil .nil))   -- 2
+
+#print Ctx.View
+-- inductive Ctx.View : Ctx → Type
+--   | nil  : Ctx.nil.View
+--   | snoc (Γ : Ctx) (h : Ok Γ) : (Γ.snoc h).View
+#check @Ctx.view    -- (x : Ctx) → x.View
+```
+
+`Ctx.view` is `Ctx.casesD` at the view's own motive, so it is one step and it
+computes. The rewrite is a `@[term_elab]` that reads `match c with | p => e` as
+`match c, c.view with | _, p => e`: the member stays a discriminant and stays
+first, so it is generalised before the view is looked at and the view's index
+refines it, and each alternative sees `c` as the constructor it matched. A
+`match` whose alternatives name no constructor of a member with a view is
+handed straight back to Lean, so nothing else about `match` changes.
+
+`def`s by equations, `fun` with alternatives, `match h : c with`, several
+discriminants at once, a member beside an ordinary type, `match` in tactic
+position and a motive that mentions the discriminant all read as they would of
+a real inductive.
+
+A view is not a subterm of what it presents, so recursion through one is
+well-founded rather than structural. The block emits the `X._sizeOf_inst` and
+the `@[simp] X.c.sizeOf_spec` lemmas the termination goals need, so a
+definition that plainly decreases goes through unaided; the price is that its
+equations then hold by `simp` rather than by `rfl`.
+
+Two things a view cannot present, both of which say so rather than reporting
+the view. A proof index forces the indices before it to be the view's
+*parameters* rather than its fields — a parameter cannot depend on an index —
+which drops the constructor fields that pinned them, exactly as Lean's own
+`cases` drops them. The rewrite hides that much: those fields are still
+written, and one given a name is bound on the right-hand side to what the
+discriminant's type says it is. What it cannot do is let a pattern *constrain*
+one. And a view is one layer deep, so a constructor written inside another
+pattern has to be reached by a `match` of its own. `MumiTests/Match.lean` pins
+all of it.
+
 ### A nested type that denests to one
 
 Nobody writes an induction-inductive block by accident, but Lean will build one
@@ -575,8 +629,11 @@ Stock behaviour returns immediately, including the stock error message.
   underneath survive: data members that recurse into *one another* still have to
   agree, since an edge puts one universe at or below the other and a cycle makes
   them equal, and a field still has to fit inside the member it belongs to.
-* Its constructors are `def`s, so `match` does not work and there is no
-  `noConfusion` at the name one would reach for. They do get `X.c.inj` and a
+* Its constructors are `def`s, so there is no `noConfusion` at the name one
+  would reach for, and `match` works through the view above rather than on the
+  member itself: a pattern may not constrain a field the view carries as a
+  parameter, and a constructor written inside another pattern needs a `match`
+  of its own. They do get `X.c.inj` and a
   `@[simp] X.c.injEq`, stated exactly
   as the ones a real inductive's constructors get — the field an index pins is
   shared rather than compared, a proof field is left out, a dependent field is

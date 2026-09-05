@@ -7,10 +7,12 @@ module
 
 public import Mumi.Options
 public import Mumi.Lowering
+public import Mumi.View
 public import Mumi.Denest
 public import Mumi.IndInd
 public import Mumi.Bridge
 public import Mumi.Rescue
 public import Mumi.Elab
 public import Mumi.Mutual
+public import Mumi.MatchView
 public import Mumi.Declaration

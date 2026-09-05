@@ -617,9 +617,14 @@ and friends depend on it), then the per-member constructions, then `brecOn` in
 a second pass, then the block-wide ones.  `brecOn` in particular is what
 structural recursion and the equation compiler need, so without it a `match`
 on a member would not elaborate.
+
+`genSizeOf := false` leaves out the `SizeOf` instance and its lemmas.  That is
+for a type whose fields are members of a block that is being measured by hand:
+the instances there are deliberately left uncompiled, and generating one on top
+of them would ask the code generator for something it will not find.
 -/
 def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
-    (isClass : Bool := false) : MetaM Unit := do
+    (isClass : Bool := false) (genSizeOf : Bool := true) : MetaM Unit := do
   let decl := Declaration.inductDecl levelParams numParams indTypes.toList false
   addDecl decl
   let names := indTypes.map (·.name)
@@ -657,7 +662,7 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
     if hasUnit && hasProd then mkBRecOn n
   unless isClass do
     -- these are generated for the whole block from its first member
-    mkSizeOfInstances names[0]!
+    if genSizeOf then mkSizeOfInstances names[0]!
     IndPredBelow.mkBelow names[0]!
     for n in names do
       mkInjectiveTheorems n

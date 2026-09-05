@@ -6,6 +6,7 @@ Authors: Alex Meiburg
 module
 
 public import Mumi.Lowering
+public import Mumi.View
 public import Mumi.Owned
 public import Lean.Elab.MutualInductive
 import all Lean.Elab.MutualInductive
@@ -8514,6 +8515,14 @@ def emit (p : Plan) : TermElabM Unit := do
     if copyNames.contains b.members[i]!.name then continue
     discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
       addInjEqs b (ofInjs.map (· ++ `ofOrig_inj)) i c
+
+  -- 12. what `match` is driven through.  A data member is a definition over a
+  -- subtype and the equation compiler reduces its way to `Subtype`, so it is
+  -- given a view -- a real inductive over the member -- to split on instead,
+  -- along with the `SizeOf` a definition by recursion over it needs
+  addViews b.numParams <| b.dataIdxs.filterMap fun i =>
+    let m := b.members[i]!
+    if copyNames.contains m.name then none else some (m.name, m.ctors.map (·.name))
 
 /-! ## The entry point -/
 
