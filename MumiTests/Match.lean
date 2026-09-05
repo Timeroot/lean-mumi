@@ -235,6 +235,96 @@ theorem always_ok (c : Ctx) : Ok c := by
   | .nil => exact .nil
   | .snoc Γ h => exact .snoc Γ h
 
+/-! ## Inside a `do` block
+
+A `do` block's `match` is a `do` element and not a term, with an elaborator of
+its own, so it takes a second override.  The rewritten `match` goes back to that
+elaborator rather than to a term one, which is what keeps everything a `do`
+block's `match` is allowed to contain working inside an alternative. -/
+
+def viaDo (c : Ctx) : Option Nat := do
+  match c with
+  | .nil => none
+  | .snoc Γ _ => return len Γ
+
+/-- info: none -/
+#guard_msgs in
+#eval viaDo .nil
+
+/-- info: some 1 -/
+#guard_msgs in
+#eval viaDo c2
+
+/-- `return` out of the block, and a mutable variable written in an alternative. -/
+def viaDoMut (c : Ctx) : Id Nat := do
+  let mut n := 0
+  match c with
+  | .nil => return 100
+  | .snoc Γ _ =>
+    n := n + len Γ
+    n := n + 1
+  return n
+
+/-- info: 100 -/
+#guard_msgs in
+#eval viaDoMut .nil
+
+/-- info: 2 -/
+#guard_msgs in
+#eval viaDoMut c2
+
+/-- `continue`, which only means anything to the `for` the `match` is under. -/
+def viaDoFor (cs : List Ctx) : Id Nat := do
+  let mut n := 0
+  for c in cs do
+    match c with
+    | .nil => continue
+    | .snoc Γ _ => n := n + len Γ + 1
+  return n
+
+/-- info: 3 -/
+#guard_msgs in
+#eval viaDoFor [c1, .nil, c2]
+
+/-- A promoted argument under a name, bound in front of the sequence. -/
+def viaDoCtxLen {Γ : Ctx} {h : Ok Γ} (t : Tm Γ h) : Id Nat := do
+  match t with
+  | .var Δ _ => return len Δ
+  | .wk Δ _ _ => return len Δ + 100
+
+/-- info: 2 -/
+#guard_msgs in
+#eval viaDoCtxLen (Tm.var c2 o2)
+
+/-- info: 102 -/
+#guard_msgs in
+#eval viaDoCtxLen (Tm.wk c2 o2 (.var c2 o2))
+
+/-- A sequence written with braces keeps its elements somewhere else. -/
+def viaDoBraces {Γ : Ctx} {h : Ok Γ} (t : Tm Γ h) : Id Nat := do
+  match t with
+  | .var Δ _ => { return len Δ }
+  | .wk Δ _ _ => { return len Δ + 100 }
+
+/-- info: 2 -/
+#guard_msgs in
+#eval viaDoBraces (Tm.var c2 o2)
+
+/-- A member next to an ordinary type, and `h :` alongside. -/
+def viaDoMixed (c : Ctx) (n : Nat) : Id Nat := do
+  match h : c, n with
+  | .nil, _ => return 0
+  | .snoc Γ _, 0 => return len Γ + (by cases h; exact 7)
+  | .snoc Γ _, k + 1 => return len Γ + k
+
+/-- info: 8 -/
+#guard_msgs in
+#eval viaDoMixed c2 0
+
+/-- info: 6 -/
+#guard_msgs in
+#eval viaDoMixed c2 6
+
 /-! ## Nothing sorried
 
 A view is a plain inductive and `Ctx.view` a plain definition over `Ctx.casesD`,
@@ -264,6 +354,10 @@ so a function written through one rests on no more than the block itself does.
 /-- info: 'MumiTests.Match.always_ok' does not depend on any axioms -/
 #guard_msgs in
 #print axioms always_ok
+
+/-- info: 'MumiTests.Match.viaDoMut' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms viaDoMut
 
 /-! ## What a view cannot present
 
@@ -303,6 +397,18 @@ example {Γ : Ctx} {h : Ok Γ} (t : Tm Γ h) : Nat :=
   match t with
   | .var .nil _ => 0
   | _ => 1
+
+-- an alternative left out is still an alternative left out, but the equation
+-- compiler counts the alternatives it was given, which are the view's: one slot
+-- for the member, matched by nothing, and one for the view
+/--
+error: Missing cases:
+_, Ctx.View.nil
+-/
+#guard_msgs in
+example (c : Ctx) : Nat :=
+  match c with
+  | .snoc Γ _ => len Γ
 
 /-! ## Other blocks
 

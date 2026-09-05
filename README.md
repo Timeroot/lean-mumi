@@ -401,6 +401,13 @@ discriminants at once, a member beside an ordinary type, `match` in tactic
 position and a motive that mentions the discriminant all read as they would of
 a real inductive.
 
+The `match` of a `do` block is a `do` element rather than a term and has an
+elaborator of its own, so it gets a second override on the same plan. The
+rewritten `match` goes back to that elaborator rather than to a term one, which
+is what keeps `return`, `break`, `continue` and mutable variables working
+inside an alternative; `if let` and `let p := c | alt` reach it by expanding to
+one.
+
 A view is not a subterm of what it presents, so recursion through one is
 well-founded rather than structural. The block emits the `X._sizeOf_inst` and
 the `@[simp] X.c.sizeOf_spec` lemmas the termination goals need, so a

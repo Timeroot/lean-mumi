@@ -7,6 +7,7 @@ module
 
 public meta import Mumi.View
 public meta import Lean.Elab.Match
+public meta import Lean.Elab.Do.Basic
 
 /-!
 # Taking over `match`
@@ -45,6 +46,12 @@ registered downstream is tried before the builtin one, and
 touched rolled back.  So this is a filter, and it is a narrow one: a file with
 no member that has a view never gets past the first line, and a `match` whose
 alternatives name no constructor of such a member never gets past the third.
+
+A `do` block's `match` is a `do` element rather than a term and has an
+elaborator of its own, so it gets an override of its own on the same plan.  The
+rewritten `match` goes back to that elaborator rather than to a term one, which
+is what keeps `return`, `break`, `continue` and mutable variables working
+inside an alternative.
 
 ## What is not rewritten
 
@@ -186,26 +193,26 @@ private meta def memberOf? (d : Syntax) : TermElabM (Option Name) :=
     catch _ =>
       return none
 
-/--
-Elaborate a `match` on a member by elaborating the same `match` on its view.
+/-- Whether any alternative is headed by a name a viewed constructor goes by,
+which is the cheap look that comes before anything is elaborated. -/
+private meta def anyHeadsAtViewed (viewed : NameSet) (alts : Array Syntax) : Bool :=
+  alts.any fun alt =>
+    alt[1].getSepArgs.any fun pl => pl.getSepArgs.any (headsAtViewed viewed)
 
-Steps aside -- `throwUnsupportedSyntax`, which hands the term to Lean's own
+/--
+The discriminants and alternatives a `match` on a member is elaborated as.
+
+`withLets` puts the bindings a promoted argument asks for in front of an
+alternative's right-hand side, which is a term for `match` and a sequence for
+the `match` in a `do` block.
+
+Steps aside -- `throwUnsupportedSyntax`, which hands the `match` to Lean's own
 elaborator with nothing changed -- wherever the rewrite does not apply.
 -/
-@[term_elab Lean.Parser.Term.match]
-meta def elabMatchThroughView : TermElab := fun stx expectedType? => do
-  -- the cheap look first: unless some alternative is headed by a name a viewed
-  -- constructor goes by, this is a `match` on something else and the
-  -- discriminants are not worth elaborating to find that out
-  let viewed := viewedCtors (← getEnv)
-  if viewed.isEmpty then throwUnsupportedSyntax
-  unless stx[2].isNone do throwUnsupportedSyntax
-  let discrs := stx[3].getSepArgs
-  let alts := stx[5][0].getArgs
+private meta def throughView (discrs alts : Array Syntax)
+    (withLets : Array (Ident × Term) → Syntax → TermElabM Syntax) :
+    TermElabM (Array Syntax × Array Syntax) := do
   let patLists (alt : Syntax) : Array Syntax := alt[1].getSepArgs
-  unless alts.any fun alt =>
-      (patLists alt).any fun pl => pl.getSepArgs.any (headsAtViewed viewed) do
-    throwUnsupportedSyntax
   -- a discriminant is gone through only where an alternative names a
   -- constructor of it, so a `match` Lean already handles is handed straight back
   let mut through : Array (Option Through) := #[]
@@ -299,13 +306,67 @@ meta def elabMatchThroughView : TermElab := fun stx expectedType? => do
     -- what the view carries as a parameter is not in the pattern to be bound,
     -- so a writer who named it is given it by definition instead
     if lets.size > 0 && lists.size > 1 then throwUnsupportedSyntax
-    let mut rhs : Term := ⟨alt[3]⟩
-    for (x, v) in lets.reverse do
-      rhs ← `(let $x := $v; $rhs)
-    newAlts := newAlts.push <| alt.setArg 1 (sepNode " | " lists) |>.setArg 3 rhs.raw
+    newAlts := newAlts.push <|
+      alt.setArg 1 (sepNode " | " lists) |>.setArg 3 (← withLets lets alt[3])
+  return (newDiscrs, newAlts)
+
+/-- The bindings in front of a term. -/
+private meta def termLets (lets : Array (Ident × Term)) (rhs : Syntax) : TermElabM Syntax := do
+  let mut r : Term := ⟨rhs⟩
+  for (x, v) in lets.reverse do
+    r ← `(let $x := $v; $r)
+  return r.raw
+
+/-- The bindings in front of a `do` sequence, which keeps its elements in a
+different place depending on whether it was written with braces. -/
+private meta def doLets (lets : Array (Ident × Term)) (seq : Syntax) : TermElabM Syntax := do
+  if lets.isEmpty then return seq
+  let items ← lets.mapM fun (x, v) => do
+    return mkNode ``Lean.Parser.Term.doSeqItem #[(← `(doElem| let $x := $v)).raw, mkNullNode]
+  let i := if seq.getKind == ``Lean.Parser.Term.doSeqBracketed then 1 else 0
+  return seq.setArg i (mkNullNode (items ++ seq[i].getArgs))
+
+/--
+Elaborate a `match` on a member by elaborating the same `match` on its view.
+
+The mechanism is the one `Mumi.Mutual` uses for `mutual`: a `@[term_elab]`
+registered downstream is tried before the builtin one, and
+`throwUnsupportedSyntax` hands the term back with any state the override
+touched rolled back.
+-/
+@[term_elab Lean.Parser.Term.match]
+meta def elabMatchThroughView : TermElab := fun stx expectedType? => do
+  let viewed := viewedCtors (← getEnv)
+  if viewed.isEmpty then throwUnsupportedSyntax
+  unless stx[2].isNone do throwUnsupportedSyntax
+  let alts := stx[5][0].getArgs
+  unless anyHeadsAtViewed viewed alts do throwUnsupportedSyntax
+  let (newDiscrs, newAlts) ← throughView stx[3].getSepArgs alts termLets
   let stx := stx.setArg 3 (sepNode ", " newDiscrs)
     |>.setArg 5 (stx[5].setArg 0 (mkNullNode newAlts))
   trace[Mumi.view] "matching through a view:{indentD m!"{stx}"}"
   elabTerm stx expectedType?
+
+/--
+The same, for the `match` of a `do` block, which has an elaborator of its own
+and so needs an override of its own.
+
+Going by way of a term `match` instead would work, but a `do` block's `match`
+is where `return`, `break` and mutable variables are handled, and the
+alternative that keeps all of that is to leave the sequences alone and hand the
+rewritten `match` back to the elaborator they belong to.
+-/
+@[doElem_elab Lean.Parser.Term.doMatch]
+meta def elabDoMatchThroughView : Lean.Elab.Do.DoElab := fun stx cont => do
+  let viewed := viewedCtors (← getEnv)
+  if viewed.isEmpty then throwUnsupportedSyntax
+  unless stx.raw[3].isNone do throwUnsupportedSyntax
+  let alts := stx.raw[6][0].getArgs
+  unless anyHeadsAtViewed viewed alts do throwUnsupportedSyntax
+  let (newDiscrs, newAlts) ← throughView stx.raw[4].getSepArgs alts doLets
+  let stx := stx.raw.setArg 4 (sepNode ", " newDiscrs)
+    |>.setArg 6 (stx.raw[6].setArg 0 (mkNullNode newAlts))
+  trace[Mumi.view] "matching through a view in a `do` block:{indentD m!"{stx}"}"
+  Lean.Elab.Do.elabDoElem ⟨stx⟩ cont
 
 end Mumi
