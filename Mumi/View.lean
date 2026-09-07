@@ -13,15 +13,15 @@ public section
 /-!
 # Seeing a member as the inductive it was written as
 
-An induction-inductive member is emitted as a definition over a subtype: `Ctx`
-is `Subtype Ctx._wf`, and `Ctx.snoc` is a definition that packs a
+An induction-inductive member is emitted as a definition over a wrapper: `Ctx`
+is `Ctx._sub`, a one-constructor inductive, and `Ctx.snoc` is a definition that packs a
 `Ctx._pre.snoc` next to a proof that the pre-term is well formed.  Everything a
 writer states about the block is stated in those names and reads exactly as
 written, and `induction` and `cases` are driven by the eliminators step 10 of
 the emit adds.  `match` is the one thing that does not go through.
 
 It cannot.  The equation compiler asks the discriminant's type for an inductive
-by reducing it, so it always arrives at `Subtype`, and the constructors --
+by reducing it, so it always arrives at the wrapper, and the constructors --
 `@[match_pattern]` definitions -- unfold on the way in.  `Ctx.snoc Γ h` becomes
 `⟨Γ.val.snoc, _⟩`, whose `Γ` is under a projection and so no longer a pattern
 variable, and `Tm.var Γ h` becomes `⟨Tm._pre.var, True.intro⟩`, which has lost
@@ -70,10 +70,14 @@ which is what `cases` presents too.
 
 ## Recursion
 
-A definition by recursion over a member cannot be structural: `Subtype Ctx._wf`
-has no `brecOn`, and the view is not recursive.  It can be well founded, given
-a `SizeOf` instance to measure with and the specification lemmas the termination
-tactic simplifies with, so those are built here as well.  The measure is the
+A definition by recursion over a member is structural where it can be.  The
+member unfolds to its wrapper, and the wrapper is given a `below` and a `brecOn`
+built out of the block's own recursor, so the equation compiler finds what it
+looks for.  Where it cannot is a member with an index of its own: the table
+`below` builds is at fixed parameters, and a recursive call at some other index
+would want a row it has no column for.  Such a recursion can still be well
+founded, given a `SizeOf` instance to measure with and the specification lemmas
+the termination tactic simplifies with, so those are built here as well.  The measure is the
 pre-term's, which is the only thing left after the proofs are erased and is
 exactly the size of what was written.
 -/
@@ -153,9 +157,9 @@ private partial def implicitUpTo (n : Nat) (e : Expr) : Expr :=
 /-- The pre-term inside a member's element, which is what it is measured by. -/
 private def preOf (x : Expr) : MetaM Expr := do
   let ty ← whnf (← inferType x)
-  let .app (.app (.const ``Subtype [u]) α) p := ty
-    | throwError "`{← inferType x}` is not a subtype"
-  return mkApp3 (mkConst ``Subtype.val [u]) α p x
+  let .const n@(.str _ "_sub") us := ty.getAppFn
+    | throwError "`{← inferType x}` is not the wrapper a member unfolds to"
+  return mkAppN (mkConst (n ++ `val) us) (ty.getAppArgs.push x)
 
 /--
 `SizeOf` for a member, measuring an element by the pre-term it wraps.

@@ -3682,7 +3682,7 @@ end
 -- unfolding to an inductive of its own
 /--
 info: def DataOnDataBuiltKept.Tm : (Γ : Ctx) → Ty Γ → Type :=
-fun Γ a => Subtype (Tm._wf Γ.val a.val)
+fun Γ a => Tm._sub Γ.val a.val
 -/
 #guard_msgs in
 #print Tm
@@ -5345,7 +5345,7 @@ end
 
 /--
 info: def PropIndex.Tm15 : (Γ : Ctx15) → Ok15 Γ → Type :=
-fun Γ a => Subtype (Tm15._wf Γ.val a)
+fun Γ a => Tm15._sub Γ.val a
 -/
 #guard_msgs in
 #print Tm15
@@ -5599,9 +5599,9 @@ inductive P5 : List C5 → Prop where
   | nil : P5 []
 end
 
--- a data member is encoded as a `Subtype`, which lands in `Sort (max 1 u)`
+-- a data member is encoded as a wrapper, which lands in `Sort (max 1 u)`
 /--
-error: The data member `S` lives at `Sort u`, which could still be `Prop`.  It is encoded as a subtype, and `Subtype` lands one universe up from `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather than `Sort v`
+error: The data member `S` lives at `Sort u`, which could still be `Prop`.  It is encoded as a wrapper around its pre-type, which lands one universe up from `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather than `Sort v`
 -/
 #guard_msgs in
 mutual
@@ -6656,15 +6656,15 @@ be the empty one they wrote. -/
 
 /--
 error: failed to synthesize instance of type class
-  Inhabited (Subtype F3Vec._wf)
+  Inhabited F3Vec._sub
 
-Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+Hint: Adding the command `deriving instance Inhabited for F3Vec._sub` may allow Lean to derive the missing instance.
 ---
 error: Failed to delta derive `Inhabited` instance for `F3Vec`.
 
 Note: Delta deriving tries the following strategies: (1) inserting the definition into each explicit non-out-param parameter of a class and (2) unfolding definitions further.
 
-Note: A data member of an induction-inductive block is the subtype of its pre-type, so `deriving` reaches it only through an instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand
+Note: A data member of an induction-inductive block unfolds to a wrapper around its pre-type, so `deriving` reaches it only through an instance that wrapper has -- `DecidableEq`, `Repr` and `Hashable` are given one, and a class that is not can be derived for the wrapper itself, which the hint above names
 -/
 #guard_msgs in
 mutual
@@ -7728,7 +7728,7 @@ warning: Failed to delta derive `Inhabited` instance for `LVec`.
 
 Note: Delta deriving tries the following strategies: (1) inserting the definition into each explicit non-out-param parameter of a class and (2) unfolding definitions further.
 
-Note: A data member of an induction-inductive block is the subtype of its pre-type, so `deriving` reaches it only through an instance `Subtype` already has -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand
+Note: A data member of an induction-inductive block unfolds to a wrapper around its pre-type, so `deriving` reaches it only through an instance that wrapper has -- `DecidableEq`, `Repr` and `Hashable` are given one, and a class that is not can be derived for the wrapper itself, which the hint above names
 -/
 #guard_msgs in
 inductive LVec where

@@ -557,7 +557,7 @@ run_meta logInfo m!"A is private: {isPrivateName ``A}, B is private: {isPrivateN
 
 /--
 info: def Modifiers.A : Type :=
-Subtype A._wf
+A._sub
 -/
 #guard_msgs in
 #print A

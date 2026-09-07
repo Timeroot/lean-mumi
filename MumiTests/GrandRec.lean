@@ -535,13 +535,15 @@ inductive Good (α : Type) where
   | mk (c : Chain α) (h : c.Short)
 
 /--
-trace: [Mumi.indind] no recursor over the whole block:
-    `Pinned.RecShort.nested_Short_3.cons` is a constructor of
-    `Pinned.RecShort.nested_Short_3` at
-    RecShort.nested_Chain_2.cons a RecShort.nested_Chain_2.nil
-    which pins a field of `Pinned.RecShort.nested_Chain_2` rather than naming one.
-    The recursion over the whole block would then have to compute at that term,
-    which is not one it is recursing on.
+trace: [Mumi.indind] no recursor over the whole block: `Pinned.RecShort.nested_Short_3.cons` is a constructor of `Pinned.RecShort.nested_Short_3` at
+      RecShort.nested_Chain_2.cons a RecShort.nested_Chain_2.nil
+    which pins a field of `Pinned.RecShort.nested_Chain_2` rather than naming one.  The recursion over the whole block would then have to compute at that term, which is not one it is recursing on.
+[Mumi.indind] no course-of-values recursion for `Pinned.RecShort`: (kernel) application type mismatch
+      F (RecShort.mk x) PUnit.unit
+    argument has type
+      PUnit
+    but function has type
+      @RecShort._sub.below motive (RecShort.mk x) → motive (RecShort.mk x)
 -/
 #guard_msgs(whitespace := lax) in
 set_option trace.Mumi.indind true in

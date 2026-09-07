@@ -6,6 +6,7 @@ Authors: Alex Meiburg
 module
 
 public import Mumi.Lowering
+public import Mumi.Runtime
 public import Mumi.View
 public import Mumi.Owned
 public import Lean.Elab.MutualInductive
@@ -127,7 +128,7 @@ everything the constructor was built from.  See `addPropRecs`.
   auto-bound implicits.
 * Universe parameters, declared or auto-bound, shared by the whole block as
   Lean's own `mutual` requires.  A *data* member may not sit at a bare `Sort u`,
-  though: it is encoded as a subtype, and `Subtype` lands in `Sort (max 1 u)`,
+  though: it is encoded as a wrapper around its pre-type, which lands in `Sort (max 1 u)`,
   which is `Sort u` again only when `u` is visibly non-zero.
 * A member may leave its resulting type out -- `inductive Tree where` -- and it
   is read as `Type`.  Lean would put a metavariable there and solve it from the
@@ -271,7 +272,7 @@ family nor its extra index is anything the erasure has to know about.
   `ofOrig_inj` that reads it back.  Two *different* constructors are told apart
   by a simproc rather than by a theorem, so `simp` settles those too --
   `contradiction` and `injection` do not, since what they reach for is the
-  `noConfusion` of whatever the member unfolds to, which is `Subtype`'s.  Reason with
+  `noConfusion` of whatever the member unfolds to, which is the wrapper's.  Reason with
   `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`; a
   bare `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into
   the goal.  A recursor with a *single* motive is registered as the `induction`
@@ -348,6 +349,28 @@ def preName (n : Name) : Name := n ++ `_pre
 
 /-- `X._wf : ∀ idxs, X._pre idxs → Prop`, well-formedness on the pre-type. -/
 def wfName (n : Name) : Name := n ++ `_wf
+
+/--
+`X._sub args`, the one-constructor inductive pairing a pre-value with its
+well-formedness proof. This is what a data member unfolds to.
+
+`Subtype` would say the same thing, and used to. But structural recursion looks
+at what the argument's type whnfs to and asks whether *that* head has a
+`.brecOn`; `Subtype` has none and can never be given one, since the recursion is
+on `X._wf`, not on the pair. So the pair gets its own head per member, which can
+carry its own `below`/`brecOn` and let the equation compiler through.
+-/
+def subName (n : Name) : Name := n ++ `_sub
+
+/--
+The wrapper `ty` is one of, if it is one at all: its head and the arguments it
+carries.  Everything that used to ask whether a type had reduced to a `Subtype`
+asks this instead, there being a head per member now rather than one head.
+-/
+def subOf? (ty : Expr) : Option (Name × List Level × Array Expr) :=
+  match ty.getAppFn with
+  | .const n@(.str _ "_sub") us => some (n, us, ty.getAppArgs)
+  | _ => none
 
 /--
 `X._ind`, the inductive a member that left the block is really declared as, in
@@ -941,18 +964,18 @@ pre-term no longer says and the predicate has to say instead.
 def Block.wfApp (b : Block) (i : Nat) (args : Array Expr) : Expr :=
   mkAppN (b.cst (wfName b.members[i]!.name)) args
 
-/-- `{t : X._pre args // X._wf args t}`, which is what `X args` unfolds to. -/
+/-- `X._sub args`, the wrapper that `X args` unfolds to. -/
 def Block.subtype (b : Block) (i : Nat) (args : Array Expr) : Expr :=
-  mkApp2 (mkConst ``Subtype [b.members[i]!.level]) (b.preApp i args) (b.wfApp i args)
+  mkAppN (b.cst (subName b.members[i]!.name)) args
 
 def Block.sVal (b : Block) (i : Nat) (args : Array Expr) (e : Expr) : Expr :=
-  mkApp3 (mkConst ``Subtype.val [b.members[i]!.level]) (b.preApp i args) (b.wfApp i args) e
+  mkAppN (b.cst (subName b.members[i]!.name ++ `val)) (args.push e)
 
 def Block.sProp (b : Block) (i : Nat) (args : Array Expr) (e : Expr) : Expr :=
-  mkApp3 (mkConst ``Subtype.property [b.members[i]!.level]) (b.preApp i args) (b.wfApp i args) e
+  mkAppN (b.cst (subName b.members[i]!.name ++ `property)) (args.push e)
 
 def Block.sMk (b : Block) (i : Nat) (args : Array Expr) (v p : Expr) : Expr :=
-  mkApp4 (mkConst ``Subtype.mk [b.members[i]!.level]) (b.preApp i args) (b.wfApp i args) v p
+  mkAppN (b.cst (subName b.members[i]!.name ++ `mk)) (args ++ #[v, p])
 
 /-! ## Recursive fields
 
@@ -2211,14 +2234,15 @@ def checkDataArities (names : Array Name) (isProp : Array Bool)
   for i in dataIdxs do
     unless ← isLevelDefEq levels[i]! levels[dataIdxs[0]!]! do
       heterogeneous := true
-  -- a data member is encoded as a `Subtype`, which lands in `Sort (max 1 l)`.
+  -- a data member is encoded as a wrapper, which lands in `Sort (max 1 l)`.
   -- For `Type v` that is `Sort l` again; for a bare `Sort u`, which might yet
   -- be `Prop`, it is not, and the definition would not typecheck
   for i in dataIdxs do
     unless ← isLevelDefEq (mkLevelMax Level.one levels[i]!) levels[i]! do
       let s := toString (← ppExpr (mkSort levels[i]!))
       throwError "The data member `{names[i]!}` lives at `{s}`, which could still \
-        be `Prop`.  It is encoded as a subtype, and `Subtype` lands one universe up from \
+        be `Prop`.  It is encoded as a wrapper around its pre-type, which lands one \
+        universe up from \
         `Prop`, so a data member's universe has to be visibly non-zero -- `Type v` rather \
         than `Sort v`"
   return heterogeneous
@@ -3680,7 +3704,7 @@ to be renamed.  The raw minor concludes at the raw constructor applied to the
 copy-typed field, and the nice minor concludes at the nice constructor applied
 to `X.toOrig` of it -- which unfolds to the raw one at `X.ofOrig (X.toOrig ..)`.
 `ofOrig_toOrig` is exactly the difference, so the conclusion is transported
-along it, one field at a time and at the `.val` level, and `Subtype.ext` lifts
+along it, one field at a time and at the `.val` level, and the wrapper's `ext` lifts
 the result back.
 
 A copy is not a name anyone reaches for, so a copy keeps only its raw recursor
@@ -3793,7 +3817,7 @@ namespace BridgeCtx
 
 /-- Which copy's original `e` is an application of, and the arguments it carries. -/
 def copyOf? (c : BridgeCtx) (e : Expr) : MetaM (Option (Nat × Array Expr)) := do
-  -- as in `Block.withRecTarget?`: a `Subtype`'s proof field says
+  -- as in `Block.withRecTarget?`: a wrapper's proof field says
   -- `(fun t => P t) val`, and the copy is at the head of its beta-normal form
   let e := e.headBeta
   if e.getAppFn.constName?.isNone then return none
@@ -4316,7 +4340,7 @@ completed.
   turns that back into the raw constructor at the fields themselves.  Stating it
   at the subtype would make that transport ill-typed, since a constructor with
   an erased proof field has a field whose *type* moves with the transport; at the
-  value there are no proof fields left at all, and `Subtype.ext` lifts it.
+  value there are no proof fields left at all, and the wrapper's `ext` lifts it.
 -/
 
 /-- The copy's image in the original: `X.toOrig : X ps idxs → I ps' idxs'`. -/
@@ -4397,19 +4421,18 @@ def niceIdxArgs (c : BridgeCtx) (i : Nat) (app : Expr) : MetaM (Array Expr) := d
     return args
 
 /--
-`Subtype.ext` at `ty`, a member of the block applied to its arguments.
+`X._sub.ext` at `ty`, a member of the block applied to its arguments.
 
-Which subtype that is could be spelled out of the member and the arguments, but
+Which wrapper that is could be spelled out of the member and the arguments, but
 not from the arguments as the writer sees them: an index at another member is
 kept by the erasure at its pre-world value, and reading it off the type asks the
-one question there is to ask and gets both components at once.
+one question there is to ask and gets the arguments the wrapper wants at once.
 -/
-def subtypeExt (c : BridgeCtx) (i : Nat) (ty a a' h : Expr) : MetaM Expr := do
+def subtypeExt (_c : BridgeCtx) (_i : Nat) (ty a a' h : Expr) : MetaM Expr := do
   let sub ← whnfD ty
-  unless sub.isAppOfArity ``Subtype 2 do
-    throwError "`{ty}` is not the subtype the member unfolds to"
-  return mkAppN (mkConst ``Subtype.ext [c.b.members[i]!.level])
-    #[sub.appFn!.appArg!, sub.appArg!, a, a', h]
+  let some (n, us, args) := subOf? sub
+    | throwError "`{ty}` is not the wrapper the member unfolds to"
+  return mkAppN (mkConst (n ++ `ext) us) (args ++ #[a, a', h])
 
 /--
 The original-world image of `x : ty`, where `ty` is written in the copy world.
@@ -4576,8 +4599,8 @@ partial def withWfIdxsAux {α} [Inhabited α] (c : BridgeCtx) (idxs : Array Expr
     forallBoundedTelescope preTy (some 1) fun ys rest => do
       let y := ys[0]!
       -- the copy-world type the index was declared with, kept alongside the term:
-      -- a rebuilt index is a `Subtype.mk`, and what that infers to says `Subtype`
-      -- rather than the copy, which is what the image is looked up by.  A later
+      -- a rebuilt index is the wrapper's `.mk`, and what that infers to names the
+      -- wrapper rather than the copy, which is what the image is looked up by.  A later
       -- index's type can mention an earlier one, and what stands for that here is
       -- the rebuilt index, not the binder the member was declared with
       let raw ← inferType idxs[i]
@@ -4627,7 +4650,7 @@ partial def wfParts (w : Expr) : MetaM (Array (Expr × Expr)) := do
   return out
 
 /--
-Every `Subtype.property` the statement `want` puts within reach.
+Every wrapper's `property` the statement `want` puts within reach.
 
 A real value is a pre-term paired with its well-formedness, so any `.val` in a
 statement brings the proof about that `.val` along with it.  The one the
@@ -4636,12 +4659,17 @@ property, not `Γ`'s -- so every projection in there is collected and the caller
 tries them all.
 -/
 partial def subProps (e : Expr) (acc : Array Expr) : Array Expr :=
-  let acc :=
-    if e.isAppOfArity ``Subtype.val 3 then
-      acc.push (mkAppN (mkConst ``Subtype.property e.getAppFn.constLevels!) e.getAppArgs)
-    else acc
   match e with
-  | .app f a => subProps a (subProps f acc)
+  -- the whole spine at once, since `.val` and `.property` take the same
+  -- arguments and a walk down `.app` would collect every partial application of
+  -- one of them as well as the application that was really there
+  | .app .. =>
+    let args := e.getAppArgs
+    let acc := match e.getAppFn with
+      | .const (.str p@(.str _ "_sub") "val") us =>
+        acc.push (mkAppN (mkConst (.str p "property") us) args)
+      | _ => acc
+    args.foldl (fun acc a => subProps a acc) acc
   | .lam _ d b _ | .forallE _ d b _ => subProps b (subProps d acc)
   | .letE _ t v b _ => subProps b (subProps v (subProps t acc))
   | .mdata _ b => subProps b acc
@@ -7384,9 +7412,9 @@ the two sides rather than compared, a proof field is left out, and a field whose
 type moved with an earlier one is compared with `HEq`.
 
 Only the proofs are ours, and they are the same few moves every time.  Forwards,
-the equation is pushed through `Subtype.val`, where reduction takes the two
+the equation is pushed through the wrapper's `.val`, where reduction takes the two
 constructors down to the pre-world's own and `injection` splits them; each
-equation that yields is a field's outright or a `Subtype.ext` away from one, and
+equation that yields is a field's outright or a wrapper's `ext` away from one, and
 substituting them in turn is what makes the later ones homogeneous.  Backwards,
 the components are substituted and the two sides are the same term.
 -/
@@ -7448,6 +7476,12 @@ proofs -- which is where mainline's statement builder answers `none` too.
 field at a denested copy needs: what `injection` leaves there is an equation
 between the two sides' images in the copy.  Which copy is not worked out --
 there are only ever a few, and the script tries each in turn.
+
+Which member's `ext` lifts an equation is not worked out either, for the same
+reason: `injection` on a constructor with fields at several members leaves one
+equation per member, each at that member's own wrapper.  A single `Subtype.ext`
+used to cover them all; a wrapper per member is what buys the recursion, and the
+price is a list of candidates rather than one.
 -/
 def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
     TermElabM Unit := do
@@ -7473,10 +7507,9 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
   let injVal ← forallBoundedTelescope injTy nBinders fun xs body => do
     let lhs := body.bindingDomain!.appFn!.appArg!
     let sub ← whnf (← inferType lhs)
-    unless sub.isAppOfArity ``Subtype 2 do
-      throwError "`{c.name}` does not build a subtype, so `injection` has nothing to split"
-    let u := sub.getAppFn.constLevels!.head!
-    let pre ← whnf (mkApp3 (mkConst ``Subtype.val [u]) sub.appFn!.appArg! sub.appArg! lhs)
+    let some (sn, sus, sargs) := subOf? sub
+      | throwError "`{c.name}` does not build a wrapper, so `injection` has nothing to split"
+    let pre ← whnf (mkAppN (mkConst (sn ++ `val) sus) (sargs.push lhs))
     let nEq ← preEqCount pre
     if nEq == 0 then throwError "`{c.name}` reduces to no pre-world constructor"
     let qs : TSyntaxArray [`ident, ``Lean.Parser.Term.hole] :=
@@ -7491,10 +7524,11 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
       let q := qName k
       let mut lifted : Array Term := #[]
       for e in #[← `(term| $q:ident), ← `(term| eq_of_heq $q)] do
-        let ext ← `(term| Subtype.ext $e)
-        lifted := lifted.push ext
-        for n in ofInjs do
-          lifted := lifted.push (← `(term| $(mkIdent n) $ext))
+        for x in b.dataIdxs do
+          let ext ← `(term| $(mkIdent (subName b.members[x]!.name ++ `ext)) $e)
+          lifted := lifted.push ext
+          for n in ofInjs do
+            lifted := lifted.push (← `(term| $(mkIdent n) $ext))
       lifted := lifted.push (← `(term| eq_of_heq $q))
       let alts ← lifted.mapM fun e => do
         let s : Array (TSyntax `tactic) :=
@@ -7513,7 +7547,7 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
     -- nothing left to do -- hence `all_goals`, which is a no-op then
     let steps : Array (TSyntax `tactic) := #[
       ← `(tactic| intro $hH:ident),
-      ← `(tactic| have $hV:ident := congrArg Subtype.val $hH),
+      ← `(tactic| have $hV:ident := congrArg $(mkIdent (sn ++ `val)) $hH),
       ← `(tactic| injection $hV with $qs*),
       ← `(tactic| all_goals $[$rest]*)]
     mkLambdaFVars xs (← proveBy body (← `(Lean.Parser.Tactic.tacticSeq| $[$steps]*)))
@@ -7554,7 +7588,7 @@ side is a constructor application, never fires either.
 A lemma per pair of constructors would say it, but there are quadratically many
 pairs and every one of them would be a declaration nobody wrote.  So it is one
 simproc for the whole library instead.  It pushes the equation through
-`Subtype.val`, where reduction takes the two sides down to two different
+the wrapper's `.val`, where reduction takes the two sides down to two different
 pre-world constructors, and hands what comes back to `noConfusion` -- so the
 pre-world name occurs in the proof term and in nothing that is stated.
 -/
@@ -7587,9 +7621,9 @@ simproc [simp] ctorNoConfusion (_ = _) := fun e => do
   withDefault do
   try
     let sub ← whnf (← inferType lhs)
-    unless sub.isAppOfArity ``Subtype 2 do return .continue
-    let u := sub.getAppFn.constLevels!.head!
-    let val := mkApp2 (mkConst ``Subtype.val [u]) sub.appFn!.appArg! sub.appArg!
+    -- `subOf?` spelled out, for the reason `preName` is
+    let .const sn@(.str _ "_sub") sus := sub.getAppFn | return .continue
+    let val := mkAppN (mkConst (sn ++ `val) sus) sub.getAppArgs
     let prf ← withLocalDeclD `h (← mkEq lhs rhs) fun h => do
       let no ← mkNoConfusion (mkConst ``False) (← mkCongrArg val h)
       unless (← inferType no).isConstOf ``False do
@@ -7863,6 +7897,283 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
           publish major (sub concl)
 
 /--
+The wrapper that a data member unfolds to, and the pieces that take it apart.
+
+`X._sub args` pairs a pre-value with the proof that it is well formed.
+`Subtype` says exactly that, and is what this used to be -- but a definition by
+recursion over a member is compiled by asking whatever the argument's type
+unfolds to for a `.brecOn`, and `Subtype`'s own recursion is on the pair rather
+than on `X._wf`, so no `Subtype.brecOn` could ever be the one wanted.  A head
+per member is what lets each member carry the recursion its writer means.
+
+Every argument is a parameter.  The wrapper is not recursive, so nothing forces
+an index, and having no indices is what keeps it structure-like: one
+constructor, eta, and `.proj`, which is everything the subtype was being used
+for.
+
+The instances are the ones core states for `Subtype`, stated the same way --
+conditional on the pre-type having one, so a pre-type without costs nothing and
+a block that never asked for `deriving` is unaffected.
+-/
+def emitSub (b : Block) (i : Nat) : MetaM Unit := do
+  let m := b.members[i]!
+  let n := subName m.name
+  let nArgs ← forallTelescope m.type fun idxs _ => pure idxs.size
+  forallBoundedTelescope (← getConstInfo (wfName m.name)).type nArgs fun ps _ => do
+    let sub := mkAppN (mkConst n b.lvls) ps
+    let pre := b.preApp i ps
+    let wf := b.wfApp i ps
+    let ctorType ← withLocalDeclD `val pre fun v =>
+      withLocalDeclD `property (mkApp wf v) fun h =>
+        return implicitPrefix ps.size (← mkForallFVars (ps ++ #[v, h]) sub)
+    addInd b.us ps.size
+      #[{ name := n, type := ← mkForallFVars ps (mkSort m.level)
+          ctors := [{ name := n ++ `mk, type := ctorType }] }]
+      (genBRecOn := false)
+    -- the two fields, as `Subtype` states them: the parameters implicit, so that
+    -- `congrArg X._sub.val h` is a thing that can be written
+    withLocalDeclD `self sub fun t => do
+      for (j, name, ty, compile) in
+          [(0, n ++ `val, pre, true), (1, n ++ `property, mkApp wf (b.sVal i ps t), false)] do
+        addDef name b.us (implicitPrefix ps.size (← mkForallFVars (ps.push t) ty))
+          (implicitPrefix ps.size (← mkLambdaFVars (ps.push t) (.proj n j t)))
+          (hints := .abbrev) (compile := compile)
+        setReducibleAttribute name
+        modifyEnv (addProjectionFnInfo · name (n ++ `mk) ps.size j false)
+    -- the wrapper is a one-constructor inductive whose two definitions really
+    -- are its projections, and saying so is what keeps `Γ.val` printing as
+    -- `Γ.val` rather than as the application it is underneath: field notation
+    -- is offered for a name the environment holds a *structure* under, and
+    -- looks through the member's definition to find it
+    let fields := #[`val, `property].map fun f =>
+      ({ fieldName := f, projFn := n ++ f, subobject? := none, binderInfo := .default } :
+        StructureFieldInfo)
+    modifyEnv (registerStructure · { structName := n, fields })
+    setStructureParents n #[]
+    -- two wrappers with the same value are the same wrapper, the other field
+    -- being a proof.  Eta says the rest: `x` is its own `⟨x.val, x.property⟩`
+    withLocalDecl `x .implicit sub fun x => withLocalDecl `y .implicit sub fun y => do
+      withLocalDeclD `h (← mkEq (b.sVal i ps x) (b.sVal i ps y)) fun h => do
+        let motive ← withLocalDeclD `v pre fun v =>
+          withLocalDeclD `hp (mkApp wf v) fun hp => do
+            mkLambdaFVars #[v] (← mkForallFVars #[hp] (← mkEq x (b.sMk i ps v hp)))
+        let base ← withLocalDeclD `hp (mkApp wf (b.sVal i ps x)) fun hp => do
+          mkLambdaFVars #[hp] (← mkEqRefl x)
+        addDef (n ++ `ext) b.us
+          (implicitPrefix ps.size (← mkForallFVars (ps ++ #[x, y, h]) (← mkEq x y)))
+          (implicitPrefix ps.size (← mkLambdaFVars (ps ++ #[x, y, h])
+            (mkApp (← mkEqNDRec motive base h) (b.sProp i ps y))))
+          (compile := false)
+    let valFn := mkAppN (b.cst (n ++ `val)) ps
+    let extFn := mkAppN (b.cst (n ++ `ext)) ps
+    for (cls, args) in
+        [(``Repr, #[valFn]), (``Hashable, #[valFn]), (``DecidableEq, #[valFn, extFn])] do
+      let how := match cls with
+        | ``Repr => ``Mumi.reprOfVal
+        | ``Hashable => ``Mumi.hashableOfVal
+        | _ => ``Mumi.decEqOfVal
+      let name := Name.mkStr n ("inst" ++ cls.getString!)
+      discard <| attempt? `Mumi.indind m!"`{name}`" do
+        withLocalDecl `inst .instImplicit (← mkAppM cls #[pre]) fun ih => do
+          addDef name b.us
+            (implicitPrefix ps.size (← mkForallFVars (ps.push ih) (← mkAppM cls #[sub])))
+            (implicitPrefix ps.size (← mkLambdaFVars (ps.push ih) (← mkAppM how args)))
+          Lean.Meta.registerInstance name .global (eval_prio default)
+
+/--
+`e` with every application of an eliminator's motive `mot` replaced by what `f`
+makes of the argument it was applied to.
+
+The course-of-values declarations below are each `X.recD` at a motive of their
+own, and each one's minor premises are the recursor's own with that motive put
+in.  Telescoping the recursor hands those premises over with the motive still an
+`fvar`, so the value built inside them is written against `mot` and this is what
+makes it mean the new motive -- in the binder types as much as in the body, which
+is why it is a replacement over the finished term rather than an argument
+threaded down.
+-/
+private def substMot (mot : Expr) (f : Expr → Expr) (e : Expr) : Expr :=
+  e.replace fun sub => if sub.isApp && sub.getAppFn == mot then some (f sub.appArg!) else none
+
+/--
+`below`, `brecOn.go`, `brecOn` and `brecOn.eq` for a data member's wrapper, which
+is what lets a definition by recursion over the member be structural.
+
+The equation compiler decides a recursion is structural by unfolding the
+argument's type, asking which inductive that is, and looking for the inductive's
+`.brecOn`.  A member unfolds to its wrapper, so the wrapper is what has to carry
+one.  The wrapper's *own* kernel recursion is over a pair and offers no
+hypothesis about anything smaller -- the recursion the writer means lives in the
+well-formedness predicate, and `X.recD` is already that recursion stated at the
+member.  So the course-of-values table is built out of `X.recD`, under the four
+names `Lean.Meta.mkBRecOn` uses, and everything the equation compiler does from
+there follows: a structural definition rather than a well-founded one, hence
+equations that hold by `rfl`, a `decide` that goes through, and the unsafe
+recursive implementation Lean supplies its own structural definitions with.
+
+Nothing has to be done to keep the result computable, and in particular no
+`csimp` lemma: the compiler never sees `brecOn`.  Lean compiles the equations as
+written, through the `_unsafe_rec` it emits beside the definition, so the code
+that runs is already the plain recursion and there is nothing to redirect.  The
+four declarations below are left uncompiled the way Lean leaves its own.
+
+Only for a member with no index of its own.  `below t` tabulates the motive at
+fixed parameters, and a recursive call at some other index would want a row the
+table has no column for; Lean's own indexed `brecOn` takes the indices before the
+major premise for exactly that reason, and doing the same here would mean an
+indexed wrapper, which costs structure eta.  An indexed member falls back to
+well-founded recursion, as every member did before.
+-/
+def emitBRecOn (b : Block) (i : Nat) : MetaM Unit := do
+  let m := b.members[i]!
+  let n := subName m.name
+  let nArgs ← forallTelescope m.type fun idxs _ => pure idxs.size
+  -- an index would be a row the table has no column for
+  unless nArgs == b.numParams do return
+  let recD := m.name ++ `recD
+  let casesD := m.name ++ `casesD
+  unless (← getEnv).contains recD && (← getEnv).contains casesD do return
+  let recInfo ← getConstInfo recD
+  let casesInfo ← getConstInfo casesD
+  -- the level the motive lands in.  The block has no name for it, and it leads
+  -- the list because that is the order `Lean.Meta.mkBRecOnConst` supplies
+  -- levels in when the equation compiler reaches for what is built here
+  let lvlName := Id.run do
+    let mut c := `u
+    let mut k := 0
+    while b.us.contains c do
+      k := k + 1
+      c := Name.mkSimple s!"u_{k}"
+    return c
+  let lvl := Level.param lvlName
+  -- the sort the table lands in: room for the motive and for the member's own
+  -- fields, which is what Lean's own `below` asks for too
+  let w := (mkLevelMax m.level lvl).normalize
+  let lps := lvlName :: b.us
+  let ls := lvl :: b.lvls
+  -- which of an eliminator's levels is its motive's
+  let motiveLvl (info : ConstantInfo) : MetaM Name :=
+    forallBoundedTelescope info.type (some (b.numParams + 1)) fun xs _ => do
+      forallTelescope (← inferType xs.back!) fun _ concl => do
+        let .sort (.param p) := concl
+          | throwError "`{info.name}` does not take its motive into a level of its own"
+        return p
+  let recMLvl ← motiveLvl recInfo
+  let casesMLvl ← motiveLvl casesInfo
+  forallBoundedTelescope (← getConstInfo (wfName m.name)).type nArgs fun ps _ => do
+    let sub := mkAppN (mkConst n b.lvls) ps
+    withLocalDecl `motive .implicit (← mkArrow sub (mkSort lvl)) fun motive => do
+      let belowOf (t : Expr) : Expr := mkAppN (mkConst (n ++ `below) ls) (ps ++ #[motive, t])
+      -- `X.recD` or `X.casesD` at motive level `l`, with `motiveOf` for the
+      -- motive and `mk` for each minor premise, stopping short of the major.
+      -- `mk` is handed the constructor its minor is about, the types of the
+      -- hypotheses that minor offers -- `second` saying what the table holds at
+      -- a recursive field -- and those hypotheses themselves
+      let build (info : ConstantInfo) (mlvl : Name) (l : Level) (motiveOf : Expr → MetaM Expr)
+          (subst : Expr → Expr) (second : Expr → Expr → Array Expr → Expr)
+          (mk : Expr → Array Expr → Array Expr → MetaM Expr) : MetaM Expr := do
+        let us := info.levelParams.map fun q => if q == mlvl then l else .param q
+        let ty ← instantiateForall (info.instantiateTypeLevelParams us) ps
+        forallTelescope ty fun xs _ => do
+          let mot := xs[0]!
+          let motiveVal ← motiveOf (← inferType mot).bindingDomain!
+          let mut vals := #[]
+          for minor in xs.extract 1 (xs.size - 1) do
+            let v ← forallTelescope (← inferType minor) fun fields concl => do
+              let mut entries := #[]
+              let mut ihs := #[]
+              for f in fields do
+                let entry? ← forallTelescope (← inferType f) fun ys body => do
+                  unless body.isApp && body.getAppFn == mot do return none
+                  return some (← mkForallFVars ys (mkApp2 (mkConst ``PProd [lvl, w])
+                    (mkApp motive body.appArg!) (second f body.appArg! ys)))
+                if let some e := entry? then
+                  entries := entries.push e
+                  ihs := ihs.push f
+              mkLambdaFVars fields (← mk concl.appArg! entries ihs)
+            vals := vals.push (substMot mot subst v)
+          return mkAppN (mkConst info.name us) ((ps.push motiveVal) ++ vals)
+      -- 1. the table: what is known about everything below `t`.  A constructor
+      -- with no recursive field knows nothing, and one with several holds them
+      -- nested to the right without a unit to close, which is the shape the
+      -- equation compiler reads back
+      let belowVal ← build recInfo recMLvl (mkLevelSucc w)
+        (fun dom => return .lam `t dom (mkSort w) .default)
+        (fun _ => mkSort w)
+        (fun f _ ys => mkAppN f ys)
+        (fun _ entries _ => do
+          if entries.isEmpty then return mkConst ``PUnit [w]
+          return entries.pop.foldr (mkApp2 (mkConst ``PProd [w, w])) entries.back!)
+      let belowName := n ++ `below
+      addDef belowName lps
+        (implicitPrefix ps.size (← mkForallFVars (ps.push motive) (← mkArrow sub (mkSort w))))
+        (implicitPrefix ps.size (← mkLambdaFVars (ps.push motive) belowVal))
+        (compile := false)
+      setReducibleAttribute belowName
+      modifyEnv (markAuxRecursor · belowName)
+      modifyEnv (addProtected · belowName)
+      let fTy ← withLocalDeclD `t sub fun t => do
+        mkForallFVars #[t] (← mkArrow (belowOf t) (mkApp motive t))
+      withLocalDeclD `t sub fun t => withLocalDeclD `F fTy fun F => do
+        let args := ps ++ #[motive, t, F]
+        let pair (x : Expr) : Expr :=
+          mkApp2 (mkConst ``PProd [lvl, w]) (mkApp motive x) (belowOf x)
+        -- 2. one pass filling the table, which answers at `t` and hands back
+        -- the row it stood on so that the next constructor up can reuse it
+        let goVal ← build recInfo recMLvl w
+          (fun dom => withLocalDeclD `x dom fun x => mkLambdaFVars #[x] (pair x))
+          pair
+          (fun _ arg _ => belowOf arg)
+          (fun ctorApp entries ihs => do
+            let row :=
+              if ihs.isEmpty then mkConst ``PUnit.unit [w]
+              else Id.run do
+                let mut ty := entries.back!
+                let mut val := ihs.back!
+                for k in *...(ihs.size - 1) do
+                  let j := ihs.size - 2 - k
+                  val := mkApp4 (mkConst ``PProd.mk [w, w]) entries[j]! ty ihs[j]! val
+                  ty := mkApp2 (mkConst ``PProd [w, w]) entries[j]! ty
+                return val
+            return mkApp4 (mkConst ``PProd.mk [lvl, w]) (mkApp motive ctorApp) (belowOf ctorApp)
+              (mkApp2 F ctorApp row) row)
+        let goName := n ++ `brecOn ++ `go
+        addDef goName lps
+          (implicitPrefix ps.size (← mkForallFVars args (pair t)))
+          (implicitPrefix ps.size (← mkLambdaFVars args (mkApp goVal t)))
+          (compile := false)
+        setReducibleAttribute goName
+        modifyEnv (addProtected · goName)
+        -- 3. the answer alone, which is what the equation compiler applies
+        let brecName := n ++ `brecOn
+        let goApp (x : Expr) : Expr := mkAppN (mkConst goName ls) (ps ++ #[motive, x, F])
+        addDef brecName lps
+          (implicitPrefix ps.size (← mkForallFVars args (mkApp motive t)))
+          (implicitPrefix ps.size (← mkLambdaFVars args
+            (mkApp3 (mkConst ``PProd.fst [lvl, w]) (mkApp motive t) (belowOf t) (goApp t))))
+          (compile := false)
+        setReducibleAttribute brecName
+        modifyEnv (markAuxRecursor · brecName)
+        modifyEnv (addProtected · brecName)
+        -- 4. and that the answer is the step applied to the row, which holds by
+        -- `rfl` at every constructor and is what the equations are unfolded with
+        let brecApp (x : Expr) : Expr := mkAppN (mkConst brecName ls) (ps ++ #[motive, x, F])
+        let eqOf (x : Expr) : Expr :=
+          mkApp3 (mkConst ``Eq [lvl]) (mkApp motive x) (brecApp x) (mkApp2 F x
+            (mkApp3 (mkConst ``PProd.snd [lvl, w]) (mkApp motive x) (belowOf x) (goApp x)))
+        let eqVal ← build casesInfo casesMLvl .zero
+          (fun dom => withLocalDeclD `x dom fun x => mkLambdaFVars #[x] (eqOf x))
+          eqOf
+          (fun f _ ys => mkAppN f ys)
+          (fun ctorApp _ _ => do
+            return mkApp2 (mkConst ``Eq.refl [lvl]) (mkApp motive ctorApp) (brecApp ctorApp))
+        let eqName := brecName ++ `eq
+        let eqTy := implicitPrefix ps.size (← mkForallFVars args (eqOf t))
+        let eqPrf := implicitPrefix ps.size (← mkLambdaFVars args (mkApp eqVal t))
+        addDecl (.thmDecl { name := eqName, levelParams := lps, type := eqTy, value := eqPrf })
+        modifyEnv (addProtected · eqName)
+
+/--
 Emit the whole encoding for a prepared block.
 
 Everything here telescopes over types that mention the block's members, so the
@@ -7941,6 +8252,7 @@ def emit (p : Plan) : TermElabM Unit := do
         mkLambdaFVars idxs (mkAppN (b.cst (preName m.name)) (← b.preImages idxs))
       addDef (rawMemberName m.name) b.us m.type value (compile := false)
     else
+      emitSub b i
       let value ← forallTelescope m.type fun idxs _ =>
         return ← mkLambdaFVars idxs (b.subtype i (← b.valArgs i idxs))
       addDef m.name b.us m.type value (compile := false)
@@ -8505,6 +8817,18 @@ def emit (p : Plan) : TermElabM Unit := do
         addSoloElim b.numParams #[lp] false (t.name ++ `rec) (t.name ++ `casesD)
           (forCases := true)
 
+  -- 10b. the course-of-values recursion over each data member, which is what
+  -- the equation compiler looks for when it decides whether a definition by
+  -- recursion over a member can be structural.  It is built out of the
+  -- one-motive recursor of step 10, so it has to come after it; a member that
+  -- did not get one, or that has an index of its own, keeps the well-founded
+  -- fallback and nothing here is emitted for it
+  for i in b.dataIdxs do
+    if copyNames.contains b.members[i]!.name then continue
+    discard <| attempt? `Mumi.indind
+        m!"no course-of-values recursion for `{b.members[i]!.name}`" <|
+      emitBRecOn b i
+
   -- 11. injectivity of the data constructors, which has to come after the
   -- bridge: what is stated is stated about the type the writer wrote, and
   -- until step 10 has run that is not yet what the constructor's own type
@@ -8517,7 +8841,7 @@ def emit (p : Plan) : TermElabM Unit := do
       addInjEqs b (ofInjs.map (· ++ `ofOrig_inj)) i c
 
   -- 12. what `match` is driven through.  A data member is a definition over a
-  -- subtype and the equation compiler reduces its way to `Subtype`, so it is
+  -- wrapper and the equation compiler reduces its way to that wrapper, so it is
   -- given a view -- a real inductive over the member -- to split on instead,
   -- along with the `SizeOf` a definition by recursion over it needs
   addViews b.numParams <| b.dataIdxs.filterMap fun i =>
@@ -8618,7 +8942,7 @@ private def tentatively? (x : CommandElabM Unit) : CommandElabM (Option MessageD
 /--
 Instance the member from a constructor that can be applied, if one can.
 
-`Inhabited` is not a class the `Subtype` a data member comes back as can lift,
+`Inhabited` is not a class the wrapper a data member comes back as can lift,
 so the delta route below cannot reach it the way `DecidableEq` and `Repr` are
 reached.  It does not need to.  A type is inhabited as soon as one of its
 constructors can be applied, and a member's visible constructors are ordinary
@@ -8682,14 +9006,14 @@ A data member `X` of one of these is not an inductive but a `def`: the subtype
 of `X._pre` that `X._wf` cuts out.  A handler that wants to see constructors
 therefore has nothing to work with, and the one route left open is the one
 Lean calls *delta* deriving -- unfold the member and derive for what is under
-it.  `Subtype` carries instances of its own, given ones for the type it cuts
+it.  The wrapper carries instances of its own, given ones for the type it cuts
 down, so what that needs is the class on the pre-type, where the constructors
 really are.
 
 Hence: ask on the pre-types first, quietly, and then delta derive the members.
 `DecidableEq` and `Repr` come across that way -- `Repr` showing the pre-term,
 constructor names and all, since that is the value it is handed.  A class with
-no `Subtype` instance to lift does not come across, and says so -- but by then
+no instance on the wrapper to lift does not come across, and says so -- but by then
 the block is already in the environment, which is the part worth keeping, so
 the complaint is logged rather than thrown.
 
@@ -8765,9 +9089,10 @@ private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool)
               Lean.Meta.registerInstance (n ++ `instInhabited) .global (eval_prio default)
             return false
         if declNames.isEmpty then continue
-        let note := m!"A data member of an induction-inductive block is the subtype of its \
-          pre-type, so `deriving` reaches it only through an instance `Subtype` already has \
-          -- `DecidableEq` and `Repr` do, and a class that does not has to be instanced by hand"
+        let note := m!"A data member of an induction-inductive block unfolds to a wrapper \
+          around its pre-type, so `deriving` reaches it only through an instance that wrapper \
+          has -- `DecidableEq`, `Repr` and `Hashable` are given one, and a class that is not \
+          can be derived for the wrapper itself, which the hint above names"
         -- the delta route reports by logging as readily as by throwing, and a
         -- logged error is how a route declines, so a caller that has said it
         -- would rather have the block runs it where the log can be undone

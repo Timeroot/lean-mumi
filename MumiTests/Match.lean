@@ -8,9 +8,9 @@ import Mumi
 /-!
 # `match` on a member
 
-A member of an induction-inductive block is a definition over a subtype, so the
+A member of an induction-inductive block is a definition over a wrapper, so the
 equation compiler cannot split on it: it reduces the discriminant's type until
-it reaches `Subtype` and then offers `Subtype.mk`.  `Mumi.View` puts a real
+it reaches the wrapper and then offers the wrapper's `.mk`.  `Mumi.View` puts a real
 inductive over the member in the way and `Mumi.MatchView` rewrites `match` to
 go through it, so that a block reads and matches the way it was written.
 
@@ -83,9 +83,11 @@ def isNil (c : Ctx) : Bool :=
 
 /-! ## Recursion
 
-A view is not a subterm of what it presents, so recursion through one is
-well-founded rather than structural.  The `SizeOf` instance and the
-`sizeOf_spec` lemmas the block emits are what makes it go through unaided. -/
+A view is not a subterm of what it presents, so what the recursion goes by is
+the member underneath.  A member with no index of its own is given a `below` and
+a `brecOn` and the recursion is structural; one whose index varies is not, and
+falls back to the well-founded route on the `SizeOf` instance and the
+`sizeOf_spec` lemmas the block emits.  Both are exercised below. -/
 
 def len (c : Ctx) : Nat :=
   match c with
@@ -114,7 +116,135 @@ def len'' : Ctx → Nat := fun
 #guard_msgs in
 #eval len'' c2
 
-/-! ## Mutual recursion across two members -/
+/-! ### What the equation compiler was given
+
+The four declarations Lean's own `brecOn` construction makes are made for the
+wrapper as well, out of the block's recursor rather than out of the wrapper's
+own: a wrapper is a one-constructor pair and its recursion knows nothing about
+anything smaller, whereas the block's recursor knows exactly that.  Their
+signatures are the ones `FindRecArg` looks for, which is the whole point. -/
+
+/-- info: @Ctx._sub.below : {motive : Ctx._sub → Sort u_1} → Ctx._sub → Sort (max 1 u_1) -/
+#guard_msgs in
+#check @Ctx._sub.below
+
+/--
+info: @Ctx._sub.brecOn : {motive : Ctx._sub → Sort u_1} →
+  (t : Ctx._sub) → ((t : Ctx._sub) → Ctx._sub.below t → motive t) → motive t
+-/
+#guard_msgs in
+#check @Ctx._sub.brecOn
+
+/--
+info: @Ctx._sub.brecOn.go : {motive : Ctx._sub → Sort u_1} →
+  (t : Ctx._sub) → ((t : Ctx._sub) → Ctx._sub.below t → motive t) → motive t ×' Ctx._sub.below t
+-/
+#guard_msgs in
+#check @Ctx._sub.brecOn.go
+
+/--
+info: @Ctx._sub.brecOn.eq : ∀ {motive : Ctx._sub → Sort u_1} (t : Ctx._sub)
+  (F : (t : Ctx._sub) → Ctx._sub.below t → motive t), Ctx._sub.brecOn t F = F t (Ctx._sub.brecOn.go t F).snd
+-/
+#guard_msgs in
+#check @Ctx._sub.brecOn.eq
+
+/-! So `len` is the plain structural definition, with no `WellFounded.fix` in
+it and nothing marked `@[irreducible]`. -/
+
+/--
+info: def MumiTests.Match.len : Ctx → Nat :=
+fun c => Ctx._sub.brecOn c len._f
+-/
+#guard_msgs in
+#print len
+
+/-! ### What being structural buys
+
+The equations hold by `rfl`, which a well-founded definition cannot offer:
+`WellFounded.fix` is `@[irreducible]`, so even its first equation is a theorem
+there. -/
+
+example : len .nil = 0 := rfl
+example (Γ : Ctx) (h : Ok Γ) : len (Γ.snoc h) = len Γ + 1 := rfl
+example : len c2 = 2 := rfl
+
+example : len' .nil = 0 := rfl
+example (Γ : Ctx) (h : Ok Γ) : len' (Γ.snoc h) = len' Γ + 1 := rfl
+
+example : len'' .nil = 0 := rfl
+example (Γ : Ctx) (h : Ok Γ) : len'' (Γ.snoc h) = len'' Γ + 1 := rfl
+
+/-! Reduction is also what `decide` runs on, so a decidable statement about a
+recursion over a member is closed by the kernel alone. -/
+
+example : len c2 = 2 := by decide
+example : ¬ (len c2 = 3) := by decide
+
+/-! The usual generated theorems come with it: the equation lemmas, the
+unfolding lemma, and the functional induction principle.
+
+The induction hypothesis below reads `motive { val := Γ.val, property := ⋯ }`
+rather than `motive Γ`, which is the same term eta-expanded.  It is the
+recursor that puts it there: the recursor underneath hands back a field of the
+pre-type, so anything at the member's own type has to be rebuilt from it, and
+what the hypothesis is stated at is the rebuilt copy.  Eta makes the two
+interchangeable, so `exact` and `simp` do not notice; only the printed form
+does. -/
+
+/-- info: len.eq_1 : len Ctx.nil = 0 -/
+#guard_msgs in
+#check @len.eq_1
+
+/--
+info: len.eq_def : ∀ (c : Ctx),
+  len c =
+    match c, c.view with
+    | .(Ctx.nil), Ctx.View.nil => 0
+    | .(Γ.snoc h), Ctx.View.snoc Γ h => len Γ + 1
+-/
+#guard_msgs in
+#check @len.eq_def
+
+/--
+info: len.induct : ∀ (motive : Ctx → Prop),
+  (Ctx.nil.view = Ctx.View.nil → motive Ctx.nil) →
+    (∀ (Γ : Ctx) (h : Ok Γ),
+        (Γ.snoc h).view = Ctx.View.snoc Γ h → motive { val := Γ.val, property := ⋯ } → motive (Γ.snoc h)) →
+      ∀ (c : Ctx), motive c
+-/
+#guard_msgs in
+#check @len.induct
+
+example (c : Ctx) : 0 < len c + 1 := by
+  fun_induction len c <;> simp
+
+example (Γ : Ctx) (h : Ok Γ) : len (Γ.snoc h) = len Γ + 1 := by simp [len]
+
+/-! And it stays computable, without a `csimp` lemma to make it so.  The
+compiler never sees `brecOn` at all: Lean compiles the equations as written,
+which is what the `_unsafe_rec` beside the definition is for, and the code that
+runs is the plain recursion rather than a tower of `below` tuples.  `below` and
+`brecOn` are left uncompiled, as Lean leaves its own. -/
+
+/-- info: len._unsafe_rec : Ctx → Nat -/
+#guard_msgs in
+#check @len._unsafe_rec
+
+open Lean in
+/-- info: len:true brecOn:false below:false -/
+#guard_msgs in
+run_cmd Elab.Command.liftTermElabM do
+  let env ← getEnv
+  let has (n : Name) : Bool := (IR.findEnvDecl env n).isSome
+  logInfo m!"len:{has ``len} brecOn:{has ``Ctx._sub.brecOn} below:{has ``Ctx._sub.below}"
+
+/-! ## Mutual recursion across two members
+
+`tSize` calls `cSize` and `cSize` does not call back, so the two are separate
+strongly connected components and each is decided on its own: `cSize` recurses
+over a member with no index and comes out structural, `tSize` recurses over one
+whose index varies and does not.  The two routes sit side by side here. -/
 
 mutual
 
@@ -137,6 +267,44 @@ end
 /-- info: 3 -/
 #guard_msgs in
 #eval tSize (Tm.wk c1 o1 (.var c1 o1))
+
+/-! ## Shapes the table has to cover
+
+A constructor can have no recursive field, or several, or infinitely many, and
+the block can have parameters in front of all of it.  Each of those is a
+different shape of row in `below`, so each is recursed over here. -/
+
+mutual
+inductive Tree (α : Type) : Type where
+  | leaf (a : α) : Tree α
+  | node (l : Tree α) (r : Tree α) (h : TOk l) : Tree α
+  | inf (f : Nat → Tree α) : Tree α
+inductive TOk {α : Type} : Tree α → Prop where
+  | leaf (a : α) : TOk (.leaf a)
+end
+
+/--
+info: @Tree._sub.below : {α : Type} → {motive : Tree._sub α → Sort u_1} → Tree._sub α → Sort (max 1 u_1)
+-/
+#guard_msgs in
+#check @Tree._sub.below
+
+def size {α : Type} : Tree α → Nat
+  | .leaf _ => 1
+  | .node l r _ => size l + size r + 1
+  | .inf f => size (f 0) + 1
+
+/-- info: 'MumiTests.Match.size' does not depend on any axioms -/
+#guard_msgs in
+#print axioms size
+
+example (a : Nat) : size (Tree.leaf a) = 1 := rfl
+example (l r : Tree Nat) (h : TOk l) : size (.node l r h) = size l + size r + 1 := rfl
+example (f : Nat → Tree Nat) : size (.inf f) = size (f 0) + 1 := rfl
+
+/-- info: 3 -/
+#guard_msgs in
+#eval size (Tree.node (Tree.leaf 3) (Tree.leaf 4) (TOk.leaf 3))
 
 /-! ## Promoted arguments
 
@@ -329,13 +497,18 @@ def viaDoMixed (c : Ctx) (n : Nat) : Id Nat := do
 
 A view is a plain inductive and `Ctx.view` a plain definition over `Ctx.casesD`,
 so a function written through one rests on no more than the block itself does.
-`propext` is what well-founded recursion brings in. -/
+
+`propext` is what is left when well-founded recursion is what the definition
+got.  A member with no index of its own carries a `brecOn`, so a recursion over
+it is structural and brings in nothing at all; `tSize` recurses over `Tm`, whose
+index varies from one call to the next, and that is still the well-founded
+route. -/
 
 /-- info: 'MumiTests.Match.isNil' does not depend on any axioms -/
 #guard_msgs in
 #print axioms isNil
 
-/-- info: 'MumiTests.Match.len' depends on axioms: [propext] -/
+/-- info: 'MumiTests.Match.len' does not depend on any axioms -/
 #guard_msgs in
 #print axioms len
 
@@ -343,7 +516,11 @@ so a function written through one rests on no more than the block itself does.
 #guard_msgs in
 #print axioms tSize
 
-/-- info: 'MumiTests.Match.ctxLen' depends on axioms: [propext] -/
+/-- info: 'MumiTests.Match.cSize' does not depend on any axioms -/
+#guard_msgs in
+#print axioms cSize
+
+/-- info: 'MumiTests.Match.ctxLen' does not depend on any axioms -/
 #guard_msgs in
 #print axioms ctxLen
 
@@ -355,7 +532,7 @@ so a function written through one rests on no more than the block itself does.
 #guard_msgs in
 #print axioms always_ok
 
-/-- info: 'MumiTests.Match.viaDoMut' depends on axioms: [propext] -/
+/-- info: 'MumiTests.Match.viaDoMut' does not depend on any axioms -/
 #guard_msgs in
 #print axioms viaDoMut
 

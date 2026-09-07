@@ -750,7 +750,18 @@ inductive Chain.Pair (α : Type) : Chain α → Prop where
 inductive PChain (α : Type) where
   | mk (c : Chain α) (h : c.Pair)
 
--- nothing is held back any more, so the trace has nothing to say
+-- nothing is held back any more.  What the trace still says is that the
+-- course-of-values recursion could not be built: the block is nested, so the
+-- recursor computes at a constructor only up to a transport, and the table
+-- `below` would have to reduce there for anything to be read out of it
+/--
+trace: [Mumi.indind] no course-of-values recursion for `MumiTests.Shapes.Stray.R`: (kernel) application type mismatch
+      F (R.mk x) PUnit.unit
+    argument has type
+      PUnit
+    but function has type
+      @R._sub.below motive (R.mk x) → motive (R.mk x)
+-/
 #guard_msgs in
 set_option trace.Mumi.indind true in
 inductive R where

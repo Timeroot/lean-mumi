@@ -6,6 +6,7 @@ Authors: Alex Meiburg
 module
 
 public import Mumi.Options
+public import Mumi.Runtime
 public import Mumi.Lowering
 public import Mumi.View
 public import Mumi.Denest

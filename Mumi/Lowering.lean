@@ -622,9 +622,17 @@ on a member would not elaborate.
 for a type whose fields are members of a block that is being measured by hand:
 the instances there are deliberately left uncompiled, and generating one on top
 of them would ask the code generator for something it will not find.
+
+`genBRecOn := false` leaves out `below` and `brecOn`.  That is for a type whose
+recursion is not the one the kernel would write: a member's wrapper is a pair
+and recurses on nothing, so the generated `brecOn` would offer no hypotheses and
+structural recursion would take it and then find no recursive call to make.  The
+one written by hand afterwards recurses through the well-formedness predicate,
+which is where the member's own structure actually is.
 -/
 def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
-    (isClass : Bool := false) (genSizeOf : Bool := true) : MetaM Unit := do
+    (isClass : Bool := false) (genSizeOf : Bool := true) (genBRecOn : Bool := true) :
+    MetaM Unit := do
   let decl := Declaration.inductDecl levelParams numParams indTypes.toList false
   addDecl decl
   let names := indTypes.map (·.name)
@@ -657,9 +665,9 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
     if hasNat then mkCtorIdx n
     if hasNat then mkCtorElim n
     if hasUnit && hasEq && hasHEq then mkNoConfusion n
-    if hasUnit && hasProd then mkBelow n
+    if hasUnit && hasProd && genBRecOn then mkBelow n
   for n in names do
-    if hasUnit && hasProd then mkBRecOn n
+    if hasUnit && hasProd && genBRecOn then mkBRecOn n
   unless isClass do
     -- these are generated for the whole block from its first member
     if genSizeOf then mkSizeOfInstances names[0]!
@@ -752,9 +760,9 @@ the refusal above safe is that the member is a real inductive, so a caller who
 writes `induction` and gets nothing gets mainline's own refusal -- "does not
 support the type, because it is mutually inductive" -- and goes looking for the
 recursor.  A member of an induction-inductive block is a `def`, and there is no
-such refusal to fall back on: `induction` unfolds it to the subtype it is
-encoded as and offers a case split on `Subtype.mk`, binding a pre-term and a
-proof of its well-formedness.  Weighed against that, a one-motive principle
+such refusal to fall back on: `induction` unfolds it to the wrapper it is
+encoded as and offers a case split on that wrapper's `.mk`, binding a pre-term
+and a proof of its well-formedness.  Weighed against that, a one-motive principle
 that has lost a sibling's hypotheses is the better default by some way, and the
 recursion over the whole block is a `using` away.
 
@@ -768,7 +776,7 @@ too -- a mutual inductive gets a `casesOn` at one motive and is refused by
 `induction` outright.
 
 Emitting one at all is the point.  `cases` on a member of an erased block
-reaches for whatever the member unfolds to, and so asks for `Subtype.mk` -- the
+reaches for whatever the member unfolds to, and so asks for its `.mk` -- the
 encoding's constructor, under a name the writer never wrote and cannot usefully
 name the fields of, since what it binds is a pre-term and a proof rather than
 the constructor's arguments.  A `Prop` member fares no better for being a real
