@@ -408,11 +408,20 @@ is what keeps `return`, `break`, `continue` and mutable variables working
 inside an alternative; `if let` and `let p := c | alt` reach it by expanding to
 one.
 
-A view is not a subterm of what it presents, so recursion through one is
-well-founded rather than structural. The block emits the `X._sizeOf_inst` and
-the `@[simp] X.c.sizeOf_spec` lemmas the termination goals need, so a
-definition that plainly decreases goes through unaided; the price is that its
-equations then hold by `simp` rather than by `rfl`.
+A view is not a subterm of what it presents, so what a recursion goes by is the
+member underneath. The wrapper the member unfolds to is given the same four
+declarations Lean's own construction makes — `below`, `brecOn`, `brecOn.go` and
+`brecOn.eq` — built out of the block's recursors rather than out of the
+wrapper's, which is a one-constructor pair and knows nothing about anything
+smaller. So the recursion is structural and its equations hold by `rfl`. An
+index the pre-type deleted is a parameter of the wrapper and is covered as
+well, the table being built over the recursor for the pre-block with that
+parameter held fixed. What is not covered is a recursive call at a *different*
+index, since a table at fixed parameters has no column for one. That case is
+still well-founded: the block emits the `X._sizeOf_inst` and the
+`@[simp] X.c.sizeOf_spec` lemmas the termination goals need, so a definition
+that plainly decreases goes through unaided, at the price of equations that
+hold by `simp` rather than by `rfl`.
 
 Two things a view cannot present, both of which say so rather than reporting
 the view. A proof index forces the indices before it to be the view's

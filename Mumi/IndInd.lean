@@ -7996,6 +7996,229 @@ private def substMot (mot : Expr) (f : Expr → Expr) (e : Expr) : Expr :=
   e.replace fun sub => if sub.isApp && sub.getAppFn == mot then some (f sub.appArg!) else none
 
 /--
+The level a course-of-values table takes its motive into, which the block has no
+name for.  It leads the level list because that is the order
+`Lean.Meta.mkBRecOnConst` supplies levels in when the equation compiler reaches
+for what is built here.
+-/
+private def motiveLevelName (us : List Name) : Name := Id.run do
+  let mut c := `u
+  let mut k := 0
+  while us.contains c do
+    k := k + 1
+    c := Name.mkSimple s!"u_{k}"
+  return c
+
+/--
+The conjuncts of a well-formedness obligation, each with a proof of it read off
+the obligation itself.
+
+`X._wf` at a constructor is the conjunction of everything erasure dropped, one
+conjunct per field that had anything to say, and a recursion over the pre-type
+needs the conjunct belonging to each recursive field.  Which conjunct that is,
+is settled by comparing it against the obligation the field itself carries -- so
+the spine is flattened here and matched at the field.
+-/
+private partial def wfConjuncts (ty proof : Expr) : MetaM (Array (Expr × Expr)) := do
+  let ty ← whnf ty
+  unless ty.isAppOfArity ``And 2 do return #[(ty, proof)]
+  let l := ty.appFn!.appArg!
+  let r := ty.appArg!
+  return (← wfConjuncts l (mkApp3 (mkConst ``And.left) l r proof))
+    ++ (← wfConjuncts r (mkApp3 (mkConst ``And.right) l r proof))
+
+/--
+The same four declarations as `emitBRecOn`, for a member whose own indices are
+all ones the pre-type deleted -- a member indexed by the block, which is what an
+induction-inductive block is for.
+
+`X.recD` cannot build them.  The wrapper takes the deleted index at the
+*pre-type*, because that is what `X._wf` is a predicate on, so `below` is stated
+at an `a : C._pre`; every recursion the block offers takes it at the member, at a
+`Γ : C`, and `C._wf a` is not recoverable from a term of `X._sub a` -- the
+encoding puts an index's well-formedness in the index and not in what it indexes,
+so `Ty._wf Γ Ty._pre.base` is `True` for a `Γ` that is no context at all.
+
+So the table is built where the index is already fixed: on the pre-type, by the
+pre-block's own recursor, with the obligation threaded the way `X.recAux` threads
+it.  The motive is `fun v => X._wf a v → Sort w` at the `a` and the `motive` the
+caller fixed, so a recursive field at the *same* index has an induction
+hypothesis that still speaks of them and lands in the table, and one at any other
+index carries an obligation at another `a`, does not match, and contributes no
+column.  That is exactly the set of rows Lean can ask for: structural recursion
+requires a recursive argument's parameters to be fixed, and the deleted index is
+a parameter of the wrapper, so a call at another index is rejected before the
+table is ever consulted and falls back to well-founded recursion as before.
+
+What makes the entries land at the caller's motive rather than at a rebuilt pair
+is the same pair of definitional facts the whole encoding rests on: `⟨x.val, w⟩`
+is `x` by structure eta, and any two proofs of an obligation are the same proof.
+-/
+private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) :
+    MetaM Unit := do
+  let m := b.members[i]!
+  let n := subName m.name
+  let nArgs ← forallTelescope m.type fun idxs _ => pure idxs.size
+  let preRec := preDataRecName p.preIsHeterogeneous m.name
+  unless (← getEnv).contains preRec do return
+  let recInfo ← getConstInfo preRec
+  let lvlName := motiveLevelName b.us
+  let lvl := Level.param lvlName
+  let w := (mkLevelMax m.level lvl).normalize
+  let lps := lvlName :: b.us
+  let ls := lvl :: b.lvls
+  forallBoundedTelescope (← getConstInfo (wfName m.name)).type nArgs fun ps _ => do
+    let params := ps.extract 0 b.numParams
+    let sub := mkAppN (mkConst n b.lvls) ps
+    let wfPs := b.wfApp i ps
+    let pre := b.preApp i ps
+    withLocalDecl `motive .implicit (← mkArrow sub (mkSort lvl)) fun motive => do
+      let mkS (v pf : Expr) : Expr := b.sMk i ps v pf
+      let belowAt (x : Expr) : Expr := mkAppN (mkConst (n ++ `below) ls) (ps ++ #[motive, x])
+      -- the pre-block's recursor at motive level `uR`, with the member's own
+      -- motive `fun v => ∀ w, bodyOf v w` and every other member's trivial.
+      -- `second` says what the table holds at a recursive field beside the
+      -- motive there, and `mk` makes a minor of the member out of the
+      -- constructor it is about, the obligation it carries, and one
+      -- (type, value) pair per field the table has a column for
+      let drive (uR : Level) (bodyOf : Expr → Expr → MetaM Expr)
+          (second : Expr → Array Expr → Expr → Expr → Expr)
+          (mk : Expr → Expr → Array (Expr × Expr) → MetaM Expr) : MetaM Expr := do
+        let us := List.replicate preRecUnivs uR ++ b.lvls
+        let ty ← instantiateForall (recInfo.instantiateTypeLevelParams us) params
+        let unitTy := mkConst ``PUnit [uR]
+        let unitVal := mkConst ``PUnit.unit [uR]
+        forallTelescope ty fun xs concl => do
+          let mot := concl.getAppFn
+          -- the motives lead, being the arguments whose types end in a sort
+          let mut nMot := 0
+          for x in xs do
+            unless ← forallTelescope (← inferType x) fun _ c => pure c.isSort do break
+            nMot := nMot + 1
+          let motives := xs.extract 0 nMot
+          let mut motVals := #[]
+          for mo in motives do
+            if mo == mot then
+              motVals := motVals.push (← withLocalDeclD `v pre fun v =>
+                withLocalDeclD `w (mkApp wfPs v) fun wv => do
+                  mkLambdaFVars #[v] (← mkForallFVars #[wv] (← bodyOf v wv)))
+            else
+              motVals := motVals.push
+                (← forallTelescope (← inferType mo) fun ys _ => mkLambdaFVars ys unitTy)
+          -- every motive is an `fvar` while a minor is being built, here as much
+          -- as in `substMot`; a member's constructor may carry a field of another
+          -- member, whose hypothesis is about that other motive
+          let subMot (e : Expr) : Expr := e.replace fun s =>
+            if s.isApp then
+              match motives.findIdx? (· == s.getAppFn) with
+              | some k => some (mkAppN motVals[k]! s.getAppArgs).headBeta
+              | none => none
+            else none
+          let mut vals := #[]
+          for minor in xs.extract nMot (xs.size - 1) do
+            let v ← forallTelescope (← inferType minor) fun fields mconcl => do
+              unless mconcl.getAppFn == mot do return ← mkLambdaFVars fields unitVal
+              let ctorApp := mconcl.appArg!
+              withLocalDeclD `w (mkApp wfPs ctorApp) fun wv => do
+                let cs ← wfConjuncts (mkApp wfPs ctorApp) wv
+                let mut entries := #[]
+                for f in fields do
+                  let e? ← forallTelescope (← inferType f) fun ys body => do
+                    unless body.isApp && body.getAppFn == mot do return none
+                    let fv := body.appArg!
+                    let want ← mkForallFVars ys (mkApp wfPs fv)
+                    let mut pf? := none
+                    for (cty, cpf) in cs do
+                      if pf?.isNone then
+                        if ← isDefEq cty want then pf? := some cpf
+                    let some cpf := pf? | return none
+                    let wpf := mkAppN cpf ys
+                    return some (← mkForallFVars ys (mkApp2 (mkConst ``PProd [lvl, w])
+                        (mkApp motive (mkS fv wpf)) (second f ys fv wpf)),
+                      ← mkLambdaFVars ys (mkApp (mkAppN f ys) wpf))
+                  if let some e := e? then entries := entries.push e
+                mkLambdaFVars (fields.push wv) (← mk ctorApp wv entries)
+            vals := vals.push (subMot v)
+          return mkAppN (mkConst preRec us) ((params ++ motVals) ++ vals)
+      -- the pre-value and its obligation, which is what the recursion runs on
+      -- and what eta says is the wrapper back again
+      let opened (x : Expr) : Array Expr := #[b.sVal i ps x, b.sProp i ps x]
+      -- 1. the table
+      let belowVal ← drive (mkLevelSucc w) (fun _ _ => pure (mkSort w))
+        (fun f ys _ wpf => mkApp (mkAppN f ys) wpf)
+        (fun _ _ entries => do
+          if entries.isEmpty then return mkConst ``PUnit [w]
+          let tys := entries.map (·.1)
+          return tys.pop.foldr (mkApp2 (mkConst ``PProd [w, w])) tys.back!)
+      let belowName := n ++ `below
+      addDef belowName lps
+        (implicitPrefix ps.size (← mkForallFVars (ps.push motive) (← mkArrow sub (mkSort w))))
+        (implicitPrefix ps.size (← mkLambdaFVars (ps.push motive)
+          (← withLocalDeclD `t sub fun t => mkLambdaFVars #[t] (mkAppN belowVal (opened t)))))
+        (compile := false)
+      setReducibleAttribute belowName
+      modifyEnv (markAuxRecursor · belowName)
+      modifyEnv (addProtected · belowName)
+      let fTy ← withLocalDeclD `t sub fun t => do
+        mkForallFVars #[t] (← mkArrow (belowAt t) (mkApp motive t))
+      withLocalDeclD `t sub fun t => withLocalDeclD `F fTy fun F => do
+        let args := ps ++ #[motive, t, F]
+        let pair (x : Expr) : Expr :=
+          mkApp2 (mkConst ``PProd [lvl, w]) (mkApp motive x) (belowAt x)
+        -- 2. one pass filling it, answering at the wrapper and handing back the
+        -- row it stood on
+        let goVal ← drive w (fun v wv => pure (pair (mkS v wv)))
+          (fun _ _ fv wpf => belowAt (mkS fv wpf))
+          (fun ctorApp wv entries => do
+            let x := mkS ctorApp wv
+            let row :=
+              if entries.isEmpty then mkConst ``PUnit.unit [w]
+              else Id.run do
+                let mut ty := entries.back!.1
+                let mut val := entries.back!.2
+                for k in *...(entries.size - 1) do
+                  let j := entries.size - 2 - k
+                  val := mkApp4 (mkConst ``PProd.mk [w, w]) entries[j]!.1 ty entries[j]!.2 val
+                  ty := mkApp2 (mkConst ``PProd [w, w]) entries[j]!.1 ty
+                return val
+            return mkApp4 (mkConst ``PProd.mk [lvl, w]) (mkApp motive x) (belowAt x)
+              (mkApp2 F x row) row)
+        let goName := n ++ `brecOn ++ `go
+        addDef goName lps
+          (implicitPrefix ps.size (← mkForallFVars args (pair t)))
+          (implicitPrefix ps.size (← mkLambdaFVars args (mkAppN goVal (opened t))))
+          (compile := false)
+        setReducibleAttribute goName
+        modifyEnv (addProtected · goName)
+        -- 3. the answer alone
+        let brecName := n ++ `brecOn
+        let goApp (x : Expr) : Expr := mkAppN (mkConst goName ls) (ps ++ #[motive, x, F])
+        addDef brecName lps
+          (implicitPrefix ps.size (← mkForallFVars args (mkApp motive t)))
+          (implicitPrefix ps.size (← mkLambdaFVars args
+            (mkApp3 (mkConst ``PProd.fst [lvl, w]) (mkApp motive t) (belowAt t) (goApp t))))
+          (compile := false)
+        setReducibleAttribute brecName
+        modifyEnv (markAuxRecursor · brecName)
+        modifyEnv (addProtected · brecName)
+        -- 4. and that the answer is the step applied to the row
+        let brecApp (x : Expr) : Expr := mkAppN (mkConst brecName ls) (ps ++ #[motive, x, F])
+        let eqOf (x : Expr) : Expr :=
+          mkApp3 (mkConst ``Eq [lvl]) (mkApp motive x) (brecApp x) (mkApp2 F x
+            (mkApp3 (mkConst ``PProd.snd [lvl, w]) (mkApp motive x) (belowAt x) (goApp x)))
+        let eqVal ← drive .zero (fun v wv => pure (eqOf (mkS v wv)))
+          (fun f ys _ wpf => mkApp (mkAppN f ys) wpf)
+          (fun ctorApp wv _ => do
+            let x := mkS ctorApp wv
+            return mkApp2 (mkConst ``Eq.refl [lvl]) (mkApp motive x) (brecApp x))
+        let eqName := brecName ++ `eq
+        addDecl (.thmDecl { name := eqName, levelParams := lps
+                            type := implicitPrefix ps.size (← mkForallFVars args (eqOf t))
+                            value := implicitPrefix ps.size
+                              (← mkLambdaFVars args (mkAppN eqVal (opened t))) })
+        modifyEnv (addProtected · eqName)
+
+/--
 `below`, `brecOn.go`, `brecOn` and `brecOn.eq` for a data member's wrapper, which
 is what lets a definition by recursion over the member be structural.
 
@@ -8018,50 +8241,44 @@ that runs is already the plain recursion and there is nothing to redirect.  The
 four declarations below are left uncompiled the way Lean leaves its own.
 
 Only for a member with no index of its own.  `below t` tabulates the motive at
-fixed parameters, and a recursive call at some other index would want a row the
-table has no column for; Lean's own indexed `brecOn` takes the indices before the
-major premise for exactly that reason, and doing the same here would mean an
-indexed wrapper, which costs structure eta.  An indexed member falls back to
-well-founded recursion, as every member did before.
+fixed parameters, and `X.recD` visits every index at once, so a member with one
+goes to `emitIndexedBRecOn` instead -- which builds the same four names on the
+pre-type, where the index is already fixed.  That covers the indices the pre-type
+deleted, which is what an induction-inductive block has; a member with an index
+of its own that the pre-type kept still falls back to well-founded recursion.
 
-That restriction is not a gap waiting to be closed -- the two halves genuinely
-cannot both hold, and it was tried.  An index-quantified motive is what
-`mkBRecOnMotive` demands, so `below` exists only if `X._sub` takes the member's
-extra arguments as indices; but `isNonRecStructure` reads `numIndices == 0` off
-the arity, so an indexed wrapper has no eta, and eta is what makes this lowering
-work at all.  `X.rec` *is* the auxiliary recursion at `t.val` and `t.property`,
-which answers the caller's question only because `mk t.val t.property` and `t`
-are the same term.  Restoring that by transport along an explicit eta lemma
-almost works: on a constructor the cast reduces away to `rfl`.  It is at a
-*variable* that it sticks, and a variable is precisely where an induction
-hypothesis sits, so reducing `X.rec (pi ..)` leaves the raw recursion at `B.val`
-facing the writer's `B.depth`, the same term under a cast that will not move.
-Pushing the cast into the auxiliary motive reproduces the mismatch one level
-down, and a motive that ignores its major premise does not make `Eq.rec` reduce.
-So the choice is between a table for indexed members and iota rules that hold by
-`rfl`, and the iota rules are worth more.
+What no table can cover is a recursive call at a *different* index.  An
+index-quantified motive is what `mkBRecOnMotive` would need, so `below` could
+take one only if `X._sub` took the member's extra arguments as indices; but
+`isNonRecStructure` reads `numIndices == 0` off the arity, so an indexed wrapper
+has no eta, and eta is what makes this lowering work at all.  `X.rec` *is* the
+auxiliary recursion at `t.val` and `t.property`, which answers the caller's
+question only because `mk t.val t.property` and `t` are the same term.  Restoring
+that by transport along an explicit eta lemma almost works: on a constructor the
+cast reduces away to `rfl`.  It is at a *variable* that it sticks, and a variable
+is precisely where an induction hypothesis sits, so reducing `X.rec (pi ..)`
+leaves the raw recursion at `B.val` facing the writer's `B.depth`, the same term
+under a cast that will not move.  Pushing the cast into the auxiliary motive
+reproduces the mismatch one level down, and a motive that ignores its major
+premise does not make `Eq.rec` reduce.  So the choice is between a table that
+crosses indices and iota rules that hold by `rfl`, and the iota rules are worth
+more -- `Ty.depth` over a `pi` whose body is at `Γ.snoc A` stays well-founded.
 -/
-def emitBRecOn (b : Block) (i : Nat) : MetaM Unit := do
+def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit := do
   let m := b.members[i]!
   let n := subName m.name
   let nArgs ← forallTelescope m.type fun idxs _ => pure idxs.size
-  -- an index would be a row the table has no column for
-  unless nArgs == b.numParams do return
+  unless nArgs == b.numParams do
+    -- an index the pre-type deleted is a parameter of the wrapper, so the table
+    -- has a column for it after all; one it kept would not be
+    if m.dropped.size == nArgs - b.numParams then emitIndexedBRecOn p preRecUnivs b i
+    return
   let recD := m.name ++ `recD
   let casesD := m.name ++ `casesD
   unless (← getEnv).contains recD && (← getEnv).contains casesD do return
   let recInfo ← getConstInfo recD
   let casesInfo ← getConstInfo casesD
-  -- the level the motive lands in.  The block has no name for it, and it leads
-  -- the list because that is the order `Lean.Meta.mkBRecOnConst` supplies
-  -- levels in when the equation compiler reaches for what is built here
-  let lvlName := Id.run do
-    let mut c := `u
-    let mut k := 0
-    while b.us.contains c do
-      k := k + 1
-      c := Name.mkSimple s!"u_{k}"
-    return c
+  let lvlName := motiveLevelName b.us
   let lvl := Level.param lvlName
   -- the sort the table lands in: room for the motive and for the member's own
   -- fields, which is what Lean's own `below` asks for too
@@ -8838,13 +9055,13 @@ def emit (p : Plan) : TermElabM Unit := do
   -- the equation compiler looks for when it decides whether a definition by
   -- recursion over a member can be structural.  It is built out of the
   -- one-motive recursor of step 10, so it has to come after it; a member that
-  -- did not get one, or that has an index of its own, keeps the well-founded
+  -- did not get one, or whose indices the pre-type kept, keeps the well-founded
   -- fallback and nothing here is emitted for it
   for i in b.dataIdxs do
     if copyNames.contains b.members[i]!.name then continue
     discard <| attempt? `Mumi.indind
         m!"no course-of-values recursion for `{b.members[i]!.name}`" <|
-      emitBRecOn b i
+      emitBRecOn p preRecUnivs b i
 
   -- 11. injectivity of the data constructors, which has to come after the
   -- bridge: what is stated is stated about the type the writer wrote, and

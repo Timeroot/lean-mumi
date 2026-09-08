@@ -84,10 +84,12 @@ def isNil (c : Ctx) : Bool :=
 /-! ## Recursion
 
 A view is not a subterm of what it presents, so what the recursion goes by is
-the member underneath.  A member with no index of its own is given a `below` and
-a `brecOn` and the recursion is structural; one whose index varies is not, and
-falls back to the well-founded route on the `SizeOf` instance and the
-`sizeOf_spec` lemmas the block emits.  Both are exercised below. -/
+the member underneath.  A member is given a `below` and a `brecOn` whenever the
+indices it carries are ones the pre-type deleted, since those are parameters of
+its wrapper and a table may be built with them held fixed, and then the
+recursion is structural.  A call that lands at a *different* index has no row in
+any such table and falls back to the well-founded route on the `SizeOf` instance
+and the `sizeOf_spec` lemmas the block emits.  Both are exercised below. -/
 
 def len (c : Ctx) : Nat :=
   match c with
@@ -242,9 +244,10 @@ run_cmd Elab.Command.liftTermElabM do
 /-! ## Mutual recursion across two members
 
 `tSize` calls `cSize` and `cSize` does not call back, so the two are separate
-strongly connected components and each is decided on its own: `cSize` recurses
-over a member with no index and comes out structural, `tSize` recurses over one
-whose index varies and does not.  The two routes sit side by side here. -/
+strongly connected components and each is decided on its own.  Both come out
+structural: `cSize` recurses over a member with no index, and `tSize` over one
+whose indices the pre-type deleted and whose recursive call keeps them where they
+were. -/
 
 mutual
 
@@ -267,6 +270,55 @@ end
 /-- info: 3 -/
 #guard_msgs in
 #eval tSize (Tm.wk c1 o1 (.var c1 o1))
+
+/-! ### The table an indexed member is given
+
+`Tm` carries two indices and the pre-type deletes both, a pre-term knowing
+nothing about the context it was written in, so both are parameters of the
+wrapper and the four declarations come out one index-worth wider.  They are
+stated at the pre-type rather than at `Ctx` and `Ok`, because that is where the
+recursion they are built from lives: the block's own recursors want the index as
+a member and there is no way to hand them one, whereas the recursor over the
+pre-block already has it fixed.  Eta on the wrapper closes the gap wherever an
+entry is used. -/
+
+/--
+info: @Tm._sub.below : {Γ : Ctx._pre} → {a : Ok._pre Γ} → {motive : Tm._sub Γ a → Sort u_1} → Tm._sub Γ a → Sort (max 1 u_1)
+-/
+#guard_msgs in
+#check @Tm._sub.below
+
+/--
+info: @Tm._sub.brecOn : {Γ : Ctx._pre} →
+  {a : Ok._pre Γ} →
+    {motive : Tm._sub Γ a → Sort u_1} → (t : Tm._sub Γ a) → ((t : Tm._sub Γ a) → Tm._sub.below t → motive t) → motive t
+-/
+#guard_msgs in
+#check @Tm._sub.brecOn
+
+/--
+info: @Tm._sub.brecOn.eq : ∀ {Γ : Ctx._pre} {a : Ok._pre Γ} {motive : Tm._sub Γ a → Sort u_1} (t : Tm._sub Γ a)
+  (F : (t : Tm._sub Γ a) → Tm._sub.below t → motive t), Tm._sub.brecOn t F = F t (Tm._sub.brecOn.go t F).snd
+-/
+#guard_msgs in
+#check @Tm._sub.brecOn.eq
+
+/-! So `tSize` is the plain structural definition, exactly as `len` was. -/
+
+/--
+info: def MumiTests.Match.tSize : {Γ : Ctx} → {h : Ok Γ} → Tm Γ h → Nat :=
+fun {Γ} {h} t => Tm._sub.brecOn t tSize._f
+-/
+#guard_msgs in
+#print tSize
+
+/-- info: 'MumiTests.Match.tSize' does not depend on any axioms -/
+#guard_msgs in
+#print axioms tSize
+
+example (Γ : Ctx) (h : Ok Γ) : tSize (Tm.var Γ h) = cSize Γ := rfl
+example (Γ : Ctx) (h : Ok Γ) (u : Tm Γ h) : tSize (Tm.wk Γ h u) = tSize u + 1 := rfl
+example : tSize (Tm.wk c1 o1 (.var c1 o1)) = 3 := by decide
 
 /-! ## Shapes the table has to cover
 
@@ -499,10 +551,11 @@ A view is a plain inductive and `Ctx.view` a plain definition over `Ctx.casesD`,
 so a function written through one rests on no more than the block itself does.
 
 `propext` is what is left when well-founded recursion is what the definition
-got.  A member with no index of its own carries a `brecOn`, so a recursion over
-it is structural and brings in nothing at all; `tSize` recurses over `Tm`, whose
-index varies from one call to the next, and that is still the well-founded
-route. -/
+got.  Every member here carries a `brecOn` -- `Tm`'s indices are ones the
+pre-type deleted, so they are parameters of its wrapper and the table has a
+column for them -- so every recursion below is structural and brings in nothing
+at all.  What would still be well-founded is a call at a *different* index,
+which no table can hold a row for. -/
 
 /-- info: 'MumiTests.Match.isNil' does not depend on any axioms -/
 #guard_msgs in
@@ -512,7 +565,7 @@ route. -/
 #guard_msgs in
 #print axioms len
 
-/-- info: 'MumiTests.Match.tSize' depends on axioms: [propext] -/
+/-- info: 'MumiTests.Match.tSize' does not depend on any axioms -/
 #guard_msgs in
 #print axioms tSize
 
@@ -618,7 +671,11 @@ end Param
 
 /-! ### An index that is data rather than a proof
 
-Nothing is promoted here, so every field stays in the pattern. -/
+Nothing is promoted here, so every field stays in the pattern.  It is also where
+the structural route stops: `app`'s function field sits at `Tm Γ (.arr a b)`
+while the result is at `Tm Γ b`, so the recursive call crosses an index and no
+table over a fixed one has a row for it.  That recursion is well-founded, which
+is what the two axioms below say. -/
 
 namespace Typed
 
@@ -645,6 +702,10 @@ def size {Γ : Ctx} {t : Ty} (e : Tm Γ t) : Nat :=
 /-- info: 2 -/
 #guard_msgs in
 #eval size (Tm.app .nil .base .base (.var .nil (.arr .base .base)) (.var .nil .base))
+
+/-- info: 'MumiTests.Match.Typed.size' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms size
 
 end Typed
 
