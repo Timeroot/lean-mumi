@@ -709,6 +709,46 @@ def size {Γ : Ctx} {t : Ty} (e : Tm Γ t) : Nat :=
 
 end Typed
 
+/-! ### Members at different universes
+
+A block may put its members at different sorts, and then a constructor's field
+can outrank the member it belongs to: `T`'s fields include a `C`, which is a
+universe above.  A view has to be at least as large as anything its constructors
+carry, so it goes to whichever of the two is bigger rather than to the member's
+own sort. -/
+
+namespace Hetero
+
+mutual
+inductive C : Type 1 where
+  | nil : C
+  | ext (Γ : C) (a : T Γ) : C
+inductive T : C → Type where
+  | base (Γ : C) : T Γ
+  | app (Γ : C) (x y : T Γ) : T Γ
+end
+
+/-- info: T.View : (a : C) → T a → Type 1 -/
+#guard_msgs in
+#check @T.View
+
+def sz {Γ : C} : T Γ → Nat
+  | .base _ => 0
+  | .app _ x y => sz x + sz y + 1
+
+/-- info: 'MumiTests.Match.Hetero.sz' does not depend on any axioms -/
+#guard_msgs in
+#print axioms sz
+
+example (Γ : C) : sz (T.base Γ) = 0 := rfl
+example (Γ : C) (x y : T Γ) : sz (T.app Γ x y) = sz x + sz y + 1 := rfl
+
+/-- info: 1 -/
+#guard_msgs in
+#eval sz (T.app .nil (.base .nil) (.base .nil))
+
+end Hetero
+
 /-! ### A member reached through a container -/
 
 namespace Nested

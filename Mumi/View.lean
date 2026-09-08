@@ -272,9 +272,12 @@ private def promoted (numParams : Nat) (ctors : Array Name)
 The view of `mem`, and the function into it.
 
 The view lives at the member's own sort, raised away from `Prop` -- a case
-split on a proof tells you nothing -- and the function is the member's `casesD`
-with the view for a motive, so it computes: matching through a view costs a
-constructor tag and nothing else.
+split on a proof tells you nothing -- and raised again past anything a
+constructor carries: in a block whose members are at different universes a
+field can outrank the member it belongs to, and an inductive has to be at least
+as large as its fields.  The function is the member's `casesD` with the view for
+a motive, so it computes: matching through a view costs a constructor tag and
+nothing else.
 -/
 def addView (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := do
   let mi ← getConstInfo mem
@@ -285,7 +288,14 @@ def addView (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := 
   forallTelescope mi.type fun binders sort => do
     let .sort v := sort | throwError "`{mem}` does not end at a sort"
     let k ← promoted numParams ctors binders
-    let v' := (Level.max (.succ .zero) v).normalize
+    let mut big := Level.max (.succ .zero) v
+    for c in ctors do
+      big ← forallTelescope (← getConstInfo c).type fun xs _ => do
+        let mut w := big
+        for x in xs.extract (numParams + k) xs.size do
+          w := .max w (← getLevel (← inferType x))
+        return w
+    let v' := big.normalize
     let ps := binders.extract 0 numParams
     let is := binders.extract numParams binders.size
     let selfTy := mkAppN (mkConst mem us) binders
