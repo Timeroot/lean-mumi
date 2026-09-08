@@ -320,6 +320,122 @@ example (Γ : Ctx) (h : Ok Γ) : tSize (Tm.var Γ h) = cSize Γ := rfl
 example (Γ : Ctx) (h : Ok Γ) (u : Tm Γ h) : tSize (Tm.wk Γ h u) = tSize u + 1 := rfl
 example : tSize (Tm.wk c1 o1 (.var c1 o1)) = 3 := by decide
 
+/-! ### An index the pre-type kept
+
+An index that is not block-typed survives erasure, so the pre-recursor binds it
+rather than taking it fixed, and the motive has to say something at every one of
+them at once.  What it says is the caller's question generalised: the motive, and
+the step where there is one, are quantified inside and put back at the caller's
+own where the table is applied.  Nothing of that shows in the four signatures,
+which come out exactly as they would for an ordinary index. -/
+
+mutual
+inductive KCtx : Type where
+  | nil : KCtx
+  | snoc (Γ : KCtx) (A : KTy Γ 0) : KCtx
+inductive KTy : KCtx → Nat → Type where
+  | base (Γ : KCtx) (k : Nat) : KTy Γ k
+  | arr (Γ : KCtx) (k : Nat) (A B : KTy Γ k) : KTy Γ k
+end
+
+/--
+info: @KTy._sub.below : {a : KCtx._pre} →
+  {a_1 : Nat} → {motive : KTy._sub a a_1 → Sort u_1} → KTy._sub a a_1 → Sort (max 1 u_1)
+-/
+#guard_msgs in
+#check @KTy._sub.below
+
+def kDep {Γ : KCtx} {k : Nat} : KTy Γ k → Nat
+  | .base _ _ => 0
+  | .arr _ _ A B => max (kDep A) (kDep B) + 1
+
+/--
+info: def MumiTests.Match.kDep : {Γ : KCtx} → {k : Nat} → KTy Γ k → Nat :=
+fun {Γ} {k} x => KTy._sub.brecOn x kDep._f
+-/
+#guard_msgs in
+#print kDep
+
+/-- info: 'MumiTests.Match.kDep' does not depend on any axioms -/
+#guard_msgs in
+#print axioms kDep
+
+example (Γ k) : kDep (KTy.base Γ k) = 0 := rfl
+example (Γ k A B) : kDep (KTy.arr Γ k A B) = max (kDep A) (kDep B) + 1 := rfl
+example : kDep (KTy.arr .nil 2 (.base .nil 2) (.base .nil 2)) = 1 := by decide
+
+/-! A deleted index whose *type* mentions a kept one is bound in the motive
+beside it, since it cannot stay fixed while the kept one varies.  Bound, not
+generalised: the caller's motive is about that one deleted index and no other. -/
+
+mutual
+inductive NCtx : Nat → Type where
+  | nil : NCtx 0
+  | snoc (k : Nat) (Γ : NCtx k) (A : NTy k Γ) : NCtx (k + 1)
+inductive NTy : (k : Nat) → NCtx k → Type where
+  | base (k : Nat) (Γ : NCtx k) : NTy k Γ
+  | arr (k : Nat) (Γ : NCtx k) (A B : NTy k Γ) : NTy k Γ
+end
+
+def nDep {k : Nat} {Γ : NCtx k} : NTy k Γ → Nat
+  | .base _ _ => 0
+  | .arr _ _ A B => max (nDep A) (nDep B) + 1
+
+/--
+info: def MumiTests.Match.nDep : {k : Nat} → {Γ : NCtx k} → NTy k Γ → Nat :=
+fun {k} {Γ} x => NTy._sub.brecOn x nDep._f
+-/
+#guard_msgs in
+#print nDep
+
+/-- info: 'MumiTests.Match.nDep' does not depend on any axioms -/
+#guard_msgs in
+#print axioms nDep
+
+example (k Γ A B) : nDep (NTy.arr k Γ A B) = max (nDep A) (nDep B) + 1 := rfl
+example : nDep (NTy.arr 0 .nil (.base 0 .nil) (.base 0 .nil)) = 1 := by decide
+
+/-! What a kept index does not buy is a constructor that lands at another one.
+`up` concludes at `n + 1`, and the wrapper takes `n` as a parameter, so there is
+no matching it at a variable `n` however the table is built.  Where that is the
+only recursion there is, Lean recurses on the index instead and never asks: -/
+
+mutual
+inductive UCtx : Type where
+  | nil : UCtx
+  | snoc (Γ : UCtx) (A : UTy 0 Γ) : UCtx
+inductive UTy : Nat → UCtx → Type where
+  | base (n : Nat) (Γ : UCtx) : UTy n Γ
+  | wrap (n : Nat) (Γ : UCtx) (A : UTy n Γ) : UTy n Γ
+  | up (n : Nat) (Γ : UCtx) (A : UTy n Γ) : UTy (n + 1) Γ
+end
+
+def uUp {n : Nat} {Γ : UCtx} : UTy n Γ → Nat
+  | .base _ _ => 0
+  | .wrap _ _ _ => 0
+  | .up _ _ A => uUp A + 1
+
+/--
+info: def MumiTests.Match.uUp : {n : Nat} → {Γ : UCtx} → UTy n Γ → Nat :=
+fun {n} {Γ} x => Nat.brecOn (motive := fun {n} => UTy n Γ → Nat) n (@uUp._f Γ) x
+-/
+#guard_msgs in
+#print uUp
+
+/-! but a definition that recurses at its own index as well has nothing left to
+descend on, and falls back to well-founded recursion. -/
+
+def uDep {n : Nat} {Γ : UCtx} : UTy n Γ → Nat
+  | .base _ _ => 0
+  | .wrap _ _ A => uDep A + 1
+  | .up _ _ A => uDep A + 1
+
+/-- info: 'MumiTests.Match.uDep' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms uDep
+
+example : uDep (UTy.up 0 .nil (.base 0 .nil)) = 1 := by simp [uDep]
+
 /-! ## Shapes the table has to cover
 
 A constructor can have no recursive field, or several, or infinitely many, and

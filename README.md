@@ -414,10 +414,14 @@ declarations Lean's own construction makes — `below`, `brecOn`, `brecOn.go` an
 `brecOn.eq` — built out of the block's recursors rather than out of the
 wrapper's, which is a one-constructor pair and knows nothing about anything
 smaller. So the recursion is structural and its equations hold by `rfl`. An
-index the pre-type deleted is a parameter of the wrapper and is covered as
-well, the table being built over the recursor for the pre-block with that
-parameter held fixed. What is not covered is a recursive call at a *different*
-index, since a table at fixed parameters has no column for one. That case is
+indexed member is covered as well, the table being built over the recursor for
+the pre-block: an index the pre-type deleted is a parameter of the wrapper and is
+simply held fixed there, and one it kept is bound by that recursor, so the motive
+quantifies over everything downstream that mentions it — the wrapper, the
+caller's own motive, its step, and any deleted index whose type names it — and
+puts them back at the caller's where the table is applied. What is not covered is
+a recursive call at a *different* index, since a table whose motive is about one
+wrapper has no column for a row about another. That case is
 still well-founded: the block emits the `X._sizeOf_inst` and the
 `@[simp] X.c.sizeOf_spec` lemmas the termination goals need, so a definition
 that plainly decreases goes through unaided, at the price of equations that

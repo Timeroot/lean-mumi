@@ -73,10 +73,12 @@ which is what `cases` presents too.
 A definition by recursion over a member is structural where it can be.  The
 member unfolds to its wrapper, and the wrapper is given a `below` and a `brecOn`
 built out of the block's recursors, so the equation compiler finds what it looks
-for.  An index the pre-type deleted is a parameter of the wrapper, so a member
-carrying only those is covered too.  Where it cannot is a recursive call at some
-*other* index: the table `below` builds is at fixed parameters and there is no
-column for a row at a different one.  Such a recursion can still be well
+for.  An indexed member is covered too, whether the pre-type deleted the index --
+which makes it a parameter of the wrapper -- or kept it, in which case the
+recursor binds it and the table is generalised over everything that mentions it.
+Where it cannot is a recursive call at some *other* index: the table `below`
+builds is at fixed parameters and there is no column for a row at a different
+one, nor any way to write the motive of one.  Such a recursion can still be well
 founded, given a `SizeOf` instance to measure with and the specification lemmas
 the termination tactic simplifies with, so those are built here as well.  The measure is the
 pre-term's, which is the only thing left after the proofs are erased and is
