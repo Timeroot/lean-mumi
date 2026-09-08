@@ -433,6 +433,18 @@ def isNil' : Ctx → Bool
 #guard_msgs in
 #eval isNil' c1
 
+/-- `..` for the fields, which stands for a run of `_` and not for a pattern
+written under the constructor. -/
+def isNil'' : Ctx → Bool
+  | .nil => true
+  | .snoc .. => false
+
+/-- info: 'MumiTests.Match.isNil''' does not depend on any axioms -/
+#guard_msgs in
+#print axioms isNil''
+
+example (Γ : Ctx) (h : Ok Γ) : isNil'' (Γ.snoc h) = false := rfl
+
 /-- `h :` names the equation, and still does. -/
 def withEq (c : Ctx) : Nat :=
   match h : c with

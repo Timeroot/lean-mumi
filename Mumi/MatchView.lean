@@ -285,8 +285,11 @@ private meta def throughView (discrs alts : Array Syntax)
             let rest := args.extract t.promoted args.size
             -- a view presents the constructor a member was built by and stops
             -- there, so a constructor written under one is out of its reach.
-            -- Only a pattern that is not already a variable can be one
-            let isVar (a : Syntax) := a.isIdent || a.getKind == ``Lean.Parser.Term.hole
+            -- Only a pattern that is not already a variable can be one, and
+            -- `..` is a run of them however many fields are left
+            let isVar (a : Syntax) := a.isIdent
+              || a.getKind == ``Lean.Parser.Term.hole
+              || a.getKind == ``Lean.Parser.Term.ellipsis
             if rest.any (!isVar ·) then
               let heads ← explicitFieldHeads c
               for j in *...rest.size do
