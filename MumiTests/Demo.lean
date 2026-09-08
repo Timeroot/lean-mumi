@@ -33,10 +33,11 @@ Nothing here is *unsound*, and one section says why the nearest thing to it
 would be.
 
 Extra declarations live in these namespaces -- pre-types, wrappers, well-
-formedness predicates, views, and the one-motive recursors `induction` and the
-equation compiler are driven by.  They are not the point and are not pinned;
-what is pinned is that the names a writer reaches for are there, with the types
-a writer expects, and that the tactics built on the rest behave.
+formedness predicates, views, and the eliminators that `induction`, `cases` and
+the equation compiler are driven by.  Their names are not ones Lean would have
+chosen, so nothing here pins them or asks a writer to type them.  What is pinned
+is that the names a writer *does* reach for are there with the types they should
+have, and that the tactics standing on the rest behave.
 -/
 
 namespace MumiTests.Demo
@@ -84,27 +85,17 @@ MumiTests.Demo.Hetero.Tree.wrap : Hidden → Tree
 #guard_msgs in
 #check @Hidden.mk
 
-/-! Each member gets its own recursor, over the whole block's motives. -/
+/-! `Tree.rec` is what it would have been with no proposition beside it: one
+motive, one minor premise per constructor. -/
 
 /--
-info: @Tree.mutualRec : {motive_1 : Tree → Sort u_1} →
-  {motive_2 : Hidden → Prop} →
-    ((n : Nat) → motive_1 (Tree.leaf n)) →
-      ((l r : Tree) → motive_1 l → motive_1 r → motive_1 (l.node r)) →
-        ((h : Hidden) → motive_2 h → motive_1 (Tree.wrap h)) →
-          (∀ (t : Tree) (ih_1 : motive_1 t), motive_2 ⋯) → (t : Tree) → motive_1 t
+info: @Tree.rec : {motive : Tree → Sort u_1} →
+  ((n : Nat) → motive (Tree.leaf n)) →
+    ((l r : Tree) → motive l → motive r → motive (l.node r)) →
+      ((h : Hidden) → motive (Tree.wrap h)) → (t : Tree) → motive t
 -/
 #guard_msgs in
-#check @Tree.mutualRec
-
-/--
-info: @Hidden.mutualRec : ∀ {motive_1 : Tree → Sort u_1} {motive_2 : Hidden → Prop}
-  (case_1 : (n : Nat) → motive_1 (Tree.leaf n)) (case_2 : (l r : Tree) → motive_1 l → motive_1 r → motive_1 (l.node r))
-  (case_3 : (h : Hidden) → motive_2 h → motive_1 (Tree.wrap h)),
-  (∀ (t : Tree) (ih_1 : motive_1 t), motive_2 ⋯) → ∀ (t : Hidden), motive_2 t
--/
-#guard_msgs in
-#check @Hidden.mutualRec
+#check @Tree.rec
 
 /-! `match` and `cases` work, because there is nothing in the way of them.  A
 `wrap` gives back nothing: its field is a proof and the result is data. -/
@@ -122,7 +113,16 @@ example : size (.node (.leaf 1) (.leaf 2)) = 2 := by decide
 #guard_msgs in
 #eval size (.node (.leaf 1) (.leaf 2))
 
+/-! `cases` on the proposition, and `induction` on the tree, with the block's own
+constructor names as the cases. -/
+
 example (h : Hidden) : True := by cases h; trivial
+
+example (t : Tree) : 0 ≤ size t := by
+  induction t with
+  | leaf n => simp [size]
+  | node l r ihl ihr => simp
+  | wrap h => simp [size]
 
 /-- info: 'MumiTests.Demo.Hetero.size' does not depend on any axioms -/
 #guard_msgs in
@@ -157,16 +157,13 @@ end
 #check @Large.of
 
 /--
-info: @Small.mutualRec : {motive_1 : Small → Sort u_1} →
-  {motive_2 : Large → Sort u_2} →
-    motive_1 Small.z →
-      ((m : Small) → motive_1 m → motive_1 m.s) →
-        ((m : Small) → motive_1 m → motive_2 (Large.of m)) →
-          ((α : Type 1) → motive_2 (Large.ty α)) →
-            ((a b : Large) → motive_2 a → motive_2 b → motive_2 (a.pair b)) → (t : Small) → motive_1 t
+info: @Large.rec : {motive : Large → Sort u_1} →
+  ((m : Small) → motive (Large.of m)) →
+    ((α : Type 1) → motive (Large.ty α)) →
+      ((a b : Large) → motive a → motive b → motive (a.pair b)) → (t : Large) → motive t
 -/
 #guard_msgs in
-#check @Small.mutualRec
+#check @Large.rec
 
 def depth : Large → Nat
   | .of _ => 0
@@ -178,6 +175,20 @@ example : depth (.pair (.of .z) (.ty (ULift Nat))) = 1 := rfl
 /-- info: 1 -/
 #guard_msgs in
 #eval depth (.pair (.of .z) (.ty (ULift Nat)))
+
+/-! `induction` over the member two universes up, and `cases` over the one
+below it. -/
+
+example (a : Large) : 0 ≤ depth a := by
+  induction a with
+  | of m => simp [depth]
+  | ty α => simp [depth]
+  | pair a b iha ihb => simp
+
+example (m : Small) : m = .z ∨ ∃ k, m = .s k := by
+  cases m with
+  | z => exact .inl rfl
+  | s k => exact .inr ⟨k, rfl⟩
 
 /-! Now the cycle.  `Cyc1` holds a `Cyc2` and `Cyc2` holds a `Cyc1`, so each
 universe is at or below the other and they have to agree; the report names the
@@ -252,10 +263,8 @@ Ctx._sub
 #check @Ty.arr
 
 /-! `Ctx.rec` is the whole block's, with a motive per member, which is what an
-induction-inductive block has instead of one recursor each.  Beside it,
-`Ctx.casesD` is the one-motive case analysis -- `casesOn` under a name the
-encoding leaves free, since `Ctx` is a `def` and `Ctx.casesOn` would resolve
-through it to the wrapper's. -/
+induction-inductive block has instead of one recursor each.  The tactics are
+driven off principles cut out of it, further down. -/
 
 /--
 info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
@@ -270,13 +279,6 @@ info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
 -/
 #guard_msgs in
 #check @Ctx.rec
-
-/--
-info: @Ctx.casesD : {motive : Ctx → Sort u_1} →
-  motive Ctx.nil → ((Γ : Ctx) → (A : Ty Γ) → motive (Γ.snoc A)) → (t : Ctx) → motive t
--/
-#guard_msgs in
-#check @Ctx.casesD
 
 /-! `match` works, through a view the rewrite puts in the way, and the
 recursion it produces is structural: no `WellFounded.fix`, so the equations hold
@@ -359,14 +361,22 @@ example (Γ : Ctx) : tsize (Ty.base Γ) = 1 := by simp [tsize]
 #guard_msgs in
 #eval tsize (Ty.arr .nil (.base .nil) (.base _))
 
-/-! The tactics work: `cases` and `induction` on either member. -/
+/-! The tactics work on either member, with the block's own constructor names as
+the cases and an induction hypothesis at the recursive field. -/
 
-example (Γ : Ctx) : 0 ≤ len Γ := by
+def len' : Ctx → Nat
+  | .nil => 0
+  | .snoc Γ _ => len' Γ + 1
+
+example (Γ : Ctx) : len Γ = len' Γ := by
   induction Γ with
-  | nil => simp
-  | snoc Δ A ih => simp
+  | nil => rfl
+  | snoc Δ A ih => simp [len, len', ih]
 
-example (Γ : Ctx) (A : Ty Γ) : True := by cases A <;> trivial
+example (Γ : Ctx) (A : Ty Γ) : 1 ≤ dom A := by
+  cases A with
+  | base _ => simp [dom]
+  | arr _ A B => simp [dom]
 
 /-! Injectivity is a theorem and a `@[simp]` lemma, stated the way an ordinary
 constructor's is -- the dependent field compared with `HEq`. -/
@@ -437,8 +447,8 @@ end IndInd
 
 The shape the encoding was written for: data, and a judgement about the data in
 `Prop`.  The proposition gets a place in the block's recursor, where its motive
-may mention the value the data recursion produced, and a case analysis of its
-own beside it.  Both land in `Prop`; section 9 is about why.
+may mention the value the data recursion produced, and `induction` and `cases`
+work on a proof of it.  The motive lands in `Prop`; section 9 is about why.
 
 *Verdict: works.* -/
 
@@ -458,13 +468,6 @@ end
 /-- info: Ok.snoc : ∀ (Γ : Ctx) (A : Ty Γ), Ok Γ → Ok (Γ.snoc A) -/
 #guard_msgs in
 #check @Ok.snoc
-
-/--
-info: @Ok.casesP : ∀ {motive : (a : Ctx) → Ok a → Prop},
-  motive Ctx.nil Ok.nil → (∀ (Γ : Ctx) (A : Ty Γ) (h : Ok Γ), motive (Γ.snoc A) ⋯) → ∀ {a : Ctx} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.casesP
 
 /-! `Ok.rec` is the whole block's, and `motive_3` there takes the value the data
 recursion produced as well as the proof.  So a proposition here can say
@@ -676,19 +679,17 @@ info: @R.rec : ∀ {motive : (a : C) → (a_1 : D) → R a a_1 → Prop},
 #guard_msgs in
 #check @R.rec
 
-/--
-info: @R.casesP : ∀ {motive : (a : C) → (a_1 : D) → R a a_1 → Prop},
-  motive C.nil D.nil R.nil →
-    (∀ (c : C) (d : D) (h : R c d), motive c.cons d ⋯) → ∀ {a : C} {a_1 : D} (h : R a a_1), motive a a_1 h
--/
-#guard_msgs in
-#check @R.casesP
-
-/-- Its own recursion is the full one, so this goes through. -/
+/-- Its own recursion is the full one, so `induction` on a proof goes through. -/
 theorem r_nil (c : C) (d : D) (h : R c d) : d = .nil := by
   induction h with
   | nil => rfl
   | cons _ _ _ ih => exact ih
+
+/-- And so does `cases`. -/
+theorem r_shape (c : C) (d : D) (h : R c d) : c = .nil ∨ ∃ k, c = .cons k := by
+  cases h with
+  | nil => exact .inl rfl
+  | cons k _ _ => exact .inr ⟨k, rfl⟩
 
 /-! And the block's recursor is the one that is a motive short. -/
 
@@ -829,9 +830,9 @@ end Forgotten
 
 /-! ## 9. What a `Prop` member may eliminate into
 
-A lowered block has *one* recursion, and every use of it supplies every motive
-at once.  A `Prop` member's motive in that recursion lands in `Prop` and cannot
-be asked to land anywhere else.
+A `Prop` member's recursion is the block's, so a use of it supplies a motive for
+every member at once.  The `Prop` member's own motive there lands in `Prop` and
+cannot be asked to land anywhere else.
 
 This is the one place where the missing feature would be unsound rather than
 merely absent.  Large elimination is granted to a single inductive on a
@@ -857,13 +858,13 @@ end
 
 /-! The `Prop` member's motive is `A → Prop`; the data member's is `Sort u`. -/
 /--
-info: @A.mutualRec : ∀ {motive_1 : A → Prop} {motive_2 : B → Sort u_1},
+info: @A.rec : ∀ {motive_1 : A → Prop} {motive_2 : B → Sort u_1},
   (∀ (b : B) (ih_1 : motive_2 b), motive_1 ⋯) →
     ∀ (case_2 : (n : Nat) → motive_2 (B.leaf n)) (case_3 : (a : A) → motive_1 a → motive_2 (B.fromA a)) (t : A),
       motive_1 t
 -/
 #guard_msgs in
-#check @A.mutualRec
+#check @A.rec
 
 /--
 error: Type mismatch
@@ -876,22 +877,29 @@ of sort `Type`
 -/
 #guard_msgs in
 example (a : A) : Nat :=
-  A.mutualRec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+  A.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     (fun _ ih => ih) (fun n => n) (fun _ ih => ih) a
 
 /-! Into `Prop` it goes, and computes. -/
 
-theorem a_holds (a : A) : A := A.mutualRec (motive_2 := fun _ => True)
+theorem a_holds (a : A) : A := A.rec (motive_2 := fun _ => True)
   (fun b _ => .mk b) (fun _ => trivial) (fun _ _ => trivial) a
 
 /-- info: 'MumiTests.Demo.PropElim.a_holds' does not depend on any axioms -/
 #guard_msgs in
 #print axioms a_holds
 
-/-! The data member's recursion is a genuine large elimination and reduces. -/
+/-! The data member's recursion is a genuine large elimination, and it reduces.
+`B.rec` is the one-motive one, so the field at the proposition carries no
+hypothesis: there is no motive over `A` for it to be at. -/
 
-def tag : B → Nat := B.mutualRec (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
-  (fun _ _ => trivial) (fun n => n) (fun _ _ => 0)
+example : B.rec (motive := fun _ => Nat) (fun n => n) (fun _ => 0) (.leaf 7) = 7 := rfl
+
+/-! Written as the `match` a writer would write, it compiles and runs. -/
+
+def tag : B → Nat
+  | .leaf n => n
+  | .fromA _ => 0
 
 example : tag (.leaf 7) = 7 := rfl
 example : tag (.fromA (.mk (.leaf 7))) = 0 := rfl
