@@ -8023,6 +8023,23 @@ table has no column for; Lean's own indexed `brecOn` takes the indices before th
 major premise for exactly that reason, and doing the same here would mean an
 indexed wrapper, which costs structure eta.  An indexed member falls back to
 well-founded recursion, as every member did before.
+
+That restriction is not a gap waiting to be closed -- the two halves genuinely
+cannot both hold, and it was tried.  An index-quantified motive is what
+`mkBRecOnMotive` demands, so `below` exists only if `X._sub` takes the member's
+extra arguments as indices; but `isNonRecStructure` reads `numIndices == 0` off
+the arity, so an indexed wrapper has no eta, and eta is what makes this lowering
+work at all.  `X.rec` *is* the auxiliary recursion at `t.val` and `t.property`,
+which answers the caller's question only because `mk t.val t.property` and `t`
+are the same term.  Restoring that by transport along an explicit eta lemma
+almost works: on a constructor the cast reduces away to `rfl`.  It is at a
+*variable* that it sticks, and a variable is precisely where an induction
+hypothesis sits, so reducing `X.rec (pi ..)` leaves the raw recursion at `B.val`
+facing the writer's `B.depth`, the same term under a cast that will not move.
+Pushing the cast into the auxiliary motive reproduces the mismatch one level
+down, and a motive that ignores its major premise does not make `Eq.rec` reduce.
+So the choice is between a table for indexed members and iota rules that hold by
+`rfl`, and the iota rules are worth more.
 -/
 def emitBRecOn (b : Block) (i : Nat) : MetaM Unit := do
   let m := b.members[i]!
