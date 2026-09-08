@@ -33,9 +33,10 @@ Nothing here is *unsound*, and one section says why the nearest thing to it
 would be.
 
 Extra declarations live in these namespaces -- pre-types, wrappers, well-
-formedness predicates, views.  They are not the point and are not pinned; what
-is pinned is that the names a writer reaches for are there, with the types a
-writer expects.
+formedness predicates, views, and the one-motive recursors `induction` and the
+equation compiler are driven by.  They are not the point and are not pinned;
+what is pinned is that the names a writer reaches for are there, with the types
+a writer expects, and that the tactics built on the rest behave.
 -/
 
 namespace MumiTests.Demo
@@ -250,11 +251,11 @@ Ctx._sub
 #guard_msgs in
 #check @Ty.arr
 
-/-! Three recursors.  `Ctx.rec` is the whole block's, with a motive per member,
-which is what an induction-inductive block has instead of one recursor each.
-`Ctx.recD` is the specialisation that discharges the other data motive, and
-`Ctx.casesD` is the non-recursive one; those two are what `induction` and
-`cases` reach for. -/
+/-! `Ctx.rec` is the whole block's, with a motive per member, which is what an
+induction-inductive block has instead of one recursor each.  Beside it,
+`Ctx.casesD` is the one-motive case analysis -- `casesOn` under a name the
+encoding leaves free, since `Ctx` is a `def` and `Ctx.casesOn` would resolve
+through it to the wrapper's. -/
 
 /--
 info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
@@ -269,13 +270,6 @@ info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
 -/
 #guard_msgs in
 #check @Ctx.rec
-
-/--
-info: @Ctx.recD : {motive : Ctx → Sort u_1} →
-  motive Ctx.nil → ((Γ : Ctx) → (A : Ty Γ) → motive Γ → motive (Γ.snoc A)) → (t : Ctx) → motive t
--/
-#guard_msgs in
-#check @Ctx.recD
 
 /--
 info: @Ctx.casesD : {motive : Ctx → Sort u_1} →
@@ -442,9 +436,9 @@ end IndInd
 /-! ## 4. A proposition over the block
 
 The shape the encoding was written for: data, and a judgement about the data in
-`Prop`.  The proposition gets a recursor of its own -- `Ok.recP`, over the
-propositions alone -- as well as a place in the block's.  Both eliminate into
-`Prop`; section 9 is about why the first of them does.
+`Prop`.  The proposition gets a place in the block's recursor, where its motive
+may mention the value the data recursion produced, and a case analysis of its
+own beside it.  Both land in `Prop`; section 9 is about why.
 
 *Verdict: works.* -/
 
@@ -466,23 +460,17 @@ end
 #check @Ok.snoc
 
 /--
-info: @Ok.recP : ∀ {motive : (a : Ctx) → Ok a → Prop},
-  motive Ctx.nil Ok.nil →
-    (∀ (Γ : Ctx) (A : Ty Γ) (h : Ok Γ), motive Γ h → motive (Γ.snoc A) ⋯) → ∀ {a : Ctx} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.recP
-
-/--
 info: @Ok.casesP : ∀ {motive : (a : Ctx) → Ok a → Prop},
   motive Ctx.nil Ok.nil → (∀ (Γ : Ctx) (A : Ty Γ) (h : Ok Γ), motive (Γ.snoc A) ⋯) → ∀ {a : Ctx} (h : Ok a), motive a h
 -/
 #guard_msgs in
 #check @Ok.casesP
 
-/-! `Ok.rec` is the whole block's, so a `Prop` motive there may say something
-about the value the recursion produced at the data member.  That is strictly
-more than `Ok.recP` offers, and it is why both are kept. -/
+/-! `Ok.rec` is the whole block's, and `motive_3` there takes the value the data
+recursion produced as well as the proof.  So a proposition here can say
+something about what the recursion over `Ctx` returned, which is strictly more
+than a recursion over the propositions alone can state.  Section 8 is a block
+that loses it. -/
 
 /--
 info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
@@ -720,13 +708,21 @@ end TwoHosts
 nothing about.  Putting such a field back at its subtype would need a
 well-formedness obligation to state it with, and a `Prop` constructor carries
 none of its own -- it has only what its indices bring it, and this field is at
-no index.  The propositions share one erased recursion, so the one constructor
-costs the block every *split* `Prop` recursor.
+no index.
 
-The block itself is unharmed: the types are as written, the data member is
-untouched, and the recursor over the whole block is still there, with `hs` bound
-in the minor premise and no induction hypothesis for it.  That last part is the
-one thing the forgotten field really costs, and it costs it because a field the
+What that costs is the propositions' place in the recursion over the *whole
+block*.  Every proposition here is peeled out instead and given a recursion over
+the propositions alone; with no joint recursion left to hold the name, that one
+*is* `rec`.  The control at the end of the section is the same block with `hs`
+deleted, where `Big.rec` carries a motive per member and the proposition's takes
+the value the recursion over `T` produced -- the thing section 4 turns on.  The
+difference between the two `Big.rec`s is the whole of the cost, and it falls on
+every proposition in the block, not only on the one that forgot a field.
+
+Nothing else goes.  The types are as written, the data member is untouched,
+`induction` and `cases` work and bind the field, and the surviving recursion is
+no worse than the one Lean gives such a proposition standing alone: `hs` bound
+in the minor premise for `Big.node`, and no `hs_ih`, because a field the
 conclusion never mentions is exactly what stops the proposition from being a
 subsingleton.
 
@@ -750,24 +746,9 @@ end
 #guard_msgs in
 #check @Big.node
 
-/-! The casualty is the `recP`/`casesP` pair, the recursors named for
-eliminating a proposition on its own.  They are gone for every proposition in
-the block, not only for the one that forgot a field, because the propositions
-share one erased recursion. -/
-
-/-- error: Unknown constant `MumiTests.Demo.Forgotten.Big.recP` -/
-#guard_msgs in
-#check @Big.recP
-
-/-- error: Unknown constant `MumiTests.Demo.Forgotten.Ok.recP` -/
-#guard_msgs in
-#check @Ok.recP
-
-/-! What is left is `rec`, which for a proposition the block does not have to
-state anything else with is the recursion over the propositions alone.  `hs` is
-bound in the minor premise for `Big.node`, and there is no `hs_ih`: that is the
-whole of what the forgotten field costs, and Lean's own recursor for such a
-proposition offers no more. -/
+/-! `Big.rec` is the recursion over the propositions alone: one motive, `hs`
+bound in the minor premise for `Big.node`, and no `hs_ih`.  `Ok` did not forget
+anything and is peeled out all the same. -/
 
 /--
 info: @Big.rec : ∀ {motive : (a : T) → Big a → Prop},
@@ -803,6 +784,46 @@ example : count .leaf = 1 := rfl
 /-- info: 1 -/
 #guard_msgs in
 #eval count (.node [.leaf] (.cons .leaf [] .nil))
+
+/-! The control: the same block with `hs` deleted.  Now the propositions stay in
+the block's recursion, and `motive_2` takes `motive_1 a` -- the value the
+recursion over `T` produced -- alongside the proof.  That argument is what the
+forgotten field costs. -/
+
+namespace Kept
+
+mutual
+inductive T : Type where
+  | node (cs : List T) (h : Ok cs) : T
+  | leaf : T
+inductive Ok : List T → Prop where
+  | nil : Ok []
+  | cons (t : T) (ts : List T) (h : Ok ts) : Ok (t :: ts)
+inductive Big : T → Prop where
+  | node (cs : List T) (h : Ok cs) : Big (.node cs h)
+  | leaf : Big .leaf
+end
+
+/--
+info: @Big.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Big a → Prop} {motive_3 : List T → Sort u_1}
+  {motive_4 : (a : List T) → motive_3 a → Ok a → Prop}
+  (node : (cs : List T) → (h : Ok cs) → (cs_ih : motive_3 cs) → motive_4 cs cs_ih h → motive_1 (T.node cs h))
+  (leaf : motive_1 T.leaf)
+  (node_1 :
+    ∀ (cs : List T) (h : Ok cs) (cs_ih : motive_3 cs) (h_ih : motive_4 cs cs_ih h),
+      motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯)
+  (leaf_1 : motive_2 T.leaf leaf Big.leaf) (nil : motive_3 [])
+  (cons : (head : T) → (tail : List T) → motive_1 head → motive_3 tail → motive_3 (head :: tail))
+  (nil_1 : motive_4 [] nil Ok.nil)
+  (cons_1 :
+    ∀ (t : T) (ts : List T) (h : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_3 ts),
+      motive_4 ts ts_ih h → motive_4 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
+  {a : T} (t : Big a), motive_2 a (T.rec node leaf node_1 leaf_1 nil cons nil_1 cons_1 a) t
+-/
+#guard_msgs in
+#check @Big.rec
+
+end Kept
 
 end Forgotten
 
