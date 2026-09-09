@@ -12,7 +12,7 @@ import Lean.Compiler.ImplementedByAttr
 # Denesting
 
 A *nested* occurrence is a member of the block appearing inside the parameters
-of some other inductive type, as `T` does in
+of another inductive type, as `T` does in
 
 ```lean
 inductive T : Type where
@@ -20,23 +20,21 @@ inductive T : Type where
   | mkT : Nonempty T → T
 ```
 
-Lean's kernel handles these itself: it specialises the nested type constructor
-to the block, giving an auxiliary member, and checks the enlarged block instead.
-That is why `T.rec` above would have a motive for `Nonempty T` as well as one
-for `T`.  It is also why the declaration is rejected -- the enlarged block has
-`T` in `Type` and the copy of `Nonempty` in `Prop`, and the kernel insists that
-a mutual block live in one universe.
+The kernel handles these by specialising the nested type constructor to the
+block, giving an auxiliary member, and checking the enlarged block instead.
+Hence `T.rec` has a motive for `Nonempty T` as well as for `T` -- and hence the
+rejection, since the enlarged block has `T` in `Type` and the copy of `Nonempty`
+in `Prop`, and a mutual block must live in one universe.
 
-This module performs the same specialisation at the elaborator level, so that
-the enlarged block can be handed to `lower` rather than to the kernel.  It is a
-pure `Input → Input` pass: a block with no nested occurrence comes back
-untouched, and one with nested occurrences comes back with a new member per
-distinct nested application.
+This module does the same specialisation at the elaborator level, so the
+enlarged block can go to `lower` instead.  It is a pure `Input → Input` pass: a
+block with no nested occurrence comes back untouched; one with them comes back
+with a new member per distinct nested application.
 
 Only strictly-positive positions are denested.  A field's type is stripped of
-its leading binders and the nested application is looked for at the head of what
-remains, which is exactly where a legal occurrence can be; occurrences in a
-binder's domain are left alone for `analyzeField` to reject.
+its leading binders and the application is sought at the head of what remains,
+which is where a legal occurrence can be.  Occurrences in a binder's domain are
+left for `analyzeField` to reject.
 -/
 
 public section
@@ -62,13 +60,13 @@ inductive Ix : Nat → Type where
   | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
 ```
 
-There is no single member such an occurrence could become, so the locals are
-abstracted and become *indices* of the new member: one member
-`Ix.nested_Nonempty_1 : Nat → Prop`, with `intro : (n : Nat) → Ix n → …`, and
-the occurrence rewritten to `Ix.nested_Nonempty_1 n`.  Everything below is
-stored in abstracted form so that the locals can be reopened as fresh binders
-when the member is built.  (The kernel refuses this case outright: *nested
-inductive datatypes parameters cannot contain local variables*.)
+No single member can stand for such an occurrence, so the locals are abstracted
+and become *indices* of the new member: `Ix.nested_Nonempty_1 : Nat → Prop` with
+`intro : (n : Nat) → Ix n → …`, and the occurrence rewritten to
+`Ix.nested_Nonempty_1 n`.  The fields below are stored abstracted, so the locals
+can be reopened as fresh binders when the member is built.  (The kernel refuses
+this outright: *nested inductive datatypes parameters cannot contain local
+variables*.)
 -/
 private structure AuxSpec where
   /-- `I p₁ … p_k` with the locals abstracted: the type constructor applied to
@@ -103,19 +101,12 @@ private abbrev DenestM := StateRefT DenestState MetaM
 private def mentionsAny (members : Array Expr) (e : Expr) : Bool :=
   members.any fun f => e.containsFVar f.fvarId!
 
-/--
-Recognise a nested occurrence at the head of a strictly-positive position.
-
-Answers `none` for anything that is not one: a position with no member in it at
-all, a member applied to its own arguments, a type constructor that is not
-inductive (`Quot`, a function), or an inductive applied to a member only outside
-its parameters.
--/
+/-- Recognise a nested occurrence at the head of a strictly-positive position. -/
 private def nestedApp? (members : Array Expr) (body : Expr) :
     MetaM (Option (Expr × Expr × InductiveVal × List Level × Array Expr × Array Expr)) := do
-  -- Specialising a parameter that is a function -- `Sigma`'s `β`, `Subtype`'s
-  -- `p` -- leaves the fields of that type as redexes, and the nesting is only
-  -- visible once they are reduced.
+  -- specialising a parameter that is a function -- `Sigma`'s `β`, `Subtype`'s
+  -- `p` -- leaves that type's fields as redexes, so the nesting is visible only
+  -- once they are reduced
   let written := body.headBeta
   if !mentionsAny members written then return none
   if members.any (· == written.getAppFn) then return none
@@ -126,10 +117,8 @@ private def nestedApp? (members : Array Expr) (body : Expr) :
   if args.size < info.numParams then return none
   let params := args.extract 0 info.numParams
   if !params.any (mentionsAny members ·) then return none
-  -- A member `lower` produced is a reducible alias for its shadow, and the
-  -- alias is what the writer typed.  Finding the inductive means seeing through
-  -- it, but the copy should still read back as what was written, so the written
-  -- head is kept when it stands for this very application.
+  -- a member `lower` produced is a reducible alias for its shadow, and the
+  -- alias is what the writer typed
   let visFn :=
     match written.getAppFn with
     | .const vn vls =>
@@ -141,11 +130,7 @@ private def nestedApp? (members : Array Expr) (body : Expr) :
 
 /--
 The local variables a nested application's parameters depend on, closed under
-the dependencies of their own types and ordered as the local context orders
-them.  The block's parameters and members are not locals in this sense: the
-former are shared by every member, and the latter are what makes the occurrence
-nested in the first place.
--/
+the dependencies of their own types and in local-context order. -/
 private def extraLocals (ps members : Array Expr) (es : Array Expr) : MetaM (Array Expr) := do
   let mut excluded : FVarIdSet := {}
   for p in ps ++ members do
@@ -167,10 +152,8 @@ private def extraLocals (ps members : Array Expr) (es : Array Expr) : MetaM (Arr
 
 mutual
 
-/--
-Intern the nested application at the head of `body`, if there is one, and then
-look through the copy's own fields for further nesting.
--/
+/-- Intern the nested application at the head of `body`, if there is one, then
+look through the copy's own fields for further nesting. -/
 private partial def internNested (root : Name) (members ps : Array Expr) (body : Expr) :
     DenestM Unit := do
   let some (app, vis, info, lvls, params, idxArgs) ← nestedApp? members body | return
@@ -271,30 +254,26 @@ private def withExtras {α : Type} [Inhabited α] (s : AuxSpec) (k : Array Expr 
 
 /-! ## Which copies are worth making
 
-The kernel denests too, and better than this module can: it leaves the
-constructor stated at the type the writer wrote, so `T.mk : List T → T` really
-does have that type and `T.rec` really does get a motive at `List T`.  Making a
-copy here costs all of that, and is worth paying for only where the kernel
-would refuse -- which is the whole reason a block comes this way.
+The kernel denests better than this module can: it leaves the constructor stated
+at the type the writer wrote, so `T.mk : List T → T` really has that type and
+`T.rec` really gets a motive at `List T`.  A copy here costs all of that, and is
+worth making only where the kernel would refuse.
 
-The clearest case where it would not refuse is a nesting that is not recursive
-at all.  `List B` inside a member `A` names `B`, and if `B` names nothing of
-`A`'s then `B` is declared first; by the time `A` is declared `List B` is an
-ordinary closed type, and there is nothing to denest.  Such an occurrence is
-left exactly as written.
+The clearest case where it would not refuse is a nesting that is not recursive.
+`List B` inside a member `A` names `B`, and if `B` names nothing of `A`'s then
+`B` is declared first; by the time `A` is declared, `List B` is an ordinary
+closed type with nothing to denest.  Such an occurrence is left as written.
 
-A genuine nesting -- `Tree S` inside `S` -- is left alone too, as long as the
-kernel would put the type it invents in the same universe as the component it
-is invented for, because a mutual block has only one.  What that costs `lower`
-is that its recursors have to range over more than the members it was handed;
-what it buys is a constructor stated at the type the writer wrote.
+A genuine nesting -- `Tree S` inside `S` -- is also left alone, as long as the
+kernel would put the type it invents in the same universe as the component it is
+invented for, since a mutual block has only one.  The cost to `lower` is that its
+recursors range over more than the members it was handed; the gain is a
+constructor stated at the type the writer wrote.
 -/
 
-/--
-The nodes a strictly-positive position depends on: every member it mentions,
+/-- The nodes a strictly-positive position depends on: every member it mentions,
 and the copy it would become if it is a nested occurrence.  Members are numbered
-as the block numbers them, and the copies follow.
--/
+as the block numbers them, and the copies follow. -/
 private def posDeps (members ps : Array Expr) (specs : Array AuxSpec) (ty : Expr) :
     MetaM (Array Nat) :=
   forallTelescope ty.headBeta fun _ body => do
@@ -324,21 +303,7 @@ inductive SpecDecision where
   | ghost
   deriving Inhabited, DecidableEq
 
-/--
-Is this copy one that could stand in the shadow alone?
-
-What that asks of the copied type is that everything the real world would have
-said about the copy can be said about it instead.  Its recursor has to be the
-recursor of one type rather than of a family, since a ghost is one slot of the
-block and one recursor is what a slot gets; and it must not itself be nested,
-since the kernel's extra recursors for what it denested would then have no
-slot to answer to.  Locals among the copy's parameters rule it out too: those
-are what make a copy differ from the type it copies, and a nesting the kernel
-will not take besides.
-
-The rest of the conditions are about the block rather than about the type, and
-`specDecisions` works them out.
--/
+/-- Is this copy one that could stand in the shadow alone? -/
 private def ghostable (s : AuxSpec) : MetaM Bool := do
   unless s.extras.isEmpty do return false
   let some (.inductInfo info) := (← getEnv).find? s.indName | return false
@@ -348,53 +313,8 @@ private def ghostable (s : AuxSpec) : MetaM Bool := do
   return r.numMotives == 1 && r.numMinors == s.ctors.size
 
 /--
-Decide which of the copies the scan found actually have to be made, and which
-of those the real world can do without.
-
-A copy can be dropped when nothing it names is being declared alongside it: the
-occurrence is then a closed type where it stands, and leaving it alone hands the
-kernel an ordinary field.  Answering that takes the same condensation `analyze`
-computes, run here on the enlarged block the copies would make.
-
-Three things keep a copy:
-
-* a `Prop` anywhere in the enlarged block.  The shadow copies every constructor
-  field verbatim with the members redirected to their shadows, and a redirected
-  `List B` reads `List B._shadow`, which is not even well-typed.
-* locals among the copy's parameters, which the kernel refuses outright.
-* sharing a component with a member of the block whose universe it does not
-  share.  That is a genuine nesting, so the kernel would have to invent a type
-  and declare it alongside the component -- which it can only do at the
-  component's own universe.  Specialising is what lowers a copy's universe
-  below the original's, and where it does, the copy is the only way through.
-
-Keeping spreads along the copies' own dependencies, in both directions.  A copy
-that stands is written into the fields of the copies above it, and a copy that
-is dropped is written into their text, so two that reach each other have to be
-kept or dropped together.
-
-A copy kept for the first of those reasons is kept for the shadow's sake alone,
-and the real world may still be able to do without it -- to write `List B`
-where the shadow writes a member.  Such a copy becomes a *ghost*, which is what
-keeps `Prop` out of the names the writer reads.  Beyond what `ghostable` asks of
-the copied type, three things about the block have to hold, and they depend on
-one another, so they are settled by retracting candidates until nothing more
-gives way:
-
-* a field at a ghost has to be one that can be written out in full.  In a `Prop`
-  member's constructor, which the lowering emits as a definition, anything can
-  be; in a data member's, which is the kernel's, `List B` is a nesting and the
-  kernel has to be able to denest it -- so the two have to share a component and
-  a universe, which is what makes it the nesting the kernel would have taken had
-  no `Prop` forced a copy at all.
-* a ghost's own fields have to be the copied type's, so every copy they mention
-  must in turn stand for what it copies.
-* its component has to have something declared in it, or be itself alone.  The
-  recursion a ghost gets is its component's: the kernel's own, over what it
-  denested, where there is a declared member to have handed it to, and the
-  copied type's where the ghost stands by itself.  Two ghosts that recurse into
-  each other and into nothing else have neither.
--/
+Decide which of the copies the scan found must be made, and which of those the
+real world can do without. -/
 private def specDecisions (inp : Input) (ps : Array Expr) (specs : Array AuxSpec) :
     MetaM (Array SpecDecision) := do
   let members := inp.memberFVars
@@ -488,39 +408,29 @@ original type back into the user's code:
 example (h : Nonempty T) : T := T.mkT (T.nested_Nonempty_1.eq_orig ▸ h)
 ```
 
-Both directions are the copy's recursor against the original's, which is
-possible exactly because the two have the same constructors: `A.cᵢ`'s fields are
-`I.cᵢ`'s with the nested occurrences rewritten, so each direction is one
-recursor call per constructor, and the only question is what to hand the
-constructor on the other side.  A field the rewriting left alone is handed over
-as it stands.  A field at the copy being bridged is handed its induction
-hypothesis, which is that field already on the other side.  A field at *another*
-copy goes through that copy's own bridge -- so a nesting inside a nesting works,
-as long as the inner one does, and the bridges are built innermost first.
+Both directions are the copy's recursor against the original's, which works
+because the two have the same constructors: `A.cᵢ`'s fields are `I.cᵢ`'s with the
+nested occurrences rewritten.  So each direction is one recursor call per
+constructor, and the only question is what to hand the constructor on the other
+side.  A field the rewriting left alone is handed over as it stands.  A field at
+the copy being bridged is handed its induction hypothesis, which is that field
+already on the other side.  A field at *another* copy goes through that copy's
+own bridge, so a nesting inside a nesting works as long as the inner one does;
+the bridges are built innermost first.
 
 `propext` turns the two implications into an equality and is the only axiom the
 equality needs.  It is not needed to *use* the identification: the coercions
 below are the implications themselves, so a term that moves a value between a
 copy and its original depends on no axioms and still reduces.
 
-What is left out is a field that mentions a copy anywhere else: in the domain of
-one of its own binders, or in a nested position.  Nothing can be handed over for
-such a field, so the member simply gets no bridge; the type itself is unaffected
-either way.
+Left out is a field that mentions a copy anywhere else: in the domain of one of
+its own binders, or in a nested position.  Nothing can be handed over for such a
+field, so the member gets no bridge; the type itself is unaffected either way.
 -/
 
 /--
 Can this rewritten constructor type be sent across the bridge, and what does
-that lean on?
-
-A field that mentions no auxiliary member at all can be handed over as it
-stands.  So can one whose own type *is* the member being bridged, however deep
-under a telescope: the recursor supplies a hypothesis for such a field, already
-at the type the other side wants.  A field at a *different* copy can be handed
-over through that copy's own bridge, so the answer names which copies that is.
-Anything else -- a copy in a nested position, or in a binder's domain -- has
-nothing to be handed over as, and the answer is `none`.
--/
+that depend on? -/
 private def fieldsBridgeable (auxFVars : Array Expr) (self : Nat) (cty : Expr) :
     MetaM (Option (Array Nat)) :=
   forallTelescope cty fun fields _ => do
@@ -537,17 +447,7 @@ private def fieldsBridgeable (auxFVars : Array Expr) (self : Nat) (cty : Expr) :
       deps := deps ++ ks.filter (· != self)
     return some deps
 
-/--
-Copy the first `n` binder annotations of `model` onto `e`.
-
-Rewriting a constructor means taking its parameters apart and putting them back,
-and `mkForallFVars` annotates each binder the way its local declaration is
-annotated.  The parameters here come from the type former, where they are
-explicit; in a constructor they are implicit -- or strict-implicit, or instance
--- so what the block was declared with has to be read back off a constructor
-that still has it.  Getting this wrong is not cosmetic: it decides whether
-`P.ghost h` or `P.ghost α h` is the way to write the constructor.
--/
+/-- Copy the first `n` binder annotations of `model` onto `e`. -/
 private def withLeadingBinderInfo : Nat → Expr → Expr → Expr
   | 0, _, e => e
   | n + 1, .forallE _ _ mb mbi, .forallE nm ty b _ =>
@@ -563,13 +463,9 @@ private structure Bridge where
   repl    : Array Expr
   deriving Inhabited
 
-/--
-`I`'s parameters for a given choice of extras.
-
-The substitution has to happen *after* the extras are put back, because
-`Expr.replaceFVars` abstracts and reinstantiates, which would capture the
-extras' own loose bound variables.
--/
+/-- `I`'s parameters for a given choice of extras.  The substitution must happen
+*after* the extras are put back, because `Expr.replaceFVars` abstracts and
+reinstantiates, which would capture the extras' own loose bound variables. -/
 private def Bridge.paramsAt (b : Bridge) (xs : Array Expr) : Array Expr :=
   b.spec.paramsAbs.map fun p => (p.instantiateRev xs).replaceFVars b.members b.repl
 
@@ -579,11 +475,9 @@ reducible alias. -/
 private def Bridge.origAt (b : Bridge) (xs : Array Expr) : Expr :=
   (b.spec.origAbs.instantiateRev xs).replaceFVars b.members b.repl
 
-/--
-Open the copy's index telescope and hand `k` the two sides of the
-identification, along with the binders everything about it is stated over: the
-block's parameters, the extras this copy was taken at, and the indices.
--/
+/-- Open the copy's index telescope and hand `k` the two sides of the
+identification, with the binders everything about it is stated over: the block's
+parameters, the extras this copy was taken at, and the indices. -/
 private def Bridge.withSides {α : Type} [Inhabited α] (b : Bridge) (ownLevels : List Level)
     (ps xs : Array Expr) (k : Array Expr → Expr → Expr → Array Expr → MetaM α) : MetaM α :=
   forallTelescope (b.spec.resType.instantiateRev xs) fun idxs _ =>
@@ -592,20 +486,8 @@ private def Bridge.withSides {α : Type} [Inhabited α] (b : Bridge) (ownLevels 
 
 /--
 The recursor's motives: the original type for each member being bridged, and
-`unit` -- the one-element type in whatever universe the recursor is being run
-at -- for every other member it asks about.  Nothing is asked of those members,
-which is why a `Prop` copy can pull the motive universe all the way down to
-zero.
-
-More than one member can be bridged at once because a nesting over a *mutual*
-family copies every member of it, and each copy's fields reach the others.  Give
-them all real motives and one pass of the recursor takes the whole family
-across; the induction hypothesis for a field at a sibling then arrives already
-on the other side, exactly as for a field at the copy itself.
-
-`mIdxs` says which member each motive is for, since the recursor of a copy that
-lowering could give a one-motive form to asks about only that copy.
--/
+`unit` -- the one-element type in whatever universe the recursor runs at -- for
+every other member it asks about. -/
 private def bridgeMotives (bridgeFor : Nat → Option Bridge) (unit : Expr) (mIdxs : Array Nat)
     (mtypes : Array Expr) : MetaM (Array Expr) := do
   let mut vals : Array Expr := #[]
@@ -623,37 +505,12 @@ private def bridgeMotives (bridgeFor : Nat → Option Bridge) (unit : Expr) (mId
     vals := vals.push v
   return vals
 
-/--
-The coercion out of an auxiliary member and into the type it copies.
-
-Its presence is what marks a member as identified with its original, and its
-type is where `Mumi.Bridge` reads that original back from, so the name is
-declared once rather than written out on both sides.  Keying the display off a
-declaration denesting adds anyway -- rather than off the equality, whose name a
-user might reasonably pick for something of their own -- is what keeps it from
-changing how unrelated types print.
--/
+/-- The coercion out of an auxiliary member and into the type it copies. -/
 def origCoeName (aux : Name) : Name := aux ++ `coeToOrig
 
 /--
 Register a coercion from one side of the identification to the other, given `f`
-taking the one to the other.
-
-The equality alone would still leave the copy's name to be written out at every
-use.  The pair of coercions is what removes it: one lets the original be passed
-to a constructor that asks for the copy, the other lets a field bound by a
-pattern match be used as the original.
-
-`f` is one half of the `Iff` the equality was built from rather than a `cast`
-along the equality, so a coerced term neither depends on `propext` nor gets
-stuck on it.
-
-Like any coercion, one is inserted only where the type it has to reach is
-known; a consumer whose own type argument is still a metavariable needs the
-field ascribed, and the ascription names the original rather than the copy.
-`⟨...⟩` reads the expected type instead of being coerced afterwards, and is
-handled separately in `Mumi.Bridge`.
--/
+taking the one to the other. -/
 private def coeDecl (binders : Array Expr) (src tgt f : Expr) : MetaM (Expr × Expr) := do
   let type  ← mkForallFVars binders (← mkAppM ``CoeOut #[src, tgt])
   let value ← mkLambdaFVars binders (← mkAppM ``CoeOut.mk #[f])
@@ -675,12 +532,7 @@ private def numForalls : Expr → Nat
 
 /--
 The types the copy's constructor gives its fields, with the fields being handed
-to it put in their place.
-
-Going backwards, nothing in the original's own fields says that one of them
-stands for a copy; only the copy's constructor knows, so its telescope is walked
-alongside.
--/
+to it put in their place. -/
 private def copyFieldTypes (cty : Expr) (flds : Array Expr) : Array Expr := Id.run do
   let mut out : Array Expr := #[]
   let mut e := cty
@@ -690,21 +542,7 @@ private def copyFieldTypes (cty : Expr) (flds : Array Expr) : Array Expr := Id.r
     e := b.instantiate1 f
   return out
 
-/--
-Send one field through another copy's bridge, if that is what it needs.
-
-`ct` is the field's type on the copy's side, which is the side a copy shows up
-on in either direction: going forwards it is the field's own type, going
-backwards it is the type the copy's constructor wants.  When its head is a copy
-with a bridge of its own, that bridge is what carries the field over -- pointwise,
-under whatever binders an infinitary field takes.  Anything else already has the
-type the other side wants and is handed over as it stands.
-
-`over` is consulted before the environment is, and answers with a *term* to cross
-by rather than a name.  That is what lets a group of copies that reach each other
-be crossed by functions which do not exist yet: the companions of a mutual family
-are built against variables standing for one another, and only then tied together.
--/
+/-- Send one field through another copy's bridge, if that is what it needs. -/
 private def crossField (f ct : Expr) (dir : Name) (lvls : List Level) (copies : Array Name)
     (over : Name → Option Expr) : MetaM Expr := do
   forallBoundedTelescope (← inferType f) (some (numForalls ct)) fun ys _ => do
@@ -718,20 +556,7 @@ private def crossField (f ct : Expr) (dir : Name) (lvls : List Level) (copies : 
         pure (.const (k ++ dir) lvls)
     mkLambdaFVars ys (mkApp (mkAppN fn concl.getAppArgs) (mkAppN f ys))
 
-/--
-Which induction hypothesis, if any, each field of a minor premise has.
-
-A minor premise binds the constructor's fields and then one hypothesis per
-recursive field, and each hypothesis says which field it belongs to: its type
-ends in the motive applied to that field.  Reading the pairing off that way is
-the only reliable way to get it.  Counting fields whose head is the type being
-recursed on does not do: a field can be at that very type without being a
-recursive occurrence, as the field of `Nonempty (Nonempty α)` is.
-
-This has to happen before the motives are instantiated, since instantiating them
-is exactly what throws away the field a hypothesis names.  `mvs` are the motives
-as they are still bound; a binder is a hypothesis when its type ends in one.
--/
+/-- Which induction hypothesis, if any, each field of a minor premise has. -/
 private def minorPairing (mvs : Array Expr) (cty : Expr) : MetaM (Option (Array (Option Nat))) :=
   forallTelescope cty fun bs _ => do
     let mut ihFor : Array (Option Nat) := #[]
@@ -752,13 +577,7 @@ private def minorPairing (mvs : Array Expr) (cty : Expr) : MetaM (Option (Array 
 
 /--
 A recursor's minor premises: the type of each, and for each the field its
-induction hypotheses are about.
-
-The pairing has to be read while the motives are still bound, because
-instantiating them is exactly what throws away which motive a hypothesis was
-at.  The types have to be read after.  Two readings of one telescope that must
-stay in step, so they are taken together.
--/
+induction hypotheses are about. -/
 private def minorsOf (what : MessageData) (recTy : Expr) (motives : Array Expr)
     (numMinors : Nat) : MetaM (Array Expr × Array (Option (Array (Option Nat)))) := do
   let types ← forallBoundedTelescope (← instantiateForall recTy motives) (some numMinors)
@@ -770,24 +589,7 @@ private def minorsOf (what : MessageData) (recTy : Expr) (motives : Array Expr)
       cvs.mapM fun c => do minorPairing mvs (← inferType c)
   return (types, pairings)
 
-/--
-The arguments to give the constructor on the other side of the bridge.
-
-A field at one of the members being bridged is handed over as its induction
-hypothesis, which is already the value on the other side -- and for an
-infinitary field is that function pointwise.  That covers the copy itself and,
-when a whole mutual family is crossed at once, its siblings: they all have real
-motives, so they all have usable hypotheses.  A field at a copy *outside* the
-group goes through that copy's own bridge.  Anything else stands as it is,
-including a field at a different member of the block, which is the same type on
-both sides even though the recursor made a hypothesis for it too.
-
-Which of those a field is, is decided by its type on the *copy's* side, `selves`
-being the names of the copies this recursor pass settles: that is the one side
-where the distinction is written down, and it reads the same going either way.
-`over` carries a field at a copy outside that set but still being built, whose
-direction is a variable until the group is put in.
--/
+/-- The arguments to give the constructor on the other side of the bridge. -/
 private def bridgeArgs (flds ihs copyTys : Array Expr) (ihFor : Array (Option Nat))
     (selves : Array Name) (dir : Name) (lvls : List Level) (copies : Array Name)
     (over : Name → Option Expr) : MetaM (Option (Array Expr)) := do
@@ -806,28 +608,7 @@ private def bridgeArgs (flds ihs copyTys : Array Expr) (ihFor : Array (Option Na
 
 /--
 Write one direction of a data bridge a second time, out of `casesOn` and a
-recursive call, so that it can actually run.
-
-The direction itself is a recursor application, and the code generator compiles
-no recursor application at all; it does compile a `casesOn`, and it does compile
-recursion inside an `unsafe` definition.  So the same function is built again in
-a shape the compiler will take, and attached to the real one with
-`@[implemented_by]`.  Nothing is trusted here: the safe definition is what the
-kernel checked and what every proof sees, and a direction whose companion does
-not go through simply stays `noncomputable`.
-
-`casesOn` binds its parameters, then the motive, then the indices and the term
-being taken apart, then one minor premise per constructor.  Each minor binds
-`nLead` arguments the target constructor does not share -- the extras a copy
-carries -- and then the fields; a field at `self` becomes a recursive call,
-pointwise under whatever binders an infinitary one takes, and `rc` says at which
-arguments.  A field at another copy crosses the same way it does in the checked
-definition, through that copy's own direction, which has a companion of its own
-and so runs; `copyTysOf` gives the copy's side of each field.  When that other
-copy is a sibling in the same mutual family, `over` answers with the variable
-standing for its companion instead, and the two end up genuinely mutually
-recursive.
--/
+recursive call, so that it can run. -/
 private def implDirection (casesName : Name) (csLevels : List Level) (pre : Array Expr)
     (motive : Expr) (idxArgs : Array Expr) (srcTy : Expr) (nCtors nLead : Nat)
     (self : Name) (dir : Name) (lvls : List Level) (copies : Array Name)
@@ -865,22 +646,7 @@ private def implDirection (casesName : Name) (csLevels : List Level) (pre : Arra
 
 /--
 Add the directions of a group of data bridges, with compiled companions if they
-can be built.  A companion has to be in place before its direction is handed to
-the code generator, which is why the two are added together.
-
-`mkImpls` is handed one *variable* per direction, standing for every recursive
-call the companions may make -- their own and each other's -- and gives back one
-body per direction, closed but for those variables.  That is what lets the
-companions be checked here rather than left to the kernel: once they are in the
-environment their recursion is real, and a bad one would be reported at the
-declaration the writer wrote rather than caught.  It is also what lets the
-copies of a mutual family call one another, since the variables become names
-only after every body is in hand, and the bodies then go in as a single block.
-
-Companions are all-or-nothing, since a mutual block is: if any body cannot be
-built or the block does not compile, every direction in the group stays
-`noncomputable` and the environment is put back as it was.
--/
+can be built. -/
 private def addDirections (levelParams : List Name) (ds : Array (Name × Expr × Expr))
     (mkImpls : Array Expr → MetaM (Option (Array Expr))) : MetaM Unit := do
   let decls := ds.map fun (name, type, value) =>
@@ -916,8 +682,8 @@ private def addDirections (levelParams : List Name) (ds : Array (Name × Expr ×
   for d in decls do compileDecl d (logErrors := false)
 
 /-- What one member's way back needs: the original's recursor read at this
-member's parameters, with a motive for every copy one pass of it can settle and
-`unit` for anything else it quantifies over. -/
+member's parameters, with a motive for every copy one pass can settle and `unit`
+for anything else it quantifies over. -/
 private structure BwdData where
   levels  : List Level
   params  : Array Expr
@@ -954,46 +720,14 @@ private structure DirData where
 /--
 Identify each `A ps xs idxs` in a group with the `I params idxs` it copies, and
 make the identification usable without naming `A`, by registering a coercion in
-each direction.
-
-Two copies are equal to their originals to different degrees.  A `Prop` copy has
-the same elements *and* the same proof irrelevance, so the two types are equal
-outright, and that goes in as `A.eq_orig`; the forward coercion doubles as the
-marker `Mumi.Bridge` reads to display `A` as the type it copies.  A data copy is
-only isomorphic -- its constructors are genuinely different constants -- so all
-there is to say is the pair of maps, and they go in under their own names,
-`A.toOrig` and `A.ofOrig`.  Either way the coercions are what let the copy's
-name stay out of the way at the use site.
-
-A whole `group` is bridged at once, because nesting over a *mutual* family
-copies every member of it and the copies reach each other: `Rose`'s copy has a
-field at `Forest`'s and the other way about, so neither can be crossed before
-the other.  Giving every copy in the family a real motive settles both at once,
-and one pass of the recursor carries the family across.  A family of one is the
-ordinary case and takes the same road.
-
-Which copies one pass settles is not the same question as which family a type
-belongs to, so it is read off the recursor: a motive is matched to a copy by the
-whole application it quantifies over.  That is what lets a nesting over a type
-which is *itself* nested work.  `RL α`, defined through `List (RL α)`, copies
-both, and its recursor has a motive at each even though `List` is no relation of
-it; `List`'s own recursor, meanwhile, reaches only the one.  A member whose
-recursor falls short crosses the shortfall on its sibling's direction instead,
-which is why the members are built against variables standing for one another
-and only then put in, in an order in which each one's definition already exists.
-A member that cannot be built at all costs the others nothing.
-
-Nothing here can make the block worse: it runs after the block has been
-declared, and reads only what is already in the environment.
--/
+each direction. -/
 private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array Name))
     (memberNames : Array Name) (group : Array (Nat × Bridge)) : TermElabM Unit := do
   let some (_, b0) := group[0]? | return
   let s0 := b0.spec
   let ownLevels := inp.levelParams.map Level.param
   -- The copies in a group all come of one nesting, so they share the locals
-  -- abstracted out of it and the universes it was written at.  They need not be
-  -- one family, and need not even be of one type constructor.
+  -- abstracted out of it and the universes it was written at
   unless group.all (fun (_, b) => b.spec.extras == s0.extras && b.spec.levels == s0.levels) do
     throwError "the copies in this group were not taken at one nesting"
   let selves := group.map fun (_, b) => b.spec.name
@@ -1011,9 +745,7 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
       unless (← sortOf b.spec).normalize.isZero == isProp do
         throwError "the group has a `Prop` copy and a data copy in it"
     -- the recursor's motive universe is the one level it does not share with
-    -- the block.  A `Prop` copy asks only for a proposition, so it goes to
-    -- zero; a data copy asks for the type it copies, and its recursor has to
-    -- eliminate that far
+    -- the block
     let mlvl := if isProp then Level.zero else lvl
     let unit    := if isProp then .const ``True [] else .const ``PUnit [mlvl]
     let unitVal := if isProp then .const ``True.intro [] else .const ``PUnit.unit [mlvl]
@@ -1023,9 +755,7 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
       b.withSides ownLevels ps xs fun _ lhs rhs bs => do
         return (← mkForallFVars bs (← mkArrow lhs rhs), ← mkForallFVars bs (← mkArrow rhs lhs))
     -- Which copy a motive of a recursor is for is read off the application it
-    -- quantifies over.  A mutual family's recursor has a motive at each member;
-    -- the recursor of a type that is itself nested has one at the type it nests
-    -- through, which is no member of its family at all.
+    -- quantifies over
     let copyOfDomain (dty : Expr) : MetaM (Option (Nat × Bridge)) := do
       let some hd := dty.getAppFn.constName? | return none
       let some (.inductInfo hi) := (← getEnv).find? hd | return none
@@ -1047,8 +777,7 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
     let overF := posIn selves fvs
     let overB := posIn selves bvs
     -- Backward: the original's recursor, rebuilding each constructor as the
-    -- copy's.  A motive with no copy behind it -- a family member this nesting
-    -- never reached -- goes to `unit`, as do its cases.
+    -- copy's
     let bwdDataFor (b : Bridge) : MetaM BwdData := do
       let s := b.spec
       let bparams := b.paramsAt xs
@@ -1110,11 +839,8 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
             let n := (← getConstInfoCtor kctors[q]!).numFields
             let flds := bs.extract 0 n
             let some ihFor := opairings[idx]! | return none
-            -- The copy's own constructor is what says which of the original's
-            -- fields stands for a copy, and at which arguments.  It need not be a
-            -- kernel constructor: lowering leaves the user-visible ones as
-            -- definitions over the shadow block it built, so only the type can be
-            -- asked for.
+            -- the copy's own constructor says which of the original's fields
+            -- stands for a copy, and at which arguments
             let ci ← getConstInfo ctorNames[jk]![q]!
             let cct ← instantiateForall
               (ci.type.instantiateLevelParams ci.levelParams ownLevels) (ps ++ xs)
@@ -1126,10 +852,10 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
           ominors := ominors.push mnr
       return { levels := bLevels, params := bparams, motives := omotives, minors := ominors,
                selfMot := omotives[k0]!, numPs := (← getConstInfoInduct s.indName).numParams }
-    -- Forward: each copy's recursor, one case per constructor it asks about.
-    -- That is every member of the lowered block -- unless lowering managed to
-    -- give this copy a recursor over fewer, in which case only those get a
-    -- hypothesis and the rest of the group is crossed.
+    -- forward: each copy's recursor, one case per constructor it asks about,
+    -- which is every member of the lowered block unless lowering gave this copy
+    -- a recursor over fewer -- then only those get a hypothesis and the rest of
+    -- the group is crossed
     let mut built : Array DirData := #[]
     for gp in *...group.size do
       let (jm, b) := group[gp]!
@@ -1141,12 +867,9 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
           if inp.levelParams.contains p then .param p else mlvl
         let recTy ← instantiateForall
           (recInfo.type.instantiateLevelParams recInfo.levelParams recLevels) ps
-        -- Which motive is whose is read off what it quantifies over, since a
-        -- native recursor's motives run over its own block and then over whatever
-        -- the kernel denested, and only their domains tell those apart.  The
-        -- block-wide recursor the lowering builds needs no guessing -- it has one
-        -- motive per member, in member order -- and must not be guessed at: a
-        -- ghost's motive is at the type it stands for, which names no member.
+        -- which motive is whose is read off what it quantifies over: a native
+        -- recursor's motives run over its own block and then over whatever the
+        -- kernel denested, and only their domains tell those apart
         let mIdxs ←
           if recInfo matches .recInfo _ then
             forallBoundedTelescope recTy (some ctorNames.size) fun mvs _ => do
@@ -1210,10 +933,8 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
           return { gpos := gp, member := jm, typeFwd, typeBwd,
                    valueFwd := ← mkLambdaFVars bs fwdE, valueBwd := ← mkLambdaFVars bs bwdE,
                    eq?, motiveJ := motives[mIdxs.idxOf jm]!, bwd }
-        -- Check before adding: `addDecl` reports a bad declaration rather than
-        -- refusing it, and a bridge must never be able to say anything.  A
-        -- variable standing in for a sibling has exactly the type the constant
-        -- replacing it will have, so what is checked here is what goes in.
+        -- check before adding: `addDecl` reports a bad declaration rather than
+        -- refusing it, and a bridge must never be able to say anything
         let checked (what : String) (type value : Expr) : MetaM Unit := do
           check value
           unless ← isDefEq (← inferType value) type do
@@ -1224,10 +945,8 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
         built := built.push d
       catch e =>
         trace[Mumi] "no bridge from `{b.spec.name}` to `{b.spec.indName}`: {e.toMessageData}"
-    -- A definition can only name one already in the environment, so those that
-    -- crossed on a sibling go in after it.  A cycle would need them defined
-    -- simultaneously, which no recursor can do, so a member left in one is
-    -- dropped -- as is one waiting on a sibling that could not be built.
+    -- a definition can only name one already in the environment, so those that
+    -- crossed on a sibling go in after it
     let ids := (fvs ++ bvs).map (·.fvarId!)
     let needs := built.map fun d =>
       (Array.range group.size).filter fun j =>
@@ -1270,12 +989,10 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
           addDecl (.thmDecl
             { name := names[k]! ++ `eq_orig, levelParams := inp.levelParams, type, value })
     else
-      -- Each direction is a recursor application, which the code generator
-      -- cannot take, so each is given a compiled companion; if that does not go
-      -- through the definition stays `noncomputable`, and the error at the use
-      -- site then names `toOrig` rather than a recursor the writer never
-      -- mentioned.  The group's companions in one direction go in together,
-      -- since a family that reaches itself needs them mutually recursive.
+      -- each direction is a recursor application, which the code generator
+      -- cannot take, so each gets a compiled companion; if that fails the
+      -- definition stays `noncomputable`, and the error at the use site names
+      -- `toOrig` rather than a recursor the writer never mentioned
       let csLevels? (n : Name) : MetaM (Option (List Level)) := do
         let some ci := (← getEnv).find? n | return none
         return some (ci.levelParams.map fun p =>
@@ -1325,10 +1042,7 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
             (ps ++ xs ++ concl.getAppArgs.extract d.bwd.numPs concl.getAppArgs.size))
           (fun q _ args =>
             mkAppN (.const ctorNames[d.member]![q]! ownLevels) (ps ++ xs ++ args))
-    -- The coercions name the two directions, so they come last.  For a `Prop`
-    -- copy those are the two halves of the `Iff` rather than a `cast` along the
-    -- equality: `propext` is what makes the two *types* equal, and nothing that
-    -- merely moves a value between them should depend on it.
+    -- the coercions name the two directions, so they come last
     for k in *...ok.size do
       let d := ok[k]!
       let s := group[d.gpos]!.2.spec
@@ -1340,15 +1054,7 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
 
 /--
 Add one member per distinct nested application, rewrite the constructors to
-refer to those members instead, and run `k` on the result.
-
-A block with no nested occurrence is passed to `k` unchanged, so this is safe to
-run on every block.
-
-This is written in continuation-passing style because the new members are free
-variables, and a free variable is only meaningful inside the scope that declares
-it.
--/
+refer to those members instead, and run `k` on the result. -/
 def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α) : TermElabM α := do
   if inp.memberTypes.isEmpty then return (← k inp)
   let members := inp.memberFVars
@@ -1391,11 +1097,10 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       let mut bridgeDeps  : Array (Option (Array Nat)) := #[]
       let mut memberGhost : Array (Option GhostInfo) :=
         Array.replicate inp.memberNames.size none
-      -- A ghost's free variable stands for the type it copies, so a field at
+      -- a ghost's free variable stands for the type it copies, so a field at
       -- one is an ordinary field of that type and needs no bridge; taking it
-      -- for a copy would leave the copies above it waiting for a bridge that is
-      -- never built.  What the block itself is handed keeps the free variable:
-      -- the ghost is still a member there, and `lower` substitutes.
+      -- for a copy would leave the copies above it waiting for a bridge never
+      -- built
       let ghostFVars := (Array.range specs.size).filterMap fun j =>
         if isGhost[j]! then some auxFVars[j]! else none
       let ghostVals ← (Array.range specs.size).filterMapM fun j =>
@@ -1458,14 +1163,10 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
       let ownLevels := inp.levelParams.map Level.param
       let vars := ps.extract 0 inp.numVars
       let repl := inp.memberNames.map fun n => mkAppN (.const n ownLevels) vars
-      -- Copies that reach each other cannot be crossed one at a time: nesting
-      -- over a mutual family copies every member of it, and `Rose`'s copy has a
-      -- field at `Forest`'s exactly as `Forest`'s has one at `Rose`'s, so
-      -- neither bridge can be built before the other.  Those go together, and
-      -- the groups are precisely the cycles of the dependency graph.  Being of
-      -- one family is not enough on its own: two members of a `mutual` block
-      -- that do not actually reach each other are still bridged one at a time,
-      -- and the second then crosses its field on the first's bridge.
+      -- copies that reach each other cannot be crossed one at a time: nesting
+      -- over a mutual family copies every member, and `Rose`'s copy has a field
+      -- at `Forest`'s just as `Forest`'s has one at `Rose`'s, so neither bridge
+      -- can be built first
       let n := specs.size
       let mut reach : Array (Array Bool) := Array.replicate n (Array.replicate n false)
       for j in *...n do
@@ -1489,12 +1190,8 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
             gid := gid.set! k g
             mem := mem.push k
         groups := groups.push mem
-      -- A group that leans on another group's bridges only has them if that one
-      -- does, and has to be built after it.  Which comes first is not decided by
-      -- the order they were interned in -- two occurrences of the same nesting
-      -- share one member, so `List (List T)` finds its inner copy already
-      -- there -- so the order is worked out here instead.  Nesting is well
-      -- founded, so taking whichever group is ready next always finishes.
+      -- a group that leans on another group's bridges only has them if that one
+      -- does, and must be built after it
       let mut built : Array Bool := Array.replicate specs.size false
       let mut done  : Array Bool := Array.replicate groups.size false
       let mut progress := true
@@ -1519,8 +1216,8 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
           catch e =>
             let s := specs[groups[g]![0]!]!
             trace[Mumi] "no bridge from `{s.name}` to `{s.indName}`: {e.toMessageData}"
-          -- what the copies that lean on these need is the pair of directions,
-          -- so whether they can go ahead is exactly whether it is there -- not
+          -- the copies that lean on these need the pair of directions, so what
+          -- decides whether they can go ahead is whether it is there, not
           -- whether `mkBridges` was asked to build it
           for j in groups[g]! do
             if (← getEnv).contains (specs[j]!.name ++ `toOrig) then

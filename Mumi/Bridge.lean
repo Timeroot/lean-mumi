@@ -13,54 +13,33 @@ public meta import Lean.PrettyPrinter.Delaborator.Basic
 public meta import Lean.PrettyPrinter.Delaborator.Builtins
 
 /-!
-# Presenting an auxiliary member as the type it copies
+# Displaying an auxiliary member as the type it copies
 
-Denesting replaces a nested occurrence with a *copy* of the type that was
-nested, so the constructor the user wrote as taking a `Nonempty T` takes a
-`T.nested_Nonempty_1` instead.  That copy is an implementation detail, and this
-module is what keeps it from leaking.
+Denesting replaces a nested occurrence by a *copy* of the nested type: a
+constructor written as taking `Nonempty T` takes a `T.nested_Nonempty_1`.  The
+copy is an implementation detail, and this module hides it.
 
-Not every nesting needs one.  The kernel denests an occurrence of its own
-accord when the head is data, and `Mumi.Lowering` lets it: the widened block
-goes to `addDecl` with the occurrence still written as `Tree S`, and what comes
-back is a constructor at `Tree S` and an extra recursor for the type the kernel
-introduced.  Nothing there is a copy, so nothing there needs hiding.  What
-brings this module into play is a nesting the kernel will not take -- a head in
-`Prop`, above a member in `Type`.
+Most nestings need no copy.  When the head is data the kernel denests the
+occurrence itself, and `Mumi.Lowering` lets it, so no copy exists.  A copy is
+needed only for a nesting the kernel rejects: a head in `Prop` under a member in
+`Type`.  There it is unavoidable, since `T.mkT : Nonempty T → T` is exactly the
+declaration the kernel refuses.
 
-For those the copy cannot be avoided.  A nested inductive whose denesting is
-universe-heterogeneous is exactly the declaration the kernel refuses, so
-`T.mkT : Nonempty T → T` can never be a kernel constructor here: the field's
-type has to be something other than `Nonempty T`, or there is nothing to
-declare.  What *can* be arranged is that nobody has to write the copy's name or
-read it, and `Mumi.Denest` arranges most of it.  It proves the copy equal to the
-original and registers a coercion each way, so the original type can be passed
-to the constructor and a field bound by a pattern match can be used as the
-original; the delaborator below then displays the copy as the original, so
-signatures, goals and error messages read the way the declaration was written.
-Between them, `#check @T.mkT`, `#print T`, `@T.rec`, a `match`, and the equation
-lemmas of a function defined by one all read `Nonempty T`.
+What can be arranged is that no one writes or reads the copy's name.
+`Mumi.Denest` proves the copy equal to the original and registers a coercion in
+each direction; the delaborator below displays the copy as the original.
+Together these make `#check @T.mkT`, `#print T`, `@T.rec`, a `match`, and the
+equation lemmas of a function defined by one all read `Nonempty T`.  Anonymous
+constructor notation bypasses coercions, because it reads the expected type
+before elaborating, so `elabAnonymousCtorNested` handles it here.
 
-One notation escapes the coercions and so is handled here too: `⟨...⟩` reads the
-expected type rather than being elaborated and then adjusted, so it has to be
-sent to the original itself.
+Only a member carrying the equality is displayed this way.  A data copy is
+isomorphic to its original but not equal to it, so it keeps its own name;
+`Mumi.IndInd` instead defines its constructors and recursor over the original
+directly, using the isomorphism.
 
-Only a member carrying that coercion is displayed this way.  A copy that is
-merely *isomorphic* to what it copies -- a data member -- keeps its own name,
-which is the honest thing to show.  There are few of those left: a data copy
-arises only where the kernel could not have denested -- a nesting a universe
-below the member it sits in, or one with locals among its parameters -- and
-where the lowering cannot make it a ghost either, which additionally takes a
-copy of a mutual family or of a type that is itself nested.
-`Mumi.IndInd` deals with those
-copies the other way round: rather than displaying one as its original, it
-defines the constructors and recursor over the originals outright, out of the
-isomorphism, so there is nothing left for a delaborator to hide.
-
-`set_option mumi.pp.nested false` turns the display off, which is what to reach
-for when a mismatch between a copy and its original has to be seen.  It is off
-under `pp.explicit` anyway, so the one error where the difference matters
-exposes itself.
+`set_option mumi.pp.nested false` disables the display.  `pp.explicit` disables
+it too, so an error about a copy/original mismatch shows the difference.
 -/
 
 public section
@@ -69,22 +48,18 @@ namespace Lean.Elab.MultiuniverseInductive
 
 open Lean Meta
 
-/--
-The type that `n lvls args` is a copy of, if it is an auxiliary member that has
-been identified with one, and is applied to all of its parameters and indices.
--/
+/-- The type `n lvls args` copies, if `n` is an auxiliary member identified with
+one and is applied to all its parameters and indices. -/
 meta def origType? (n : Name) (lvls : List Level) (args : Array Expr) :
     MetaM (Option Expr) := do
-  -- only an *equality* licenses showing one type as the other.  A data copy
-  -- carries the same pair of coercions but is merely isomorphic to what it
-  -- copies, and displaying it as the original would make two distinct types
-  -- print the same
+  -- only an equality licenses the display: a data copy has the same coercions
+  -- but is merely isomorphic, so showing it as the original would print two
+  -- distinct types the same way
   unless (← getEnv).contains (n ++ `eq_orig) do return none
   let some ci := (← getEnv).find? (origCoeName n) | return none
   forallTelescope ci.type fun ys body => do
     -- a partially applied copy has no original to show: the original's
-    -- parameters may mention any of the binders, so there is nothing to
-    -- abstract over
+    -- parameters may mention any binder, so there is nothing to abstract over
     unless ys.size == args.size do return none
     let .app (.app (.const ``CoeOut _) src) tgt := body | return none
     unless src.getAppFn.constName? == some n && src.getAppArgs == ys do return none
@@ -93,18 +68,8 @@ meta def origType? (n : Name) (lvls : List Level) (args : Array Expr) :
 
 open Elab Term in
 /--
-Elaborate `⟨...⟩` at an identified auxiliary member as if it had been written at
-the type that member copies.
-
-A coercion cannot help here: `⟨...⟩` reads the expected type rather than being
-elaborated and then adjusted, and what it reads is the copy, whose constructors
-belong to the shadow block the lowering built.  So `T.mkT ⟨T.mk1⟩` would
-otherwise ask for a `T._shadow` -- a name from two translations down, for a
-field whose type reads `Nonempty T`.
-
-Anything else is left to Lean: an unknown expected type, a type that is not a
-copy, or a copy with no original recorded all fall through untouched.
--/
+Elaborate `⟨...⟩` at an identified auxiliary member as if written at the type
+that member copies. -/
 @[term_elab Lean.Parser.Term.anonymousCtor]
 meta def elabAnonymousCtorNested : TermElab := fun stx expectedType? => do
   unless mumi.enabled.get (← getOptions) do throwUnsupportedSyntax
@@ -117,26 +82,17 @@ meta def elabAnonymousCtorNested : TermElab := fun stx expectedType? => do
   ensureHasType expectedType (← elabTerm stx orig)
 
 open PrettyPrinter Delaborator SubExpr in
-/--
-Display an identified auxiliary member as the type it copies.
-
-Registered for `const` as well as `app` because a copy with no parameters or
-indices of its own -- the common case -- is a bare constant.
--/
+/-- Display an identified auxiliary member as the type it copies. -/
 @[delab app, delab const]
 meta def delabNestedAux : Delab := withIncRecDepth do
   unless mumi.pp.nested.get (← getOptions) do failure
-  -- `pp.explicit` asks for the term as it is, and a mismatch between a copy and
-  -- its original is exactly where that matters: `addPPExplicitToExposeDiff`
-  -- turns it on when the two sides of a type error print the same, so standing
-  -- aside here is what keeps such an error from reading `expected Nonempty T,
-  -- got Nonempty T`
+  -- `pp.explicit` asks for the term as it is
   if ← getPPOption getPPExplicit then failure
   let e ← getExpr
   let .const n lvls := e.getAppFn | failure
   let some orig ← origType? n lvls e.getAppArgs | failure
   -- the position stays that of the whole application, so the replacement is one
-  -- clickable unit rather than one with misattributed children
+  -- clickable unit with no misattributed children
   annotateCurPos (← withTheReader SubExpr ({ · with expr := orig }) delab)
 
 end Lean.Elab.MultiuniverseInductive

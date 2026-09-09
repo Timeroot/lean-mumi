@@ -30,20 +30,19 @@ inductive Fresh : String → Ctx → Prop where
 end
 ```
 
-`Fresh`'s arity mentions `Ctx`.  This is a different obstruction from the one
-`Mumi.Lowering` lifts.  Universe heterogeneity is a *check* on an elaborated
-block; here the block does not elaborate at all, because Lean elaborates every
+`Fresh`'s arity mentions `Ctx`.  This obstruction differs from the one
+`Mumi.Lowering` lifts: universe heterogeneity is a *check* on an elaborated
+block, whereas here the block does not elaborate at all.  Lean elaborates every
 member's arity before any member is in scope, so `Ctx` in `Fresh`'s arity is an
-unknown identifier.  Collapsing the block to one universe does not help.
+unknown identifier.
 
 ## The narrow class
 
-We handle the case where the block is **narrow**: every field of a data
-constructor whose type mentions a `Prop` member is itself a proof.  Then those
-fields can be *erased*.  A data member's arity may mention the block as well, and
-where it does the index is *deleted* -- see "What is allowed" below.  The example
-above needs no deletion, its induction-induction running only through `Fresh`, so
-erasing the proofs leaves an ordinary, non-induction-inductive block:
+This module handles **narrow** blocks: every field of a data constructor whose
+type mentions a `Prop` member is itself a proof, and so can be *erased*.  A data
+member's arity may also mention the block; where it does, the index is *deleted*
+(see "What is allowed").  The example needs no deletion, so erasing the proofs
+leaves an ordinary block:
 
 ```lean
 inductive Ctx._pre : Type where
@@ -67,15 +66,12 @@ def Ctx   := { Γ : Ctx._pre // Ctx._wf Γ }
 def Fresh (x : String) (Γ : Ctx) : Prop := Fresh._pre x Γ.val
 ```
 
-Being a function is what makes the encoding cheap: `Ctx._wf (.snoc Γ x)` *is*
-`Ctx._wf Γ ∧ Fresh._pre x Γ`, definitionally, so "inversion" is `And.left` and
-`And.right` and no inversion lemmas have to be generated.  One conjunct per
-recursive field (the sub-term is well formed) and one per erased field (the
-proof it carried).
-
-The constructors are then definitions rather than constructors, and the
-recursor is written by structural recursion on the pre-type with the
-well-formedness proof threaded through:
+Being a function makes the encoding cheap: `Ctx._wf (.snoc Γ x)` is definitionally
+`Ctx._wf Γ ∧ Fresh._pre x Γ`, so inversion is `And.left` and `And.right`.  There
+is one conjunct per recursive field (the sub-term is well formed) and one per
+erased field (the proof it carried).  The constructors are then definitions, and
+the recursor is structural recursion on the pre-type with the well-formedness
+proof threaded through:
 
 ```lean
 def Ctx.recAux {C : Ctx → Sort u} (nil : C Ctx.nil)
@@ -88,118 +84,78 @@ def Ctx.rec {C : Ctx → Sort u} .. (Γ : Ctx) : C Γ :=
   Ctx.recAux nil snoc Γ.val Γ.property
 ```
 
-Both iota rules hold by `rfl`, and the encoding adds no axioms.  That rests on
-the same two things the heterogeneous lowering rests on: definitional proof
-irrelevance, which collapses the `_wf` proofs, and definitional eta for
-structures, which gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.
+Both iota rules hold by `rfl`, and the encoding adds no axioms.  It rests on the
+two facts the heterogeneous lowering rests on: definitional proof irrelevance,
+which collapses the `_wf` proofs, and definitional eta for structures, which
+gives `⟨Γ.val, Γ.property⟩ ≡ Γ`.  `recAux` is structural recursion rather than a
+`Ctx._pre.rec` application for the reason given in `Mumi.Lowering`: the code
+generator compiles no recursor application.
 
-`recAux` is written by structural recursion rather than as a `Ctx._pre.rec`
-application for the reason spelled out in `Mumi.Lowering`: the code generator
-compiles no recursor application, so the direct term would be `noncomputable`
-and so would everything downstream.  Lean's own `Structural.structuralRecursion`
-does the work; if it cannot see that the definition terminates, that is an
-error at the point of the block rather than a silent fallback.
-
-A `Prop` member's recursor needs none of that machinery, because `Fresh` *is*
-`Fresh._pre` at the `.val`s of its indices.  What is wrong with `Fresh._pre.rec`
-is only the world its motive and minors are stated in, so it is run at the
-transported motive `fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h` -- a statement about every way
-of making `Γ₀` well-formed -- and the result applied to the major premise's own
-indices, where `⟨Γ.val, Γ.property⟩ ≡ Γ` again closes it.  A minor that was
-handed a data field in the pre-world has to put it back at its subtype, and the
-proof for that is read off the conclusion's `_wf`: being a conjunction over the
-constructor's recursive and erased fields, it contains the well-formedness of
-everything the constructor was built from.  See `addPropRecs`.
+A `Prop` member's recursor needs none of that, since `Fresh` *is* `Fresh._pre` at
+the `.val`s of its indices.  Only the world `Fresh._pre.rec`'s motive and minors
+are stated in is wrong, so it is run at the transported motive
+`fun Γ₀ h => ∀ w, C ⟨Γ₀, w⟩ h` and applied to the major premise's own indices,
+where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it.  See `addPropRecs`.
 
 ## What is allowed
 
-* Any number of data members and any number of `Prop` members, and they need
-  not share a universe.  The data members become one mutual pre-block, which the
-  kernel's same-universe rule applies to -- so the pre-block is emitted through
-  `Mumi.Lowering`, whose whole job is lifting that rule.  The two passes compose
-  in that order and are independent: erasure never looks at a universe, and the
-  lowering never sees an arity that mentions the block.  See `emitPreData`.
-
-  What the composition cannot buy is the rules underneath the one being lifted.
-  Data members that recurse into *one another* still have to agree, since an
-  edge puts one universe at or below the other and a cycle makes them equal; and
-  a field still has to fit inside the member it is a field of.
-* Parameters, shared by the whole block as `mutual` already requires, and
-  auto-bound implicits.
-* Universe parameters, declared or auto-bound, shared by the whole block as
-  Lean's own `mutual` requires.  A *data* member may not sit at a bare `Sort u`,
-  though: it is encoded as a wrapper around its pre-type, which lands in `Sort (max 1 u)`,
-  which is `Sort u` again only when `u` is visibly non-zero.
-* A member may leave its resulting type out -- `inductive Tree where` -- and it
-  is read as `Type`.  Lean would put a metavariable there and solve it from the
-  fields, but a metavariable cannot go into the scratch axiom that puts the
-  member in scope for its siblings, and the guess would be baked into their
-  fields before it was known (`List Tree` picks up `List.{0}`).  So the guess is
-  fixed, and a block it is too small for is rejected with the type to write.
-* Members named under one another -- `TreeNested.WF` beside `TreeNested`.  A
-  member's constructors are known by name, so nothing has to be read off a
-  prefix.
-* Indices on any member, a *data* member's included -- `Ty : Ctx → Type` beside
-  `Ctx`, and `Tm : (Γ : Ctx) → Ty Γ → Type` beside both.  An index of a data
-  member that mentions the block is *deleted*: the pre-world has no `Ctx` to
-  state `Ty` at, so `Ty._pre` carries no index and the well-formedness puts a
-  `Ctx._pre` back.  To be stateable at all such an index has to be a data
-  member's own type applied outright, what is left of it once the deletion has
-  run must name no other index, and an index that *stays* may mention none that
-  goes.  See `checkDropped`.
-* A constructor of such a member either gives a deleted index as a field of its
-  own or *builds* it, out of its fields and the block's data constructors, and
-  the well-formedness carries an equation saying in the pre-world what was built.
-  It may build more than one, build one out of another, and give one field as
-  several of them; a field standing at an index that reads one the constructor
-  built is kept and its index built out of it, which is the same thing said
-  twice.  See `Block.transportBuilt`, which is what carries an alternative from
-  the constructor's reading of all this to the recursion's.
+* Any number of data and `Prop` members, in any universes.  The data members
+  become one mutual pre-block, emitted through `Mumi.Lowering` so that the
+  kernel's same-universe rule is lifted (see `emitPreData`).  The two passes are
+  independent: erasure never inspects a universe, and the lowering never sees an
+  arity that mentions the block.  Rules underneath the lifted one still apply:
+  data members that recurse into *one another* must agree on their universe, and
+  a field must fit inside its member.
+* Parameters and auto-bound implicits, shared by the whole block.
+* Universe parameters, declared or auto-bound, shared by the whole block.  A
+  *data* member may not sit at a bare `Sort u`: its wrapper lands in
+  `Sort (max 1 u)`, which is `Sort u` only for visibly non-zero `u`.
+* A member may omit its resulting type -- `inductive Tree where` -- and it is read
+  as `Type`.  A metavariable cannot go into the scratch axiom.  A block the guess
+  is too small for is rejected with the type to write.
+* Members named under one another -- `TreeNested.WF` beside `TreeNested`.
+  Constructors are known by name, so nothing is read off a prefix.
+* Indices on any member, a *data* member included -- `Ty : Ctx → Type` beside
+  `Ctx`, and `Tm : (Γ : Ctx) → Ty Γ → Type` beside both.  An index of a data member
+  that mentions the block is *deleted*: `Ty._pre` carries no index and the
+  well-formedness puts a `Ctx._pre` back.  Such an index must be a data member's
+  own type applied outright, what remains after deletion must name no other index,
+  and an index that *stays* may mention none that goes.  See `checkDropped`.
+* A constructor of such a member either takes a deleted index as a field or
+  *builds* it from its fields and the block's constructors, in which case the
+  well-formedness carries an equation stating what was built.  It may build
+  several, build one out of another, and supply one field as several.  See
+  `Block.transportBuilt`.
 * Recursive fields may be indexed and infinitary -- `(f : (n : Nat) → Vec n)` --
-  provided the binders `ys` mention no member of the block.  `(f : Ctx → Ctx)`
-  is out, and not because of positivity: a pre-world `Ctx._pre` cannot be turned
-  back into a `Ctx` without its well-formedness proof, so there is nothing to
-  hand `f`.
-* A member that takes no part in the erasure *leaves the block* instead of going
-  through it, and is declared as the ordinary inductive it already is once the
-  members it is stated over are there.  Two kinds qualify, for opposite reasons:
-  a proposition nothing else in the block is stated with, which the erasure has
-  nothing to offer, and a data member nothing else in the block reaches, which
-  has nothing to offer the erasure.  See `markPeeled`.
+  provided the binders `ys` mention no member of the block.  `(f : Ctx → Ctx)` is
+  rejected, not for positivity but because a `Ctx._pre` cannot become a `Ctx`
+  without its well-formedness proof, leaving nothing to pass `f`.
+* A member that takes no part in the erasure *leaves the block* and is declared as
+  the ordinary inductive it already is.  Two kinds qualify, for opposite reasons:
+  a proposition nothing else in the block is stated with, and a data member
+  nothing else in the block reaches.  See `markPeeled`.
 
-  The second kind is settled by a fixpoint rather than by one pass, because a
-  member the block still reaches may be reached only by another member that is
-  itself leaving.  `Sub.ext` reads a `Tm`, so `Tm` cannot go while `Sub` is
-  there; `Sub` goes, and then `Tm` can follow.  Members leave until no more can,
-  subject to what stays being induction-inductive still -- otherwise there is no
-  recursor of ours left to widen -- and to what leaves not being
-  induction-inductive among itself, since that is handed to the kernel as it
-  stands.
+  The second kind needs a fixpoint, a member the block still reaches being
+  possibly reached only by another that is itself leaving: `Sub.ext` reads a `Tm`,
+  so `Tm` cannot go while `Sub` is there, but can once `Sub` has gone.  Members
+  leave until no more can, subject to two conditions: what stays must still be
+  induction-inductive, or no recursor of ours is left to widen, and what leaves
+  must not be induction-inductive among itself.
 
-  What a member gains by leaving is everything an inductive has and an encoded
-  member does not -- `match` above all, and with it the equation compiler,
-  `noConfusion`, `injection` and `contradiction`.  What the block loses is
-  nothing: `widenWithPeeled` puts the departed member's motive back into every
-  recursor, so `Ctx.rec` over a block one of whose members left is the same
-  recursion, motive for motive, as it would have been.  That is what Lean itself
-  does for a `mutual` block that is not really mutual, and a member that can be
-  lifted out is exactly that case.
-
-  A *data* member that leaves is declared one name over, as `X._ind`, and the
-  writer's name is given to a definition unfolding to it -- see `peelIndName` --
-  because the kernel writes `X.rec` for whatever it is handed as an inductive
-  `X`, and `X.rec` is wanted for the block's recursion.  Its constructors are
-  declared under the writer's names all the same, since nothing requires a
-  constructor to sit in its own type's namespace, and `X._ind.c` is aliased to
-  `X.c` so that dot-notation resolves against either head.
+  A member that leaves gains `match`, and with it the equation compiler,
+  `noConfusion`, `injection` and `contradiction`.  The block loses nothing:
+  `widenWithPeeled` puts the departed motive back into every recursor.  A *data*
+  member that leaves is declared as `X._ind`, with the writer's name a definition
+  unfolding to it (see `peelIndName`), the kernel writing `X.rec` for whatever it
+  is handed as an inductive `X`.  Its constructors keep the writer's names, and
+  `X._ind.c` is aliased to `X.c` so dot-notation resolves against either head.
 
 ## Nested inductives that denest to this
 
-Nobody writes an induction-inductive block by accident, but Lean will build one
-for you.  A *nested* inductive is denested by specialising the nesting type
-constructor to the block, and if the type being specialised is itself a family
-indexed by another type being specialised, the enlarged block is
-induction-inductive.  The smallest interesting case is a tree that is
+Lean builds induction-inductive blocks on its own.  A *nested* inductive is
+denested by specialising the nesting type constructor to the block, and if that
+type is itself a family indexed by another type being specialised, the enlarged
+block is induction-inductive.  The smallest such case is a tree that is
 well-formed by construction and stores itself:
 
 ```lean
@@ -217,8 +173,8 @@ inductive RecWFTree where
 ```
 
 Copying `WFTree` at `RecWFTree` drags in `Tree`, and copying `Tree` drags in
-`Tree.WF` and `Tree.WFWith`, whose arities are indexed by the copy of `Tree`.
-So the block Lean would have to check is the five-member block
+`Tree.WF` and `Tree.WFWith`, whose arities are indexed by the copy of `Tree`, so
+Lean must check a five-member block:
 
 ```lean
 mutual
@@ -230,104 +186,77 @@ inductive RecWFTree.nested_WFWith_4 : RecWFTree.nested_Tree_2 → List Nat → P
 end
 ```
 
-and that is exactly a narrow-class induction-inductive block: only the `Prop`
-members' arities mention the block.  `denestRaw` builds it, `prepareCore`
-lowers it, and `Mumi.Declaration` reaches this path only after Lean itself and
-the heterogeneous retry have both failed.
+which is a narrow-class induction-inductive block: only the `Prop` members'
+arities mention the block.  `denestRaw` builds it and `prepareCore` lowers it,
+and `Mumi.Declaration` reaches this path only after Lean itself and the
+heterogeneous retry have both failed.  `Mumi.Denest` does the same job for the
+blocks `Mumi.Lowering` takes, but is not reusable here: it rewrites an `Input`
+over member *free variables* and only at the head of an application, whereas here
+the members are constants and a copied constructor can appear in an *index*.
 
-`Mumi.Denest` does the same job for the blocks `Mumi.Lowering` takes, but it
-cannot be reused: it rewrites an `Input` over member *free variables*, and only
-at the head of an application, whereas here the members are constants and a
-copied constructor can turn up in an *index* -- `nested_WFWith_4.empty` has
-`nested_Tree_2.empty` as its first index -- so the rewrite has to be
-structural.  Both differences are small and both are load-bearing.
-
-Two shapes are worth naming because they cost the copies more than an extra
-constructor.  A nesting type that is itself part of a `mutual` family is copied
-with the whole family, since a copy of one member alone would still mention the
-others.  And a nesting whose parameters mention a *field* of the constructor it
-sits in -- `OkFam LocalsII n` for a field `n` -- stands for a whole family of
-originals, so its copy gains `n` as an index and every one of the copy's
-constructors takes it as a leading field.  Both survive the erasure: the copy is
-a member like any other by the time `prepareCore` sees it, and neither its
-family nor its extra index is anything the erasure has to know about.
+Two shapes cost the copies more than an extra constructor.  A nesting type that
+is part of a `mutual` family is copied with the whole family.  A nesting whose
+parameters mention a *field* of the constructor it sits in -- `OkFam LocalsII n`
+for a field `n` -- gains `n` as an index of the copy, and every constructor of
+the copy takes it as a leading field.  Both survive the erasure: by the time
+`prepareCore` sees it the copy is a member like any other.
 
 ## What this does not do
 
 * Section `variable`s.
 * An erased field's type may not mention a *data* member as a constant.
-  `(h : Fresh x Γ)` is fine -- `Fresh x Γ` unfolds to `Fresh._pre x Γ.val`, so
-  erasing it is definitionally invisible -- but `(h : Γ = Γ')` is not: `Γ = Γ'`
-  and `Γ.val = Γ'.val` are different propositions, and the encoding would have
-  to transport between them.
+  `(h : Fresh x Γ)` is fine, `Fresh x Γ` unfolding to `Fresh._pre x Γ.val`, so
+  erasing it is definitionally invisible; `(h : Γ = Γ')` is not, since `Γ = Γ'`
+  and `Γ.val = Γ'.val` are different propositions and the encoding would have to
+  transport between them.
 * A data constructor's field mentioning a `Prop` member must be a proof; that is
   the "narrow" in narrow class.
-* The constructors of a data member that *stayed* in the block are `def`s, so
-  `match` on them does not work and there is no `noConfusion` at the name one
-  would reach for.  (A member that left is a real inductive and has both; this
-  bullet is about the ones the erasure carried.)  What they do
-  have is `inj` and a `@[simp] injEq`, stated as the ones a real inductive's
-  constructors get -- at a field at a denested copy too, where what the equation
-  reduces to is the copy's `ofOrig` of each side and it is that copy's own
-  `ofOrig_inj` that reads it back.  Two *different* constructors are told apart
-  by a simproc rather than by a theorem, so `simp` settles those too --
-  `contradiction` and `injection` do not, since what they reach for is the
-  `noConfusion` of whatever the member unfolds to, which is the wrapper's.  Reason with
-  `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`; a
-  bare `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into
-  the goal.  A recursor with a *single* motive is registered as the `induction`
-  tactic's default for its member, so a bare `induction` does work on those --
-  but a block whose members recurse into each other has a motive apiece, and
-  those stay `using`-only, as a mutual block's do in vanilla Lean.
-* A bare `cases` on a `Prop` member works only where the motive does not depend
-  on the indices, and otherwise fails ("dependent elimination failed"), because
-  what it reaches for is `Fresh._pre`'s `casesOn`, stated over the pre-type.
-  `Fresh.rec` itself is derived and is stated over the originals, so
-  `induction x, Γ, h using Fresh.rec with | nil .. | snoc ..` is the way in; its
-  indices are listed as targets, as they would be for any indexed family.
-* A `Prop` member that joins the recursion over the whole block is eliminated
-  into `Prop`, even where its own recursor would have gone into any sort.  Its
-  hypothesis rides in a bundle beside a data member's, and what a bundle holds
-  its `Prop` half in is a conjunction.  A subsingleton judgement therefore
-  trades large elimination for the other half of the recursion -- the one that
-  lets a data function be declared with the proposition's motive on it.
+* The constructors of a data member that *stayed* are `def`s, so `match` does not
+  work on them and there is no `noConfusion` under the expected name.  (A member
+  that left is a real inductive and has both.)  They do have `inj` and a
+  `@[simp] injEq`, and a simproc distinguishes two *different* constructors;
+  `contradiction` and `injection` reach for the `noConfusion` of what the member
+  unfolds to, which is the wrapper's.  Reason with
+  `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`; a bare
+  `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into the goal.
+  A recursor with a *single* motive is registered as the `induction` tactic's
+  default; a block whose members recurse into each other has one motive per member
+  and stays `using`-only, as in vanilla Lean.
+* A bare `cases` on a `Prop` member works only where the motive does not depend on
+  the indices; otherwise it fails with "dependent elimination failed", reaching for
+  `Fresh._pre`'s `casesOn`.  Use
+  `induction x, Γ, h using Fresh.rec with | nil .. | snoc ..`, listing the indices
+  as targets.
+* A `Prop` member that joins the recursion over the whole block eliminates into
+  `Prop` only, even where its own recursor would eliminate into any sort: its
+  hypothesis rides in a bundle beside a data member's, and a bundle holds its
+  `Prop` half in a conjunction.  A subsingleton judgement therefore trades large
+  elimination for the other half of the recursion.
 * A block that both names a `Prop` member at a deleted index -- `Wf.base :
   (Γ : Ctx) → Ok Γ → Wf Γ (Ty.base Γ)`, where `Ty.base` deleted the `Γ` -- and
   deletes an index built out of a constructor -- `Ty.pi : (Γ : Ctx) → (A : Ty Γ)
-  → Ty (Γ.snoc A) → Ty Γ`.  What a deleted index arrives under settles both, and
-  the two want opposite things of it: the first wants the whole bundle, so that
-  the proposition about that index is there to state a hypothesis with, and the
-  second wants the motive's value alone, which is the only half that can be
-  rebuilt out of a minor.  Either on its own goes through, and both are tried.
-* Two copies that need each other -- an original nested inside another
-  original -- have no order to build the bridge in.  That is reported rather
-  than worked around, and the bridge is dropped as a whole, as it is whenever
-  any step of it fails: the plain names are then the raw declarations,
-  `RecWFTree.mk` reads `RecWFTree.nested_WFTree_1 → RecWFTree` again, and the
-  block is exactly what it was before the bridge was attempted.
-* A *data* member leaves the block only where the block holds no propositions.
-  A recursor over a block that has them bundles each `Prop` motive with the value
-  the data recursion returned at the index it is stated over, and neither the
-  order the motives come in nor a hypothesis at a proof field survives being
-  restated from outside, so a data member's leaving would cost the block that
-  shape.  It leaves only where what stays is still induction-inductive, too:
-  otherwise Lean is handed the remainder as ordinary declarations, and a
-  recursor the kernel wrote is not ours to widen.
-* A data member that left prints as `X._ind` in the types of its own
-  constructors, and there only -- `Tm.lam : .. → Tm._ind (Γ.snoc A) B → Tm._ind Γ
-  (Ty.pi Γ A B)`.  An inductive's own occurrences in its constructor types are
-  the one thing the kernel will not let a definition stand in for.  The
-  recursors, the eliminators `induction` and `cases` reach for, and the goals
-  they leave all read `Tm`.
+  → Ty (Γ.snoc A) → Ty Γ`.  Both turn on what a deleted index arrives under, and
+  they need opposite things: the first the whole bundle, to state a hypothesis
+  with, the second the motive's value alone, the only half a minor can rebuild.
+  Either alone succeeds, and both are tried.
+* Two copies that need each other, an original nested inside another original,
+  have no order to build the bridge in.  This is reported and the bridge dropped
+  as a whole, as whenever any step of it fails.
+* A *data* member leaves the block only where the block holds no propositions, a
+  bundled `Prop` motive surviving neither the motive order nor a hypothesis at a
+  proof field when restated from outside; and only where what stays is still
+  induction-inductive.
+* A data member that left prints as `X._ind` in the types of its own constructors
+  and nowhere else -- `Tm.lam : .. → Tm._ind (Γ.snoc A) B → Tm._ind Γ
+  (Ty.pi Γ A B)` -- constructor types being the one place the kernel will not
+  accept a definition standing in for the inductive.  The recursors, the
+  eliminators `induction` and `cases` reach for, and the goals they leave all
+  read `Tm`.
 * A recursor over a data member that left is a recursor application, which the
-  code generator compiles none of, so it is published beside an `unsafe`
-  companion written out of `casesOn` and a self-call and wired up with
-  `setImplementedBy`.  Nothing is trusted by this: the definition the kernel
-  checked is the one every proof reads, and a companion that does not go through
-  leaves it `noncomputable`, which is what it would have been anyway.  A group of
-  data members that left *together*, being genuinely mutual with one another,
-  gets no companion -- the kernel recursor it would be written out of has a
-  motive apiece -- so its recursor is `noncomputable`.
+  code generator does not compile, so it is published beside an `unsafe` companion
+  written out of `casesOn` and a self-call and wired up with `setImplementedBy`.
+  A group of data members that left *together* is genuinely mutual, so the kernel
+  recursor has one motive per member; such a group gets no companion.
 -/
 
 public section
@@ -352,49 +281,23 @@ def wfName (n : Name) : Name := n ++ `_wf
 
 /--
 `X._sub args`, the one-constructor inductive pairing a pre-value with its
-well-formedness proof. This is what a data member unfolds to.
-
-`Subtype` would say the same thing, and used to. But structural recursion looks
-at what the argument's type whnfs to and asks whether *that* head has a
-`.brecOn`; `Subtype` has none and can never be given one, since the recursion is
-on `X._wf`, not on the pair. So the pair gets its own head per member, which can
-carry its own `below`/`brecOn` and let the equation compiler through.
--/
+well-formedness proof; a data member unfolds to this. -/
 def subName (n : Name) : Name := n ++ `_sub
 
-/--
-The wrapper `ty` is one of, if it is one at all: its head and the arguments it
-carries.  Everything that used to ask whether a type had reduced to a `Subtype`
-asks this instead, there being a head per member now rather than one head.
--/
+/-- The `_sub` wrapper `ty` is, if it is one: its head, levels and arguments. -/
 def subOf? (ty : Expr) : Option (Name × List Level × Array Expr) :=
   match ty.getAppFn with
   | .const n@(.str _ "_sub") us => some (n, us, ty.getAppArgs)
   | _ => none
 
 /--
-`X._ind`, the inductive a member that left the block is really declared as, in
-the case where `X` itself has to stay a definition.
-
-The kernel writes `X.rec` for whatever it is handed as an inductive named `X`,
-and that is the one name a member of a `mutual` block cannot give up: what the
-writer expects to find there is a recursion over the whole block, motives and
-all.  So the type goes one name over and `X` becomes a definition that unfolds
-to it.  See step 11 of `emit`.
--/
+`X._ind`, the inductive a peeled member is declared as when `X` itself must stay
+a definition, `X.rec` being owed to the whole block.  See step 11 of `emit`. -/
 def peelIndName (n : Name) : Name := n ++ `_ind
 
 /--
-The recursor of the data pre-block that ranges over *all* of it, which is what
-`X._wf` recurses with.
-
-When the pre-block goes in as one mutual inductive that is the kernel's own
-`X._pre.rec`.  When its members disagree about their universe it goes in through
-`Mumi.Lowering` instead, which splits it into one ordinary block per component
-and offers the whole-block recursor under `mutualRec` -- so that is the name to
-reach for.  The two differ in how many motive universes they take, which
-`widenPreRecLevels` settles.
--/
+The recursor over *all* of the data pre-block, which `X._wf` recurses with:
+`X._pre.rec` for one mutual inductive, `mutualRec` for a lowered one. -/
 def preDataRecName (heterogeneous : Bool) (n : Name) : Name :=
   preName n ++ (if heterogeneous then `mutualRec else `rec)
 
@@ -409,16 +312,8 @@ inductive FieldKind where
   /-- A proof mentioning a `Prop` member; dropped, and remembered by `_wf`. -/
   | erased
   /--
-  A value of the member `mem` that is also the resulting type's index at position
-  `pos`; dropped, and given back as an argument of `_wf`.
-
-  Two things are dropped when data is indexed by data, and this is the second of
-  them.  The index goes from the *arity*, because the pre-types are one mutual
-  inductive and no member of one may appear in another's arity; the field that
-  was that index goes with it, because there is nothing left for it to index.
-  Both come back from `_wf`, an erased proof out of its conjuncts and a deleted
-  index out of its arguments.
-  -/
+  A value of the member `mem` that is also the resulting type's index at
+  position `pos`; dropped, and given back as an argument of `_wf`. -/
   | deleted (mem : Nat) (pos : Nat)
   deriving Inhabited, DecidableEq, Repr
 
@@ -438,27 +333,11 @@ structure MemberSpec where
   level  : Level
   /--
   Which of the member's indices the pre-type drops, counting from the first one
-  after the parameters: exactly those whose type mentions the block.
-
-  Empty unless the block indexes data by something of the block: by data, which
-  puts a member of the erased pre-block into another's arity, or by one of the
-  propositions, whose pre-types are declared after the data pre-block and so are
-  not there to be named either.  A `Prop` member's indices are never dropped --
-  the propositions become a *second* pre-block, declared after the data one, so
-  their arities may name it freely.
-  -/
+  after the parameters: those whose type mentions the block. -/
   dropped : Array Nat := #[]
   /--
-  Which of the deleted indices a recursion hands a hypothesis about: those at a
-  *data* member's type, in the same numbering as `dropped` and a subset of it.
-
-  A deleted index is not in the pre-term the recursion runs on, so a hypothesis
-  about it could not have been computed and is handed in instead.  One at a
-  proposition gets none: the recursion is over the data, and a proof is no more
-  something to recurse at than a field of a type outside the block -- just as a
-  proposition of a later layer gets no hypothesis about a field of an earlier
-  one.
-  -/
+  Which of the deleted indices a recursion is handed a hypothesis about: those at
+  a *data* member's type, in the same numbering as `dropped`. -/
   dropIhs : Array Nat := #[]
   ctors  : Array CtorSpec
   deriving Inhabited
@@ -469,33 +348,13 @@ structure Block where
   numParams : Nat
   /--
   The universe parameters, shared by every declaration the lowering makes.  A
-  member that does not mention one still carries it, exactly as Lean's own
-  mutual inductives do, so that one list of levels serves the whole block.
-  -/
+  member that does not mention one still carries it. -/
   us : List Name := []
   /--
-  The name a constructor is really emitted under.
-
-  A constructor whose type mentions a denesting copy comes out under a hidden
-  name, and only gets the one that was written when the bridge at the end gives
-  it back.  So anything built before then that has to *name* a constructor has
-  to ask for the hidden one -- the plain name does not exist yet, and when it
-  does it will take the original where this one takes the copy.  The identity is
-  the right answer everywhere the block was not denested.
-  -/
+  The name a constructor is emitted under; the identity where the block was not
+  denested. -/
   rawCtor : Name → Name := id
-  /--
-  The name a member is really emitted under.
-
-  The same story as `Block.rawCtor`, one level up.  A `Prop` member whose *arity*
-  runs over a denesting copy -- `Ok : List Ctx → Prop`, where the block nests at
-  `List Ctx` -- cannot be given the writer's name until the bridge is there to
-  say what the written arity means, so it too comes out hidden and the bridge
-  composes it with `ofOrig` under the plain name.  Only propositions: a data
-  member indexed by a copy is a block denesting turns down outright, since the
-  index would have to travel out and back and no transport of a nesting is the
-  identity.
-  -/
+  /-- The name a member is emitted under; as `Block.rawCtor`, one level up. -/
   rawMember : Name → Name := id
   deriving Inhabited
 
@@ -511,14 +370,8 @@ def Block.toRaw (b : Block) (e : Expr) : Expr :=
     | _ => none
 
 /--
-The name a constructor was written under, given the one it is emitted as.
-
-The inverse of `Block.rawCtor`, and the identity on everything that is not a
-renamed constructor.  Every question the block answers about a name -- what its
-pre-world counterpart is, which fields it keeps, whether it belongs to the block
-at all -- is asked of the written name, so a name that arrives raw comes back
-through here first.
--/
+The name a constructor was written under, given the one it is emitted as: the
+inverse of `Block.rawCtor`, and the identity on anything else. -/
 def Block.unRaw (b : Block) (n : Name) : Name := Id.run do
   for m in b.members do
     for c in m.ctors do
@@ -526,16 +379,8 @@ def Block.unRaw (b : Block) (n : Name) : Name := Id.run do
   return n
 
 /--
-A constructor's type at the block's parameters, named the way the block is really
-emitted.
-
-The written type is what the block was declared with, and a constructor that
-*builds* one of its own indices names another constructor there: `U.mk (v : List
-T) : U (.node v)` has `T.node` in it.  With a denesting copy in the block that
-name is not the one `T.node` is emitted under, and everything the recursors are
-built out of is built before the bridge at the end gives it back.  So the type
-is read here rather than off the spec, and the recursors name what exists.
--/
+A constructor's type at the block's parameters, named the way the block is
+emitted. -/
 def Block.ctorType (b : Block) (c : CtorSpec) (ps : Array Expr) : MetaM Expr :=
   return b.toRaw (← instantiateForall c.type ps)
 
@@ -546,13 +391,8 @@ def Block.lvls (b : Block) : List Level := b.us.map Level.param
 def Block.cst (b : Block) (n : Name) : Expr := mkConst n b.lvls
 
 /--
-Member `i` as a constant, named the way it is really emitted.
-
-Anything stated in the raw world -- where the copies are the types -- has to
-reach a member by this and not by the name the writer wrote, for the same reason
-`Block.toRaw` exists.  The two agree except at a `Prop` member the bridge is
-going to restate.
--/
+Member `i` as a constant, named the way it is emitted.  This agrees with the
+written name except at a `Prop` member the bridge will restate. -/
 def Block.memberCst (b : Block) (i : Nat) : Expr :=
   b.cst (b.rawMember b.members[i]!.name)
 
@@ -575,8 +415,7 @@ def Block.propIdxs (b : Block) : Array Nat :=
 /-- The index of the member named `n`. -/
 def Block.memberIdx? (b : Block) (n : Name) : Option Nat :=
   -- either name will do: a type read out of a raw declaration spells a renamed
-  -- member the way it was emitted, and everything asked about it -- what its
-  -- pre-type is, which arguments it keeps -- is the same question either way
+  -- member the way it was emitted, and both names answer the same questions
   b.members.findIdx? fun m => m.name == n || b.rawMember m.name == n
 
 /-- The index of the member whose *pre-type* is named `n`. -/
@@ -585,10 +424,7 @@ def Block.preIdx? (b : Block) (n : Name) : Option Nat :=
 
 /--
 Where the minor premise for the constructor `n` sits in a recursor over the
-members `idxs`: their constructors, in order, flattened.  Out of range if `n` is
-not a constructor of one of them, which is a caller's mistake and reads better
-as a panic at the minor than as a silently wrong one.
--/
+members `idxs`: their constructors, in order, flattened. -/
 def Block.minorIdx (b : Block) (idxs : Array Nat) (n : Name) : Nat := Id.run do
   let n := b.unRaw n
   let mut acc := 0
@@ -623,22 +459,8 @@ def recPositions (kinds : Array FieldKind) : Array Nat := Id.run do
   return out
 
 /--
-The member a minor premise's induction hypothesis about this field is stated
-at, and `none` for a field there is no hypothesis about.
-
-A recursive field gets one because the recursion has just run at it.  A
-*deleted* one gets the very same hypothesis for the opposite reason: it is an
-index, so the alternative binds the index and not the field, and the recursion
-was handed a hypothesis about it on the way in rather than computing one.  Which
-of the two produced it is the recursion's business; the minor sees a hypothesis
-about every field whose type is a member of the block either way, and that is
-what the eliminator of an inductive-inductive definition is supposed to give.
-
-So this is deliberately not `recPositions`, which stays the narrower question of
-which fields the recursion calls itself at.  Anything reading the minor's
-telescope wants this one, and the two answers differ exactly on the blocks the
-erasure deletes an index of.
--/
+The member a minor premise's induction hypothesis about this field is stated at,
+and `none` for a field with no hypothesis. -/
 def FieldKind.ihTarget? : FieldKind → Option Nat
   | .recur m | .deleted m _ => some m
   | _ => none
@@ -656,12 +478,7 @@ def ihPositions (kinds : Array FieldKind) : Array Nat := Id.run do
 
 /--
 The field the constructor deleted along with the index at position `pos`, if the
-index was a field at all.
-
-`none` means the constructor *builds* that index -- `Tm.lam` ends in
-`Tm Γ (Ty.pi Γ A B)`, whose second index is no field of it -- and then the
-erasure has an equation to state rather than a field to drop.
--/
+index was a field. -/
 def deletedField? (kinds : Array FieldKind) (pos : Nat) : Option Nat := Id.run do
   for k in *...kinds.size do
     if let .deleted _ p := kinds[k]! then
@@ -669,14 +486,8 @@ def deletedField? (kinds : Array FieldKind) (pos : Nat) : Option Nat := Id.run d
   return none
 
 /--
-`FieldKind.ihTarget?` with the propositions taken out: the member a minor
-premise's hypothesis about this field is stated at, and `none` where there is
-none.
-
-A deleted index at one of the block's propositions is the difference.  It is
-still a field the pre-constructor drops, but the recursion has no hypothesis to
-hand about it -- see `MemberSpec.dropIhs` -- so the minor is given none either.
--/
+`FieldKind.ihTarget?` with the propositions removed; the recursion has no
+hypothesis to pass about those.  See `MemberSpec.dropIhs`. -/
 def Block.ihTarget? (b : Block) (k : FieldKind) : Option Nat :=
   match k.ihTarget? with
   | some m => if b.members[m]!.isProp then none else some m
@@ -707,9 +518,8 @@ def Block.ihDrops (b : Block) (i : Nat) (dels : Array Expr) : Array Expr :=
   (b.ihSlots i).map (dels[·]!)
 
 /-- Whether the deleted index at arity position `p` of member `i` is one of the
-block's propositions, which is the same question as whether it goes without a
-hypothesis; see `MemberSpec.dropIhs`.  Asked only of positions that really are
-deleted, since every other one answers `true` for want of an entry. -/
+block's propositions, equivalently whether it goes without a hypothesis.  Ask
+only of positions that are deleted: any other answers `true`. -/
 def Block.dropAtProp (b : Block) (i p : Nat) : Bool :=
   !b.members[i]!.dropIhs.contains p
 
@@ -755,11 +565,9 @@ def Block.keptOf (b : Block) (n : Name) : Option (Array Nat) := Id.run do
   return none
 
 /--
-The block's own view of an expression, rewritten to the pre-world: members and
-their constructors are re-rooted, and whatever the pre-world drops goes with
-them -- a member's deleted indices, and a data constructor's erased and deleted
-arguments.
--/
+`e` rewritten to the pre-world: members and their constructors are re-rooted, and
+what the pre-world drops goes with them -- a member's deleted indices, a data
+constructor's erased and deleted arguments. -/
 partial def Block.tr (b : Block) (e : Expr) : Expr :=
   match e with
   | .const n us => .const (b.preOf n) us
@@ -783,15 +591,8 @@ partial def Block.tr (b : Block) (e : Expr) : Expr :=
   | _ => e
 
 /--
-Whether `n` is a member of the block, or a constructor of one, among those
-members `keep` selects.
-
-The test is by exact name, not by prefix: a member may perfectly well be
-declared *under* another member's name -- `TreeNested` beside `TreeNested.WF` --
-and then a prefix test would read every mention of the predicate as a mention of
-the tree.  Nothing else of the block exists yet to be mentioned, since the whole
-of it is in scope only as the scratch axioms this list names.
--/
+Whether `n` is a member of the block, or a constructor of one, among the members
+`keep` selects. -/
 def Block.named (b : Block) (keep : MemberSpec → Bool) (n : Name) : Bool :=
   let n := b.unRaw n
   b.members.any fun m => keep m && (n == m.name || m.ctors.any (·.name == n))
@@ -809,19 +610,8 @@ def Block.mentionsProp (b : Block) (e : Expr) : Bool :=
   e.getUsedConstants.any (b.named (·.isProp))
 
 /--
-Put the block's own constants at one shared list of levels.
-
-Each member is stubbed as an `axiom` over every universe name in scope, so a
-reference to it elaborates to `Ctx.{?u, ?v}` with one metavariable per name and
-only those the reference actually constrains are assigned.  But the block is
-uniformly polymorphic in its parameters, so the right level list is always the
-same one -- which also disposes of the metavariables nothing constrained.
-
-`lvls` being empty is not a reason to skip this.  A block that uses no universe
-parameters written under a `universe u v w` the rest of the file needs is still
-stubbed over `u`, `v` and `w`, and every reference to a member still comes back
-carrying three metavariables that nothing will ever assign.
--/
+Put the block's own constants at one shared list of levels, disposing of the
+unassigned metavariables a scratch axiom's reference carries. -/
 def normLevels (names : Array Name) (lvls : List Level) (e : Expr) : Expr :=
   e.replace fun s =>
     match s with
@@ -831,33 +621,10 @@ def normLevels (names : Array Name) (lvls : List Level) (e : Expr) : Expr :=
 /-! ## Members applied to their indices
 
 The data member `X` at indices `args` is the subtype of `X._pre args` cut out by
-`X._wf args`.  Everything that crosses between the two worlds goes through these
-five, so they are the only place the shape of the encoding is written down.
+`X._wf args`.  Everything crossing between the two worlds goes through these
+five.  `args` are always the pre-world's. -/
 
-`args` are always the pre-world's: `Block.valArgs` is what puts them that way,
-and it is called once, where the member is defined.  Below that they only ever
-travel, so there is no second place to remember the difference. -/
-
-/--
-The pre-types of the indices the member `i` dropped, at the parameters `ps`,
-each as a function of the indices the pre-type kept.
-
-`X._wf` takes these back as arguments, and a motive over `X._pre` has to end in
-them, so they are read once from the arity and used in both places.  A dropped
-index's pre-type may name the kept ones -- a context carrying its own length
-makes `Ty : (n : Nat) → Ctx n → Type` delete a `Ctx n`, whose pre-reading is
-still `Ctx._pre n` -- and the readers do not agree about what binder `n` is, so
-what comes back is abstracted over the kept indices and every reader says which
-ones it means.  `Block.dropTysAt` is that, and is what everyone actually calls.
-
-A dropped index's pre-type may equally name a dropped index *before* it, and
-then the array is a telescope: `Tm : (Γ : Ctx) → Ok Γ → Type` drops both of its
-indices, and the second is stated at the first.  So each entry is abstracted
-over the earlier dropped indices as well, and stays a function of them after
-`Block.dropTysAt` has said which kept ones it means.  `withDropTele` and
-`mkDropForall` are for readers that want them as binders; a reader that has
-their values applies each entry to the ones before it.
--/
+/-- The pre-types of the indices member `i` dropped, at parameters `ps`. -/
 def Block.dropTys (b : Block) (i : Nat) (ps : Array Expr) : MetaM (Array Expr) := do
   if b.members[i]!.dropped.isEmpty then return #[]
   forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ => do
@@ -872,12 +639,8 @@ def Block.dropTysAt (b : Block) (i : Nat) (ps idxs : Array Expr) : MetaM (Array 
   return (← b.dropTys i ps).map (·.beta (b.keptIdxs i idxs))
 
 /--
-Bind a member's dropped indices, one at a time, each at its type read at the
-ones before it.
-
-`Block.dropTysAt` leaves that dependency standing, so anything that wants the
-dropped indices as binders rather than as values has to put them on in order.
--/
+Bind a member's dropped indices one at a time, each at its type read at the ones
+before it.  `Block.dropTysAt` leaves that dependency standing. -/
 partial def withDropTele {α} [Inhabited α] (dts : Array Expr) (q : Nat) (acc : Array Expr)
     (k : Array Expr → MetaM α) : MetaM α := do
   if h : q < dts.size then
@@ -894,14 +657,9 @@ def mkArrows (ts : Array Expr) (e : Expr) : Expr :=
   ts.foldr (fun t acc => .forallE `a t acc .default) e
 
 /--
-The sort the motives of the `X._wf` recursion all land in.
-
-A motive ends in the member's deleted indices and then `Prop`, so it lands in the
-`max` of their sorts and `Type`, which is `Prop`'s own.  A member that deleted
-nothing lands in `Type` flat, and while the deleted indices are at `Type` too --
-`Ctx._pre : Type` -- that is one and the same sort for every member of the block,
-which is why this is `Type` almost always.
--/
+The sort every motive of the `X._wf` recursion lands in: the `max` of `Type` and
+the sorts of the member's deleted indices, a motive ending in those and then
+`Prop`. -/
 def Block.wfMotiveLevel (b : Block) (ps : Array Expr) : MetaM Level := do
   let mut l := Level.one
   for i in b.dataIdxs do
@@ -914,28 +672,16 @@ def Block.wfMotiveLevel (b : Block) (ps : Array Expr) : MetaM Level := do
   return l
 
 /--
-The one further argument every motive of the `X._wf` recursion ends in when they
-would not otherwise agree, and what fills it in.
-
-A block at `Type 1`, or one under a universe parameter, deletes indices from
-above `Type`, so a motive that ends in one lands higher than a motive that ends
-in nothing.  One recursion has one motive sort, so all of them are brought up to
-the highest by ending in an argument nothing ever reads.  Empty in the ordinary
-case, where they agree already and the recursion is the shorter for it.
--/
+The extra argument every motive of the `X._wf` recursion ends in when the motives
+would not otherwise share a sort, and the value that fills it; empty when they
+agree. -/
 def wfPad (l : Level) : Array Expr × Array Expr :=
   if l == Level.one then (#[], #[])
   else (#[mkConst ``PUnit [l]], #[mkConst ``PUnit.unit [l]])
 
 /--
-A member's indices with each deleted one rebound at its pre-type, and every other
-one the arity's own binder, unchanged.
-
-Only the deleted ones are rebound, at the kept ones the arity already gave.  The
-rest are left alone so that no substitution is needed: what they might have
-mentioned is a deleted index, and `prepareCore` refuses that.
-
--/
+A member's indices with each deleted one rebound at its pre-type; every other
+index keeps the arity's own binder. -/
 def Block.withValIdxs {α} [Inhabited α] (b : Block) (i : Nat) (ps idxs : Array Expr)
     (k : Array Expr → MetaM α) : MetaM α := do
   let dropped := b.members[i]!.dropped
@@ -956,11 +702,8 @@ def Block.preApp (b : Block) (i : Nat) (args : Array Expr) : Expr :=
   mkAppN (b.cst (preName b.members[i]!.name)) (b.keptArgs i args)
 
 /--
-`X._wf args`, a predicate on `X._pre args`.
-
-`_wf` keeps every index the arity had, because a deleted one is exactly what the
-pre-term no longer says and the predicate has to say instead.
--/
+`X._wf args`, a predicate on `X._pre args`.  `_wf` keeps every index the arity
+had, a deleted one being what the pre-term no longer states. -/
 def Block.wfApp (b : Block) (i : Nat) (args : Array Expr) : Expr :=
   mkAppN (b.cst (wfName b.members[i]!.name)) args
 
@@ -979,20 +722,19 @@ def Block.sMk (b : Block) (i : Nat) (args : Array Expr) (v p : Expr) : Expr :=
 
 /-! ## Recursive fields
 
-A recursive field has type `∀ ys, M args` for a member `M`.  `ys` is empty in
-the ordinary case and non-empty for an infinitary one such as
-`(f : (n : Nat) → Vec n)`; the three functions below are what make the two
-cases the same code. -/
+A recursive field has type `∀ ys, M args` for a member `M`.  `ys` is empty in the
+ordinary case and non-empty for an infinitary field such as
+`(f : (n : Nat) → Vec n)`.  The three functions below let one code path handle
+both. -/
 
 /--
-If `ty` is `∀ ys, M args` for some member `M`, hand `k` the binders, the member's
-index and its arguments.  Otherwise answer `none`.
--/
+If `ty` is `∀ ys, M args` for a member `M`, pass `k` the binders, the member's
+index and its arguments.  Otherwise return `none`. -/
 def Block.withRecTarget? {α} (b : Block) (ty : Expr)
     (k : Array Expr → Nat → Array Expr → MetaM α) : MetaM (Option α) :=
-  -- a copy of `Subtype` carries its predicate as a parameter, so its proof
-  -- field arrives as `(fun t => P t) val`; what a field *is* is its beta-normal
-  -- form, and the kernel reads it that way too
+  -- a copy of `Subtype` carries its predicate as a parameter, so its proof field
+  -- arrives as `(fun t => P t) val`; a field is its beta-normal form, and the
+  -- kernel reads it that way too
   forallTelescope ty.headBeta fun ys concl => do
     let concl := concl.headBeta
     let .const n _ := concl.getAppFn | return none
@@ -1019,11 +761,7 @@ def Block.withPreTarget {α} (b : Block) (ty : Expr)
 
 mutual
 
-/--
-The pre-world image of `x : ty`.  A term of a data member's type loses its
-well-formedness proof; everything else, including a term of a `Prop` member's
-type, passes through, because `P args` is *defined* as `P._pre args'`.
--/
+/-- The pre-world image of `x : ty`. -/
 partial def Block.preImage (b : Block) (x ty : Expr) : MetaM Expr := do
   let r? ← b.withRecTarget? ty fun ys i args => do
     if b.members[i]!.isProp then return x
@@ -1031,16 +769,8 @@ partial def Block.preImage (b : Block) (x ty : Expr) : MetaM Expr := do
   return r?.getD x
 
 /--
-A member's arguments moved from the real world to the pre-world.
-
-Everything the encoding does with a member's arguments it does with them stated
-as the pre-world states them, which for all but a deleted index is no difference
-at all: the other arguments never mention the block, so the two worlds spell
-them the same way.  A deleted index is a subtype element in one world and its
-value in the other, and this is the one place that gap is crossed.  The recursion
-is on the arity: a deleted index is itself a member application, whose own
-deleted indices have to be crossed before it can be.
--/
+A member's arguments moved from the real world to the pre-world; the only place
+that gap is crossed. -/
 partial def Block.valArgs (b : Block) (i : Nat) (args : Array Expr) : MetaM (Array Expr) := do
   if b.members[i]!.dropped.isEmpty then return args
   let mut out := #[]
@@ -1052,26 +782,8 @@ partial def Block.valArgs (b : Block) (i : Nat) (args : Array Expr) : MetaM (Arr
 end
 
 /--
-A field's type moved to the pre-world, with the fields around it replaced by the
-pre-world stand-ins `news`.
-
-A member application keeps its real head.  What the pre-world does to one is
-exactly to drop arguments, and the readers of this are the ones that still need
-them all: `Block.withRecTarget?` finds the member there, and the arguments it
-hands over are pre-world terms already.  Everywhere else, and under the head,
-`Block.tr` has been through.
-
-Real means real in this world, where the copies are the types, so the head is
-the name the member is really emitted under -- the reading is only ever wanted
-before the bridge exists to give a renamed proposition the plain one.
-
-The order of the two halves is the whole point.  A stand-in can be a term like
-`A.val`, whose type argument names the real world -- `Ty._wf ((Γ.snoc A).val)` --
-and `Block.tr` reaching *that* would rewrite the `Γ.snoc A` buried in it into a
-pre-world constructor applied to real terms, which is not a term at all.  So the
-type is translated while it is still purely real, and the stand-ins go in
-afterwards, already across.
--/
+A field's type moved to the pre-world, with the surrounding fields replaced by
+the pre-world stand-ins `news`. -/
 def Block.subTy (b : Block) (olds news : Array Expr) (ty : Expr) : MetaM Expr :=
   forallTelescope ty.headBeta fun ys concl => do
     let concl := concl.headBeta
@@ -1090,19 +802,8 @@ def Block.preTy (b : Block) (subTy : Expr) : MetaM Expr := do
   return r?.getD subTy
 
 /--
-`Block.subTy`'s reading of every field of a constructor the pre-world keeps one
-for one, at the pre-world terms `xs` standing for them.
-
-A `Prop` constructor is such a constructor: nothing of a `Prop` member is erased
-or deleted, so its two field telescopes line up and each real field type can be
-read at the stand-ins for the fields before it.  Worth reading at all for the
-usual reason -- `Block.subTy` keeps the member's real head, and so goes on
-naming an index the pre-type deleted, which is the only form `X._wf` has to be
-stated in.
-
-The type is read in the raw naming, this being a raw-world reading throughout
-and the writer's names not all being defined when it is wanted.
--/
+`Block.subTy`'s reading of every field of a constructor, at the pre-world terms
+`xs` standing for them. -/
 def Block.subFieldTys (b : Block) (cc : CtorSpec) (ps xs : Array Expr) :
     MetaM (Array Expr) := do
   forallBoundedTelescope (← instantiateForall (b.toRaw cc.type) ps) xs.size fun rxs _ => do
@@ -1122,14 +823,7 @@ def Block.propImage (b : Block) (x ty : Expr) : MetaM Expr :=
 
 /--
 A member's indices in the pre-world, and the well-formedness the data ones
-carry, as the two lists a pre-block's recursor wants.
-
-A motive over a pre-type is built by `withWfIdxs`, which takes the erased
-indices first and the proofs about them last, after the major premise -- there
-is nothing to say about an index until the recursor has one.  So a call has to
-supply them in two pieces with the major premise between, and only the data
-indices contribute a proof.  Both ends read the same list, so it is built once.
--/
+carry, as the two lists a pre-block's recursor takes. -/
 def Block.preAndWf (b : Block) (idxs : Array Expr) : MetaM (Array Expr × Array Expr) := do
   let mut pres : Array Expr := #[]
   let mut wfs : Array Expr := #[]
@@ -1142,15 +836,8 @@ def Block.preAndWf (b : Block) (idxs : Array Expr) : MetaM (Array Expr × Array 
   return (pres, wfs)
 
 /--
-The `Prop` members behind a pre-block recursor's members, in the recursor's own
-order.
-
-A mutual recursor's motives and minors run over the whole pre-block in the order
-the pre-block was declared in, which is not in general the order the members
-were written in, and every constructor of every member gets a minor whether or
-not the caller has any use for it.  Reading the order off `all` is the only way
-to line the two up.
--/
+The `Prop` members behind a pre-block recursor's members, in the recursor's
+order. -/
 def Block.propsBehind (b : Block) (recInfo : RecursorVal) : MetaM (Array Nat) :=
   recInfo.all.toArray.mapM fun n => do
     let some j := b.propIdxs.find? fun j => preName b.members[j]!.name == n
@@ -1163,23 +850,14 @@ def Block.ctorsOf (b : Block) (idxs : Array Nat) : Array (Nat × CtorSpec) :=
 
 /--
 `∀ ys, X._wf args (y ys)`, from a recursive field `y : ∀ ys, X args`, read from
-`Block.subTy`'s reading of it -- which is the only one in which a deleted index
-is still there to be said.
--/
+`Block.subTy`'s reading of it, the only one that still names a deleted index. -/
 def Block.wfOfSub (b : Block) (y subTy : Expr) : MetaM Expr :=
   b.withRecTarget subTy fun ys i args =>
     mkForallFVars ys (mkApp (b.wfApp i args) (mkAppN y ys))
 
 /--
-The earlier erased fields that field `k`'s conjunct still names, in field order.
-
-A proposition of the block may be indexed by another, and then a constructor
-that carries a proof of the second carries a proof of the first for it to be
-about: `QA.mk (x : A α) (h : x.P) (q : A.Q α x h)`.  Both fields are erased, so
-neither is a binder of the pre-term, and `q`'s conjunct is left naming `h` with
-nothing to bind it.  These are the fields that have to be quantified away, and
-the type of one may name another, so the answer is closed under that too.
--/
+The earlier erased fields that field `k`'s conjunct still names, in field order,
+closed under one naming another. -/
 def erasedDeps (kinds : Array FieldKind) (imgs : Array (Option Expr))
     (subTys : Array Expr) (conj : Expr) (k : Nat) : Array Nat := Id.run do
   let mut out : Array Nat := #[]
@@ -1205,16 +883,7 @@ partial def Block.closeErased (b : Block) (imgs : Array (Option Expr)) (subTys :
 
 /--
 What an erased field's conjunct says: the proposition the field carried, closed
-over the earlier erased fields it names.
-
-`h : x.P` and `q : A.Q α x h` give `P._pre x ∧ ∀ h, Q._pre x h`, which is the
-existential the two fields really are -- `∃ h, Q._pre x h` -- written so that
-both directions hold definitionally rather than by an elimination.  Proof
-irrelevance is what buys that: the constructor proves the second conjunct with
-`fun _ => q`, since its own `h` and the bound one are proofs of the same
-proposition and so the same proof, and a recursor's alternative gets its `q`
-back by applying the conjunct to the `h` it has already recovered.
--/
+over the earlier erased fields it names. -/
 def Block.erasedConj (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Expr))
     (subTys : Array Expr) (k : Nat) : MetaM Expr := do
   let conj ← b.preTy subTys[k]!
@@ -1222,22 +891,8 @@ def Block.erasedConj (b : Block) (kinds : Array FieldKind) (imgs : Array (Option
 
 /--
 The conjuncts of a constructor's well-formedness, in the order `_wf` states
-them: the recursive fields first, each saying its sub-term is well formed, then
-the erased fields, each being the proposition that field carried, and last the
-equations `eqs`, one for each index the constructor builds rather than takes as
-a field.  `projConj` reads positions off this order, so it is the same one
-`recPositions` and the erased fields come out in.
-
-`imgs` is indexed by field and only has to be filled in at the recursive and
-erased positions; that is the shape `withPreFields` hands over.
-
-A recursive field is closed over the erased fields it names for the same reason
-an erased one is: `Tm.wk (Γ) (h : Ok Γ) (t : Tm Γ h)` recurses at a context an
-erased proof is part of, and the pre-constructor does not bind that proof, so the
-conjunct about `t` would name nothing.  Quantifying is not a weakening -- the
-proposition the proof was of is a conjunct of its own, and past that any two
-proofs of it are the same proof.
--/
+them: recursive fields first, then erased fields, then the equations `eqs`, one
+per built index. -/
 def Block.wfConjs (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Expr))
     (subTys : Array Expr) (eqs : Array Expr := #[]) : MetaM (Array Expr) := do
   let mut conjs : Array Expr := #[]
@@ -1250,34 +905,8 @@ def Block.wfConjs (b : Block) (kinds : Array FieldKind) (imgs : Array (Option Ex
   return conjs ++ eqs
 
 /--
-The equations a constructor's *built* indices impose: one for each index the
-pre-type deleted that the constructor does not simply take as a field.
-
-`Tm.lam` ends in `Tm Γ (Ty.pi Γ A B)`, and `Tm._pre.lam` says nothing about
-either index -- that is what deleting them means.  `Tm._wf` takes both back as
-arguments, and where the first is a field the constructor *is*, so that binding
-the argument binds the field, the second is one it *builds*.  Nothing then ties
-the argument to the term unless the well-formedness says so itself, and this is
-the conjunct that says it: `Ty._pre.pi a b = A`.  The recursor transports along
-it to get from the argument the recursion was given back to the term the
-constructor wrote, and at a real `Tm.lam` the two are the same term, so the
-proof is `rfl` and the transport computes away.
-
-A built index at one of the block's *propositions* gets no equation, and wants
-none.  `Tm.top : Tm .nil .nil` builds both, and the second is a proof: the
-argument `Tm._wf` was handed and the term the constructor wrote are two proofs of
-one proposition, so they are equal already, and definitionally so.  The equation
-could not even be stated -- the argument's type is the proposition read at the
-*first* argument, and the term's is the proposition read at the term the first
-equation is about, and an `And` is not a `Σ`, so the one conjunct cannot lean on
-the other.  Nothing is lost by leaving it out: proof irrelevance makes that
-argument of `X._wf` invisible, which is the same reason `Tm Γ h` and `Tm Γ h'`
-are the same type.
-
-`dvals` are the pre-world readings of the member's deleted indices in arity
-order, and `olds`/`news` move the constructor's fields across.  Each answer says
-which of those indices it is about.
--/
+The equations a constructor's *built* indices impose: one per index the pre-type
+deleted that the constructor does not take as a field. -/
 def Block.builtEqs (b : Block) (i : Nat) (kinds : Array FieldKind) (concl : Expr)
     (olds news dvals : Array Expr) : MetaM (Array (Nat × Expr)) := do
   let dropped := b.members[i]!.dropped
@@ -1290,12 +919,7 @@ def Block.builtEqs (b : Block) (i : Nat) (kinds : Array FieldKind) (concl : Expr
 
 /--
 The shape of `X._wf`'s hypothesis about a recursive field: what its motive says
-at a pre-term of the member the field recurses into.
-
-A member that deleted indices has a motive that ends in them, so the hypothesis
-does too: knowing a pre-term is well formed means knowing it at each of the
-contexts it could be read in, and nothing here has said which one is meant yet.
--/
+at a pre-term of the member the field recurses into. -/
 def Block.ihTy (b : Block) (ps pad : Array Expr) (subTy : Expr) : MetaM Expr :=
   b.withRecTarget subTy fun ys mm args => do
     let dts ← b.dropTysAt mm ps (b.idxArgs args)
@@ -1308,10 +932,10 @@ def Block.ihConj (b : Block) (ih : Expr) (padVal : Array Expr) (subTy : Expr) : 
 
 /-! ## Conjunctions
 
-`X._wf` at a constructor is a right-associated conjunction, one conjunct per
-recursive field followed by one per erased field, and `True` when there are
-none.  These three functions are the only place that shape is fixed; the
-constructors build it, the recursor takes it apart, and they have to agree. -/
+`X._wf` at a constructor is a right-associated conjunction: one conjunct per
+recursive field, then one per erased field, and `True` when there are none.
+These three functions fix that shape.  The constructors build it and the recursor
+takes it apart, so both must agree. -/
 
 /-- `cs[i] ∧ (cs[i+1] ∧ ..)`, and `True` when `i` is past the end. -/
 partial def foldConj (cs : Array Expr) (i : Nat) : Expr :=
@@ -1340,28 +964,9 @@ partial def introConj (cs ps : Array Expr) (i : Nat) : Expr :=
 /-! ## Rebuilding a telescope in the pre-world -/
 
 /--
-Walk a constructor's fields, rebuilding the telescope in the pre-world: the
-dropped fields go and everything else keeps its place with its type moved across
-by `Block.subTy`, the earlier fields replaced by their pre-world counterparts.
-
-`k` receives the substitution the walk built -- the original fields on the left
-and their pre-world stand-ins on the right, which is what moves an expression
-across -- an image per *original* field (`none` for a dropped one), and each
-field's type as `Block.subTy` reads it, which is with the member applications
-left at their real names.
-
-The pre-world stand-in of a *deleted* field is not bound here; the caller
-supplies it, in `olds` and `news`, because the two callers disagree about what
-it is.  `X._wf` binds it as a fresh pre-term of the member, while a recursor's
-alternative has a real one to hand and takes its value.
-
-A field the pre-world leaves alone -- a `Nat`, a parameter's value, anything the
-block does not reach into -- is its own stand-in and gets no new binder.  That
-is worth the equality test on its own account, since it is most of the fields of
-most constructors, but it is also what lets a deleted index's *type* be written
-down before the walk runs: a pre-type that mentions such a field mentions the
-very binder the arity gave it, and not one this walk has yet to invent.
--/
+Walk a constructor's fields, rebuilding the telescope in the pre-world.  `k`
+receives the substitution built (originals left, stand-ins right), one image per
+original field (`none` for a dropped one), and each field's type. -/
 partial def withPreFieldsAux {α} [Inhabited α] (b : Block) (kinds : Array FieldKind)
     (xs : Array Expr) (i : Nat) (olds news : Array Expr) (imgs : Array (Option Expr))
     (subTys : Array Expr)
@@ -1373,7 +978,7 @@ partial def withPreFieldsAux {α} [Inhabited α] (b : Block) (kinds : Array Fiel
     if kinds[i]!.isDropped then
       -- an erased field is its own image: nothing of it survives into the
       -- pre-term, but a later field's type may name it and the well-formedness
-      -- has to be able to say which field that was
+      -- must be able to say which field that was
       let img := if kinds[i]! == .erased then some x else none
       withPreFieldsAux b kinds xs (i + 1) olds news (imgs.push img) (subTys.push sub) k
     else
@@ -1400,15 +1005,7 @@ def keptImages (kinds : Array FieldKind) (imgs : Array (Option Expr)) : Array Ex
 
 /--
 The real terms an alternative reads a member's deleted indices at, in arity
-order.
-
-An index the constructor takes as a field is that field, and wants no binder of
-its own.  One it *builds* -- `Tm.lam` ends in `Tm Γ (Ty.pi Γ A B)`, whose second
-index is no field of it -- has nothing to be, so the alternative binds it, at
-the type the arity gives it.  They are bound in order and each at the ones
-before it, because a deleted index's type may well name them: `Tm`'s second
-index is a `Ty` of its first.
--/
+order. -/
 partial def Block.withDelsAux {α} [Inhabited α] (b : Block) (kinds : Array FieldKind)
     (xs : Array Expr) (dropped : Array Nat) (tys : Array (Name × Expr)) (q : Nat)
     (acc : Array Expr) (k : Array Expr → MetaM α) : MetaM α := do
@@ -1423,16 +1020,7 @@ partial def Block.withDelsAux {α} [Inhabited α] (b : Block) (kinds : Array Fie
 
 /--
 `Block.withDelsAux`, given the constructor's own conclusion indices `cidxs` to
-read the arity at.
-
-A deleted index's type may name the indices that stayed as well as the deleted
-ones before it -- `Tm`'s second index is a `Ty n Γ`, whose `n` is an index the
-erasure keeps -- and the arity states it at the binders the arity gave them,
-which are nobody's here.  So the type is abstracted over both and applied to the
-constructor's readings: the kept indices come from the conclusion, because that
-is where the recursion was called, and the deleted ones from what the
-alternative has bound so far.
--/
+read the arity at. -/
 def Block.withDels {α} [Inhabited α] (b : Block) (i : Nat) (ps xs cidxs : Array Expr)
     (kinds : Array FieldKind) (k : Array Expr → MetaM α) : MetaM α := do
   let dropped := b.members[i]!.dropped
@@ -1448,15 +1036,7 @@ def Block.withDels {α} [Inhabited α] (b : Block) (i : Nat) (ps xs cidxs : Arra
 
 /--
 An index the erasure deleted that the constructor *builds* rather than takes as
-a field: `Tm.lam` ends in `Tm Γ (Ty.pi Γ A B)`, and its second index is no field
-of it.
-
-An alternative is handed the index the recursion was called at, while the
-constructor has a reading of its own, and all the two have in common is the
-equation `Block.builtEqs` puts into the well-formedness.  So the alternative
-binds the index -- there being no field for it to be -- and everything it wants
-to say at the constructor's reading has to be carried over by that equation.
--/
+a field: `Tm.lam` ends in `Tm Γ (Ty.pi Γ A B)`, whose second index is no field. -/
 structure BuiltIdx where
   /-- Which of the member's deleted indices this is, counted in arity order. -/
   slot : Nat
@@ -1473,32 +1053,8 @@ structure BuiltIdx where
   deriving Inhabited
 
 /--
-One constructor of a data member, read in the pre-world: what an alternative of
-either recursor starts from.
-
-`xs` are the fields at the originals, `imgs` their pre-world stand-ins one per
-original field, and `olds`/`news` the substitution that moves an expression
-across.  `head` is the pre-world constructor applied to the fields it kept, `wc`
-a local proof that `head` is well formed, `conjs` the conjuncts that proof
-splits into, and `cIdxs` the conclusion's arguments moved across.
-
-`real` is the constructor's own fields put back: a recursive one paired with
-its share of `wc`, an erased one read off `wc`, a plain one passed through, a
-deleted index left exactly as it was.  Both recursors hand `real` to the *same*
-minor premises, so they have to agree about it down to the order -- which is why
-it is built in one place.
-
-`dels` are those deleted indices, which is the one thing here that is a real
-term rather than a pre-world one: it is the member the pre-block could not
-mention, and a minor premise binds it back.  An index the constructor *builds*
-has no field to be, and `built` says which ones those are and what they were
-bound at; see `BuiltIdx`.
-
-`realIdxs` is `cIdxs` again, on the other side: the conclusion's arguments with
-the fields put back as `real` has them.  A motive is stated in the real world
-and nowhere else, so a caller that has to name one at the constructor's own
-indices reads them here, and everything that builds a term reads `cIdxs`.
--/
+One constructor of a data member, read in the pre-world: the starting point for
+an alternative of either recursor. -/
 structure AltFields where
   kinds : Array FieldKind
   xs : Array Expr
@@ -1517,21 +1073,17 @@ structure AltFields where
   built : Array BuiltIdx
 
 /--
-Read the constructor `c` of member `i` in the pre-world and run `k` on it,
-under the binders it introduces: the pre-world fields, the deleted indices and
-the well-formedness `wc`, all of which `k` is expected to abstract over.  An
-index the constructor builds contributes two binders of its own, which `k` finds
-in `AltFields.built` and has to abstract over instead of the index.
--/
+Read the constructor `c` of member `i` in the pre-world and run `k` on it, under
+the binders it introduces: the pre-world fields, the deleted indices and the
+well-formedness `wc`. -/
 def Block.withAlt {α} [Inhabited α] (b : Block) (i : Nat) (c : CtorSpec) (ps : Array Expr)
     (k : AltFields → MetaM α) : MetaM α := do
   let kinds := b.fieldKinds c.kinds
   forallTelescope (← b.ctorType c ps) fun xs cconcl => do
     let dropped := b.members[i]!.dropped
     b.withDels i ps xs (b.idxArgs cconcl.getAppArgs) kinds fun dels => do
-      -- what the pre-world sees of a deleted index is its value, and that is
-      -- what the substitution carries.  Only an index that is a field is
-      -- substituted *for*: one the alternative just bound stands for nothing
+      -- the pre-world sees a deleted index as its value, and that is what the
+      -- substitution carries
       let mut fOlds : Array Expr := #[]
       let mut fNews : Array Expr := #[]
       let mut dvals : Array Expr := #[]
@@ -1574,8 +1126,8 @@ def Block.withAlt {α} [Inhabited α] (b : Block) (i : Nat) (c : CtorSpec) (ps :
             | .plain => real := real.push (imgs[j]!).get!
             | .deleted .. => real := real.push xs[j]!
             | .erased =>
-              -- the conjunct was closed over the earlier erased fields it
-              -- named, and those have just been recovered, so it opens again
+              -- the conjunct was closed over the earlier erased fields it named;
+              -- those have just been recovered, so it opens again
               let pr := projConj conjs wc (recPos.size + nera)
               let deps := erasedDeps kinds imgs subTys (← b.preTy subTys[j]!) j
               real := real.push (mkAppN pr (deps.map (real[·]!)))
@@ -1585,44 +1137,8 @@ def Block.withAlt {α} [Inhabited α] (b : Block) (i : Nat) (c : CtorSpec) (ps :
               recPos, dels, built }
 
 /--
-An alternative's body carried from the index the constructor built to the one
-the recursion was called at.
-
-`core` is what the recursion returns at the constructor, and it returns it at
-the constructor's own reading of the index -- `Ty.pi Γ A B`.  The alternative
-was handed an index of its own instead, and all the two have in common is the
-equation the well-formedness states between them.  So the motive is abstracted
-over the index's *value*, `core` proves it at the constructor's reading, and
-that equation moves it to the alternative's.  Both well-formedness proofs travel
-inside the abstraction -- the index's and the term's -- because the motive's own
-arguments are made out of them.
-
-A constructor that builds no index gets `core` back untouched, and even one that
-does pays nothing at a real term: there the two readings are the same term, the
-equation proves `x = x`, and the kernel takes the transport away again before
-the minor premise is reached.
-
-A constructor may build more than one index -- `Sub.ext` of a substitution
-between two contexts builds both of them -- and the well-formedness has an
-equation for each, so the transports are done one after another.  Every one of
-them is stated at the indices the ones before it already moved, which is why the
-goal is abstracted over all of the built values at once and then transported a
-value at a time rather than each transport being closed off on its own.
-
-`goal` says what the alternative concludes at and `core` produces it, both of
-them given the member's real indices, the pre-world reading of the same
-arguments, and the term's well-formedness.  The two recursions want different
-things there -- a split alternative concludes at a motive and a grand one at a
-bundle -- and the transport is the same either way, so it is asked rather than
-assumed.
-
-The body is asked for under those three rather than handed in ready-made
-because the grand recursion's bundle has the well-formedness *in its type*: the
-bundle at the alternative's reading of the index is not the bundle at the
-constructor's, and the one to build is the constructor's.  A split alternative
-concludes at a motive, which is stated in the real world and has no proof in
-it, so it ignores all three and builds the same body either way.
--/
+An alternative's body carried from the index the constructor built to the index
+the recursion was called at. -/
 def Block.transportBuilt (b : Block) (i : Nat) (a : AltFields)
     (goal core : Array Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
   if a.built.isEmpty then return ← core (b.idxArgs a.realIdxs) a.cIdxs a.wc
@@ -1633,11 +1149,8 @@ def Block.transportBuilt (b : Block) (i : Nat) (a : AltFields)
   let pres := a.built.map (·.pre)
   let dels := (Array.range qs.size).map fun k => a.cIdxs[b.numParams + qs[k]!]!
   -- a built index may be *stated* at one built before it -- `Tm.var` ends in
-  -- `Tm (Γ.snoc A) (Ty.base (Γ.snoc A))`, whose second index is a type in the
-  -- context the first one is -- so its own arguments have to be read at
-  -- whatever that one has been moved to so far and not at where it ends up.
-  -- Its pre-*type* names no index at all, which `checkDropped` saw to, so only
-  -- the well-formedness and the subtype element are affected
+  -- `Tm (Γ.snoc A) (Ty.base (Γ.snoc A))` -- so its arguments are read at
+  -- whatever that one has been moved to so far, not at where it ends up
   let argsAt (k : Nat) (vs : Array Expr) : Array Expr :=
     a.built[k]!.args.map fun e => e.replace fun s => Id.run do
       for j in *...qs.size do
@@ -1681,15 +1194,7 @@ def withImplicits {α} [Inhabited α] (decls : Array (Name × (Array Expr → Te
     (k : Array Expr → TermElabM α) : TermElabM α :=
   withLocalDecls (decls.map fun (n, ty) => (n, .implicit, ty)) k
 
-/--
-What tells one recursor's front from another's.
-
-Every recursor built here opens the same way -- a motive per member it runs over,
-then a minor premise per constructor of one -- and the four that are built differ
-only in the five answers below.  Holding them in one record is what lets
-`Block.withRawFront` and `BridgeCtx.withNiceFront` each be written once instead
-of once per recursor.
--/
+/-- What distinguishes one recursor's front from another's. -/
 structure Front where
   /-- The members the motives run over, in the order the recursor takes them. -/
   members : Array Nat
@@ -1703,14 +1208,9 @@ structure Front where
   ihPos : Array FieldKind → Array Nat
 
 /--
-The front of a recursor stated in the raw world, handed to `k` as the motives and
-the minors.
-
-Everything here is spelled the way the pre-block spells it: a motive is over the
-member's own arity at the member's own constant, a minor is over the raw
-constructor's fields and concludes at the raw constructor.  A caller that wants
-the writer's spelling instead wants `BridgeCtx.withNiceFront`.
--/
+The front of a recursor stated in the raw world, passed to `k` as the motives
+and the minors: a motive over the member's own arity, a minor over the raw
+constructor's fields concluding at the raw constructor. -/
 def Block.withRawFront {α} [Inhabited α] (b : Block) (ps : Array Expr) (f : Front)
     (k : Array Expr → Array Expr → TermElabM α) : TermElabM α := do
   let mnames := motiveNames f.members.size
@@ -1741,37 +1241,25 @@ def Block.withRawFront {α} [Inhabited α] (b : Block) (ps : Array Expr) (f : Fr
 
 /-! ## Elaborating the headers, with the members as scratch axioms
 
-The members' arities have to be elaborated with the *other* members in scope,
-which is exactly what `mutual` refuses to do.  So each member is declared as a
-temporary `axiom` as soon as its own arity is known, inside
-`withoutModifyingEnv`; the constructors are elaborated against those, and the
-data constructors become axioms too so that `.snoc` in a `Prop` constructor's
-type resolves the way the writer meant.  The environment is then rolled back and
-the real declarations are made under the very same names, so the expressions we
-extracted stay meaningful.
+The members' arities must be elaborated with the *other* members in scope, which
+`mutual` refuses to do.  Each member is declared as a temporary `axiom` as soon
+as its arity is known, inside `withoutModifyingEnv`.  The constructors elaborate
+against those.  The data constructors become axioms too, so that `.snoc` in a
+`Prop` constructor's type resolves as written.  The environment is then rolled
+back and the real declarations made under the same names.
 
-Elaborating the arities needs an order, and the writer is under no obligation to
-supply one, so they are elaborated by a worklist: go round the members, keep
-whichever succeed, and stop when a round adds nothing.  A genuine circularity --
-`A`'s arity mentioning `B` and `B`'s mentioning `A` -- fails every round, and is
-reported with the error of the last attempt.
-
-Which universe parameters the block ends up with is not known until every
-constructor has been read, so a stub is declared over every universe name in
-scope at the time and `restub` moves the whole batch once the real list is
-settled. -/
+The arities need an order the writer need not supply, so a worklist is used: go
+round the members, keep whichever succeed, stop when a round adds nothing.  The
+universe parameters are unknown until every constructor is read, so a stub is
+declared over every universe name in scope and `restub` moves the batch once the
+list is settled. -/
 
 private def stubAxiomAt (levelParams : List Name) (name : Name) (type : Expr) :
     TermElabM Unit := do
-  -- A scratch axiom is never part of the environment anybody sees: `withRaw`
-  -- elaborates the whole block inside `withoutModifyingEnv`, and every real
-  -- declaration made afterwards is kernel-checked on its own.  So the kernel is
-  -- told to stand aside here, which is not merely an economy.  A stub is added
-  -- as soon as its type is elaborated, before the block's universe parameters
-  -- are known, so its type still carries a level metavariable for every
-  -- universe name in scope that nothing has constrained -- and `Elab.async`
-  -- checks in a background task, which `restub`'s rewind cannot call off, so
-  -- the complaint would surface as an error about a name that no longer exists.
+  -- A scratch axiom never enters the visible environment, and every real
+  -- declaration is kernel-checked on its own.  Skipping is also required: a
+  -- stub's type carries level metavariables, and `Elab.async` checks in a task
+  -- that `restub`'s rewind cannot cancel
   withOptions (debug.skipKernelTC.set · true) do
     addDecl (.axiomDecl { name, levelParams, type := ← instantiateMVars type, isUnsafe := false })
 
@@ -1782,13 +1270,8 @@ private def stubAxiom (name : Name) (type : Expr) : TermElabM Unit := do
   stubAxiomAt (← Term.getLevelNames).reverse name type
 
 /--
-Add a batch of scratch axioms, each after whatever else in the batch it mentions.
-
-The order the names were first stubbed in is not one their types respect: a
-copy's arity may name a copy interned after it, and re-stubbing starts from an
-environment where none of the batch exists.  So they go in by worklist, as the
-arities themselves do.
--/
+Add a batch of scratch axioms, each after whatever else in the batch it
+mentions, by worklist. -/
 private def stubBatch (levelParams : List Name) (todo : Array (Name × Expr))
     (what : String := "scratch axioms") : TermElabM Unit := do
   let batch := todo.map (·.1)
@@ -1808,27 +1291,14 @@ private def stubBatch (levelParams : List Name) (todo : Array (Name × Expr))
     todo := next
 
 /--
-Auto-binding, as Lean's own header elaboration does it: universe names such as
-the `u` of `Type u` are collected into the level names, and unbound identifiers
-become implicit binders.  A *member's* name is forbidden from auto-binding, or
-the worklist below would silently accept a sibling it has not stubbed yet by
-turning it into an implicit variable.
--/
+Auto-binding, as Lean's header elaboration does it: universe names such as the
+`u` of `Type u` join the level names, and unbound identifiers become implicit
+binders. -/
 private def withAuto {α} (views : Array InductiveView) (k : TermElabM α) : TermElabM α :=
   Term.withAutoBoundImplicitForbiddenPred (fun n => views.any (·.shortDeclName == n)) <|
     Term.withAutoBoundImplicit k
 
-/--
-`∀ params idxs, Sort l`, together with how many of those binders are parameters.
-
-A member that gives no resulting type at all -- `inductive Tree where` -- is read
-as `Type`.  Lean would put a universe metavariable there and solve it from the
-constructors' fields, but a metavariable cannot go into the scratch axiom that
-puts this member in scope for its siblings, and a wrong guess there would be
-baked into the siblings' fields (`List Tree` picks up `List.{0}`).  So the guess
-is fixed, and `checkInferredArity` below rejects a block the guess is too small
-for rather than quietly mis-elaborating it.
--/
+/-- `∀ params idxs, Sort l`, together with how many of those binders are parameters. -/
 private def elabArity (views : Array InductiveView) (view : InductiveView) :
     TermElabM (Expr × Nat) := do
   withRef (view.type?.getD view.ref) <| Term.withoutErrToSorry <| withAuto views do
@@ -1844,12 +1314,7 @@ private def elabArity (views : Array InductiveView) (view : InductiveView) :
       let params ← Term.addAutoBoundImplicits params none
       return (← instantiateMVars (← mkForallFVars params type), params.size)
 
-/--
-Make the leading `n` binders implicit.  A constructor's parameters are implicit
-even where the type's are explicit -- `List.nil : {α : Type u} → List α` -- and
-that is what lets `.nil` resolve against an expected type; the recursor's are
-implicit for the same reason `List.rec`'s are.
--/
+/-- Make the leading `n` binders implicit. -/
 partial def implicitPrefix (n : Nat) (e : Expr) : Expr :=
   let keep (bi : BinderInfo) := if bi == .instImplicit then bi else .implicit
   match n, e with
@@ -1858,15 +1323,7 @@ partial def implicitPrefix (n : Nat) (e : Expr) : Expr :=
   | n + 1, .lam nm d body bi => .lam nm d (implicitPrefix n body) (keep bi)
   | _, _ => e
 
-/--
-Make the `n` binders that start at position `lo` implicit, leaving the ones
-before them as they are.
-
-A recursor's indices are implicit in the major premise -- `Nat.le.rec` ends
-`{a : Nat} → (t : n.le a) → motive a t`, whatever `Nat.le`'s own index binder
-looked like -- and a recursor's indices sit after its motives and minors, not
-at the front where `implicitPrefix` reaches.
--/
+/-- Make the `n` binders starting at position `lo` implicit. -/
 partial def implicitRange (lo n : Nat) (e : Expr) : Expr :=
   match lo, e with
   | 0, _ => implicitPrefix n e
@@ -1876,9 +1333,8 @@ partial def implicitRange (lo n : Nat) (e : Expr) : Expr :=
 
 /--
 A recursor's binders, as Lean leaves its own: the parameters implicit, the
-motives and minors as they were declared, the indices implicit again, and the
-major premise the only thing left to write.
--/
+motives and minors as declared, the indices implicit, the major premise
+explicit. -/
 def hideRecBinders (numParams numPremises numIdxs : Nat) (e : Expr) : Expr :=
   implicitPrefix numParams <| implicitRange (numParams + numPremises) numIdxs e
 
@@ -1891,16 +1347,9 @@ private def elabCtorType (views : Array InductiveView) (view : InductiveView) (c
         let ty ← match ctor.type? with
           | some typeStx => Term.elabType typeStx
           | none =>
-            -- the member is in scope only as its scratch axiom, and that is
-            -- declared over every universe name that was around when its arity
-            -- was read.  An empty level list is the right length only when there
-            -- were none; anywhere else it makes a constructor whose type is
-            -- ill-formed the moment another member's constructor mentions it,
-            -- which is exactly what a `Prop` member indexed by this one does.
-            -- Which levels they are is not knowable yet and does not matter,
-            -- since `normLevels` moves every reference to the block's own list;
-            -- but writing the names in would make the block depend on universes
-            -- it does not use, so they go in as metavariables
+            -- the member is in scope only as its scratch axiom, declared over
+            -- every universe name around when its arity was read, so an empty
+            -- level list is the right length only when there were none
             let ps := (((← getEnv).find? view.declName).map (·.levelParams)).getD []
             pure (mkAppN (mkConst view.declName (← ps.mapM fun _ => mkFreshLevelMVar)) params)
         Term.synthesizeSyntheticMVarsNoPostponing
@@ -1925,37 +1374,20 @@ private def checkSupported (views : Array InductiveView) : TermElabM Unit := do
         throwError "Computed fields are not supported for an induction-inductive block"
 
 /--
-Everything that has to be built while the scratch axioms are still in the
-environment.
-
-`Meta.forallTelescope` looks each binder's type up -- `withNewLocalInstances`
-asks `isClass?` about it -- so a telescope over a constructor's type only works
-where the members are declared.  That is true of the scratch environment and
-false of the one the real declarations go into, up until the member being
-telescoped over has itself been added.  So the pre-world types, which are
-telescoped from the original ones, are all built here, against scratch axioms
-for the pre-types as well; everything from `X` itself onwards is built during
-emission, by which point the constants it telescopes over are real.
--/
+Everything that must be built while the scratch axioms are still in the
+environment. -/
 structure Plan where
   block : Block
   /-- The data members' pre-types, as one mutual inductive. -/
   preDataInds : Array InductiveType
   /--
-  Whether those pre-types disagree about their universe, and so have to reach
-  the kernel through `Mumi.Lowering` rather than as a single `addInd`.
-
-  The whole-block recursor is then `X._pre.mutualRec` rather than `X._pre.rec`,
-  and it takes a motive universe per component instead of one; `preDataRec` is
-  where that difference is spent.
-  -/
+  Whether those pre-types disagree about their universe and so must reach the
+  kernel through `Mumi.Lowering` rather than as a single `addInd`. -/
   preIsHeterogeneous : Bool := false
   /--
-  The `Prop` members' pre-types, in the layers `propLayers` worked out: one
-  mutual inductive per layer, declared in this order, so that a proposition
-  indexed by another has the other's pre-type in scope already.  Almost always
-  one layer, which is every block in which no proposition indexes another.
-  -/
+  The `Prop` members' pre-types in the layers `propLayers` computed: one mutual
+  inductive per layer, declared in this order, so a proposition indexed by
+  another already has the other's pre-type in scope. -/
   prePropInds : Array (Array InductiveType)
   /-- Which members each of those layers holds, in the same order. -/
   propLayers : Array (Array Nat) := #[]
@@ -1965,19 +1397,11 @@ structure Plan where
   copies : Array (Name × Expr) := #[]
   /--
   The members that left the block rather than going through the erasure, ready
-  to be declared as they stand.  See `markPeeled` for which ones those are; they
-  are stated over the block as the writer reads it, so they go in last of all.
-
-  A data member among them is declared one name over, as `X._ind`, with `X`
-  itself a definition unfolding to it, so that `X.rec` is free to be the
-  recursion over the whole block.  See `peelIndName` and step 11 of `emit`.
-  -/
+  to be declared as they stand; see `markPeeled`. -/
   peeled : Array InductiveType := #[]
   /--
-  Where each of those sat in the block as it was written, so that the recursors
-  of the members that stayed can put them back in their places.  See
-  `widenWithPeeled`.
-  -/
+  Where each of those sat in the block as written, so that the recursors of the
+  members that stayed can put them back.  See `widenWithPeeled`. -/
   peeledIdxs : Array Nat := #[]
   deriving Inhabited
 
@@ -1995,32 +1419,20 @@ structure Raw where
   /-- The level names the block itself declares. -/
   declLevelNames  : List Name
   /--
-  The members `denestRaw` added, and what each one is a copy of: a lambda over
-  the block's parameters, and over any field of the constructor its parameters
-  mentioned, giving the original application `I ps'` that the copy stands for,
-  with the copy's own indices still to come.  Empty for a block somebody wrote.
-  -/
+  The members `denestRaw` added, and what each is a copy of: a lambda over the
+  block's parameters, and over any constructor field its parameters mentioned,
+  giving the original application `I ps'`.  Empty for a hand-written block. -/
   copies : Array (Name × Expr) := #[]
   /--
-  The environment as it stood before the first scratch axiom was added, so that
-  they can be re-declared once the block's universe parameters are known.  See
-  `restub`.
-  -/
+  The environment as it stood before the first scratch axiom was added, so they
+  can be re-declared once the block's universe parameters are known; see
+  `restub`. -/
   stubEnv : Option Environment := none
-  /--
-  The section variables in scope where the block was written, in scope order.
-  Whichever of them the block turns out to use become its leading parameters;
-  see `withSectionVars`.  Empty outside a section.
-  -/
+  /-- The section variables in scope where the block was written, in scope order. -/
   vars : Array Expr := #[]
   /--
-  The members that leave the block before the erasure sees it, by index.  See
-  `markPeeled`: they are the members that take no part in what the erasure is
-  for -- propositions nothing else in the block is stated with, and data members
-  nothing else in the block reaches -- and they come out as inductives the
-  writer would recognise instead.  Their types are left exactly as they were
-  written -- denesting skips them, and so does everything after.
-  -/
+  The members that leave the block before the erasure sees it, by index; see
+  `markPeeled`. -/
   peeled : Array Nat := #[]
   deriving Inhabited
 
@@ -2043,59 +1455,22 @@ def memberLevels (names : Array Name) (arities : Array Expr) :
   return (isProp, levels)
 
 /--
-Mark the members that should leave the block rather than be erased with it.
-
-Two kinds of member leave, for opposite reasons.  A proposition leaves when the
-erasure has nothing to offer it; a data member leaves when it has nothing to
-offer the erasure.  The comments through the body say which is which at each
-step; the paragraphs here are about the first.
-
-A proposition the rest of the block is never stated with -- no data member's
-arity or field mentions it, and neither does any proposition that is itself
-staying -- is a *consumer* of the block and not a part of it.  The erasure is
-there to break the cycle between the data and the propositions inside it, and a
-member outside the cycle gains nothing by going through: it can be declared
-afterwards, over the members as the writer sees them, as the ordinary inductive
-it already is.
-
-That would be the better answer for every such member, and it is deliberately
-not taken for every one.  A proposition the erasure *can* carry comes back with
-a recursor over the whole block -- the data recursion and the proof in step
-together -- which is worth more than the plain one it would get out here, and
-blocks that have it were written for it.  So the peel is kept for the case where
-the erasure has nothing to offer: a constructor with a field whose type is a
-data member of the block, sitting at a position its own conclusion says nothing
-about.  There is no well-formedness in reach for such a field -- see
-`dataFieldPart` -- so the recursor cannot be stated at all, and until now the
-member simply came out without one.
-
-Nothing here is peeled unless it can be, either.  These types are declared after
-the block and read against it, so a member whose type will be rewritten on the
-way through -- because it mentions a nesting the block denests -- is left where
-it is; what it would be declared over is a copy, which is the one thing the
-writer must not be shown.
--/
+Mark the members that leave the block rather than being erased with it: a
+proposition when the erasure has nothing to offer it, a data member when it has
+nothing to offer the erasure. -/
 def markPeeled (r : Raw) : TermElabM Raw := do
   let (isProp, _) ← memberLevels r.names r.arities
-  -- a block of nothing but propositions gives the erasure nothing to keep and is
-  -- refused for that, but the peel is not the erasure: the propositions that
-  -- leave it may be all there was in the way, and then what stays is a block
-  -- Lean can read.  So no early return on there being no data here
+  -- a block of nothing but propositions gives the erasure nothing to keep, but
+  -- the peel is not the erasure: the propositions that leave may be all that was
+  -- in the way.  So no early return on there being no data
   let dataNames := (Array.range r.names.size).filterMap fun i =>
     if isProp[i]! then none else some r.names[i]!
   let propNames := (Array.range r.names.size).filterMap fun i =>
     if isProp[i]! then some r.names[i]! else none
   -- a constructor field whose type is the block's data, at a position the
-  -- conclusion does not bind: the shape the erasure cannot state a minor for.
-  -- A *proof* field of that shape is not one -- it travels erased and whole,
-  -- and nothing has to be put back at a subtype for it -- so `h : a = b`
-  -- between two members is no reason to peel anything
+  -- conclusion does not bind: the shape the erasure cannot state a minor for
   let wants (i : Nat) : TermElabM Bool := do
-    -- or an arity indexed by another of the block's propositions.  The erasure
-    -- buys one crossing, from the data to the propositions, and not a second
-    -- from the propositions to themselves -- `checkDataArities` turns such a
-    -- member away outright -- whereas outside the block the index is a
-    -- proposition like any other and there is nothing to arrange
+    -- or an arity indexed by another of the block's propositions
     if r.arities[i]!.getUsedConstants.any fun c => c != r.names[i]! && propNames.contains c then
       return true
     for c in r.ctorTypes[i]! do
@@ -2112,17 +1487,8 @@ def markPeeled (r : Raw) : TermElabM Raw := do
     let n := r.names[j]!
     r.arities[i]!.getUsedConstants.contains n ||
       r.ctorTypes[i]!.any (·.getUsedConstants.contains n)
-  -- a data member nothing else in the block reaches at all is peeled too, and
-  -- for the opposite reason: not that the erasure has nothing to offer it, but
-  -- that it has nothing to offer the erasure.  What it gets instead is
-  -- everything an inductive gets, `match` above all, and the members that stay
-  -- lose nothing -- `widenWithPeeled` puts its motive back in their recursors.
-  --
-  -- Only in a block with no propositions in it.  A recursor over a block that
-  -- has them bundles each `Prop` motive with the value the data recursion
-  -- returned at the index it is stated over, and neither the order the motives
-  -- come in nor a hypothesis at a proof field survives being restated from
-  -- outside; a peeled data member would cost the block that shape
+  -- a data member nothing else in the block reaches is peeled too: it gains
+  -- `match`, and `widenWithPeeled` puts its motive back in the other recursors
   let peelData := !isProp.any id
   let mut cand : Array Nat := #[]
   for j in *...r.names.size do
@@ -2141,27 +1507,17 @@ def markPeeled (r : Raw) : TermElabM Raw := do
       c := next
     return c
   cand := close cand
-  -- a data member is peeled to gain it something, not to take the block apart.
-  -- If what stays is no longer induction-inductive then Lean is handed the whole
-  -- thing as two ordinary declarations instead, and the members that stay lose
-  -- the peeled one's motive with nothing to put it back -- `widenWithPeeled`
-  -- restates a recursor of ours, and one the kernel wrote is not ours to
-  -- restate.  So then the data candidates go, and the propositions, whose peel
-  -- was never about the shape of anybody else's recursor, are asked again
+  -- a data member is peeled to gain it something, not to take the block apart:
+  -- if what stays is no longer induction-inductive, the staying members lose the
+  -- peeled one's motive and only a recursor of ours can be widened
   let stillIndInd (keep : Array Nat) : Bool := keep.any fun i =>
     r.arities[i]!.getUsedConstants.any fun c => keep.any fun k => k != i && r.names[k]! == c
   if cand.any (!isProp[·]!) &&
       !stillIndInd ((Array.range r.names.size).filter (!cand.contains ·)) then
     cand := close (cand.filter (isProp[·]!))
   -- and now grow upwards.  A data member the block still reaches cannot leave,
-  -- but the member reaching it may be leaving too, and then there is nothing
-  -- holding it in after all: `Sub` reads a `Tm`, so `Tm` is no candidate to
-  -- begin with, and once `Sub` is out it is one.  Taking them one at a time and
-  -- asking again after each keeps the two things a peel owes.  What stays has to
-  -- be induction-inductive still, since widening a recursor is only possible
-  -- where the recursor is ours to widen; and what leaves must *not* be
-  -- induction-inductive among itself, since `addInd` hands it to the kernel as
-  -- it stands and the kernel is what cannot read such a block in the first place
+  -- but the member reaching it may be leaving too: `Sub` reads a `Tm`, so `Tm`
+  -- is no candidate until `Sub` is out
   if peelData then
     let mut grew := true
     while grew do
@@ -2180,29 +1536,7 @@ def markPeeled (r : Raw) : TermElabM Raw := do
 
 /--
 The arity check that depends on which members are still in the block, and the
-order the propositions' pre-types are declared in.
-
-It is about the propositions, and it is a thing the peel can carry away, so
-unlike the rest of the arity checks it waits until the constructors have been
-read -- whether anything else is stated with a member is a fact about those.
-What is left over by then really is out of reach.
-
-The interesting part is the order.  No member of a mutual inductive may appear
-in another's arity, so a `Prop` indexed by another `Prop` cannot share a pre-type
-block with it -- but it does not have to.  The propositions are erased and
-nothing is defined by recursion across the whole of them, so they may be
-declared as *several* mutual inductives one after another, and one declared
-later may name an earlier one's pre-type in its arity as freely as any of them
-may name the data.  So this works out which proposition has to be declared
-before which and hands back the layers.
-
-A member's arity naming another puts it in a strictly later layer; a member's
-*constructors* naming another only puts it no earlier, since a mutual inductive's
-members may mention each other in their constructors and an earlier layer is in
-scope anyway.  Two propositions that are genuinely induction-inductive with each
-other -- each arity naming the other, or one arity naming a proposition whose
-constructors name it back -- want both at once, and that is the one thing refused.
--/
+order the propositions' pre-types are declared in. -/
 def propLayers (names : Array Name) (arities : Array Expr) (ctorTypes : Array (Array Expr))
     (isProp : Array Bool) : TermElabM (Array (Array Nat)) := owning do
   -- erasure keeps the data and rebuilds it as a subtype of what it kept, so a
@@ -2256,39 +1590,19 @@ def propLayers (names : Array Name) (arities : Array Expr) (ctorTypes : Array (A
     erasure buys one crossing, from the data to the propositions, and not a second \
     from the propositions to themselves"
 
-/--
-The checks the arities alone settle.
-
-They are made before any constructor is elaborated, so that a block erasure
-cannot reach at all is turned away before its fields are read against members
-that will never exist.
-
-Every one of them says the same kind of thing -- this is an induction-inductive
-block, and it is outside the narrow class -- so they are `Mumi.owning` errors:
-worth reporting even when this is a retry whose failure would otherwise be
-dropped, since the block really was recognised and really is out of scope.
--/
+/-- The checks the arities alone settle. -/
 def checkDataArities (names : Array Name) (isProp : Array Bool)
     (levels : Array Level) : TermElabM Bool := owning do
   let dataIdxs := (Array.range names.size).filter (!isProp[·]!)
-  -- The data members become one mutual pre-block, so the kernel's own
-  -- same-universe rule applies to it.  Lifting that rule is exactly what
-  -- `Mumi.Lowering` does, so members that disagree are not an error here but a
-  -- decision: the pre-block is emitted through the lowering instead of straight
-  -- through `addInd`.  `emitPreData` is the other half.
-  --
-  -- A copy's level may still be a metavariable: the nesting type was applied at
-  -- one, and in a universe-polymorphic block nothing before now had to pin it
-  -- down.  Unification is what pins it, so try it on every member before giving
-  -- up on agreement -- a level left unassigned reaches the kernel as `Sort ?u`.
-  -- Only levels that genuinely cannot be made to agree choose the other route.
+  -- The data members become one mutual pre-block, so the kernel's same-universe
+  -- rule applies.  `Mumi.Lowering` lifts it, so members that disagree are not an
+  -- error but a decision: emit the pre-block through the lowering rather than
+  -- through `addInd`
   let mut heterogeneous := false
   for i in dataIdxs do
     unless ← isLevelDefEq levels[i]! levels[dataIdxs[0]!]! do
       heterogeneous := true
-  -- a data member is encoded as a wrapper, which lands in `Sort (max 1 l)`.
-  -- For `Type v` that is `Sort l` again; for a bare `Sort u`, which might yet
-  -- be `Prop`, it is not, and the definition would not typecheck
+  -- a data member is encoded as a wrapper, which lands in `Sort (max 1 l)`
   for i in dataIdxs do
     unless ← isLevelDefEq (mkLevelMax Level.one levels[i]!) levels[i]! do
       let s := toString (← ppExpr (mkSort levels[i]!))
@@ -2300,24 +1614,8 @@ def checkDataArities (names : Array Name) (isProp : Array Bool)
   return heterogeneous
 
 /--
-Which of each member's indices its pre-type has to delete: the ones whose type
-mentions the block.
-
-That is the whole rule, and it is forced.  The data members become a single
-mutual inductive, and no member of a mutual inductive may appear in another's
-arity, so `Ty : Ctx → Type` is an arity the pre-block cannot state.  An index at
-one of the *propositions* is no better off, for a different reason: their
-pre-types are declared after the data pre-block, so `Ok._pre` is not yet a
-constant when `Tm._pre` is being stated.  Deleting the index is what lifts both;
-`X._wf`, which is a definition and comes after every pre-type, is where it goes.
-
-A `Prop` member never deletes anything.  Its pre-type is declared *after* the
-data one and is a separate mutual inductive, so it may name the data pre-types
-in its arity as freely as it likes.
-
-Along with them, which of them a recursion can hand a hypothesis about: see
-`MemberSpec.dropIhs`.
--/
+Which of each member's indices its pre-type must delete: those whose type
+mentions the block. -/
 def droppedIndices (b : Block) : MetaM (Array (Array Nat × Array Nat)) := do
   let mut out : Array (Array Nat × Array Nat) := #[]
   for m in b.members do
@@ -2332,31 +1630,17 @@ def droppedIndices (b : Block) : MetaM (Array (Array Nat × Array Nat)) := do
             let ty ← inferType idxs[p]!
             if b.mentions ty then
               ds := ds.push p
-              -- the head is what settles it: only an index at a data member's
-              -- own type is something the recursion could say anything about
+              -- the head settles it: only an index at a data member's own type
+              -- is something the recursion can say anything about
               let atData ← b.withRecTarget? ty fun _ j _ => pure !b.members[j]!.isProp
               if atData.getD false then hs := hs.push p
           return (ds, hs)
   return out
 
 /--
-Whether the deletions `droppedIndices` asks for can be carried out.
-
-Two things have to hold, and each of them is the price of a decision made
-elsewhere.  A deleted index's type must *be* a member's, because the pre-world
-has to have a type to state it at, and only a member has a pre-type.  And an
-index that stays must not mention one that goes, because the one that stays is
-left at the binder the arity gave it, and the one that goes is not.
-
-What a deleted index's type may name is not restricted: `Ty : (n : Nat) → Ctx n
-→ Type` deletes a `Ctx n` whose pre-reading `Ctx._pre n` names an index that
-stayed, and `Tm : (Γ : Ctx) → Ok Γ → Type` deletes both of its own, the second
-stated at the first.  `Block.dropTys` hands them round as a telescope for
-exactly that.
-
-Like the other arity checks these are `Mumi.owning`: the block really is an
-induction-induction and really is outside what the erasure can state.
--/
+Whether the deletions `droppedIndices` asks for can be carried out: a deleted
+index's type must *be* a member's, only a member having a pre-type to state it
+at, and an index that stays must not mention one that goes. -/
 def checkDropped (b : Block) : TermElabM Unit := owning do
   for i in b.dataIdxs do
     let m := b.members[i]!
@@ -2372,9 +1656,9 @@ def checkDropped (b : Block) : TermElabM Unit := owning do
               throwError "The index `{idxs[p]!}` of `{m.name}` mentions an index the erasure \
                 has to delete, so it cannot be left where it is:{indentExpr ty}"
             continue
-          -- a proof is as good an index as anything else: the proposition has a
-          -- pre-type of its own, declared before `X._wf` is, so `Tm._wf` can be
-          -- stated at an `Ok._pre` like any other deleted index
+          -- a proof is as good an index as any: the proposition has a pre-type
+          -- of its own, declared before `X._wf`, so `Tm._wf` can be stated at an
+          -- `Ok._pre` like any other deleted index
           let some _ ← b.withRecTarget? ty fun ys j _ => do
               unless ys.isEmpty do
                 throwError "The index `{idxs[p]!}` of `{m.name}` binds arguments before \
@@ -2385,14 +1669,7 @@ def checkDropped (b : Block) : TermElabM Unit := owning do
                 being a member's type, so the erasure has no pre-type to state it \
                 at:{indentExpr ty}"
 
-/--
-The members `which` selects, in an order in which each can be defined.
-
-A member indexed by another mentions it by name -- `Ty G` is a subtype whose
-predicate is applied to `G.val`, and `Tm : (Γ : Ctx) → Ok Γ → Type` says `Ok`
-outright -- so it has to be declared second.  Two members each indexed by the
-other are a block no order would help, and that is the one thing refused here.
--/
+/-- The members `which` selects, in an order in which each can be defined. -/
 def memberOrder (b : Block) (which : Array Nat) : TermElabM (Array Nat) := owning do
   let needs (i : Nat) : Array Nat :=
     which.filter fun j =>
@@ -2414,17 +1691,7 @@ against: a constructor's indices are built out of the block's own constructors,
 and every member is a definition before any constructor is. -/
 def dataOrder (b : Block) : TermElabM (Array Nat) := memberOrder b b.dataIdxs
 
-/--
-The data constructors in an order in which each can be defined.
-
-A constructor of an indexed family names its indices, and when the block indexes
-data by data those indices are built out of the block's own constructors --
-`Ty.pi`'s field `B : Ty (Γ.snoc A)` names `Ctx.snoc`.  Every member is a
-definition by then, but a constructor is one too, so it has to be there first.
-
-The sort is stable, so a block whose constructors say nothing about one another
-comes out in the order it was written.
--/
+/-- The data constructors in an order in which each can be defined. -/
 def ctorOrder (b : Block) (order : Array Nat) : TermElabM (Array (Nat × CtorSpec)) := owning do
   let mut left : Array (Nat × CtorSpec) := #[]
   for i in order do
@@ -2444,22 +1711,7 @@ def ctorOrder (b : Block) (order : Array Nat) : TermElabM (Array (Nat × CtorSpe
 
 /--
 Whether the recursion can name an induction hypothesis at `e`, a deleted index
-of one of `c`'s recursive fields.
-
-Recursing into such a field means calling the member's `recAux`, and a `recAux`
-whose member deleted an index wants that index's own hypothesis along with it --
-`Ty.recAux` at `Ty (Γ.snoc A)` has to be handed the hypothesis at `Γ.snoc A`.
-`ihOfTerm` is what will find one, and it knows two things: a field of the
-constructor, whose hypothesis the minor was given, and a constructor of the
-block, whose hypothesis is its minor applied to the fields' own.  A function of
-the fields is neither, so it is turned away here rather than half-emitted.
-
-Below the top call `xs` is not a telescope but a constructor's argument list,
-since an index built out of a constructor is checked against that constructor's
-own fields, and an argument list holds closed terms as readily as variables --
-`Ctx.snoc n Γ true A` gives one.  So the head is looked for by comparing terms
-rather than by reading a variable off each entry.
--/
+of one of `c`'s recursive fields. -/
 partial def reachableIh (b : Block) (c : CtorSpec) (kinds : Array FieldKind) (xs : Array Expr)
     (e : Expr) : MetaM Unit := do
   let f := e.getAppFn
@@ -2489,19 +1741,7 @@ partial def reachableIh (b : Block) (c : CtorSpec) (kinds : Array FieldKind) (xs
 
 /--
 The refusal for a constructor that *builds* an index at one of the block's
-propositions rather than taking the proof as a field.
-
-Taking it as a field is fine, and is the shape the whole exercise is for: the
-index is deleted like any other and handed back to `X._wf`, where being a proof
-only means the predicate never looks at it, which is what makes `Tm Γ h` and
-`Tm Γ h'` the same type.  Building one is a different matter.  The alternative of
-the recursion binds the deleted index, and for a built index it is the equation
-in the well-formedness that ties that binder back to the term the constructor
-wrote -- and there is no such equation to be had here, because the two sides are
-proofs and the pre-world dropped the parts they were built from.  So the
-alternative has a proof it cannot relate to anything and the recursion has
-nothing to recurse under.
--/
+propositions rather than taking the proof as a field. -/
 def throwBuiltProof {α} (b : Block) (i : Nat) (c : CtorSpec) (p : Nat) (a : Expr) :
     TermElabM α :=
   throwError "The resulting type of `{c.name}` builds the index{indentExpr a}\nwhich is a \
@@ -2512,16 +1752,7 @@ def throwBuiltProof {α} (b : Block) (i : Nat) (c : CtorSpec) (p : Nat) (a : Exp
 
 /--
 An index a constructor builds rather than takes as a field, checked to be a term
-the erasure can state.
-
-The well-formedness is going to say that the index the recursion arrives at *is*
-this term, and it says so in the pre-world.  So everything the term is made of
-has to have a pre-world reading: a field of the constructor's own has one, either
-a stand-in or, where the field is itself a deleted index, its value, and so does
-a data constructor of the block, fully applied.  An erased proof field has none,
-having been dropped, and neither has anything else of the block -- a member's
-type, say, or a constructor still waiting for arguments.
--/
+the erasure can state. -/
 partial def statableIdx (b : Block) (c : CtorSpec) (kinds : Array FieldKind) (xs : Array Expr)
     (top e : Expr) : TermElabM Unit := do
   let bad (why : MessageData) : TermElabM Unit :=
@@ -2573,23 +1804,7 @@ def checkIhReachable (b : Block) : TermElabM Unit := owning do
                 discard <| b.withRecTarget? (← inferType xs[k]!) fun _ _ args =>
                   (b.ihDrops mm (b.dropArgs mm args)).forM (reachableIh b c kinds xs)
 
-/--
-Re-declare the scratch axioms at the block's own universe parameters.
-
-A member is stubbed as soon as its arity is known, and the only level list
-available then is every universe name in scope.  That is the wrong list twice
-over.  It can be too long -- a `universe u v w` the rest of the file needs is in
-scope whether or not the block uses any of it -- and it can be *different* from
-one member to the next, since a later member's `Type u` auto-binds `u` after an
-earlier member has already been stubbed.  Either way it is not `us`, which is
-what `normLevels` has just rewritten every reference to.
-
-So the scratch environment is wound back to before the first stub and the whole
-batch is declared again at `us`, from the normalized types.  Nothing else is
-lost by the rewind: `withRaw` elaborates the block inside `withoutModifyingEnv`,
-so anything else the elaboration happened to add was going to be discarded on
-the way out regardless.
--/
+/-- Re-declare the scratch axioms at the block's own universe parameters. -/
 private def restub (r : Raw) (us : List Name) (arities : Array Expr)
     (ctorTypes : Array (Array Expr)) : TermElabM Unit := do
   let some env0 := r.stubEnv | return
@@ -2608,22 +1823,7 @@ private def restub (r : Raw) (us : List Name) (arities : Array Expr)
 
 /--
 The pre-types of some of a block's members, as inductive types over the scratch
-axioms.
-
-An arity goes through `tr` whichever kind of member it belongs to, and then
-loses the indices the pre-type drops.  For a `Prop` member `tr` is the whole of
-it: its arity may mention the block's data, and what it says of it is said again
-at the pre-types.  For a data member it is the other way round -- `tr` has
-nothing to rewrite, because a data index that mentions the block is one the
-pre-type is about to delete.
-
-Every pre-type is stubbed before any constructor is built, because a
-constructor of one member may mention the pre-type of another.  The
-constructors themselves are stubbed only when asked: `X._wf` is defined by
-recursion over the data pre-constructors and is elaborated before the pre-block
-is really declared, while nothing is ever elaborated against a `Prop`
-pre-constructor.
--/
+axioms. -/
 private def preInds (b : Block) (us : List Name) (idxs : Array Nat) (stubCtors : Bool) :
     TermElabM (Array InductiveType) := do
   let arity (i : Nat) : TermElabM Expr := do
@@ -2645,28 +1845,7 @@ private def preInds (b : Block) (us : List Name) (idxs : Array Nat) (stubCtors :
       cs := cs.push { name := b.preOf c.name, type }
     return { name := preName m.name, type := ← arity i, ctors := cs.toList }
 
-/--
-The section variables the block uses, folded in as its leading parameters.
-
-An inductive written inside a `variable (α : Type)` means the same as one that
-takes `α` by hand, so the work is to find out which variables that is and put
-them in front.  Which ones cannot be known before the constructors are read --
-`Ty.base : (Γ : Ctx) → α → Ty Γ` names `α` in a field and in no arity at all --
-so this runs on the finished `Raw` rather than on the way in.
-
-A variable is kept when the block mentions it, when a kept variable's own type
-mentions it, or when it is an instance whose type is about variables already
-kept, which is how `[Inhabited α]` comes along with `α`.  The three feed each
-other, so the search runs to a fixed point, and the survivors are taken in scope
-order, which is dependency order.
-
-They are then bound in front of every arity, every constructor type and every
-copy's lambda, and every reference to a member or a constructor of the block is
-applied to them -- which is what lets the short spellings the writer used inside
-the block go on meaning what they meant.  The constructors' copy of them is made
-implicit, since that is what the rest of this file expects a parameter to look
-like there.
--/
+/-- The section variables the block uses, folded in as its leading parameters. -/
 private def withSectionVars (r : Raw) : TermElabM Raw := do
   if r.vars.isEmpty then return r
   let mut st : CollectFVars.State := {}
@@ -2701,12 +1880,7 @@ private def withSectionVars (r : Raw) : TermElabM Raw := do
   let copies ← r.copies.mapM fun (n, e) => return (n, ← mkLambdaFVars used (fix e))
   return { r with arities, ctorTypes, copies, numParams := r.numParams + used.size }
 
-/--
-Everything between the elaborated block and the `Plan`.
-
-The block reaching here need not be one anybody wrote: `denest` adds members of
-its own, and they go through exactly the same analysis.
--/
+/-- Everything between the elaborated block and the `Plan`. -/
 def prepareCore (r : Raw) : TermElabM Plan := do
     let r ← withSectionVars r
     let n := r.names.size
@@ -2737,11 +1911,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     arities := arities.map (normLevels blockNames lvls)
     ctorTypes := ctorTypes.map (·.map (normLevels blockNames lvls))
     -- the peeled members leave the block here, taking their types with them
-    -- exactly as they were written.  They are collected after the levels are
-    -- settled, because what they are stated over is the block, and the block
-    -- spells its own universes only once `us` is known; and before `restub`,
-    -- because a name that is going to be declared for real must not still be
-    -- standing in the environment as a scratch axiom
+    -- exactly as they were written
     let peeled : Array InductiveType := r.peeled.map fun i =>
       let cs := (Array.range r.ctorNames[i]!.size).map fun j =>
         ({ name := r.ctorNames[i]![j]!, type := ctorTypes[i]![j]! } : Constructor)
@@ -2774,17 +1944,9 @@ def prepareCore (r : Raw) : TermElabM Plan := do
       { skeleton with
         members := skeleton.members.mapIdx fun i m =>
           { m with dropped := drops[i]!.1, dropIhs := drops[i]!.2 } }
-    -- a *data* member's index of that shape is refused rather than denested.
-    -- Denesting is what makes the proposition above work -- `GOk : GWrap GVec →
-    -- Prop` becomes `GOk : GVec.nested_GWrap_1 → Prop`, and since the whole
-    -- proposition is erased there is nothing to carry back -- but a data
-    -- member's index of the same shape is deleted, which means travelling as a
-    -- member's pre-type and coming back as a subtype of it, and a `List` of
-    -- them is neither: the transport would be a `List.map`, which is no
-    -- identity, and the iota rules would stop holding by `rfl`.  So the index
-    -- has to be a member's type as written, and this is the last place that can
-    -- tell -- by `checkDropped` the copy is a member and passes, leaving the
-    -- writer with a `Ty` indexed by an internal name they never wrote
+    -- a *data* member's index of that shape is refused rather than denested: the
+    -- index is deleted, so it travels as a pre-type and returns as a subtype of
+    -- it, and a `List` of them is neither.  This is the last place that can tell
     for j in dataIdxs do
       if r.copies.any (·.1 == r.names[j]!) then continue
       forallTelescope arities[j]! fun idxs _ => do
@@ -2829,9 +1991,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
     -- one layer at a time, so that a layer's arities find the pre-types of the
     -- ones before it already stubbed
     let prePropInds ← propLayers.mapM fun layer => preInds b us layer (stubCtors := false)
-    -- `X._wf`, one conjunct per recursive field and one per erased proof field.
-    -- All the data members share one set of motives and minors, so each `X._wf`
-    -- is a different projection of the very same recursion.
+    -- `X._wf`, one conjunct per recursive field and one per erased proof field
     let wfDecls ← forallBoundedTelescope b.members[b.dataIdxs[0]!]!.type numParams
         fun ps _ => do
       -- a motive ends in the member's deleted indices, because that is where
@@ -2852,10 +2012,7 @@ def prepareCore (r : Raw) : TermElabM Plan := do
           let kinds := b.fieldKinds c.kinds
           let minor ← forallTelescope (← b.ctorType c ps) fun xs concl => do
             -- the deleted indices are what the motive ends in, so the minor
-            -- takes them last, all of them and at their pre-types.  A field the
-            -- constructor gave as one of them is then read at the binder that
-            -- replaced it; an index it built is read nowhere, and the equations
-            -- at the end of the conjunction are what pin that binder down
+            -- takes them last, all of them and at their pre-types
             let dropped := b.members[i]!.dropped
             -- the kept indices a dropped one's pre-type names are read at the
             -- constructor's own values for them, which is where they are the
@@ -2900,9 +2057,8 @@ def prepareCore (r : Raw) : TermElabM Plan := do
       let mut wfDecls : Array (Name × Expr × Expr) := #[]
       for i in b.dataIdxs do
         let m := b.members[i]!
-        -- one motive universe, the one they were all brought to.  A lowered
-        -- pre-block wants one per component instead, and `widenPreRecLevels`
-        -- repeats this one to suit once the real recursor is there to be counted
+        -- one motive universe, the one they were all brought to; a lowered
+        -- pre-block wants one per component, which `widenPreRecLevels` supplies
         let rec' := mkConst (preDataRecName preIsHeterogeneous m.name) (motiveLevel :: b.lvls)
         let (type, value) ← forallTelescope (← instantiateForall m.type ps) fun is _ =>
           b.withValIdxs i ps is fun vis =>
@@ -2964,11 +2120,7 @@ where
               member's type nor a proof of one of the block's propositions, so this lowering \
               cannot erase it:{indentExpr ty}"
           kinds := kinds.push .plain
-      -- what the arity deletes, the constructor deletes with it.  A constructor
-      -- that gives such an index as a bare field of its own loses the field
-      -- along with the index, which is the cheap case and the common one; one
-      -- that *builds* the index keeps every field and owes the erasure an
-      -- equation instead, saying in the pre-world what it built
+      -- what the arity deletes, the constructor deletes with it
       let idxArgs := b.idxArgs concl.getAppArgs
       let dropped := b.members[i]!.dropped
       -- which of the member's own indices each of them is stated at, which
@@ -2998,11 +2150,8 @@ where
         | some k =>
           -- a field can stand for only one of the indices it is given as --
           -- `Sub.id : (Γ : Ctx) → Sub Γ Γ` gives its context as both -- and
-          -- which one is not free: an index stated at one of those readings has
-          -- a field typed there, and only the reading the field *is* leaves
-          -- that field at a term the alternative has.  Every other reading is
-          -- treated as one the constructor built, out of the field, and the
-          -- equation in the well-formedness is what says they agree
+          -- which one is not free: only the reading the field *is* leaves a
+          -- field typed at that index at a term the alternative has
           let ps := (given.find? (·.1 == k)).getD (k, #[p]) |>.2
           let keep := (ps.find? fun p' =>
             dropped.any fun r => !ps.contains r && statedAt[r]!.contains p').getD ps[0]!
@@ -3011,10 +2160,7 @@ where
             statableIdx b c kinds xs a a
             built := built.push p
             continue
-          -- a proof field given as an index is deleted like any other.  Erasure
-          -- would have dropped it anyway; being an index as well only means the
-          -- well-formedness takes it back, at the proposition's pre-type, rather
-          -- than asserting it as a conjunct of its own
+          -- a proof field given as an index is deleted like any other
           let m ← match kinds[k]!, ← recTargetOf? b (← inferType xs[k]!).headBeta with
             | .recur m, _ | .erased, some (m, true) => pure m
             | _, _ =>
@@ -3022,15 +2168,9 @@ where
                 `{a}`, which is not a value of a member of the block"
           kinds := kinds.set! k (.deleted m p)
       -- an index taken as a field, but stated at one the constructor built,
-      -- cannot stay a field: the alternative binds the built index, so the field
-      -- would be sitting at the constructor's reading of something the
-      -- alternative only has a binder for.  What it can do instead is be both --
-      -- the field is kept, the index is built out of it, and the equation the
-      -- well-formedness carries for a built index is what says the two agree.
-      -- The alternative then binds the field where the constructor wrote it and
-      -- gets an induction hypothesis for it besides, which the deleted reading
-      -- would not have given.  A binder in an arity can only name the ones before
-      -- it, so one pass in arity order settles every promotion this sets off
+      -- cannot stay a field: the alternative binds the built index, so the
+      -- field would sit at the constructor's reading of something the
+      -- alternative only has a binder for
       for p in dropped do
         let some k := deletedField? kinds p | continue
         -- a proof index is not promoted: erasure drops the field whatever else
@@ -3088,12 +2228,7 @@ where
             `{xs[k]!}` as an index, but erasure has to move or drop \
             it{indentExpr a}"
 
-/--
-Elaborate a written block into a `Raw`, and hand it on.
-
-`k` runs with the scratch axioms still in scope, which is what `prepareCore`
-needs; it is a callback rather than a return value for exactly that reason.
--/
+/-- Elaborate a written block into a `Raw`, and hand it on. -/
 def withRaw {α} (views : Array InductiveView) (vars : Array Expr := #[])
     (k : Raw → TermElabM α) : TermElabM α := do
   checkSupported views
@@ -3170,15 +2305,9 @@ def withRaw {α} (views : Array InductiveView) (vars : Array Expr := #[])
               `{c.declName}`.  It must be given because `{views[i]!.declName}` is an \
               inductive family"
     -- the constructors, a member at a time, each after the members its arity
-    -- names.  A constructor says what its indices are, and an index is built out
-    -- of the indexing member's own constructors: `Ok : Ctx → Prop` has `Ok.snoc :
-    -- Ok (.snoc Γ h)`, where `.snoc` is `Ctx`'s and resolves to nothing until
-    -- `Ctx` has been read, and `Tm : (Γ : Ctx) → Ok Γ → Type` has `Tm.top : Tm
-    -- .nil .nil`, whose second `.nil` is `Ok`'s.  The dependency runs both ways
-    -- between the data and the propositions, so both go in the one pass.  Data
-    -- first among those equally ready, which is the order a block without any
-    -- such indexing was read in before.  A cycle of arities is refused later, by
-    -- `propLayers`; here it just keeps the written order
+    -- names.  An index is built out of the indexing member's own constructors:
+    -- `Tm : (Γ : Ctx) → Ok Γ → Type` has `Tm.top : Tm .nil .nil`, whose second
+    -- `.nil` is `Ok`'s
     let mut ctorTypes : Array (Array Expr) := (List.replicate n (#[] : Array Expr)).toArray
     let mut pending := dataIdxs ++ propIdxs
     while !pending.isEmpty do
@@ -3192,10 +2321,7 @@ def withRaw {α} (views : Array InductiveView) (vars : Array Expr := #[])
         for j in *...tys.size do
           stubAxiom views[i]!.ctors[j]!.declName tys[j]!
       pending := pending.filter (!ready.contains ·)
-    -- a member whose resulting type was left out was guessed at `Type`.  Now
-    -- that the fields are known, check the guess was big enough: a field the
-    -- guess does not fit would have been elaborated against the wrong universe,
-    -- so the answer is to ask for the type rather than to widen it here
+    -- a member whose resulting type was left out was guessed at `Type`
     for i in *...n do
       if views[i]!.type?.isNone then
         for j in *...ctorTypes[i]!.size do
@@ -3228,38 +2354,30 @@ inductive RecWFTree where
 ```
 
 The kernel handles these by specialising the nesting type constructor to the
-block: `WFTree RecWFTree` becomes a new member of the block, and the enlarged
-block is checked instead.  `Mumi.Denest` does the same at the elaborator, and
-hands the result to `Mumi.Lowering`.
+block: `WFTree RecWFTree` becomes a new member and the enlarged block is checked
+instead.  `Mumi.Denest` does the same at the elaborator.  Neither can do it here:
+the specialisation of `Tree.WF` is `Tree.WF RecWFTree : Tree RecWFTree → Prop`,
+whose *arity* mentions the copy of `Tree`, so the enlarged block is
+induction-inductive.  It is done again here against the `Raw` above, and the
+result goes through `prepareCore` like any other.
 
-Neither can do it here.  The specialisation of `Tree.WF` above is
-`Tree.WF RecWFTree : Tree RecWFTree → Prop`, whose *arity* mentions the copy of
-`Tree` -- the enlarged block is induction-inductive, which is exactly what
-`Mumi.Denest` refuses and `Mumi.Lowering` cannot lower.  So the specialisation
-is done again here, against the `Raw` above, and the enlarged block goes through
-`prepareCore` like any other.
-
-Two things differ from `Mumi.Denest` beyond that, and both follow from where in
-the pipeline this sits.  The members are *constants* -- their scratch axioms --
-rather than free variables, so an occurrence is recognised by name.  And the
-rewrite is structural rather than head-only, because a copied constructor can
-appear in an index: `Tree.WFWith.empty`'s resulting type is
-`Tree.WFWith α .empty []`, and the `.empty` in it has to become the copy's.
+Two things differ from `Mumi.Denest`.  The members are *constants*, their scratch
+axioms, so an occurrence is recognised by name.  And the rewrite is structural
+rather than head-only, a copied constructor being able to appear in an index:
+`Tree.WFWith.empty` ends in `Tree.WFWith α .empty []`, whose `.empty` must become
+the copy's.
 -/
 
 /-!
 A nesting applied to something that mentions a field of the constructor it sits
 in -- `mk (n : Nat) (x : OkFam A n)` -- cannot become a copy with `n` among its
-parameters: a member's parameters are fixed before any constructor is
-elaborated.  It becomes a copy *indexed* by `n` instead, and the field is
-abstracted out of the parameters on the way in.
-
-That abstraction has to survive between the two passes.  `scanExpr` walks under
-binders with free variables of its own, `rwExpr` walks the raw expression with
-its de Bruijn indices still in it, and one occurrence is a different expression
-in each.  So the parameters are recorded as a *pattern*: an abstracted field
-stands as a hole constant, which nothing the block can contain has in it, and
-`matchHoles` reads back out of a candidate what each hole stood for.
+parameters, a member's parameters being fixed before any constructor is
+elaborated.  It becomes a copy *indexed* by `n`, with the field abstracted out of
+the parameters on the way in.  That abstraction must survive between the two
+passes, which see one occurrence as different expressions: `scanExpr` walks under
+binders with free variables, `rwExpr` walks the raw expression with de Bruijn
+indices.  The parameters are therefore recorded as a *pattern*, an abstracted
+field standing as a hole constant, and `matchHoles` reads back each hole.
 -/
 
 /-- The marker standing for the `j`-th field a copy's parameters were abstracted over. -/
@@ -3282,15 +2400,7 @@ private def hasLooseBVarBelow (e : Expr) (d : Nat) : Bool := Id.run do
 
 /--
 Match the pattern `p`, holes and all, against `e`, recording what each hole
-stood for.  A hole reached twice has to reach the same thing both times.
-
-`e` is the raw expression, de Bruijn indices and all, so a hole reached under a
-binder of the pattern -- `Sigma Nat fun _ => Wrap R n` puts one under a lambda
--- comes back counted from inside that binder, while it is passed on outside it.
-So `depth` says how many of the pattern's binders it was found under, and what
-it stood for is lowered past them.  A value that is one of them cannot be lifted
-out at all, and the match fails.
--/
+stood for; a hole reached twice has to reach the same thing both times. -/
 private partial def matchHoles (p e : Expr) (out : Array (Option Expr)) (depth := 0) :
     Option (Array (Option Expr)) :=
   if let some j := holeIdx? p then
@@ -3313,10 +2423,7 @@ private partial def matchHoles (p e : Expr) (out : Array (Option Expr)) (depth :
     | .proj _ i b, .proj _ i' b' => if i == i' then matchHoles b b' out depth else none
     | p', e' => if p' == e' then some out else none
 
-/--
-Open the telescope of fields a copy's parameters were abstracted over.  Each
-one's type may mention the holes of the ones before it, so they go in in order.
--/
+/-- Open the telescope of fields a copy's parameters were abstracted over. -/
 private def withHoles {m : Type → Type} [Monad m] [MonadControlT MetaM m] {α : Type}
     (tys : List (Name × Expr)) (acc : Array Expr) (k : Array Expr → m α) : m α :=
   match tys with
@@ -3327,25 +2434,16 @@ private def withHoles {m : Type → Type} [Monad m] [MonadControlT MetaM m] {α 
 private structure AuxSpec where
   /--
   `@I p₁ … p_k`: the type constructor applied to its parameters and nothing
-  else.  Two occurrences with the same parameters share one member, so this is
-  the key -- with the block's own constants stripped of their levels, because
-  each is a scratch axiom over every universe name in scope and two references
-  to it carry two different sets of metavariables.  Two occurrences that differ
-  only in the fields they are applied to share one member too, which is what the
-  holes in it are for.
-  -/
+  else. -/
   key       : Expr
   name      : Name
   /--
   `I`'s parameters, as they were written -- levels and all, unlike `key` -- with
-  a hole wherever a field of the constructor was abstracted out.
-  -/
+  a hole wherever a field of the constructor was abstracted out. -/
   params    : Array Expr
   /--
   The fields those holes stand for: their names, for the copy's binders, and
-  their types, each of which may mention the holes of the ones before it.  Empty
-  unless the nesting was applied to something a field reaches.
-  -/
+  their types, each of which may mention the holes of the ones before it. -/
   localTys  : List (Name × Expr)
   indName   : Name
   /-- The levels `I` was applied at. -/
@@ -3364,17 +2462,7 @@ private def mentionsNames (names : Array Name) (e : Expr) : Bool :=
 
 /--
 Put every constant of `names` at the empty level list, and every other level in
-normal form, so that keys compare.
-
-A member's own levels are dropped because a key stands for the shape of the
-nesting and not for how the occurrence spelled the block.  The rest are
-normalised because the order `max` writes its arguments in is not fixed:
-`List (T α β)` with `T : Type (max u v)` elaborates to `List.{max v u}` in one
-member's arity and `List.{max u v}` in another member's constructor, and
-structural equality between those two is false.  A key that missed that way
-would leave the occurrence standing in the constructor while the arity took the
-copy, and the two no longer agree on what the constructor's index is.
--/
+normal form, so that keys compare. -/
 private def stripLevels (names : Array Name) (e : Expr) : Expr :=
   e.replace fun s =>
     match s with
@@ -3388,31 +2476,7 @@ private def stripLevels (names : Array Name) (e : Expr) : Expr :=
       if u' == u then none else some (.sort u')
     | _ => none
 
-/--
-How far into an occurrence's arguments the parameters a copy specialises reach.
-
-Which of an inductive's binders are parameters is read off its constructors, and
-one with *no* constructors has nothing to read: every binder is fixed across all
-zero of them, so
-
-```lean
-inductive Box.Never (α : Type) : Box α → Prop
-```
-
-arrives with two parameters where it was written with one.  Specialising both
-would fix the copy at whatever the occurrence's `Box α` happened to be -- a
-constructor's own field, in `Box.Never R b` -- and a copy taken at a field is a
-copy of a family, indexed by that field with the type it was written at.  For a
-field at `Box R` there is no such type: the block is being declared, so `Box R`
-is itself denested, and the index would have to be the copy of `Box` rather than
-`Box` at anything.
-
-Taking the shorter prefix says the same thing without the detour.  What is not
-specialised stays an index of the copy, where it is rewritten along with the
-rest, and `Box.Never R b` becomes `nested_Never ..` indexed by `nested_Box ..`
--- exactly what the same block gets once its proposition has a constructor and
-Lean stops promoting the index.
--/
+/-- How far into an occurrence's arguments the parameters a copy specialises reach. -/
 private def specParams (names : Array Name) (info : InductiveVal) (args : Array Expr) : Nat :=
   Id.run do
     if !info.ctors.isEmpty then return info.numParams
@@ -3423,9 +2487,7 @@ private def specParams (names : Array Name) (info : InductiveVal) (args : Array 
 
 /--
 Recognise a nested occurrence: an inductive type applied to parameters that
-mention the block.  A member applied to its own arguments is not one, and
-neither is an inductive that mentions the block only outside its parameters.
--/
+mention the block. -/
 private def nestedApp? (names : Array Name) (e : Expr) :
     MetaM (Option (Expr × InductiveVal × List Level × Array Expr × Array Expr)) := do
   if !mentionsNames names e then return none
@@ -3446,17 +2508,12 @@ mutual
 
 /--
 Intern the nested application `e` is, if it is one, and then look through the
-copy's own arity and constructors for further nesting.
--/
+copy's own arity and constructors for further nesting. -/
 private partial def internNested (names : Array Name) (root : Name) (bound : Array FVarId)
     (e : Expr) : DenestM Unit := do
   let some (_, info, lvls, params, idxArgs) ← nestedApp? names e | return
   -- `Mumi.Denest` turns a nesting parameter that mentions a field of the
-  -- constructor it sits in into an extra index of the copy, and so does this.
-  -- `bound` is what the scan itself went under, so it is exactly the fields in
-  -- scope at the occurrence; the ones the parameters reach are closed under
-  -- their own types, so that the telescope the copy gains is well formed, and
-  -- taken in scope order, which is dependency order
+  -- constructor it sits in into an extra index of the copy, and so does this
   let mut want : Array FVarId := #[]
   for y in bound.reverse do
     if want.contains y || params.any (·.containsFVar y) then
@@ -3480,8 +2537,7 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
   -- a local the copy gains may itself be typed by the block -- `List (Ty Γ)`
   -- makes a copy indexed by the `Γ` it was nested at -- and that is no obstacle
   -- here, only the statement that the copy is induction-inductive too, which is
-  -- the thing this file was written to erase.  So the type goes across as it
-  -- stands and the copy joins the block as an ordinary member
+  -- the thing this file was written to erase
   let mut localPats : Array (Name × Expr) := #[]
   for j in *...ys.size do
     let ty ← inferType ys[j]!
@@ -3490,10 +2546,7 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
   let localTys := localPats.toList
   -- nesting into one member of a mutual family specialises the whole family:
   -- the members mention each other, so a copy of one is useless without copies
-  -- of the rest.  They share a parameter telescope, so `params` fits all of
-  -- them, and they are named in declaration order however the block reached
-  -- them.  Every one is interned before any is scanned, so that the members'
-  -- references to each other find copies rather than intern them again
+  -- of the rest
   let fam ← info.all.toArray.mapM getConstInfoInduct
   for fi in fam do
     let name := root ++ Name.mkSimple s!"nested_{shortName fi.name}_{(← get).size + 1}"
@@ -3541,17 +2594,12 @@ end
 /--
 The spec `app` is an occurrence of, and what its holes stood for there: a copy
 whose parameters mention a field takes that field as a leading index, so those
-come back to be passed on in front of the occurrence's own indices.
--/
+come back to be passed on in front of the occurrence's own indices. -/
 private def specOf? (names : Array Name) (specs : Array AuxSpec) (app : Expr) :
     Option (AuxSpec × Array Expr) := Id.run do
   let a := stripLevels names app
-  -- `internNested` keys on the whole application, so a block holding both
-  -- `List (Wrap R n)` and `List (Wrap R 0)` gets a member for each.  The second
-  -- occurrence matches both -- the family's hole takes `0` -- and the member
-  -- that stands for it alone is the one meant: sending it to the family's
-  -- instead would give that member's own constructors a conclusion at a
-  -- different type
+  -- `internNested` keys on the whole application, so a block holding both `List
+  -- (Wrap R n)` and `List (Wrap R 0)` gets a member for each
   for s in specs do
     if s.localTys.isEmpty && s.key == a then return some (s, #[])
   for s in specs do
@@ -3590,28 +2638,14 @@ private partial def rwExpr (names : Array Name) (specs : Array AuxSpec) (ps : Ar
       return .done (mkAppN (← rw e.getAppFn) (← e.getAppArgs.mapM rw))
     | _ => return .continue)
 
-/--
-Copy the first `n` binder names and annotations from `model` onto `e`.
-
-Rewriting under the block's parameters means taking them apart and putting them
-back, and `mkForallFVars` annotates each binder the way its local declaration
-is, which for a constructor is not how the constructor had it.
--/
+/-- Copy the first `n` binder names and annotations from `model` onto `e`. -/
 private def copyLeadingBinders : Nat → Expr → Expr → Expr
   | 0, _, e => e
   | n + 1, .forallE mn _ mb mbi, .forallE _ ty b _ =>
     .forallE mn ty (copyLeadingBinders n mb b) mbi
   | _, _, e => e
 
-/--
-Specialise every nested occurrence in `r` into a member of its own.
-
-A block with no nested occurrence comes back untouched.  Otherwise the copies
-are appended as members, and everything -- the original members included -- is
-rewritten to mention them instead.  The copies are stubbed as scratch axioms on
-the way out, in dependency order, so that `prepareCore` can telescope over them
-like any other member.
--/
+/-- Specialise every nested occurrence in `r` into a member of its own. -/
 def denestRaw (r : Raw) : TermElabM Raw := do
   let names := r.blockNames
   let root := r.names[0]!
@@ -3655,9 +2689,8 @@ def denestRaw (r : Raw) : TermElabM Raw := do
         let params := s.params.map (fillHoles ls)
         -- a nesting whose parameter is a lambda -- `Σ _ : Nat, Wrap R n` passes
         -- `fun _ => Wrap R n` -- leaves a redex wherever the original mentions
-        -- that parameter, and `Sigma.mk`'s `snd : β fst` becomes
-        -- `(fun _ => Wrap R n) fst`.  The copy is a declaration the writer reads,
-        -- so it gets the beta-normal form
+        -- that parameter, and `Sigma.mk`'s `snd : β fst` becomes `(fun _ =>
+        -- Wrap R n) fst`
         let resType ← Core.betaReduce
           (← instantiateForall (ci.instantiateTypeLevelParams s.levels) params)
         let arity := copyLeadingBinders r.numParams r.arities[0]!
@@ -3688,10 +2721,9 @@ def denestRaw (r : Raw) : TermElabM Raw := do
         let params := s.params.map (fillHoles ls)
         -- a parameter `specParams` left unspecialised is a leading index of the
         -- copy, and the original still wants it where its own parameters go, so
-        -- it is abstracted here alongside the fields -- at the type the original
-        -- gives it rather than the copy's, which is the one the bridge has to
-        -- start from.  That makes it a local like any other, and the machinery
-        -- that copies a *family* one member at a time is what carries it
+        -- it is abstracted here alongside the fields -- at the type the
+        -- original gives it rather than the copy's, which is the one the bridge
+        -- has to start from
         let res ← instantiateForall (ci.instantiateTypeLevelParams s.levels) params
         forallBoundedTelescope res (ci.numParams - s.numParams) fun ds _ => do
           instantiateMVars (← mkLambdaFVars (ps ++ ls ++ ds)
@@ -3708,28 +2740,22 @@ def denestRaw (r : Raw) : TermElabM Raw := do
 /-! ## The bridge back to the originals
 
 Denesting replaces `WFTree RecWFTree` with a copy of `WFTree` specialised at the
-block, and a copy is not the type it copies: `RecWFTree.nested_WFTree_1` and
-`WFTree RecWFTree` have the same constructors, but no term of one is a term of
-the other, and no arrangement of declarations makes them defeq -- the copy has
-to exist before `RecWFTree` does, and `WFTree RecWFTree` cannot be written until
-`RecWFTree` does.  Lean's own nested inductives have no such copy at all: the
-kernel builds the enlarged block internally and states `Rose.rec` over
-`List Rose` directly, which is not something an elaborator can reproduce.
+block, and a copy is not the type it copies: no arrangement of declarations makes
+them defeq, the copy having to exist before `RecWFTree` and `WFTree RecWFTree`
+not being writable until after.  Lean's own nested inductives have no copy at all
+-- the kernel builds the enlarged block internally -- which an elaborator cannot
+reproduce.  What can be arranged is that the copy never appears in anything the
+writer reads.  The two types are *isomorphic*, and the isomorphism is definable:
 
-What can be arranged is that the copy never appears in anything the writer has
-to read.  The two types are *isomorphic*, and the isomorphism is definable:
-
-* `X.ofOrig` sends the original to the copy.  It recurses on the original, an
-  ordinary inductive with an ordinary recursor, so this direction is the easy
-  one: a data copy's is compiled by structural recursion, a `Prop` copy's is a
-  theorem built from the original's own `rec`.
-* `X.toOrig` sends the copy back.  It has to recurse on the copy, which is a
-  member of the lowered block, so it goes through the pre-type: `X.toOrigPre`
-  is the structural recursion, over a motive that takes the well-formedness of
-  the indices *after* the term itself, and `X.toOrig` supplies them from the
-  index it was handed.
+* `X.ofOrig` sends the original to the copy, recursing on the original: a data
+  copy's is compiled by structural recursion, a `Prop` copy's is a theorem built
+  from the original's own `rec`.
+* `X.toOrig` sends the copy back.  It recurses on the copy, a member of the
+  lowered block, so it goes through the pre-type: `X.toOrigPre` is the structural
+  recursion, over a motive taking the well-formedness of the indices *after* the
+  term itself, and `X.toOrig` supplies them from the index it was handed.
 * `X.ofOrig_toOrig : (X.ofOrig (X.toOrig x)).val = x.val` closes the round trip
-  on the side the recursor needs, by recursion on the copy the same way.
+  on the side the recursor needs, by recursion on the copy.
 
 With `ofOrig`, the constructor the writer declared can be given the type they
 wrote.  The kernel-facing constructor keeps the copy in its type under a hidden
@@ -3739,43 +2765,27 @@ name, `RecWFTree._nested_mk`, and `RecWFTree.mk` is a wrapper over it:
 def RecWFTree.mk (x : WFTree RecWFTree) : RecWFTree := RecWFTree._nested_mk (ofOrig x)
 ```
 
-The recursor gets the same treatment, and needs the whole isomorphism.
+The recursor gets the same treatment and needs the whole isomorphism.
 `RecWFTree._nested_rec` is the kernel-facing one, with a motive for every member
-of the enlarged block -- one of them over `RecWFTree.nested_WFTree_1`.  `X.rec`
-takes motives over the originals instead and applies `_nested_rec` at
-`fun idxs t => C .. (X.toOrig t)`, which is what makes a minor stated over a
-copy line up with one stated over the original: a field of copy type is handed
-on as `X.toOrig` of itself, and the induction hypotheses match on the nose.
+of the enlarged block.  `X.rec` takes motives over the originals and applies
+`_nested_rec` at `fun idxs t => C .. (X.toOrig t)`, which lines a minor stated
+over a copy up with one stated over the original.  The exception is a renamed
+constructor of the writer's own: the raw minor concludes at the raw constructor
+applied to the copy-typed field, the nice one at the nice constructor applied to
+`X.toOrig` of it, which unfolds to the raw one at `X.ofOrig (X.toOrig ..)`.  So
+the conclusion is transported along `ofOrig_toOrig` one field at a time at the
+`.val` level, and the wrapper's `ext` lifts the result back.
 
-The one place it does not line up is a constructor of the writer's own that had
-to be renamed.  The raw minor concludes at the raw constructor applied to the
-copy-typed field, and the nice minor concludes at the nice constructor applied
-to `X.toOrig` of it -- which unfolds to the raw one at `X.ofOrig (X.toOrig ..)`.
-`ofOrig_toOrig` is exactly the difference, so the conclusion is transported
-along it, one field at a time and at the `.val` level, and the wrapper's `ext` lifts
-the result back.
+Copies whose originals are nested in each other -- `Rose T`, whose field is a
+`List (Rose T)`, or the two members of a `mutual` family -- are compiled as one
+group.  A group of data copies goes by structural recursion over the outer
+original's recursor; a group of `Prop` copies is a mutual induction, each theorem
+giving every copy a real motive so a sibling arrives as a hypothesis.  A group
+that *mixes* the two has no such shape.
 
-A copy is not a name anyone reaches for, so a copy keeps only its raw recursor
-and `X.rec` is emitted for the members the writer declared.  The plain name is
-always free: every member of a lowered block is a `def`, so Lean generates no
-`X.rec` of its own to collide with.
-
-Copies whose originals are nested in each other -- `Rose T`, whose own field is
-a `List (Rose T)`, so that both are copied and neither can be built first, or
-the two members of a `mutual` family, which are copied together because a copy
-of one is no use without the other -- are found and compiled as one group.  A
-group of data copies is compiled by structural recursion over the outer
-original's recursor; a group of `Prop` copies is a mutual induction, each
-theorem giving every copy in the group a real motive so that a sibling arrives
-as a hypothesis rather than as a call to a theorem that does not exist yet.  A
-group that *mixes* the two has no such shape, since a data copy's `ofOrig` is a
-compiled function and a `Prop` copy's is a theorem; no block in vanilla Lean is
-known to produce one.
-
-Nothing here is load-bearing.  Every step is attempted and, if any of it fails
--- that last case, say -- the environment is rolled back to before the bridge,
-the plain names are defined as the raw declarations instead, and the block is
-exactly what it was before.
+Nothing here is load-bearing: every step is attempted, and if any fails the
+environment is rolled back, the plain names are defined as the raw declarations,
+and the block is what it was before.
 -/
 
 /-- `e` with `n` leading lambdas stripped, and how many there were. -/
@@ -3789,16 +2799,7 @@ private def numHeadLams : Expr → Nat
   | .lam _ _ b _ => numHeadLams b + 1
   | _            => 0
 
-/--
-A member denesting added, and the type it is a copy of.
-
-A copy whose nesting parameters mentioned a field of the constructor it sat in
-stands for a *family* of originals rather than for one: `fun (n : Nat) => OkFam
-α n` is copied once, and the field `n` becomes a leading index of the copy.
-`app` is that lambda, `numLocals` says how long it is, and everywhere below the
-copy's own indices are those locals followed by the original's real indices --
-which is exactly the telescope of `app`'s type.
--/
+/-- A member denesting added, and the type it is a copy of. -/
 structure Copy where
   /-- Where the copy sits among the block's members. -/
   idx     : Nat
@@ -3808,8 +2809,7 @@ structure Copy where
   indName : Name
   /--
   `fun ls => I ps'`: that inductive applied to its parameters, under the block's
-  parameters, abstracted over the constructor fields those parameters mentioned.
-  -/
+  parameters, abstracted over the constructor fields those parameters mentioned. -/
   app     : Expr
   /-- How many constructor fields `app` is abstracted over.  Usually none. -/
   numLocals : Nat := 0
@@ -3826,13 +2826,9 @@ def Copy.origAt (c : Copy) (args : Array Expr) : Expr :=
 def Copy.ofName (c : Copy) : Name := c.name ++ `ofOrig
 
 /--
-The copy's own arguments for `e`, if `e` is this copy's original applied.
-
-Those are the locals the family member is at -- read off the occurrence, since
-they are what says *which* member of the family it is -- followed by the
-original's real indices.  A copy of a single original has no locals, and then
-this is just the old question of whether the parameters agree.
--/
+The copy's own arguments for `e`, if `e` is this copy's original applied: the
+locals the family member is at -- read off the occurrence, they being what says
+*which* member of the family it is -- followed by the original's real indices. -/
 def Copy.argsOf? (cp : Copy) (e : Expr) : MetaM (Option (Array Expr)) := do
   -- a nesting whose parameter is a lambda -- `Sigma`'s second one -- leaves the
   -- original applied under a redex, and the copy is at the head of its
@@ -3870,10 +2866,7 @@ def copyOf? (c : BridgeCtx) (e : Expr) : MetaM (Option (Nat × Array Expr)) := d
   let e := e.headBeta
   if e.getAppFn.constName?.isNone then return none
   -- a block may hold both `List (Wrap R n)`, whose copy stands for the family,
-  -- and `List (Wrap R 0)`, whose copy stands for that one type.  Both match the
-  -- second occurrence, and the one that copies nothing else is the right answer:
-  -- taking the family's would send `nested_List_3.nil` to a conclusion at
-  -- `nested_List_1 0`, which is a different type
+  -- and `List (Wrap R 0)`, whose copy stands for that one type
   for narrow in [true, false] do
     for k in *...c.copies.size do
       if (c.copies[k]!.numLocals == 0) != narrow then continue
@@ -3881,14 +2874,7 @@ def copyOf? (c : BridgeCtx) (e : Expr) : MetaM (Option (Nat × Array Expr)) := d
         return some (k, args)
   return none
 
-/--
-The copy-world image of `x : ty`, where `ty` is stated in the original world.
-
-A field or index whose type has nothing to do with the block comes back as it
-is; one that lands in a copied type is sent through that copy's `ofOrig`.  That
-`ofOrig` is indexed by the *original's* indices -- it is what sends them across
--- so they are passed on as they stand.
--/
+/-- The copy-world image of `x : ty`, where `ty` is stated in the original world. -/
 def ofImage (c : BridgeCtx) (x ty : Expr) : MetaM Expr :=
   forallTelescope ty.headBeta fun ys concl => do
     let some (k, idxs) ← c.copyOf? concl | return x
@@ -3930,26 +2916,11 @@ partial def unCopy (c : BridgeCtx) (e : Expr) : MetaM Expr :=
     | .const n _ => return .done ((← c.unCopyHead? n #[]).getD e)
     | _ => return .continue)
 
-/--
-Member `i`'s arity as the writer stated it, at the block's parameters.
-
-A `Prop` member indexed by a nesting was denested along with everything else, so
-what the block carries is its arity over the copy; the plain name the bridge
-gives it is over the original.  For every other member the two are the same
-expression, `unCopy` having nothing to put back.
--/
+/-- Member `i`'s arity as the writer stated it, at the block's parameters. -/
 def niceArity (c : BridgeCtx) (i : Nat) : MetaM Expr := do
   c.unCopy (← instantiateForall c.b.members[i]!.type c.ps)
 
-/--
-Every copy that a subterm of `e` is an application of the original of.
-
-The question is which copy, not which inductive: `Tree` nested inside `WFTree`
-inside the block is copied twice, once at `R` and once at `WFTree R`, and the
-two are different members with different bridges.  `copyOf?` tells them apart by
-their parameters, so it is asked about each application rather than about each
-head name.  A constructor is asked about as the inductive it belongs to.
--/
+/-- Every copy that a subterm of `e` is an application of the original of. -/
 private partial def usesCopies (c : BridgeCtx) (e : Expr) (acc : Array Nat) :
     MetaM (Array Nat) := do
   let mut acc := acc
@@ -3984,22 +2955,7 @@ private partial def usesCopies (c : BridgeCtx) (e : Expr) (acc : Array Nat) :
 
 /--
 The copies, grouped and ordered so that each group comes after every copy the
-group's originals mention.
-
-The originals are looked at *instantiated at their parameters*, which is what
-makes a copy of `List` at a copied `Tree` come out after the `Tree`: plain
-`List` mentions nothing of the block.  It is also what lets two copies of the
-same inductive be ordered against each other, which nesting inside nesting
-needs: `Tree (WFTree R)` waits for `WFTree R`, which waits for `Tree R`, which
-waits for nothing.  A copy may of course mention *itself*.
-
-Copies that genuinely need each other -- a nesting type that is itself a nested
-inductive, so that `Rose T` and `List (Rose T)` are copied together, or a
-nesting into one member of a mutual family -- have no order between them, and
-come back as one group.  `addOfOrig` compiles such a group as one mutual
-recursion; `toOrig` does not need the grouping, because it recurses on the
-copies, which are members of a single lowered block already.
--/
+group's originals mention. -/
 def order (c : BridgeCtx) : MetaM (Array (Array Nat)) := do
   let n := c.copies.size
   let mut uses : Array (Array Nat) := #[]
@@ -4065,9 +3021,7 @@ def ofType (c : BridgeCtx) (k : Nat) : MetaM Expr := do
 
 /--
 `X.ofOrig` for a data copy: a `casesOn` on the original, with the fields sent
-across one by one.  A field of the original's own type becomes a recursive call,
-which is what `Structural.structuralRecursion` is handed afterwards.
--/
+across one by one. -/
 def ofValueData (c : BridgeCtx) (k : Nat) : MetaM Expr := do
   let cp := c.copies[k]!
   let info ← getConstInfoInduct cp.indName
@@ -4110,11 +3064,7 @@ structure MinorPlan where
 
 /--
 What each minor premise of `recTy`, a recursor's type at its parameters, is
-about.
-
-`recInfo.rules` would answer the constructor and its arity, but only for the
-member whose recursor this is, and the minors run over the whole block.
--/
+about. -/
 def recPlan (recInfo : RecursorVal) (recTy : Expr) : MetaM (Array MinorPlan) :=
   forallBoundedTelescope recTy recInfo.numMotives fun ms rest =>
     forallBoundedTelescope rest recInfo.numMinors fun mins _ => do
@@ -4140,11 +3090,7 @@ def recPlan (recInfo : RecursorVal) (recTy : Expr) : MetaM (Array MinorPlan) :=
 
 /--
 An original's own recursor, set up to prove something of a whole group of copies
-at once.
-
-Both `ofValueProp` and `backValue` are one application of it, and they agree on
-everything but what a motive says and what a minor premise proves.
--/
+at once. -/
 structure GroupElim where
   /-- The recursor. -/
   recInfo : RecursorVal
@@ -4161,14 +3107,7 @@ structure GroupElim where
 
 /--
 Set the recursor of `cp`'s original, at `params` and `lvls`, up to eliminate all
-of `grp` at once.
-
-`motive` says what is being proved of a member of the group, and is given which
-copy it is, the arguments that copy is at, and the major premise.  Everything
-else the recursor eliminates -- the other members of the original's own block,
-and the types that block nests into -- is sent to `True`, whose hypotheses are
-worth nothing and whose minor premises `GroupElim.minors` discharges.
--/
+of `grp` at once. -/
 def groupElim (c : BridgeCtx) (grp : Array Nat) (cp : Copy) (params : Array Expr)
     (lvls : List Level) (motive : Nat → Array Expr → Expr → MetaM Expr) :
     MetaM GroupElim := do
@@ -4197,13 +3136,8 @@ def groupElim (c : BridgeCtx) (grp : Array Nat) (cp : Copy) (params : Array Expr
   return { recInfo, recLvls, recTy, plan, motives, targets }
 
 /--
-The minor premises: `body` at each one that is about a copy in the group, and
-`trivial` at each one that is not.
-
-`body` is given the copy the minor is about, what the minor is about it, the
-minor's own arguments and the conclusion it has to reach; the abstraction over
-those arguments is taken here rather than by `body`.
--/
+The minor premises: `body` at each one about a copy in the group, `trivial` at
+each one that is not. -/
 def GroupElim.minors (ge : GroupElim)
     (body : Nat → MinorPlan → Array Expr → Expr → MetaM Expr) : MetaM (Array Expr) := do
   forallBoundedTelescope (← instantiateForall ge.recTy ge.motives) ge.recInfo.numMinors
@@ -4220,24 +3154,7 @@ def GroupElim.minors (ge : GroupElim)
 def GroupElim.app (ge : GroupElim) (params minors idxs : Array Expr) (x : Expr) : Expr :=
   mkAppN (mkConst ge.recInfo.name ge.recLvls) (params ++ ge.motives ++ minors ++ idxs ++ #[x])
 
-/--
-`X.ofOrig` for a `Prop` copy: one application of the original's own recursor.
-
-A theorem cannot call itself, so a field of the original's type takes the
-hypothesis the recursor supplies for it rather than a recursive call.  The same
-goes for a field of any other original in `grp`, the copies that need each other
-and so are being defined at once -- `Chain.Even` and `Chain.Odd`, say.  Every
-one of them is given its copy as a motive, and everything else the recursor
-eliminates is sent to `True`, whose minor premises are `trivial` and whose
-hypotheses are worth nothing; a field of a copy *outside* the group is already
-bridged and goes across by calling that copy's `ofOrig`.
-
-The original's recursor carries a motive per member of its own mutual block,
-and one more per type that block nests into, so which hypothesis belongs to
-which field cannot be read off the field alone.  It is read off the recursor
-instead: before the motives are instantiated, a hypothesis' type still mentions
-both the motive it is for and the field it is about.
--/
+/-- `X.ofOrig` for a `Prop` copy: one application of the original's own recursor. -/
 def ofValueProp (c : BridgeCtx) (grp : Array Nat) (k : Nat) : MetaM Expr := do
   let cp := c.copies[k]!
   -- a copy standing for a family recurses one member at a time, so the whole
@@ -4269,24 +3186,7 @@ def ofValueProp (c : BridgeCtx) (grp : Array Nat) (k : Nat) : MetaM Expr := do
     return implicitPrefix (c.ps.size + jdxs.size)
       (← mkLambdaFVars (c.ps ++ jdxs ++ #[x]) (ge.app params minors idxs x))
 
-/--
-Add `X.ofOrig` for every copy, each group after the ones its own bodies call.
-
-A group of more than one is a set of copies whose originals are nested in each
-other -- `Rose T` and the `List (Rose T)` inside it, or the two members of a
-mutual family the block nests into -- and their `ofOrig`s need each other.
-
-`Prop` copies get one theorem each: a `Prop` copy's `ofOrig` recurses through
-its original's recursor, and that recursor already has a motive for every other
-original in the group, so nothing in the group is a call.  Data copies are
-compiled together by structural recursion, over the recursor of the outermost
-original, which likewise has a motive for each of them: it is exactly what a
-writer gets for `def f : Rose α → β` paired with `def fs : List (Rose α) → γ`.
-
-A group holding both kinds at once would be a mutual family that is itself
-induction-inductive, which is not something Lean can be asked for, and it is
-refused -- which drops the bridge and leaves the block with its copies visible.
--/
+/-- Add `X.ofOrig` for every copy, each group after the ones its own bodies call. -/
 def addOfOrig (c : BridgeCtx) (docCtx : LocalContext × LocalInstances) : TermElabM Unit := do
   for grp in ← c.order do
     let isProp (k : Nat) : Bool := c.b.members[c.copies[k]!.idx]!.isProp
@@ -4315,18 +3215,7 @@ def addOfOrig (c : BridgeCtx) (docCtx : LocalContext × LocalInstances) : TermEl
       else
         for d in preDefs do addAndCompileNonRec docCtx d
 
-/--
-Give every renamed member the arity it was declared with.
-
-A `Prop` member the writer indexed by a nesting is emitted over the copy, and
-what it means over the original is the raw one at the original's image -- which
-is what `ofOrig` is for, and why this waits until `ofOrig` is there.
-
-It has to come before the constructors: `Ok.nil : Ok []` typechecks against the
-raw `Ok._nested (K.ofOrig [])` only because `ofOrig` at a constructor of the
-original reduces to the copy's, so the plain name has to exist for the plain
-statement to be made at all.
--/
+/-- Give every renamed member the arity it was declared with. -/
 def niceMembers (c : BridgeCtx) (rawOf : Name → Name) : TermElabM Unit := do
   for i in *...c.b.size do
     let m := c.b.members[i]!
@@ -4339,12 +3228,7 @@ def niceMembers (c : BridgeCtx) (rawOf : Name → Name) : TermElabM Unit := do
     addDef m.name c.b.us (← instantiateMVars type) (← instantiateMVars value)
       (compile := false)
 
-/--
-Give every renamed constructor the type it was declared with.
-
-`rawOf` is the name the constructor was actually emitted under; a constructor
-that kept its own name has nothing to do here.
--/
+/-- Give every renamed constructor the type it was declared with. -/
 def niceCtors (c : BridgeCtx) (rawOf : Name → Name) : TermElabM Unit := do
   for i in *...c.b.size do
     let m := c.b.members[i]!
@@ -4367,26 +3251,23 @@ end BridgeCtx
 
 /-! ### The way back, and the recursor stated over the originals
 
-`ofOrig` alone gives the constructors their written types, but a recursor has to
-travel the other way: a minor is handed a term of the *copy* and has to produce
-one of the original for the writer's motive to apply to.  So the isomorphism is
-completed.
+`ofOrig` gives the constructors their written types, but a recursor travels the
+other way: a minor is handed a term of the *copy* and must produce one of the
+original for the writer's motive.  So the isomorphism is completed.
 
 * `X.toOrig` sends the copy to the original.  A data copy's is one application of
-  the copy's own recursor, with the members it is not eliminating given `PUnit`
-  as their motive.  A `Prop` copy's cannot be, quite: the copy is *defined* as
-  its pre-form at the underlying values, so a proof in hand says nothing about
-  the well-formedness of the terms it is indexed by, and the original's statement
-  needs those.  It goes through the pre-form's recursor with the well-formedness
-  proofs taken last, and `X.toOrig` supplies them from the index it was given.
+  the copy's own recursor, with the members it is not eliminating given `PUnit`.
+  A `Prop` copy's cannot be, the copy being defined as its pre-form at the
+  underlying values, so a proof in hand says nothing about the well-formedness
+  the original's statement needs.  It goes through the pre-form's recursor with
+  the well-formedness proofs taken last, and `X.toOrig` supplies them from the
+  index it was given.
 
-* `X.ofOrig_toOrig` is the round trip, at the underlying pre-world value.  It is
-  needed in exactly one place -- a minor for a constructor the writer declared
-  produces the raw constructor at the round-tripped fields, and this is what
-  turns that back into the raw constructor at the fields themselves.  Stating it
-  at the subtype would make that transport ill-typed, since a constructor with
-  an erased proof field has a field whose *type* moves with the transport; at the
-  value there are no proof fields left at all, and the wrapper's `ext` lifts it.
+* `X.ofOrig_toOrig` is the round trip at the underlying pre-world value, needed
+  where a minor for a constructor the writer declared produces the raw
+  constructor at the round-tripped fields and must produce it at the fields
+  themselves.  Stating it at the subtype would make that transport ill-typed; at
+  the value there are no proof fields, and the wrapper's `ext` lifts it.
 -/
 
 /-- The copy's image in the original: `X.toOrig : X ps idxs → I ps' idxs'`. -/
@@ -4409,12 +3290,7 @@ def Copy.numOrigParams (c : Copy) : Nat := (peelLams c.numLocals c.app).getAppNu
 
 /--
 The original's constructor that `n`, a constructor of the copy, is a copy of,
-applied to `vals`, the copy's constructor's own arguments.
-
-A copy standing for a family carries its locals as leading fields of every
-constructor, and they say which original this constructor belongs to; the rest
-of `vals` are the original's own fields.
--/
+applied to `vals`, the copy's constructor's own arguments. -/
 def Copy.origCtor (c : Copy) (n : Name) (vals : Array Expr) : Expr :=
   let orig := c.orig vals
   mkAppN (mkConst (reroot c.name c.indName n) orig.getAppFn.constLevels!)
@@ -4429,18 +3305,7 @@ def copyAt? (c : BridgeCtx) (i : Nat) : Option Nat :=
 /-- Where the data member `i` sits among the motives. -/
 def dpos (c : BridgeCtx) (i : Nat) : Nat := (c.b.dataIdxs.findIdx? (· == i)).getD 0
 
-/--
-The name of anything the denesting made up, if `ty` mentions one.
-
-Every statement the bridge adds is a statement a writer reads and has to
-instantiate, so none of them may name a copy, anything in a copy's namespace, or
-the hidden name a renamed member or constructor went in under.  A *value* may
-name all of these and mostly does -- it is the raw declaration it is standing in
-front of.  The bridge checks the types it adds against this rather than trusting
-that they came out clean, since a restatement that reaches for one of these names
-is one the block is better off not having: the split recursor it falls back to
-says less but says it in the writer's own words.
--/
+/-- The name of anything the denesting made up, if `ty` mentions one. -/
 def leaked? (c : BridgeCtx) (ty : Expr) : Option Name :=
   let b := c.b
   ty.getUsedConstants.find? fun n =>
@@ -4450,12 +3315,8 @@ def leaked? (c : BridgeCtx) (ty : Expr) : Option Name :=
              || m.ctors.any fun cc => cc.name != n && b.rawCtor cc.name == n
 
 /--
-The motive arguments of a member's type: a copy's are the *original's*.
-
-`app` is the member applied, in the original world for a copy.  A copy standing
-for a family is asked which member of it this is, since the locals that answer
-that are among the original's parameters and lead the copy's own indices.
--/
+The motive arguments of a member's type: a copy's are the *original's*. `app` is
+the member applied, in the original world for a copy. -/
 def niceIdxArgs (c : BridgeCtx) (i : Nat) (app : Expr) : MetaM (Array Expr) := do
   match c.copyAt? i with
   | none   => return c.b.idxArgs app.getAppArgs
@@ -4466,14 +3327,7 @@ def niceIdxArgs (c : BridgeCtx) (i : Nat) (app : Expr) : MetaM (Array Expr) := d
           one of them"
     return args
 
-/--
-`X._sub.ext` at `ty`, a member of the block applied to its arguments.
-
-Which wrapper that is could be spelled out of the member and the arguments, but
-not from the arguments as the writer sees them: an index at another member is
-kept by the erasure at its pre-world value, and reading it off the type asks the
-one question there is to ask and gets the arguments the wrapper wants at once.
--/
+/-- `X._sub.ext` at `ty`, a member of the block applied to its arguments. -/
 def subtypeExt (_c : BridgeCtx) (_i : Nat) (ty a a' h : Expr) : MetaM Expr := do
   let sub ← whnfD ty
   let some (n, us, args) := subOf? sub
@@ -4481,16 +3335,8 @@ def subtypeExt (_c : BridgeCtx) (_i : Nat) (ty a a' h : Expr) : MetaM Expr := do
   return mkAppN (mkConst (n ++ `ext) us) (args ++ #[a, a', h])
 
 /--
-The original-world image of `x : ty`, where `ty` is written in the copy world.
-
-The mirror of `BridgeCtx.ofImage`.  A copy's indices are the original's -- a data
-copy has the arity it copies, and a `Prop` copy's `toOrig` is stated at the
-copy's own -- so here too the indices are passed on as they stand.
-
-A proof of a member the bridge restates is the third thing this meets, and the
-only one that moves: the written statement is the raw member at the round trips
-of its indices, so the proof is transported onto them.
--/
+The original-world image of `x : ty`, where `ty` is written in the copy world;
+the mirror of `BridgeCtx.ofImage`. -/
 partial def toImage (c : BridgeCtx) (x ty : Expr) : MetaM Expr :=
   forallTelescope ty fun ys concl => do
     let some hd := concl.getAppFn.constName? | return x
@@ -4538,11 +3384,7 @@ def toType (c : BridgeCtx) (k : Nat) : MetaM Expr := do
 
 /--
 Build one minor per constructor of every data member, reading the binders off
-the raw recursor's own type rather than reconstructing them.
-
-`mk` is handed the member, the constructor, the fields and the induction
-hypotheses, and returns the minor's body.
--/
+the raw recursor's own type rather than reconstructing them. -/
 def withRawMinors (c : BridgeCtx) (recCst : Expr) (motives : Array Expr)
     (mk : Nat → CtorSpec → Array Expr → Array Expr → Expr → TermElabM Expr) :
     TermElabM (Array Expr) := do
@@ -4567,24 +3409,7 @@ def withRawMinors (c : BridgeCtx) (recCst : Expr) (motives : Array Expr)
         q := q + 1
     return out
 
-/--
-`X.toOrig` for a data copy: one application of the copy's own recursor.
-
-The copy being sent across is one of `grp`, the copies whose originals are
-nested in each other and so have no order between them -- `Rose T` and the
-`List (Rose T)` inside it.  Every one of them gets its original as a motive, and
-every other member of the block is eliminated into `PUnit`.  Only one of the
-motives is what the definition returns, so giving the rest of the group
-something real looks wasteful, and is what keeps this a single recursor
-application: a field whose type is another copy in the group then arrives as an
-induction hypothesis already in the original world, rather than as a call to a
-`toOrig` that is being defined at the same moment.
-
-A copy *outside* the group is already defined, so its fields go across by
-calling its `toOrig`, as they always did.  Handing it a motive too would be
-worse than wasteful: an erased field of one of its constructors would drag in a
-`Prop` copy's `toOrig`, and that one is stated in terms of this one.
--/
+/-- `X.toOrig` for a data copy: one application of the copy's own recursor. -/
 def toValueData (c : BridgeCtx) (grp : Array Nat) (k : Nat) (rawRec : Nat → Name) :
     TermElabM Expr := do
   let b := c.b
@@ -4620,9 +3445,7 @@ def toValueData (c : BridgeCtx) (grp : Array Nat) (k : Nat) (rawRec : Nat → Na
           | .erased => vals := vals.push (← c.toImage xs[z]! (← inferType xs[z]!))
           -- a copy carries the constructor-locals its parameters mention as
           -- leading fields, and when one of those is a member of the block the
-          -- erasure calls it a deleted index.  Here it is still a field, and it
-          -- is the local `origCtor` reads off the front, so it goes across as
-          -- itself
+          -- erasure calls it a deleted index
           | .deleted .. => vals := vals.push xs[z]!
           -- a deleted field arrives with a hypothesis of its own, so the count
           -- has to step over it even though nothing here reads it
@@ -4633,28 +3456,21 @@ def toValueData (c : BridgeCtx) (grp : Array Nat) (k : Nat) (rawRec : Nat → Na
 
 /--
 Walk a `Prop` member's indices in the pre-world, collecting the well-formedness
-proofs that turn them back into real ones.
-
-`k` receives the pre-world binders, one proof binder per index that lands in a
-data member, and the real indices rebuilt from the two.
--/
+proofs that turn them back into real ones. -/
 partial def withWfIdxsAux {α} [Inhabited α] (c : BridgeCtx) (idxs : Array Expr) (i : Nat)
     (preTy : Expr) (pres ws : Array Expr) (reals : Array (Expr × Expr))
     (k : Array Expr → Array Expr → Array (Expr × Expr) → TermElabM α) : TermElabM α := do
   if h : i < idxs.size then
     forallBoundedTelescope preTy (some 1) fun ys rest => do
       let y := ys[0]!
-      -- the copy-world type the index was declared with, kept alongside the term:
-      -- a rebuilt index is the wrapper's `.mk`, and what that infers to names the
-      -- wrapper rather than the copy, which is what the image is looked up by.  A later
-      -- index's type can mention an earlier one, and what stands for that here is
-      -- the rebuilt index, not the binder the member was declared with
+      -- the copy-world type the index was declared with, kept alongside the
+      -- term: a rebuilt index is the wrapper's `.mk`, and what that infers to
+      -- names the wrapper rather than the copy, which is what the image is
+      -- looked up by
       let raw ← inferType idxs[i]
       let ty := raw.replaceFVars (idxs.extract 0 i) (reals.map (·.1))
-      -- and the same type read the way `Block.subTy` reads a field: the member's
-      -- real head over pre-world arguments.  That reading is the only one that
-      -- still names an index the pre-type deleted, and `X._wf` takes every index
-      -- the arity had, so it is the only one the proof can be stated from
+      -- and the same type read the way `Block.subTy` reads a field: the
+      -- member's real head over pre-world arguments
       let sub ← c.b.subTy (idxs.extract 0 i) pres raw
       let isData ← c.b.withRecTarget? ty fun _ m _ => pure (!c.b.members[m]!.isProp)
       if isData == some true then
@@ -4678,13 +3494,7 @@ def withWfIdxs {α} [Inhabited α] (c : BridgeCtx) (j : Nat)
 
 /--
 Every well-formedness fact a proof of a `_wf` conjunction yields, with the proof
-of each.
-
-`X._wf` at a constructor is a conjunction over the recursive fields, so a proof
-that a constructor application is well formed *contains* the proof for each of
-its arguments.  Which conjunct is which is not worth reconstructing: they are all
-collected and the one that is wanted is the one whose statement matches.
--/
+of each. -/
 partial def wfParts (w : Expr) : MetaM (Array (Expr × Expr)) := do
   let ty ← whnf (← inferType w)
   let mut out := #[(ty, w)]
@@ -4695,18 +3505,7 @@ partial def wfParts (w : Expr) : MetaM (Array (Expr × Expr)) := do
     out := out ++ (← wfParts (mkApp3 (mkConst ``And.right) l r w))
   return out
 
-/--
-What both restatements of a raw `Prop` minor premise open with, handed to `k`.
-
-The minor binds the constructor's fields and then its induction hypotheses, so
-`args` splits at the number of fields.  `subTys` is what each field has to be
-rebuilt at to be handed to the constructor the writer wrote, and `parts` is every
-well-formedness proof the conclusion carries -- the material both restatements
-rebuild a field out of, whichever of the two is asking.
-
-`ws` is what the conclusion still binds once it is whnf'd, which the restatement
-has to abstract over again at the end; `parts` is exactly what those carry.
--/
+/-- What both restatements of a raw `Prop` minor premise open with, handed to `k`. -/
 def withRawPropMinor {α} (b : Block) (cc : CtorSpec) (ps : Array Expr)
     (kinds : Array FieldKind) (args : Array Expr) (concl : Expr)
     (k : Array Expr → Array Expr → Array Expr → Array (Expr × Expr) → Array Expr →
@@ -4720,15 +3519,7 @@ def withRawPropMinor {α} (b : Block) (cc : CtorSpec) (ps : Array Expr)
       parts := parts ++ (← wfParts w)
     k xs ihs subTys parts ws
 
-/--
-Every wrapper's `property` the statement `want` puts within reach.
-
-A real value is a pre-term paired with its well-formedness, so any `.val` in a
-statement brings the proof about that `.val` along with it.  The one the
-statement is about need not be the outermost -- `Ty._wf Γ.val A.val` is `A`'s
-property, not `Γ`'s -- so every projection in there is collected and the caller
-tries them all.
--/
+/-- Every wrapper's `property` the statement `want` puts within reach. -/
 partial def subProps (e : Expr) (acc : Array Expr) : Array Expr :=
   match e with
   -- the whole spine at once, since `.val` and `.property` take the same
@@ -4747,17 +3538,7 @@ partial def subProps (e : Expr) (acc : Array Expr) : Array Expr :=
   | .proj _ _ b => subProps b acc
   | _ => acc
 
-/--
-The proof among `parts` of the statement `want`, or one assembled out of them.
-
-A fact about a term the constructor *built* -- `Wf.pi` recurses at
-`Wf (Γ.snoc A) B`, and no proof about `Γ.snoc A` was handed to it -- is in none
-of the parts, but it is not new either.  `X._wf` at a pre-constructor is the
-conjunction of the facts about that constructor's own arguments, so unfolding
-the statement one step turns it into exactly the facts the caller does hold, and
-the proof is those put back together.  A constructor with no recursive arguments
-unfolds to `True` and needs nothing at all.
--/
+/-- The proof among `parts` of the statement `want`, or one assembled out of them. -/
 partial def findPart (parts : Array (Expr × Expr)) (want : Expr) : MetaM Expr := do
   let bad : MetaM Expr := throwError "No well-formedness proof to hand for{indentExpr want}"
   for (ty, pf) in parts do
@@ -4784,17 +3565,7 @@ partial def findPart (parts : Array (Expr × Expr)) (want : Expr) : MetaM Expr :
     catch _ => bad
   | e => if e.isConstOf ``True then return mkConst ``True.intro else bad
 
-/--
-A raw induction hypothesis, at the well-formedness proofs in hand.
-
-A motive over a pre-type ends in the proofs about its indices, so the hypothesis
-the pre-block's recursor states for a `Prop` field is quantified over them: the
-pre-world does not know which proofs the field's indices will turn out to carry.
-At a constructor we do know -- they are components of the proof the conclusion
-is under, which `wfParts` has already broken apart -- so the hypothesis is
-applied to the matching component of each and comes back in the shape the
-caller's own minor premise asks for.
--/
+/-- A raw induction hypothesis, at the well-formedness proofs in hand. -/
 def atParts (parts : Array (Expr × Expr)) (ih fieldTy : Expr) : MetaM Expr := do
   let nzs ← forallTelescope fieldTy fun zs _ => pure zs.size
   forallBoundedTelescope (← inferType ih) nzs fun zs rest => do
@@ -4804,29 +3575,7 @@ def atParts (parts : Array (Expr × Expr)) (ih fieldTy : Expr) : MetaM Expr := d
         fnd := fnd.push (← findPart parts (← inferType w))
       mkLambdaFVars zs (mkAppN ih (zs ++ fnd))
 
-/--
-Some element of a field's type, if a constructor can be applied to make one.
-
-This is what stands in for a *stray* field -- a data field of a `Prop`
-constructor that the conclusion says nothing about, and so has no
-well-formedness in reach to put it back at its subtype with.  Standing in for it
-is sound because everything built out of such a field is a proof, and two proofs
-of one proposition are definitionally equal: the constructor applied to any
-element of the field's type *is* the constructor applied to the element that was
-meant.  Callers are the ones who know they are building a proof, so they are the
-ones who ask for this.
-
-The search is the one `Inhabited` would do -- a constructor whose own fields can
-be filled in turn -- with the block's own members included, since their visible
-constructors are `def`s into the subtype and are in the environment by the time
-any of this runs.  It is bounded by `fuel` rather than by anything cleverer: a
-member that needs a deep term to reach is a member the writer is unlikely to
-have meant as a throwaway, and answering `none` costs only the recursor that
-would have been built.
-
-An infinitary field is a function into the member, and is answered under its own
-binders by a constant function.
--/
+/-- Some element of a field's type, if a constructor can be applied to make one. -/
 partial def someElem? (b : Block) (ty : Expr) (fuel : Nat) : MetaM (Option Expr) := do
   if let .some inst ← trySynthInstance (← mkAppM ``Inhabited #[ty]) then
     return some (← mkAppOptM ``Inhabited.default #[ty, inst])
@@ -4856,20 +3605,7 @@ partial def someElem? (b : Block) (ty : Expr) (fuel : Nat) : MetaM (Option Expr)
 
 /--
 Put back a data field of a `Prop` constructor at its subtype, or say why there
-is none to put back.
-
-A data constructor's `_wf` is computed from its fields, so every one of them
-comes with its own well-formedness.  A `Prop` constructor has no `_wf` -- a
-`Prop` member is a predicate on values that are already well formed -- so the
-only well-formedness in reach is whatever its *conclusion's* indices carry.  A
-data field the conclusion does not mention, the middle value of a transitivity
-rule being the usual one, has none.
-
-Recording it is not an option either: `_wf` is a function defined by recursion
-on the erased data, and a data member whose fields include proofs has a `_wf`
-that mentions the `Prop` members' erased types.  A `Prop` member carrying `_wf`
-of its fields would have to be declared before and after itself.
--/
+is none to put back. -/
 def dataFieldPart (b : Block) (cc : CtorSpec) (parts : Array (Expr × Expr))
     (x subTy : Expr) : MetaM Expr := do
   let want ← b.wfOfSub x subTy
@@ -4883,21 +3619,7 @@ def dataFieldPart (b : Block) (cc : CtorSpec) (parts : Array (Expr × Expr))
       constructor carries no well-formedness of its own -- only what its indices \
       bring -- so there is nothing to state the recursor's minor premise with."
 
-/--
-A data field of a `Prop` constructor, put back at its subtype.
-
-The recursion runs in the pre-world, so the field arrives erased; the minor
-premise the caller is building is stated over the writer's own types, so the
-field has to be paired back up with its well-formedness before it can be passed
-on.  An infinitary field is a function into the member, and is rebuilt under its
-own binders.
-
-`strayOk` says that what is being built is a proof, and so that a field with no
-well-formedness in reach may be answered with `someElem?` instead of the value
-the recursion was handed.  Only a caller can know that -- it is the caller that
-holds the term's type -- and a caller that does not say so gets the failure and
-the reason for it, as before.
--/
+/-- A data field of a `Prop` constructor, put back at its subtype. -/
 def rebuiltField (b : Block) (cc : CtorSpec) (parts : Array (Expr × Expr))
     (x subTy : Expr) (strayOk := false) : MetaM Expr := do
   let rebuild (pf : Expr) : MetaM Expr :=
@@ -4910,31 +3632,7 @@ def rebuiltField (b : Block) (cc : CtorSpec) (parts : Array (Expr × Expr))
       return e
   rebuild (← dataFieldPart b cc parts x subTy)
 
-/--
-Which of a `Prop` constructor's fields nothing else in the constructor mentions.
-
-A field like this is one the recursion has to stand an arbitrary element in for:
-its well-formedness would have to come from the conclusion, and the conclusion
-does not know it exists.  Standing one in costs the minor premise its induction
-hypothesis at that field, since the substitute is not the value the recursion was
-handed and there is nothing to be said about it.
-
-The positions are worked out here, once, because the minor premise's *type* and
-the term that fills it are built far apart and have to agree about them down to
-the last one.  Disagreeing is not a type error where the mistake is: it is an
-application at the wrong arity, a long way from either half.
-
-Hence the test is what it is.  Asking `dataFieldPart` directly would name more
-fields, but it is asked under a substitution on one side and not on the other and
-does not always give the same answer twice; occurring in the constructor's own
-type is a property of the constructor and of nothing else.  A field the
-conclusion mentions in a way `dataFieldPart` still cannot use falls through to
-the failure it always had.
-
-A field a *later field's type* mentions is not stray either, even if the
-conclusion forgets it: substituting for it would leave that later field's type
-talking about a value no longer there.
--/
+/-- Which of a `Prop` constructor's fields nothing else in the constructor mentions. -/
 def strayFields (b : Block) (i : Nat) (c : CtorSpec) (ps : Array Expr) :
     MetaM (Array Nat) := do
   unless b.members[i]!.isProp do return #[]
@@ -4951,20 +3649,7 @@ def strayFields (b : Block) (i : Nat) (c : CtorSpec) (ps : Array Expr) :
       out := out.push z
     return out
 
-/--
-`X.toOrigPre` and `X.toOrig` for a `Prop` copy.
-
-The recursion is on the pre-form, whose motive takes the well-formedness of the
-indices *after* the proof itself; `X.toOrig` then supplies them from the index
-it was handed.
-
-Every `Prop` copy in the block gets its real motive, not just the one being
-defined, so that a copy whose constructor recurses into a *sibling* copy has an
-induction hypothesis to hand rather than a `True`.  The minors are then the same
-for all of them and only the recursor's head changes, which is why they are
-built here and not once per copy.  A `Prop` member the writer declared is not a
-copy of anything and is eliminated into `True`.
--/
+/-- `X.toOrigPre` and `X.toOrig` for a `Prop` copy. -/
 def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
   let b := c.b
   let cp := c.copies[k]!
@@ -4985,11 +3670,9 @@ def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
         for (r, ty) in reals do
           js := js.push (← c.toImage r ty)
         let body ← mkForallFVars ws (c.copies[kj]!.origAt js)
-        -- `toOrig` is added one copy at a time, and a sibling whose own index has
-        -- not been sent across yet has nothing to state its real motive with.  Two
-        -- families denested side by side are like that: each is settled whole
-        -- before the other is begun.  `True` is the right motive there, and costs
-        -- only an induction hypothesis that nothing in the other family asks for
+        -- `toOrig` is added one copy at a time, and a sibling whose own index
+        -- has not been sent across yet has nothing to state its real motive
+        -- with
         let env ← getEnv
         if body.getUsedConstants.all env.contains then
           return (← mkLambdaFVars (pres ++ #[h]) body, true)
@@ -5027,10 +3710,8 @@ def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
               | .deleted .. => throwError "A `Prop` member deleted an index"
               | .recur m =>
                 if !b.members[m]!.isProp then
-                  -- a data field, rebuilt at the subtype from the proof in hand, and
-                  -- then sent across.  A member that deleted an index is spelt one
-                  -- way here and another in the copy world, and nothing in reach
-                  -- says which original index the deleted one stands for
+                  -- a data field, rebuilt at the subtype from the proof in
+                  -- hand, and then sent across
                   unless b.members[m]!.dropped.isEmpty do
                     throwError "A deleted index reached the denesting bridge"
                   -- the bridge is a theorem, so a stray field may be stood in for
@@ -5072,14 +3753,7 @@ def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
                       type := ← instantiateMVars (← c.toType k)
                       value := ← instantiateMVars value })
 
-/--
-Add `X.toOrig` for every copy, each after the ones its own body calls.
-
-Unlike `ofOrig`, a group of copies that need each other does not have to be
-compiled together: each one is a single application of the lowered block's
-recursor, and `toValueData` gives the whole group motives so that the group's
-own members never appear as calls.
--/
+/-- Add `X.toOrig` for every copy, each after the ones its own body calls. -/
 def addToOrig (c : BridgeCtx) (rawRec : Nat → Name) : TermElabM Unit := do
   for grp in ← c.order do
     for k in grp do
@@ -5097,15 +3771,7 @@ partial def funExtN (h : Expr) (n : Nat) : MetaM Expr := do
     let y := ys[0]!
     mkFunExt (← mkLambdaFVars #[y] (← funExtN (mkApp h y) (n - 1)))
 
-/--
-`head as = head bs`, one step per argument the two sides differ at.
-
-`arg z` is the term both sides hold at position `z`, and `pf z` an equation
-there instead, for a position where they differ.  The steps are taken one at a
-time rather than as a single `congr` so that a head whose later arguments depend
-on earlier ones still goes through, which needs the steps to be at arguments no
-later one depends on -- the caller's business, and true where this is used.
--/
+/-- `head as = head bs`, one step per argument the two sides differ at. -/
 def stepCongr (head : Expr) (n : Nat) (arg : Nat → TermElabM Expr)
     (pf : Nat → TermElabM (Option Expr)) : TermElabM Expr := do
   let eqSides (p : Expr) : TermElabM (Expr × Expr) := do
@@ -5130,13 +3796,7 @@ def stepCongr (head : Expr) (n : Nat) (arg : Nat → TermElabM Expr)
 
 /--
 `X._pre.c (kept images) = X._pre.c (kept fields)`, one step per field the two
-sides differ at.
-
-`pf z` is the equation for field `z`, or `none` when the two sides hold the same
-term there -- which is every field but a copy's, and every erased field, since
-those are not at this level at all.  A field used as an index has to be one
-erasure leaves alone, so the steps never move what a later field depends on.
--/
+sides differ at. -/
 def valCongr (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
     (pf : Nat → TermElabM (Option Expr)) : TermElabM Expr := do
   let b := c.b
@@ -5146,35 +3806,11 @@ def valCongr (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
     (fun q => pf kept[q]!)
 
 /--
-Move a minor's result from the constructors that were written to the ones the raw
-recursor asks about.
-
-The nice minor is handed the round trip of each field that is at a copy -- the
-copy sent to the original and back -- and every renamed constructor it builds is
-by definition the raw one at exactly those round trips.  So the whole of the gap
-between what the nice minor concluded and what the raw one owes is one
-substitution: the raw conclusion with each such field replaced by its round trip
-*is* the nice conclusion, definitionally, and closing the round trip a field at a
-time closes all of it at once.
-
-That is worth doing on the field axis rather than the conclusion's, because a
-conclusion moves in more places than one and they do not move independently.
-`U.mk (v : List T) : U (.node v)` has the copy in its index as well as in the
-term, and `Ok.node (n) (v : List (Wrap T n)) : Ok (.node n v)` has it in the
-index of a proof; walking the arguments would have to carry each along the ones
-before it, and the term at a moved index has no equation of its own to be carried
-along.  The field they all came from has one.
-
-`cc` is the constructor, `xs` its fields as the raw minor bound them, `concl`
-what the raw minor has to conclude at, and `body` what the nice one produced.
--/
+Move a minor's result from the constructors that were written to the ones the
+raw recursor asks about. -/
 def acrossFields (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
     (concl body : Expr) : TermElabM Expr := do
-  -- the gap may already be closed, and then there is nothing to close it with.
-  -- A motive the bridge restated is stated at the image of its index, so it
-  -- reads a field at a copy through `toOrig` itself and the round trip cancels
-  -- against it: the nice minor concluded at exactly what the raw one owes, and
-  -- an equation put in anyway would have to be true of the round trip instead
+  -- the gap may already be closed, and then there is nothing to close it with
   if ← isDefEq (← inferType body) concl then return body
   let b := c.b
   let kinds := b.fieldKinds cc.kinds
@@ -5183,13 +3819,10 @@ def acrossFields (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
   let mut steps : Array (Nat × Expr) := #[]
   for z in *...xs.size do
     let ty ← inferType xs[z]!
-    -- a proof field standing outside the copies -- an erased one, or a recursive
-    -- one at a proposition of the block -- is a proof of a member the bridge may
-    -- have restated, and then it has moved as well: `Ok v` at the field `v` is
-    -- the raw member at the round trip of `v`, and that is where the nice minor's
-    -- proof of it sits.  No step of its own -- what moves `v` back carries it --
-    -- but the starting point has to know where it went.  `toImage` leaves any
-    -- other proof alone
+    -- a proof field outside the copies -- erased, or recursive at a proposition
+    -- of the block -- proves a member the bridge may have restated, and has
+    -- then moved too: `Ok v` at the field `v` is the raw member at the round
+    -- trip of `v`, where the nice minor's proof sits
     let carried : Bool := match kinds[z]! with
       | .erased   => true
       | .recur mm => (c.copyAt? mm).isNone && b.members[mm]!.isProp
@@ -5223,12 +3856,9 @@ def acrossFields (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
   let mut cur := rts
   for (z, eq) in steps do
     let ty ← inferType xs[z]!
-    -- a later field may be a proof *about* this one -- `Ok v` at the field `v` --
-    -- and it was moved onto the round trip along with it, so it has to be carried
-    -- back the same way.  Binding the equation inside the motive is what lets
-    -- that happen; nothing but a proof is ever carried, a data field at another
-    -- field of a copy being a shape denesting turns down, and two proofs of the
-    -- one proposition are the same proof, so the far end meets `xs` exactly
+    -- a later field may be a proof *about* this one -- `Ok v` at the field `v`
+    -- -- and it was moved onto the round trip along with it, so it has to be
+    -- carried back the same way
     let mut carry : Array (Nat × Expr) := #[]
     for k in (z + 1)...xs.size do
       let abst ← kabstract (← Core.betaReduce (← inferType cur[k]!)) rts[z]!
@@ -5240,27 +3870,15 @@ def acrossFields (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr)
           out := out.set! k (← mkEqNDRec mot out[k]! hw)
         mkLambdaFVars #[w, hw] (concl.replaceFVars xs out)
     body ← mkEqRec motive body eq
-    -- the carried proofs moved with this step, and a proof about *two* fields at
-    -- copies is still standing on the round trip of the one that has not had its
-    -- step yet.  So `cur` follows the body: the same transport the motive made,
-    -- at the equation itself rather than at the one it bound, which is the term
-    -- the body now holds in that position and so the one the next step has to
-    -- read its statement off
+    -- the carried proofs moved with this step, and a proof about *two* fields
+    -- at copies is still standing on the round trip of the one that has not had
+    -- its step yet
     for (k, mot) in carry do
       cur := cur.set! k (← mkEqNDRec mot cur[k]! eq)
     cur := cur.set! z xs[z]!
   return body
 
-/--
-The raw motive standing behind the writer's, for a member the bridge restated.
-
-A `Prop` member indexed by a nesting is written over the original and emitted
-over the copy, so a motive the raw recursor takes is bound at the copy's
-arguments where the writer's is bound at the original's.  Both the arguments and
-the proof go across the same way anything else does, `BridgeCtx.toImage` knowing
-what to do with each -- which for the proof is a transport onto the round trips
-of its own indices, that being what the written statement unfolds to.
--/
+/-- The raw motive standing behind the writer's, for a member the bridge restated. -/
 def rawPropMotive (c : BridgeCtx) (m : Nat) (nice : Expr) : TermElabM Expr := do
   let b := c.b
   forallTelescope (← instantiateForall b.members[m]!.type c.ps) fun idxs _ =>
@@ -5269,8 +3887,7 @@ def rawPropMotive (c : BridgeCtx) (m : Nat) (nice : Expr) : TermElabM Expr := do
 
 /--
 The equation between the constructor at its fields' round trips and the
-constructor at the fields themselves, one step per field that is at a copy.
--/
+constructor at the fields themselves, one step per field that is at a copy. -/
 def roundTrip (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr) : TermElabM Expr := do
   let kinds := c.b.fieldKinds cc.kinds
   c.valCongr cc xs fun z => do
@@ -5287,22 +3904,7 @@ def roundTrip (c : BridgeCtx) (cc : CtorSpec) (xs : Array Expr) : TermElabM Expr
 
 /--
 The same move as `BridgeCtx.acrossFields`, walked along the conclusion's
-arguments instead of the constructor's fields.
-
-The recursion over the whole block needs this one.  Its `Prop` motives are
-stated over what the data recursion returned, so a `Prop` minor's conclusion
-mentions the data minors -- and those have already been moved across themselves,
-so the conclusion is no longer a function of the fields alone and substituting a
-field into it does not produce what the nice minor concluded.  What is still
-true is that each argument of the conclusion moved by a rename of its own head,
-so they are moved one at a time, with the equation bound inside the motive so
-that every later argument standing on the one being moved is carried along.  The
-data minor's own conclusion is then carried by exactly the transport that built
-it, and the two sides meet.
-
-A proof is never carried: two proofs of the one proposition are the same proof,
-so once its indices line up, so does it.
--/
+arguments instead of the constructor's fields. -/
 def acrossIndices (c : BridgeCtx) (concl body : Expr) : TermElabM Expr := do
   let b := c.b
   let head := concl.getAppFn
@@ -5340,37 +3942,15 @@ def acrossIndices (c : BridgeCtx) (concl body : Expr) : TermElabM Expr := do
 
 /--
 `X.toOrig_ofOrig` at `x : ty`, if `ty` is a copy's original: the proof that
-sending `x` into the copy and reading it back is `x` again.
-
-`none` when there is nothing to send, which is every type outside the denesting
-and so most of them.
--/
+sending `x` into the copy and reading it back is `x` again. -/
 def backEq? (c : BridgeCtx) (x ty : Expr) : MetaM (Option Expr) := do
   let some (k, idxs) ← c.copyOf? ty.headBeta | return none
   return some (mkAppN (mkConst c.copies[k]!.backName c.b.lvls) (c.ps ++ idxs ++ #[x]))
 
 /--
 A value the raw recursor returned, moved from the round trips of the writer's
-indices onto the indices themselves.
-
-A proposition the bridge restated is emitted over the copies, so its recursor has
-to be given the copy-world images of the indices, and what it hands back is the
-writer's motive at those images read out again -- `(ofOrig a).toOrig` where the
-writer wrote `a`.  The two are equal and not the same term, so the value is
-carried across one index at a time, `X.toOrig_ofOrig` closing each and the
-equation bound inside the motive so that the proof standing on the index comes
-along with it.  Nothing moves at all in a block with no such member, the
-recursor's own statement being the writer's already.
-
-`raws` is what the value ought to be stated at -- the writer's indices, and the
-major premise with them where the caller has one.  Which argument each of them is
-the round trip of is looked for rather than counted off, a motive taking more
-arguments than the writer wrote indices as soon as the recursion over the whole
-block is the one being restated: there the value the data recursion returned
-stands between the index and the proof, and it moves along with the index it is
-stated over rather than on any step of its own.  What the value is stated at is
-read off its own type, that always being a motive applied.
--/
+indices onto the indices themselves; nothing moves in a block with no restated
+member. -/
 def backAcross (c : BridgeCtx) (raws : Array Expr) (body : Expr) :
     TermElabM Expr := do
   let mut body := body
@@ -5399,12 +3979,8 @@ def backAcross (c : BridgeCtx) (raws : Array Expr) (body : Expr) :
   return body
 
 /--
-Add a restatement of the raw recursor `recCst`, stated over the block's
-parameters, the nice motives and minors, and concluding at `goalMot`.  The raw
-motives and minors are what the value passes on, each of them sending its
-arguments across.  Everything ahead of the major premise is implicit, as it is
-in a recursor Lean generates for itself.
--/
+Add a restatement of the raw recursor `recCst`, over the block's parameters, the
+nice motives and minors, concluding at `goalMot`. -/
 def addRestated (c : BridgeCtx) (i : Nat) (lp niceName : Name)
     (nmots nmins : Array Expr) (goalMot recCst : Expr)
     (rmots rmins : Array Expr) : TermElabM Unit := do
@@ -5435,9 +4011,7 @@ def addRestated (c : BridgeCtx) (i : Nat) (lp niceName : Name)
 def addRoundTrips (c : BridgeCtx) (needed : Array Nat) (rawRec : Nat → Name) :
     TermElabM Unit := do
   let b := c.b
-  -- `(X.ofOrig (X.toOrig t)).val`, for `t` a term of the copy at `ids`.  The
-  -- value and its well-formedness are stated in the pre-world, so a copy that
-  -- deleted an index of its own has its arguments crossed over first
+  -- `(X.ofOrig (X.toOrig t)).val`, for `t` a term of the copy at `ids`
   let roundLhs (k : Nat) (ids : Array Expr) (t : Expr) : MetaM Expr := do
     let cp := c.copies[k]!
     let there := mkAppN (mkConst cp.toName b.lvls) (c.ps ++ ids ++ #[t])
@@ -5480,32 +4054,22 @@ def addRoundTrips (c : BridgeCtx) (needed : Array Nat) (rawRec : Nat → Name) :
 
 /-! ### The round trip taken from the other end
 
-`ofOrig_toOrig` starts at the copy and comes back to it, and that is an
-induction over the copy, which is a member of this block.  `toOrig_ofOrig`
-starts at the original, and that is a different induction altogether: over a
-type that is no member of anything here, but an ordinary inductive with a
-recursor of its own.
+`ofOrig_toOrig` starts at the copy, an induction over a member of this block.
+`toOrig_ofOrig` starts at the original, so it is a different induction.
 
-The scheme is `ofOrig`'s for a `Prop` copy.  Every copy in the group is given
-its round trip as a motive, everything else the original's recursor eliminates
-goes to `True`, and a field at a group member contributes the hypothesis the
-recursor supplies rather than a call.  Each minor is then a congruence between
-one constructor at two lots of arguments, because `toOrig` and `ofOrig` both
-reduce at a constructor; a field is left alone where the round trip already
-comes back by itself -- through a structure it does, by eta -- and is otherwise
-either that hypothesis or the round trip of whichever copy the field is at.
+The scheme is `ofOrig`'s for a `Prop` copy.  Every copy in the group gets its
+round trip as a motive, everything else goes to `True`, and a field at a group
+member takes the hypothesis the recursor supplies.  Each minor is a congruence
+between one constructor at two lots of arguments; a field is left alone where the
+round trip comes back by eta through a structure, and is otherwise that
+hypothesis or the round trip of the copy it is at.  The congruence is
+`mkHCongrWithArity`'s and so heterogeneous, which a field indexed by another
+needs: what moves under such a field moves its type with it, leaving a `HEq`.  A
+data field there is out of reach; a `Prop` one is `proof_irrel_heq`.
 
-The congruence is `mkHCongrWithArity`'s and so heterogeneous, which is what it
-takes for a field the block's own shape indexes by another: what moves under
-such a field moves its type with it, and there is no equation to state, only a
-`HEq`.  A data field in that position is out of reach, but a `Prop` one is
-exactly `proof_irrel_heq` -- and that is the shape a denested ind-ind original
-has, a proof carried alongside the thing it is about.
-
-What this is for is `ofOrig_inj`, and through it the injectivity of a
-constructor with a field at a copy.  What `injection` leaves at such a field is
-an equation between the two sides' `ofOrig`s, and `ofOrig_toOrig` is the wrong
-half of the round trip to get anything out of it.
+This exists for `ofOrig_inj`, and through it the injectivity of a constructor
+with a field at a copy: `injection` leaves an equation between the two sides'
+`ofOrig`s, for which `ofOrig_toOrig` is the wrong half.
 -/
 
 /-- `X.toOrig (X.ofOrig x)`, for `x` the original at `jdxs`. -/
@@ -5515,13 +4079,7 @@ def backLhs (c : BridgeCtx) (k : Nat) (jdxs : Array Expr) (x : Expr) : MetaM Exp
   return mkAppN (mkConst cp.toName c.b.lvls)
     (c.ps ++ imgs ++ #[mkAppN (mkConst cp.ofName c.b.lvls) (c.ps ++ jdxs ++ #[x])])
 
-/--
-`X.toOrig_ofOrig`, by the original's own recursor at the whole group.
-
-A field at another copy is read back by *that* copy's round trip, which may not
-have been proved yet -- so `wanted` is where the name of one that was missing is
-left, for the caller to prove and come back with.
--/
+/-- `X.toOrig_ofOrig`, by the original's own recursor at the whole group. -/
 def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Array Nat)) :
     TermElabM (Expr × Expr) := do
   let cp := c.copies[k]!
@@ -5548,9 +4106,8 @@ def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Arra
       let mut lhs := fields[z]!
       if let some (j, mq') := mp.ihs[z]! then
         if ge.targets[mq']!.isSome then
-          -- a field that is a function into the group is given a
-          -- hypothesis for each of its values, and the equation wanted is
-          -- of the two functions
+          -- a field that is a function into the group is given a hypothesis for
+          -- each of its values, and the equation wanted is of the two functions
           step := some (← funExtN ihs[j]! nzs)
       if step.isNone then
         (lhs, step) ← forallTelescope ty fun zs concl => do
@@ -5630,24 +4187,7 @@ def ofInjValue (c : BridgeCtx) (k : Nat) : TermElabM (Expr × Expr) := do
 
 /--
 Add `X.toOrig_ofOrig` and `X.ofOrig_inj` for each data copy in `needed`, and for
-each copy those turn out to be proved at.
-
-`needed` is where the writer's own constructors have a field, and a copy's round
-trip is proved at *its* constructors, whose fields may be at copies further in
-again.  Which of those actually want a round trip of their own is not something
-to read off the fields: at a great many of them it comes back by itself, and a
-copy asked for on the strength of having a field there would be a pair of
-theorems nobody ever names.  So the copy that was missing is the one the proof
-says it wanted, and the pass is simply run again for it -- until a go round
-learns nothing new, which it must, there being finitely many copies.
-
-Nothing the block emits needs any of this, so a failure costs only the pair it
-was proving and goes to the trace rather than taking the bridge down with it.
-That is what the last pass is for: the rounds before it fail quietly, since
-"the copy further in is not there yet" is a state of affairs and not a fault.
-What a real failure costs in the end is the injectivity of whichever
-constructors had a field at the copy that failed.
--/
+each copy those turn out to be proved at. -/
 def addBackTrips (c : BridgeCtx) (needed : Array Nat) : TermElabM Unit := do
   let order ← c.order
   let wanted ← IO.mkRef (#[] : Array Nat)
@@ -5692,15 +4232,7 @@ def addBackTrips (c : BridgeCtx) (needed : Array Nat) : TermElabM Unit := do
 
 /--
 The front of a recursor stated the way the writer wrote the block, handed to `k`
-as the motives and the minors.
-
-This is `Block.withRawFront` with every copy sent back to its original: a motive
-is over the arity the writer gave the member rather than the one the bridge had
-to give the raw one, and a minor is over the fields as the writer wrote them and
-concludes at the constructor under the name that was written.  What is left of
-the copies is the two `copyAt?` splits, which pick the original out of a copy
-where there is one to pick.
--/
+as the motives and the minors. -/
 def withNiceFront {α} [Inhabited α] (c : BridgeCtx) (f : Front)
     (k : Array Expr → Array Expr → TermElabM α) : TermElabM α := do
   let b := c.b
@@ -5738,16 +4270,7 @@ def withNiceFront {α} [Inhabited α] (c : BridgeCtx) (f : Front)
                 ((← c.niceIdxArgs m concl) ++ #[ctorApp])))
     withLocalDeclsD minorDecls fun nminors => k nmotives nminors
 
-/--
-The recursor for a member the writer declared, with only originals in it.
-
-The motives are over the originals, the minors are over the originals'
-constructors, and the copies are gone from both.  The value is the raw recursor
-at motives that send their argument across first; every minor then lines up
-definitionally, except for a constructor of the writer's own that had to be
-renamed -- there the raw one comes out at the round-tripped fields, and the round
-trip is what closes the gap.
--/
+/-- The recursor for a member the writer declared, with only originals in it. -/
 def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
     (niceName : Name) (rawOf : Name → Name) : TermElabM Unit := do
   let b := c.b
@@ -5775,31 +4298,7 @@ def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
     c.addRestated i lp niceName nmotives nminors nmotives[c.dpos i]! recCst
       rmotives rminors
 
-/--
-The recursor over the whole block, with only originals in it.
-
-`emitGrandRecs` has already built one over the copies, and its shape is the shape
-wanted -- a motive per member, a minor per constructor, a `Prop` motive taking the
-value the recursion produced at the data member it is indexed by.  So nothing is
-reconstructed from the block here.  Each binder is the raw binder with the copies
-put back as originals, the binders before it replaced by the ones already built,
-and a constructor of the writer's own that had to be renamed put back under the
-name that was written.  The value is the raw recursor at motives that send their
-arguments across first, the way `BridgeCtx.addNiceRec` does it, and the round trip
-closes the same gap at the same place.
-
-Which member the whole thing recurses at is read off the raw recursor too: the
-motive it concludes at is the one the major premise belongs to.
-
-For a `Prop` member the conclusion is more than that motive at the indices: the
-motive also takes the value the data recursion returned, and the raw recursor
-writes it with the raw recursor over the copies at the raw binders.  The nice
-recursor for that member is defined as exactly that, so the application is
-rebuilt at the nice binders rather than substituted into -- substituting would
-leave an internal name and the transported binders in a type a writer reads.
-`ready` says which members already have theirs, since one that fell back to its
-split recursor has nothing of the right shape to be rebuilt at.
--/
+/-- The recursor over the whole block, with only originals in it. -/
 def addNiceGrandRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawGrand : Nat → Name)
     (niceOf : Nat → Name) (rawOf : Name → Name) (free ready : Array Nat) :
     TermElabM Unit := do
@@ -5891,14 +4390,9 @@ def addNiceGrandRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawGrand : Nat → Na
               let body := mkAppN nmins[q]! (vals ++ ihs)
               if rawOf cc.name == cc.name then
                 return ← mkLambdaFVars args body
-              -- a constructor that *builds* an index the erasure deleted has
-              -- the copy in the index and in the term at once, and the term at
-              -- a moved index has no equation of its own to be carried along;
-              -- the field they both came from has one, so that one moves on the
-              -- field axis.  Everything else moves on the argument axis, and
-              -- has to: a `Prop` minor's conclusion mentions the data minors,
-              -- so a data minor that moved the other way would no longer be the
-              -- term the `Prop` minor is carrying
+              -- a constructor that *builds* a deleted index has the copy in the
+              -- index and in the term at once, and only the field they came
+              -- from has an equation, so that one moves on the field axis
               let kinds' := b.fieldKinds cc.kinds
               if b.members[mz]!.dropped.any fun p => (deletedField? kinds' p).isNone then
                 mkLambdaFVars args (← c.acrossFields cc xs concl body)
@@ -5915,13 +4409,8 @@ def addNiceGrandRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawGrand : Nat → Na
             if let some z := ready.find? fun z => rawGrand z == n then
               return mkAppN (mkConst (niceOf z) a.getAppFn.constLevels!)
                 (c.ps ++ nmots ++ nmins ++ rest)
-            -- a copy is a member of the block and so covered by the recursion,
-            -- but it is nothing the writer named and there is no name to read
-            -- its recursion under.  The value could be put in as the term it is,
-            -- and the statement would then be about the recursion over the
-            -- denesting rather than over anything written; the split recursor
-            -- says less and says it in the writer's own words, so the block is
-            -- better off with that one
+            -- a copy is covered by the recursion but is nothing the writer
+            -- named, so there is no name to read its recursion under
             if let some k := c.copies.findIdx? fun cp => rawGrand cp.idx == n then
               throwError "the writer has no name for the recursion at \
                 `{← ppExpr (c.copies[k]!.orig #[])}`, which is what this \
@@ -5933,40 +4422,20 @@ def addNiceGrandRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawGrand : Nat → Na
           mkLambdaFVars zs (mkAppN nmots[iq]! args)
         c.addRestated i lp (niceOf i) nmots nmins goal recCst rmotives rminors
 
-/--
-The positions of the fields a `Prop` member's recursor gets a hypothesis for.
-
-`grp` is the layer the recursion runs over.  A proposition indexed by another is
-declared in a layer of its own, after it, and a field of that earlier layer's
-type is a field of some other inductive as far as this recursion is concerned --
-so there is no hypothesis to be had about it, exactly as there is none about a
-field of any type outside the block.
--/
+/-- The positions of the fields a `Prop` member's recursor gets a hypothesis for. -/
 def propRecPositions (b : Block) (grp : Array Nat) (kinds : Array FieldKind) : Array Nat :=
   (recPositions kinds).filter fun z =>
     match kinds[z]! with
     | .recur m => b.members[m]!.isProp && grp.contains m
     | _        => false
 
-/--
-What the two `Prop` recursor builders both read off the pre-block's recursor.
-
-The raw recursor of `BridgeCtx.addPropRecs` and the restatement of
-`BridgeCtx.addNicePropRec` have to agree on the members they run over, the order
-they run over them in and the universe they eliminate into, and all three come
-from the same place.  Reading them once keeps the two in step.
--/
+/-- What the two `Prop` recursor builders both read off the pre-block's recursor. -/
 structure PropRecs where
   /-- The pre-block's own recursor, which a raw one is one application of. -/
   info : RecursorVal
   /-- Every `Prop` member behind that recursor, in the order it runs over them. -/
   pIdxs : Array Nat
-  /--
-  The ones a recursor is wanted for.  The rest still get a motive and a minor,
-  since the pre-block recurses through all of them at once, but nobody has to
-  see them: theirs are the trivial ones, and the caller has already made sure
-  that nothing kept recurses into one.
-  -/
+  /-- The ones a recursor is wanted for. -/
   kIdxs : Array Nat
   /-- The motives' universe. -/
   lvl : Level
@@ -5977,13 +4446,7 @@ structure PropRecs where
 
 /--
 Read that off one layer of the block's propositions, or `none` if there is
-nothing there to build.  `rep` is any member of the layer, which is how the
-layer is named: what the pre-block's recursor runs over is the rest of it.
-
-`lp` is a level parameter the writer cannot have taken; the recursor carries one
-of its own exactly when the pre-block's does, which is to say when it eliminates
-large.
--/
+nothing there to build. -/
 def propRecs? (b : Block) (lp : Name) (rep : Nat) (keep : Array Nat) :
     MetaM (Option PropRecs) := do
   let info ← getConstInfoRec (mkRecName (preName b.members[rep]!.name))
@@ -5996,36 +4459,7 @@ def propRecs? (b : Block) (lp : Name) (rep : Nat) (keep : Array Nat) :
                 recLvls := if large then lvl :: b.lvls else b.lvls
                 us := if large then lp :: b.us else b.us }
 
-/--
-`X.rec` for a `Prop` member, stated over the block rather than the pre-types.
-
-A `Prop` member is *defined* as its pre-form at the `.val`s of its indices, so
-`X._pre.rec` is nearly the recursor already; what it has wrong is the world its
-motive and minors are stated in.  The motive is transported the way
-`toOrigPre`'s is -- `fun pres h => ∀ ws, C (pres rebuilt with ws) h` -- and the
-major premise's own indices supply the `ws` at the very end, where
-`⟨t.val, t.property⟩ ≡ t` closes it.
-
-A minor then arrives with its fields in the pre-world, and a field of a *data*
-member's type has to be put back at the subtype.  The proof that lets it be is
-in the conclusion: `X._wf` at a constructor is the conjunction of the `_wf`s of
-its recursive fields, so the well-formedness of the conclusion's indices
-contains the well-formedness of everything the constructor was built from.  A
-field the conclusion does not reach that way is not rebuildable -- `X._pre` is
-then genuinely larger than `X`'s image in it -- and the group is dropped rather
-than half-emitted.
-
-A field of a `Prop` member's type needs nothing done to it, since `P args` *is*
-`P._pre args'`; only its induction hypothesis does, and that is the raw one at
-the same well-formedness proofs the fields were rebuilt with, so the two line up
-definitionally.
-
-The motives cover every `Prop` member of the block and the minors every
-constructor of one, which is what the pre-block's own recursor does.  The data
-members are a separate block with a recursor of their own, so a `Prop`
-constructor's data field arrives without a hypothesis -- correctly, since
-nothing recurses into it.
--/
+/-- `X.rec` for a `Prop` member, stated over the block rather than the pre-types. -/
 def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
     TermElabM Unit := do
   let b := c.b
@@ -6120,26 +4554,7 @@ def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
         (compile := false)
       markElabAsElim (recNameOf j)
 
-/--
-`X.rec` for a `Prop` member, with only originals in it.
-
-The `Prop` side of `BridgeCtx.addNiceRec`, and a much shorter one.  A copy the
-recursion reaches gets its motive over the original it stands for and its minors
-over the original's constructors; the value is the raw recursor at motives that
-send their argument across with `toOrig` first, and at minors that do the same
-to their fields.
-
-The proof itself needs no transporting back, which is where this is shorter than
-the data side.  Every copy a `Prop` member's recursion reaches is a copy of a
-*proposition* -- that is what put it in this group -- so a minor's conclusion is
-a statement about a proof, and the raw constructor and the one the bridge renamed
-are the same proof to the kernel.  On the data side that gap costs a transport;
-proof irrelevance closes it here for nothing.
-
-What the proof *carries* is another matter, and that is what
-`BridgeCtx.acrossFields` is for -- the same function the data side uses, closing
-the same round trips.
--/
+/-- `X.rec` for a `Prop` member, with only originals in it. -/
 def addNicePropRec (c : BridgeCtx) (s : PropRecs) (j : Nat) (rawRec : Nat → Name)
     (niceName : Name) : TermElabM Unit := do
   let b := c.b
@@ -6200,13 +4615,10 @@ end BridgeCtx
 
 /-! ## The induction-inductive recursor
 
-Steps 8 and 9 below build two separate recursors: one for the data members,
-whose motives run over the data members only, and one for the `Prop` members,
-whose motives run over those.  That is enough to compute with, but it is not the
-eliminator the block deserves: a `Prop` member of an induction-inductive block
-is indexed by a data member, so its motive ought to be allowed to mention the
-*value* the recursion produced at that index, and a data constructor that
-carries a proof ought to get an induction hypothesis for it.  Written out for
+Steps 8 and 9 build two separate recursors, one over the data members and one
+over the `Prop` members.  That computes, but a `Prop` member's motive should be
+able to mention the *value* the recursion produced at its data index, and a data
+constructor carrying a proof should get an induction hypothesis for it:
 
 ```
 mutual
@@ -6228,14 +4640,10 @@ Ctx.rec.{u} {motive_1 : Ctx → Sort u}
       (h_ih : motive_2 x Γ Γ_ih h) → motive_1 (.snoc Γ x h)) → ..
 ```
 
-and `Fresh.rec` takes the very same motives and minors.  The two motives cannot
-be merged into one -- `Fresh` is small-eliminating, so nothing may land in
-`Sort u` by recursion on it -- but they can be *taken together*, which is
-exactly the shape above.
-
-It has to be one recursion, because the two halves are interleaved: the value at
-`Ctx.snoc Γ x h` needs the proof-motive's value at `h`, which needs the
-data-motive's value at `Γ`.  So the recursion computes, at each pre-term, a
+and `Fresh.rec` takes the same motives and minors.  The two motives cannot be
+merged -- `Fresh` is small-eliminating -- but it must be one recursion: the value
+at `Ctx.snoc Γ x h` needs the proof-motive's value at `h`, which needs the
+data-motive's value at `Γ`.  So the recursion computes at each pre-term a
 **bundle**: the data value paired with the proof-motive's value at *every* proof
 of *every* `Prop` member indexed by that pre-term.
 
@@ -6245,21 +4653,19 @@ Bundle p := (w : Ctx._wf p) →
 ```
 
 The pairing is a `PSigma` rather than a `Subtype` because the first component is
-data; and it stays a `PSigma` even for a data member no `Prop` member is indexed
-by (with `fun _ => True` as the second component), so that every member's bundle
-lands in `Sort (max 1 u)` and the group can recurse together.
+data, and it stays one even for a data member no `Prop` member is indexed by
+(with `fun _ => True` second), so every bundle lands in `Sort (max 1 u)` and the
+group can recurse together.
 
-Building the bundle at a data constructor is where the work is.  The data
-component is the minor applied to the rebuilt fields, whose proof-field
-hypotheses come out of the bundle's *own* second component at the recursive
-field the proof is about.  The proof component is proved by inverting the
-`Prop` member's pre-form at the constructor: index unification forces the
-proof's fields to be the constructor's own, so the `Prop` minor's data
-hypotheses are the sibling bundles' first components and its proof hypotheses
-their second.  The inversion is `Lean.Meta.cases`, which discharges the
-alternatives that cannot happen; the recursive calls are named before it runs so
-that structural recursion sees them at the top of the alternative rather than
-buried under the equations the inversion introduces.
+Building the bundle at a data constructor is the work.  The data component is the
+minor applied to the rebuilt fields, whose proof-field hypotheses come out of the
+bundle's *own* second component.  The proof component is proved by inverting the
+`Prop` member's pre-form at the constructor: index unification forces the proof's
+fields to be the constructor's own, so the `Prop` minor's data hypotheses are the
+sibling bundles' first components and its proof hypotheses their second.  The
+inversion is `Lean.Meta.cases`; the recursive calls are named before it runs so
+structural recursion sees them at the top of the alternative rather than under
+the equations the inversion introduces.
 -/
 
 /-- Where a `Prop` member of the block sits in the recursion. -/
@@ -6281,54 +4687,18 @@ def slotOf? (slots : Array PropSlot) (j : Nat) : Option PropSlot := slots.find? 
 def slotsAt (slots : Array PropSlot) (i : Nat) : Array Nat :=
   (Array.range slots.size).filter (slots[·]!.data == i)
 
-/--
-Of a `Prop` member's indices, the ones its slot does not already account for.
-
-Fixing the data index fixes that member's own indices too, so a proof component
-is stated over the rest alone; whoever applies it has to leave out exactly the
-same ones.
--/
+/-- Of a `Prop` member's indices, the ones its slot does not already account for. -/
 def PropSlot.freeArgs (s : PropSlot) (args : Array Expr) : Array Expr :=
   (Array.range args.size).filterMap fun z =>
     if z == s.pos || s.bound.contains z then none else some args[z]!
 
-/--
-The index arguments of the data member a `Prop` member's principal index is at.
-`who` names the member for the error, which is a malformed block rather than
-something the caller can recover from.
--/
+/-- The index arguments of the data member a `Prop` member's principal index is at. -/
 def dataIdxArgs (b : Block) (who : Name) (d : Expr) : MetaM (Array Expr) := do
   let some args ← b.withRecTarget? (← inferType d) fun _ _ args => pure (b.idxArgs args)
     | throwError "The index `{d}` of `{who}` is not a member's type"
   return args
 
-/--
-Read a slot off every `Prop` member of the block.
-
-A grand recursor puts each `Prop` member it covers in the bundle of one data
-member, so it needs a single index of that member's to settle all the rest: a
-bundle carries the hypotheses about one data value and no more.  The last data
-index is the one that stands the best chance, since a later index is stated over
-the earlier ones, and it settles them exactly when it names them all -- the
-`Ty Γ` of `Wf : (Γ : Ctx) → Ty Γ → Prop` has the `Γ` as its own index, so the
-`Ty` bundle already knows which `Ctx` it is over.  Two data indices that fix
-each other not at all are two the one bundle cannot hold hypotheses for.
-
-A member indexed by *no* data member is a different matter: there is no bundle
-to put it in, but neither is there anything for it to be in one for.  It gets no
-slot, and the caller leaves it out of the recursion rather than giving up on the
-block; a recursor of its own comes from the split ones.  So an empty result
-means every `Prop` member is free-standing, and `none` means one of them is
-genuinely in the way.
-
-The slots come back in *settle* order rather than block order.  A bundle's proof
-components are built one after another, and `WF.intro (l) (t) (h : WFWith t l)`
-asks for `WFWith` at the very term `WF` is being proved at -- where the only
-thing that can stand for it is a component already built.  So a `Prop` member
-another wants at its own principal term comes first.  Which order that is, is not
-something the writer chose: denesting names the copies in the order it meets
-them, and the block that comes out can have the two either way round.
--/
+/-- Read a slot off every `Prop` member of the block. -/
 def propSlots? (b : Block) (ps : Array Expr) : TermElabM (Option (Array PropSlot)) := do
   let mut out : Array PropSlot := #[]
   for j in b.propIdxs do
@@ -6389,11 +4759,8 @@ def propSlots? (b : Block) (ps : Array Expr) : TermElabM (Option (Array PropSlot
   return some sorted
 
 /--
-Re-bind a `Prop` member's index telescope with its data index pinned to
-`target` (and that index's own indices to `dIdxs`).  `k` receives the indices
-that stayed free, all of them in order, and their pre-world images -- with
-`targetPre` standing in for `target`, which is where the pre-term itself goes.
--/
+Re-bind a `Prop` member's index telescope with its data index pinned to `target`
+(and that index's own indices to `dIdxs`). -/
 partial def withSlotIdxs {α} [Inhabited α] (b : Block) (s : PropSlot) (dIdxs : Array Expr)
     (target targetPre ty : Expr) (q : Nat) (free all pres : Array Expr)
     (k : Array Expr → Array Expr → Array Expr → MetaM α) : MetaM α := do
@@ -6442,30 +4809,7 @@ where
     else
       k acc
 
-/--
-The recursor's own value at a term of a member's type, as the minors see it.
-
-A minor's conclusion says what the recursion returns at the constructor it is
-for, and a `Prop` member's motive takes the data motive's value at its index --
-so a `Prop` minor's conclusion has to name that value.  The index is built out
-of the constructor's fields, so the value is built the same way: a field's value
-is its induction hypothesis, and a constructor's is the minor for it, applied to
-the fields' values in turn.  Anything else is not something the recursion has a
-value for, and the block gets the split recursors instead.
-
-Which fields carry a hypothesis is `hasIh`, and it differs between the callers:
-the recursion over the whole block has a motive at every member, so a proof
-field carries one too, while the recursion over the data members alone has
-hypotheses only where it recursed.
-
-`bundled` asks for the whole bundle at the term rather than the motive's value,
-which a caller wants when the hypothesis is going to a `recAux` whose deleted
-indices carry their propositions with them.  Only a term already under a
-hypothesis can answer that: rebuilding one out of a minor gets the value and
-nothing else, since the propositional half of a bundle at a constructor is
-proved by inverting a proof of it, which is the recursion's own work and not
-something to be done a second time out here.
--/
+/-- The recursor's own value at a term of a member's type, as the minors see it. -/
 partial def ihOfTerm (b : Block) (ctors : Array (Nat × CtorSpec)) (ctorNameOf : Name → Name)
     (hasIh : FieldKind → Bool) (minors : Array Expr) (ihAt : Array (FVarId × Expr))
     (e : Expr) (bundled : Bool := false) : MetaM Expr := do
@@ -6496,23 +4840,7 @@ partial def ihOfTerm (b : Block) (ctors : Array (Nat × CtorSpec)) (ctorNameOf :
 
 /--
 The recursion's own value at a real term `v` of a member's type, for a caller
-that is not itself inside the recursion.
-
-`X.rec` is such a caller: it has a term and no hypothesis about anything, so the
-one a member's `recAux` wants at each index it deleted has to be produced here,
-by recursing at that index.  Which is finite -- the recursion is on the arity,
-and an index of `Tm` is a `Ty` whose index is a `Ctx` whose arity is empty --
-and, unlike the hypotheses an alternative builds, under no obligation to
-decrease, since `X.rec` does not call itself.
-
-`answer` is what the caller's `recAux` returns read as the motive's value, told
-the member, its real indices, the pre-term and its well-formedness -- which is
-everything the reading can depend on, and the same four the caller states the
-return type from.  The recursion over the data members alone returns the value
-already and leaves it alone; the one over the whole block returns a bundle,
-whose first component it is.  It is applied at every level, because a hypothesis
-built here is handed to a `recAux` that wants the same reading of it.
--/
+that is not itself inside the recursion. -/
 partial def valueIh (b : Block) (recAuxName : Nat → Name) (lvl : Level)
     (ps motives minors : Array Expr) (v : Expr)
     (answer : Nat → Array Expr → Expr → Expr → Expr → MetaM Expr :=
@@ -6531,22 +4859,7 @@ partial def valueIh (b : Block) (recAuxName : Nat → Name) (lvl : Level)
 
 /--
 Add definitions that may call each other, splitting them into the groups that
-actually recurse.
-
-`Structural.structuralRecursion` wants a group that is mutually recursive:
-handed one whose members are independent it throws, and handed one where only
-some of them recurse it panics inside Lean's fixed-parameter analysis before it
-gets as far as throwing.  A block's members are under no obligation to be
-mutually recursive -- `A` may nest a family over `B` while `B` never mentions
-`A` -- so the call graph is condensed into its strongly connected components
-and each one is added on its own, callees first.
-
-A component of one that does not call itself is not a recursion at all and goes
-the direct way.  Everything else goes to `structuralRecursion`, which throws if
-it cannot see that the definitions terminate; that is what we want, and is why
-`addPreDefinitions`, which would quietly fall back to `partial` or `sorry`, is
-not used.
--/
+actually recurse. -/
 def addRecGroups (docCtx : LocalContext × LocalInstances)
     (preDefs : Array PreDefinition) : TermElabM Unit := do
   if preDefs.isEmpty then return
@@ -6590,15 +4903,7 @@ def addRecGroups (docCtx : LocalContext × LocalInstances)
       done := done.set! i true
     left := left - picked.size
 
-/--
-The auxiliary recursors over the pre-types, added as one group.
-
-Both the split recursors and the grand one are stated over a member's type and
-proved by an auxiliary that runs over its pre-type instead, and neither kind can
-be added on its own: the auxiliaries call each other exactly as the pre-block's
-members do.  So each kind hands its whole array here, and the sorting into
-mutually recursive groups happens once, in `addRecGroups`.
--/
+/-- The auxiliary recursors over the pre-types, added as one group. -/
 def addRecAuxs (docCtx : LocalContext × LocalInstances) (levelParams : List Name)
     (auxs : Array (Name × Expr × Expr)) : TermElabM Unit :=
   addRecGroups docCtx <| auxs.map fun (declName, type, value) =>
@@ -6607,29 +4912,7 @@ def addRecAuxs (docCtx : LocalContext × LocalInstances) (levelParams : List Nam
 
 /--
 Check that no `Prop` constructor pins a field of the data constructor it is
-about.
-
-What proves a bundle's proof component is an inversion, which unifies the `Prop`
-constructor's principal index against the data constructor the recursion is at.
-What that may not do is pin one of *the data constructor's* fields: the
-recursion has a call at the field, and once the field has been replaced the call
-is at a term that is no longer a subterm of what is being recursed on.  So a
-principal index has to be a variable, or a constructor at fields of its own, all
-of them different.
-
-One step and no more.  A nesting through two types at once -- `List (Except
-String T)` denests to a copy of `List` over a copy of `Except` -- can have a
-`Prop` constructor whose index is one copy's constructor at another's, and the
-unification does walk into both.  What does not follow it is the recursion: the
-alternative being filled in is the outer copy's, so a call is in hand at each of
-*its* fields and at nothing inside them.  Admitting the deeper tree on the
-grounds that the leaves below the top need no hypothesis was tried, and does not
-help either -- what the value then needs is a call at the outer field itself,
-inside the inversion that took it apart, and Lean's structural recursion cannot
-see that one.  So the shallow rule is the real one, and saying so precisely is
-worth more than reaching one step further and failing later with a worse
-message.
--/
+about. -/
 def checkPrincipals (b : Block) (ps : Array Expr) (slots : Array PropSlot)
     (ctorNameOf : Name → Name) : MetaM Unit := do
   for s in slots do
@@ -6655,14 +4938,7 @@ def checkPrincipals (b : Block) (ps : Array Expr) (slots : Array PropSlot)
 
 /--
 Check that the members left out of the recursion are disconnected from the ones
-that stay.
-
-A `Prop` member no data member indexes rides in no bundle, so it is left out
-entirely.  That is only sound if nothing that stays recurses into it -- a field
-of its type would want a hypothesis at a motive that is not there -- and if it
-does not recurse into a `Prop` member that stays, since the split recursors it
-will be given instead would then have to name one this emits.
--/
+that stay. -/
 def checkFreeProps (b : Block) (ps : Array Expr) (free : Array Nat) : MetaM Unit := do
   for i in *...b.size do
     let m := b.members[i]!
@@ -6683,14 +4959,7 @@ def checkFreeProps (b : Block) (ps : Array Expr) (free : Array Nat) : MetaM Unit
 /--
 Open member `i`'s pre-type: its indices, the values its well-formedness
 predicate is stated at, a hypothesis for each index the pre-type deleted, a
-pre-term, and a proof that the pre-term is well-formed.
-
-That is what both recursions over the block run under, the grand one and the
-split ones.  The predicate is stated in the pre-world, so an index the pre-type
-deleted reaches it at its value; and since such an index is not in the term the
-recursion runs on, there is nothing there to recurse at, so the caller is handed
-a hypothesis about it instead, of whatever shape `ihTypeAt` gives it.
--/
+pre-term, and a proof that the pre-term is well-formed. -/
 def withPreRec {α} [Inhabited α] (b : Block) (i : Nat) (ps : Array Expr)
     (ihTypeAt : Expr → MetaM Expr)
     (k : Array Expr → Array Expr → Array Expr → Expr → Expr → TermElabM α) : TermElabM α := do
@@ -6706,12 +4975,7 @@ def withPreRec {α} [Inhabited α] (b : Block) (i : Nat) (ps : Array Expr)
 /--
 The auxiliary recursion at member `i`, as a type and a value: everything a
 `withPreRec` opened, abstracted over `concl`, with the value one `casesOn` on
-the pre-term taking `alts` at the constructors.
-
-A deleted index is not read off the pre-term, so the `casesOn` stands under
-everything the pre-type dropped -- those indices, the hypotheses at them, and
-the well-formedness proof -- and is applied to them again afterwards.
--/
+the pre-term taking `alts` at the constructors. -/
 def recAuxOver (b : Block) (i : Nat) (ps motives minors idxs delIhs : Array Expr)
     (t0 w concl : Expr) (alts : Array Expr) : MetaM (Expr × Expr) := do
   let all := ps ++ motives ++ minors ++ idxs ++ delIhs ++ #[t0, w]
@@ -6727,23 +4991,7 @@ def recAuxOver (b : Block) (i : Nat) (ps motives minors idxs delIhs : Array Expr
 /--
 `X.rec` for every member of an induction-inductive block, over one set of
 motives and minors: see the section header for the shape and why it is one
-recursion.  Throws if the block is not one this can be done for, and the caller
-falls back to the split recursors.
-
-A `Prop` member no data member indexes is not induction-inductive with anything,
-and having one is no reason to give up on the members that are.  Such a member
-is left out: it gets no motive, no minor and no recursor here, and the returned
-indices tell the caller which ones it still owes a recursor to.
-
-`bundled` says what a deleted index arrives under.  An index the pre-type
-dropped is not in the term the recursion runs on, so the caller has to hand a
-hypothesis about it in; the plain reading of that hypothesis is the motive's
-value, which is all a data member ever asks of it.  A `Prop` constructor can ask
-for more -- `Wf.base : (Γ : Ctx) → Ok Γ → Wf Γ (Ty.base Γ)` wants the `Ok` at a
-`Γ` that `Ty.base` deleted -- and then the hypothesis has to be the whole bundle.
-That costs generality at the other end, since a bundle cannot be rebuilt out of
-a minor, so the caller tries this way first and falls back to the plain reading.
--/
+recursion. -/
 def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Name)
     (recNameOf recAuxName : Nat → Name) (ctorNameOf : Name → Name) (bundled : Bool) :
     TermElabM (Array Nat) := do
@@ -6751,9 +4999,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
   if dIdxs.isEmpty || b.propIdxs.isEmpty then
     throwError "Not an induction-inductive block"
   -- a deleted index at a proposition gets no hypothesis, and everything here
-  -- reads the hypotheses off a list as long as the deleted indices are.  The
-  -- split recursors do not, so the block still gets its eliminators, one member
-  -- at a time, and the propositions still get theirs from their own layers
+  -- reads the hypotheses off a list as long as the deleted indices are
   for i in dIdxs do
     let m := b.members[i]!
     if m.dropIhs.size != m.dropped.size then
@@ -6762,11 +5008,8 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
   let lvl := Level.param lp
   let ihName (n : Name) : Name := if n.hasMacroScopes then `ih else n.appendAfter "_ih"
   -- everything below is stated in the raw world, where the copies are the types
-  -- and anything the bridge will rename goes by its hidden name -- a constructor
-  -- whose type mentions a copy, and a proposition indexed by one.  A constructor
-  -- type reaches that world when a proposition's index pins a data constructor,
-  -- or when it names the proposition it belongs to, and neither plain name is
-  -- defined until the bridge runs
+  -- and anything the bridge will rename goes by its hidden name -- a
+  -- constructor whose type mentions a copy, and a proposition indexed by one
   let b := { b with members := b.members.map fun m =>
     { m with ctors := m.ctors.map fun c => { c with type := b.toRaw c.type } } }
   let out ← forallBoundedTelescope b.members[0]!.type b.numParams fun ps _ => do
@@ -6796,13 +5039,9 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
     let mpos (i : Nat) : Nat := (ord.findIdx? (· == i)).getD 0
     let ctors := b.ctorsOf ord
     let minorPos (n : Name) : Nat := (ctors.findIdx? (·.2.name == n)).getD 0
-    -- a field a `Prop` constructor's conclusion forgets has no well-formedness to
-    -- be put back at its subtype with, so the recursion stands an arbitrary
-    -- element of its type in.  That is sound here because every `Prop` member of
-    -- this recursor has a slot, and a member with a slot gets a `Prop`-valued
-    -- motive, so the minor is building a proof -- and two proofs of one
-    -- proposition are definitionally equal, which is exactly what says the
-    -- substitute does as well as the value that was meant
+    -- a field a `Prop` constructor's conclusion forgets has no well-formedness
+    -- to be put back at its subtype with, so the recursion stands an arbitrary
+    -- element of its type in
     let strayList : Array (Array Nat) ← ctors.mapM fun (i, c) => BridgeCtx.strayFields b i c ps
     let strayAt (n : Name) : Array Nat := strayList[minorPos n]!
     -- this is a recursor over the whole block, one motive per member and one
@@ -6823,10 +5062,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
     let mnames := motiveNames ord.size
     -- which fields of a data constructor its minor premise gives a hypothesis
     -- about: everything the recursion has a value at, which a plain field is
-    -- not.  A deleted index is one of them even though the pre-constructor has
-    -- no field for it, because the recursion was handed a hypothesis about it
-    -- on the way in -- see `FieldKind.ihTarget?`, which this agrees with once
-    -- the erased proof fields a `Prop` member contributes are added
+    -- not
     let hasIh : FieldKind → Bool := fun k => k != .plain
     let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := ord.mapIdx fun q i =>
       (mnames[q]!, fun acc => do
@@ -6891,8 +5127,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
       withLocalDeclsD minorDecls fun minors => do
         -- The binders a slot's component lives under: whichever of the `Prop`
         -- member's own indices the data member does not fix, and a proof of it
-        -- at the pre-type.  The component is *stated* in the bundle's type and
-        -- *proved* in the bundle's value, so the two have to agree about them
+        -- at the pre-type
         let withSlotBinders {α} [Inhabited α] (s : PropSlot) (mIdxs : Array Expr)
             (target p : Expr) (k : Array Expr → Array Expr → Expr → MetaM α) : MetaM α := do
           withSlotIdxs b s mIdxs target p (← instantiateForall b.members[s.j]!.type ps)
@@ -6900,12 +5135,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
               withLocalDeclD `h
                 (mkAppN (b.cst (preName b.members[s.j]!.name)) (ps ++ pres)) fun h =>
                   k free all h
-        -- the bundle: what the recursion computes at a pre-term.  It is indexed
-        -- twice over, because its two halves live in different worlds: `mIdxs`
-        -- are the member's indices in the real one, which is the only world a
-        -- motive is stated in, and `vargs` the same arguments in the pre-world,
-        -- where the pre-term and its well-formedness are.  A block that deletes
-        -- no index spells the two the same way
+        -- the bundle: what the recursion computes at a pre-term
         let bundleType (i : Nat) (mIdxs vargs : Array Expr) (p wf : Expr) : MetaM Expr := do
           let target := b.sMk i vargs p wf
           let cTy := mkAppN motives[mpos i]! (mIdxs ++ #[target])
@@ -6921,11 +5151,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
         -- a bundle whose type is already on its binder says what it is itself,
         -- and reading it off is shorter than stating it a second time
         let bunTy (bun : Expr) : MetaM Expr := do whnf (← inferType bun)
-        -- the two components of a bundle's type.  Whether a term really is a
-        -- bundle depends on how the recursion arrived at it, and the ones that
-        -- turn out not to be are the block's answer that the joint reading does
-        -- not hold together -- so this reports rather than taking the type
-        -- apart on faith, which aborts the process instead of the elaboration
+        -- the two components of a bundle's type
         let bunParts (bTy : Expr) : MetaM (Expr × Expr) := do
           unless bTy.isAppOfArity ``PSigma 2 && bTy.appArg!.isLambda do
             throwError "The recursion over the whole block wanted a bundle here and \
@@ -6947,9 +5173,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
           return projConj (peelConj group.size (beta.bindingBody!.instantiate1 fst)) snd q
         -- what the recursion promises at a real value of a data member's type.
         -- A deleted index is handed one of these, since the pre-term the
-        -- recursion runs on does not have the index in it to recurse at.
-        -- `bundled` is the reading that carries the propositions about the index
-        -- too, which a `Prop` constructor naming one of them needs
+        -- recursion runs on does not have the index in it to recurse at
         let ihTypeAt (v : Expr) : MetaM Expr := do
           let r? ← b.withRecTarget? (← inferType v) fun _ mm args => do
             let mIdxs := b.idxArgs args
@@ -6964,10 +5188,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
         -- it is already unless it is carrying the propositions as well
         let ihValOf (ih : Expr) : MetaM Expr := do
           if bundled then return ← bunFst (← bunTy ih) ih else return ih
-        -- an index of a `Prop` member, back at the subtypes.  An index the
-        -- constructor being recursed at deleted is real already, and there is
-        -- nothing in the alternative's well-formedness to put it back together
-        -- from -- the pre-constructor dropped it rather than carrying a proof
+        -- an index of a `Prop` member, back at the subtypes
         let toRealIdxs (delS : Array (Expr × Expr × Expr)) (jj : Nat) (pidxs : Array Expr)
             (parts : Array (Expr × Expr)) : MetaM (Array Expr) := do
           let mut rty ← instantiateForall b.members[jj]!.type ps
@@ -6995,14 +5216,8 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
           return out
         -- One alternative of the inversion that proves a bundle's proof
         -- component.  A `Prop` constructor's data field need not be a *strict*
-        -- subterm of the pre-term being recursed at: `WF.intro (l) (t) (h : WFWith t l)`
-        -- has the pre-term itself in it, and asks for the data value there and
-        -- for the component of a `Prop` member at the very same place.  So the
-        -- bundle under construction stands in for a recursive call, its first
-        -- component being `self` and its slot components the ones already built.
-        -- `delAt` is the other way a data field can fail to be a subterm: it can
-        -- be an index the constructor being recursed at *deleted*, in its
-        -- pre-image and its real reading, with the hypothesis it arrived under
+        -- subterm of the pre-term recursed at: `WF.intro (l) (t) (h : WFWith t
+        -- l)` holds the pre-term itself
         let fillAlt (imgs : Array (Option Expr)) (recPos : Array Nat) (buns : Array Expr)
             (delAt : Array (Expr × Expr × Expr))
             (wc selfPre self : Expr) (selfProps : Array (Option Expr))
@@ -7112,10 +5327,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
                 -- premise wants, and the hypothesis about it
                 let delAt : Array (Expr × Expr × Expr) ← dels.mapIdxM fun q d => do
                   return ((← b.preImage d (← inferType d)), d, dIhs[q]!)
-                -- a recursive field read in both worlds at once.  The pre-world
-                -- reading is what the encoding's terms are built out of and the
-                -- real one is where the motives are; the two are the same
-                -- telescope, so the second is instantiated at the first's binders
+                -- a recursive field read in both worlds at once
                 let withField {α} [Inhabited α] (k : Nat)
                     (f : Array Expr → Nat → Array Expr → Array Expr → MetaM α) : MetaM α := do
                   let r? ← b.withRecTarget? subTys[k]! fun ys mm pargs => do
@@ -7125,10 +5337,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
                     | throwError "The field `{xs[k]!}` of `{c.name}` is not a member's type"
                   return e
                 -- the recursive calls, named before anything else, so that
-                -- structural recursion meets them at the top of the alternative.
-                -- They are built over the constructor's own fields and moved to
-                -- the alternative's binders at the end, because the hypothesis a
-                -- deleted index wants is found by the shape of the index term
+                -- structural recursion meets them at the top of the alternative
                 let mut ihAt : Array (FVarId × Expr) :=
                   dels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
                 let mut bnames : Array Name := #[]
@@ -7298,16 +5507,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
     markElabAsElim n
   return free
 
-/--
-A data member's recursor, in the two forms step 8 builds it in.
-
-The auxiliary is the one that does the work: it runs over the pre-type, and
-takes the well-formedness proof as an argument of its own, which is what leaves
-the recursion structural enough for the equation compiler to see.  The other is
-what a writer reaches for, stated over the member's own type, and is nothing
-but the auxiliary applied to the subtype's two projections.  They have to travel
-together because the first is added by the group and the second one at a time.
--/
+/-- A data member's recursor, in the two forms step 8 builds it in. -/
 structure SplitRec where
   /-- The auxiliary recursor's type, over the pre-type. -/
   auxType : Expr
@@ -7321,28 +5521,7 @@ structure SplitRec where
 
 /-! ## Emitting the declarations -/
 
-/--
-The data members' pre-types, as real declarations.
-
-They are one mutual inductive whenever they agree about their universe, and the
-kernel takes that as it stands.  When they do not agree, the rule being broken
-is the kernel's own same-universe rule for a mutual block -- which is precisely
-the rule `Mumi.Lowering` exists to lift.  So the pre-block is handed to the
-lowering instead: it splits into one ordinary mutual inductive per strongly
-connected component, emits them in topological order, and stitches the pieces
-back into a recursor ranging over the whole block again.
-
-Erasure and lowering are two different restrictions being lifted, and this is
-where they compose.  Erasure removes the dependency of one member's *arity* on
-another; what it leaves behind is an ordinary mutual block, which may or may not
-also be heterogeneous, and lowering is what answers that second question.
-Neither pass has to know anything about the other's problem.
-
-Either way, what comes back out is `X._pre`, its constructors, and one recursor
-over all of it, which is all the rest of the encoding asks for.  The return
-value is how many motive universes that recursor takes -- one on the direct
-path, one per component on the lowered one.
--/
+/-- The data members' pre-types, as real declarations. -/
 private def emitPreData (p : Plan) : TermElabM Nat := do
   let b := p.block
   unless p.preIsHeterogeneous do
@@ -7372,12 +5551,8 @@ private def emitPreData (p : Plan) : TermElabM Nat := do
   catch ex => owning do
     -- name the pair that disagreed before anything else: which two members they
     -- are is the first thing the reader needs, and the inner error is about the
-    -- pre-block, whose names nobody wrote
-    -- the universe a member ends in, read off its *pre*-type rather than off
-    -- what the writer wrote.  Erasure leaves the resulting sort alone, and the
-    -- pre-types are closed, where a member's own type names its siblings and
-    -- not one of them is in the environment yet -- looking at that here is how
-    -- the reason this block was turned down gets replaced by an unknown constant
+    -- pre-block, whose names nobody wrote the universe a member ends in, read
+    -- off its *pre*-type
     let levelOf (q : Nat) : TermElabM Level :=
       forallTelescope p.preDataInds[q]!.type fun _ body => do
         let .sort l := ← whnf body | return .zero
@@ -7408,13 +5583,7 @@ private def emitPreData (p : Plan) : TermElabM Nat := do
 
 /--
 Repeat the motive universe in `e`'s pre-recursor heads until there are `k` of
-them.
-
-`X._wf`'s body was built against a recursor taking one.  A lowered pre-block's
-`mutualRec` takes one per component -- and `Block.wfMotiveLevel` already brought
-every motive `X._wf` supplies to a single sort, so they are all that universe and
-the one already there is it.
--/
+them. -/
 private def widenPreRecLevels (p : Plan) (k : Nat) (e : Expr) : Expr :=
   if k == 1 then e else
     let heads := p.preDataInds.map (·.name ++ `mutualRec)
@@ -7427,24 +5596,15 @@ private def widenPreRecLevels (p : Plan) (k : Nat) (e : Expr) : Expr :=
 
 /-! ## Injectivity
 
-A data member of an induction-inductive block is a `def` onto a subtype, and its
-constructors are `def`s too, so nothing hands them the `inj`/`injEq` pair that a
-real inductive's constructors get.  Without those `simp` knows nothing whatever
-about a constructor equation -- not even that `Ctx.snoc Γ A = Ctx.snoc Δ B` says
-`Γ = Δ` -- and the encoding shows through the first time anyone asks.
-
-The statements are mainline's own, built by `mkInjectiveTheoremTypeCore?` off a
-`ConstructorVal` assembled from the `def`, so the rules about which fields get
-compared are mainline's too: a field the resulting type pins is shared between
-the two sides rather than compared, a proof field is left out, and a field whose
-type moved with an earlier one is compared with `HEq`.
-
-Only the proofs are ours, and they are the same few moves every time.  Forwards,
-the equation is pushed through the wrapper's `.val`, where reduction takes the two
-constructors down to the pre-world's own and `injection` splits them; each
-equation that yields is a field's outright or a wrapper's `ext` away from one, and
-substituting them in turn is what makes the later ones homogeneous.  Backwards,
-the components are substituted and the two sides are the same term.
+A data member is a `def` onto a subtype and its constructors are `def`s, so
+nothing hands them the `inj`/`injEq` pair a real inductive's constructors get.
+The statements are mainline's, built by `mkInjectiveTheoremTypeCore?` off a
+`ConstructorVal` assembled from the `def`; only the proofs are ours.  Forwards,
+the equation is pushed through the wrapper's `.val`, where reduction takes the
+two constructors down to the pre-world's own and `injection` splits them; each
+equation that yields is a field's outright or a wrapper's `ext` away from one,
+and substituting them in turn makes the later ones homogeneous.  Backwards, the
+components are substituted and the two sides are the same term.
 -/
 
 /-- The conjuncts of a right-associated `And`, or the whole of `e` if it is not one. -/
@@ -7455,8 +5615,7 @@ private partial def conjuncts (e : Expr) : Array Expr :=
 /--
 How many equations `injection` yields at `pre`, an application of a pre-world
 constructor: one per field, less the proofs, which proof irrelevance settles
-without an equation of their own.
--/
+without an equation of their own. -/
 private def preEqCount (pre : Expr) : MetaM Nat := do
   let some n := pre.getAppFn.constName? | return 0
   let cv ← getConstInfoCtor n
@@ -7468,16 +5627,8 @@ private def preEqCount (pre : Expr) : MetaM Nat := do
       return k
 
 /--
-Elaborate `by seq` at `goal`, with whatever is in scope in scope, and raise
-rather than report if it does not go through.
-
-A tactic block that fails ordinarily says so by logging and standing in `sorry`
-for what it could not prove, which is right for a script the writer wrote and
-wrong for one we are trying on their behalf: what should come of that is no
-theorem and a trace, not a proof of `False` waiting to be found and an error
-about a script they never saw.  So the log is set aside for the attempt and put
-back after it, and anything left in it counts as a failure.
--/
+Elaborate `by seq` at `goal`, and raise rather than report if it does not go
+through. -/
 private def proveBy (goal : Expr) (seq : TSyntax ``Lean.Parser.Tactic.tacticSeq) :
     TermElabM Expr := do
   let log ← Core.getMessageLog
@@ -7493,24 +5644,7 @@ private def proveBy (goal : Expr) (seq : TSyntax ``Lean.Parser.Tactic.tacticSeq)
   finally
     Core.setMessageLog log
 
-/--
-`X.c.inj` and `X.c.injEq` for one constructor of a data member.
-
-Nothing is added for a constructor with no two applications to tell apart --
-one all of whose fields the resulting type pins, or whose only fields are
-proofs -- which is where mainline's statement builder answers `none` too.
-
-`ofInjs` are the `X.ofOrig_inj` the bridge managed to prove, and they are what a
-field at a denested copy needs: what `injection` leaves there is an equation
-between the two sides' images in the copy.  Which copy is not worked out --
-there are only ever a few, and the script tries each in turn.
-
-Which member's `ext` lifts an equation is not worked out either, for the same
-reason: `injection` on a constructor with fields at several members leaves one
-equation per member, each at that member's own wrapper.  A single `Subtype.ext`
-used to cover them all; a wrapper per member is what buys the recursion, and the
-price is a list of candidates rather than one.
--/
+/-- `X.c.inj` and `X.c.injEq` for one constructor of a data member. -/
 def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
     TermElabM Unit := do
   let info ← getConstInfo c.name
@@ -7522,9 +5656,7 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
   let some eqTy ← mkInjectiveTheoremTypeCore? cv true | return
   let some injTy ← mkInjectiveTheoremTypeCore? cv false | return
   -- the binders the two statements share: the parameters, the fields, and a
-  -- second copy of every field that is not shared.  `injEq` ends there, while
-  -- `inj` goes on to take the equation itself, which the forward proof wants
-  -- to introduce under a name of its own rather than off a telescope
+  -- second copy of every field that is not shared
   let nBinders ← forallTelescope eqTy fun xs _ => pure xs.size
   let us := info.levelParams.map Level.param
   let hH := mkIdent `mumiH
@@ -7545,8 +5677,7 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
     -- an equation about a field of the subtype has to be lifted before it can
     -- be substituted, one about a field at a denested copy has to be read back
     -- through that copy, and one about a field a shared one's type mentions is
-    -- heterogeneous until the substitutions before it have run.  A shared
-    -- field's own equation is of a term with itself and there is nothing to do
+    -- heterogeneous until the substitutions before it have run
     let mut rest : Array (TSyntax `tactic) := #[]
     for k in *...nEq do
       let q := qName k
@@ -7608,33 +5739,18 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
 /-! ## Disjointness
 
 Two different constructors of one data member build different terms, and `simp`
-will not find that out by itself.  What makes it true is a `noConfusion` in the
-pre-world, and the member is a `def`, so there is nothing under the name the
-writer would reach for; core's own `reduceCtorEq`, which asks whether either
-side is a constructor application, never fires either.
-
-A lemma per pair of constructors would say it, but there are quadratically many
-pairs and every one of them would be a declaration nobody wrote.  So it is one
-simproc for the whole library instead.  It pushes the equation through
-the wrapper's `.val`, where reduction takes the two sides down to two different
-pre-world constructors, and hands what comes back to `noConfusion` -- so the
-pre-world name occurs in the proof term and in nothing that is stated.
+will not find that out by itself: what makes it true is a `noConfusion` in the
+pre-world, and core's `reduceCtorEq` never fires on a `def`.  Pairs of
+constructors are quadratically many, so this is one simproc for the whole library
+rather than a lemma each.  It pushes the equation through the wrapper's `.val`,
+where reduction takes the two sides down to two different pre-world constructors,
+and hands what comes back to `noConfusion` -- so the pre-world name occurs in the
+proof term and in nothing stated.
 -/
 
 /--
 `(X.c₁ .. = X.c₂ ..) = False`, for two different constructors of a data member
-of an induction-inductive block.
-
-A simproc is offered every equation in the file, so the shape is recognised by
-name first: two constants that differ, whose shared prefix `X` has a pre-world
-`X._pre` carrying a `noConfusion`.  That is two lookups, and it turns away an
-equation between unrelated functions before anything is elaborated.
-
-What survives is then built and checked rather than trusted.  Two names can
-differ and still reduce to one constructor -- `noConfusion` answers a *weaker*
-question there, and its answer is not `False` -- so the term's type is read back
-before the rewrite is offered, and anything else is quietly left alone.
--/
+of an induction-inductive block. -/
 simproc [simp] ctorNoConfusion (_ = _) := fun e => do
   let some (_, lhs, rhs) := e.eq? | return .continue
   let some c₁ := lhs.getAppFn.constName? | return .continue
@@ -7664,13 +5780,7 @@ simproc [simp] ctorNoConfusion (_ = _) := fun e => do
 /--
 The minor premise a peeled constructor takes in a widened recursor: its fields,
 then one hypothesis per field at a member of the block, then the motive at what
-the constructor built.
-
-Nothing here is in the erased world.  A peeled member is an inductive over the
-types the writer wrote, its fields are at those types, and the hypotheses are
-the ones any recursor over the block would offer -- which is why this can be
-said at all for a member whose erased recursor could not be.
--/
+the constructor built. -/
 private def peeledMinorType (numParams : Nat) (memberAt : Name → Option Nat)
     (motives : Array Expr) (us : List Level) (ps : Array Expr) (motive : Expr)
     (c : Constructor) : TermElabM Expr := do
@@ -7693,20 +5803,7 @@ private def peeledMinorType (numParams : Nat) (memberAt : Name → Option Nat)
 
 /--
 The minor the kernel's recursor over a peeled member wants, out of the one a
-recursion over the whole block offers.
-
-The block's minor asks for a hypothesis at every field that is at a member of
-the block, and the kernel's recursion has only the ones at the members it
-`covered` to give.  Every other one is a recursion in its own right, and all of
-them are within reach: the widened recursor of the member a field is at takes
-exactly the motives and minors this one was handed, so it can simply be called.
-That is the recursion Lean's own grand recursor would have run there.
-
-`selfCall?` is for the companion described in `addPeeledRecImpl`, which takes
-itself apart with a `casesOn` and so is handed no hypothesis at all: given the
-recursion's own name, a field at the member itself becomes a call to it, and
-what comes back is a minor over the constructor's fields alone.
--/
+recursion over the whole block offers. -/
 private def selfMinorValue (numParams : Nat) (memberAt : Name → Option Nat)
     (pubRec : Nat → Name) (elimLvls : List Level) (covered : Array Nat)
     (motives minors : Array Expr) (ps : Array Expr)
@@ -7748,29 +5845,7 @@ private def selfMinorValue (numParams : Nat) (memberAt : Name → Option Nat)
 
 /--
 Put the members that left the block back into the recursors of the ones that
-stayed.
-
-A peeled member is an inductive in its own right, with a recursor of its own,
-and nothing that stayed can reach it -- that is what made the peel legal in the
-first place.  So the block's own recursion has no use for its motive.  But what
-Lean gives a `mutual` block is one motive per member and one minor per
-constructor whether the recursion needs them or not: a block whose members turn
-out to be independent still comes out in the shape it was written in.  A reader
-of `Ctx.rec` should not be able to tell that `Tm` was declared apart from it, so
-the motives and minors come back, in the order the block put them, and the
-recursor simply does not look at them.  Sound for the same reason the peel was:
-what it discards, nothing it returns could have depended on.
-
-This runs for the members that left as well as for the ones that stayed.  What
-the kernel wrote for a peeled member is a recursion over that member alone, and
-a reader of `Tm.rec` is owed the same three motives a reader of `Ctx.rec` is.
-
-`core` is the recursion being restated, `coreAt` the places in the block its
-motives stand for -- in its own order, which is the block's -- and `self` the
-place of the member it concludes at.  `pub` is the name the writer reads.
-Everything is stated over the block as the writer reads it, which is the only
-world the peeled types exist in, so this runs once they are declared.
--/
+stayed. -/
 def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array Nat)
     (pubRec : Nat → Name) (core pub : Name) (coreAt : Array Nat) (self : Nat)
     (compile := true) : TermElabM Unit := do
@@ -7794,8 +5869,7 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
   forallTelescope info.type fun args concl => do
     let ps := args.extract 0 b.numParams
     -- the motives are the arguments after the parameters whose own types end in
-    -- a sort.  A minor's ends in a motive and an index's in neither, so the run
-    -- of them stops where the minors start
+    -- a sort
     let mut nMot := 0
     for a in args.extract b.numParams args.size do
       if ← forallTelescopeReducing (← inferType a) fun _ c => pure c.isSort then
@@ -7804,9 +5878,7 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
     unless nMot == coreAt.size do
       throwError "`{core}` has {nMot} motives where the recursion is over {coreAt.size}"
     let oldMot := args.extract b.numParams (b.numParams + nMot)
-    -- the universe the recursion returns in is the core's own.  It is not always
-    -- a name this side of the block chose: what a peeled member brings is the
-    -- recursor the kernel wrote for it
+    -- the universe the recursion returns in is the core's own
     let lvl ← forallTelescopeReducing (← inferType oldMot[0]!) fun _ c =>
       match c with
       | .sort u => pure u
@@ -7830,10 +5902,7 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
     withImplicits motDecls fun motives => do
       let coreMotives := coreAt.map (motives[·]!)
       let sub (e : Expr) : Expr := e.replaceFVars oldMot coreMotives
-      -- one minor per constructor, in the order the block was written.  A minor
-      -- the core states is restated at the new motives, and every other one is
-      -- built here -- including the peeled member's own, whose core version is
-      -- short of the hypotheses at the members it does not recurse over
+      -- one minor per constructor, in the order the block was written
       let selfPeeled := peeledAt.contains self
       let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
       let mut owner : Array Nat := #[]
@@ -7871,8 +5940,7 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
         if selfPeeled then
           -- the core is the kernel's recursor over the inductive behind the
           -- member, so its major is stated at that and not at the name the
-          -- writer reads.  The two being definitionally equal is exactly what
-          -- lets the one below be handed to the one above
+          -- writer reads
           let idxDecls ← forallTelescope (← instantiateForall selfType ps) fun idxs _ => do
             let mut ds : Array (Name × (Array Expr → TermElabM Expr)) := #[]
             for q in *...idxs.size do
@@ -7884,14 +5952,7 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
           withImplicits idxDecls fun idxs =>
             withLocalDeclD `t (mkAppN (mkConst selfName us) (ps ++ idxs)) fun t => do
               publish (idxs ++ #[t]) (mkAppN motives[self]! (idxs ++ #[t]))
-              -- and a companion that can actually run.  What was just published
-              -- is a recursor application, and the code generator compiles none
-              -- of those, so the same function is written a second time out of a
-              -- `casesOn` -- which it does compile -- and a recursive call, which
-              -- an `unsafe` definition may make freely.  Nothing is trusted: the
-              -- checked definition is the one the kernel has and every proof
-              -- reads, and a companion that does not go through leaves it
-              -- `noncomputable`, which is what it would have been anyway
+              -- and a companion that can run
               let csName := core.getPrefix ++ `casesOn
               let all := ps ++ motives ++ minors ++ idxs ++ #[t]
               let ok ← attempt? `Mumi.indind m!"no compiled recursion for `{pub}`" <| do
@@ -7924,25 +5985,7 @@ def widenWithPeeled (b : Block) (peeled : Array InductiveType) (peeledAt : Array
         else
           publish major (sub concl)
 
-/--
-The wrapper that a data member unfolds to, and the pieces that take it apart.
-
-`X._sub args` pairs a pre-value with the proof that it is well formed.
-`Subtype` says exactly that, and is what this used to be -- but a definition by
-recursion over a member is compiled by asking whatever the argument's type
-unfolds to for a `.brecOn`, and `Subtype`'s own recursion is on the pair rather
-than on `X._wf`, so no `Subtype.brecOn` could ever be the one wanted.  A head
-per member is what lets each member carry the recursion its writer means.
-
-Every argument is a parameter.  The wrapper is not recursive, so nothing forces
-an index, and having no indices is what keeps it structure-like: one
-constructor, eta, and `.proj`, which is everything the subtype was being used
-for.
-
-The instances are the ones core states for `Subtype`, stated the same way --
-conditional on the pre-type having one, so a pre-type without costs nothing and
-a block that never asked for `deriving` is unaffected.
--/
+/-- The wrapper that a data member unfolds to, and the pieces that take it apart. -/
 def emitSub (b : Block) (i : Nat) : MetaM Unit := do
   let m := b.members[i]!
   let n := subName m.name
@@ -8010,25 +6053,13 @@ def emitSub (b : Block) (i : Nat) : MetaM Unit := do
 
 /--
 `e` with every application of an eliminator's motive `mot` replaced by what `f`
-makes of the argument it was applied to.
-
-The course-of-values declarations below are each `X.recD` at a motive of their
-own, and each one's minor premises are the recursor's own with that motive put
-in.  Telescoping the recursor hands those premises over with the motive still an
-`fvar`, so the value built inside them is written against `mot` and this is what
-makes it mean the new motive -- in the binder types as much as in the body, which
-is why it is a replacement over the finished term rather than an argument
-threaded down.
--/
+makes of the argument it was applied to. -/
 private def substMot (mot : Expr) (f : Expr → Expr) (e : Expr) : Expr :=
   e.replace fun sub => if sub.isApp && sub.getAppFn == mot then some (f sub.appArg!) else none
 
 /--
 The level a course-of-values table takes its motive into, which the block has no
-name for.  It leads the level list because that is the order
-`Lean.Meta.mkBRecOnConst` supplies levels in when the equation compiler reaches
-for what is built here.
--/
+name for. -/
 private def motiveLevelName (us : List Name) : Name := Id.run do
   let mut c := `u
   let mut k := 0
@@ -8039,14 +6070,7 @@ private def motiveLevelName (us : List Name) : Name := Id.run do
 
 /--
 The conjuncts of a well-formedness obligation, each with a proof of it read off
-the obligation itself.
-
-`X._wf` at a constructor is the conjunction of everything erasure dropped, one
-conjunct per field that had anything to say, and a recursion over the pre-type
-needs the conjunct belonging to each recursive field.  Which conjunct that is,
-is settled by comparing it against the obligation the field itself carries -- so
-the spine is flattened here and matched at the field.
--/
+the obligation itself. -/
 private partial def wfConjuncts (ty proof : Expr) : MetaM (Array (Expr × Expr)) := do
   let ty ← whnf ty
   unless ty.isAppOfArity ``And 2 do return #[(ty, proof)]
@@ -8056,14 +6080,8 @@ private partial def wfConjuncts (ty proof : Expr) : MetaM (Array (Expr × Expr))
     ++ (← wfConjuncts r (mkApp3 (mkConst ``And.right) l r proof))
 
 /--
-The caller's data, restated wherever the pre-recursor bound something of its own.
-
-An index the pre-type *kept* is bound by the recursor's motive, so under each
-minor premise the wrapper is a different type, and the caller's motive and step
-are terms about a different type in turn.  Every part of the construction has to
-be told which ones it is looking at.  Where the pre-type kept nothing there is
-only ever one answer, and it is what the caller wrote.
--/
+The caller's data, restated wherever the pre-recursor bound something of its
+own. -/
 private structure Restated where
   /-- the member's arguments, with a kept index replaced by the bound one -/
   args : Array Expr
@@ -8073,46 +6091,8 @@ private structure Restated where
   step? : Option Expr
 
 /--
-The same four declarations as `emitBRecOn`, for a member that has indices of its
-own -- a member indexed by the block, which is what an induction-inductive block
-is for, and one indexed by anything else it happens to carry alongside.
-
-`X.recD` cannot build them.  The wrapper takes a deleted index at the *pre-type*,
-because that is what `X._wf` is a predicate on, so `below` is stated at an
-`a : C._pre`; every recursion the block offers takes it at the member, at a
-`Γ : C`, and `C._wf a` is not recoverable from a term of `X._sub a` -- the
-encoding puts an index's well-formedness in the index and not in what it indexes,
-so `Ty._wf Γ Ty._pre.base` is `True` for a `Γ` that is no context at all.
-
-So the table is built on the pre-type, by the pre-block's own recursor, with the
-obligation threaded the way `X.recAux` threads it.  The motive is
-`fun v => X._wf a v → Sort w` at the `a` and the `motive` the caller fixed, so a
-recursive field at the *same* index has an induction hypothesis that still speaks
-of them and lands in the table, and one at any other index does not match and
-contributes no column.  That is exactly the set of rows Lean can ask for:
-structural recursion requires a recursive argument's parameters to be fixed, and
-every index of the member is a parameter of the wrapper, so a call at another one
-is rejected before the table is ever consulted and falls back to well-founded
-recursion as before.
-
-An index the pre-type *kept* is bound by the recursor rather than fixed, and the
-motive has to say something at every one of them at once.  What it says is the
-caller's question generalised: `fun k v => X._wf a k v → (mot : X._sub a k → Sort
-u) → ...`, with the motive -- and, in the two declarations that have one, the
-step -- quantified inside, and instantiated back at the caller's own where the
-table is finally applied.  A hypothesis at the minor's own index can then be used
-at the minor's own motive, and one at another index is at another motive and gets
-no column, which is the same discipline arrived at from the other side.
-
-A deleted index whose *type* mentions a kept one cannot stay fixed while the kept
-one varies, so it is bound in the motive as well.  Bound, not generalised: the
-caller's motive is about that one deleted index and no other, so a hypothesis at
-a different one still has nowhere to land and still gets no column.
-
-What makes the entries land at the caller's motive rather than at a rebuilt pair
-is the same pair of definitional facts the whole encoding rests on: `⟨x.val, w⟩`
-is `x` by structure eta, and any two proofs of an obligation are the same proof.
--/
+The same four declarations as `emitBRecOn`, for a member with indices of its
+own. -/
 private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) :
     MetaM Unit := do
   let m := b.members[i]!
@@ -8135,9 +6115,7 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
       if m.dropped.contains q then none else some (b.numParams + q)
     let keptFVars := keptPos.map (ps[·]!.fvarId!)
     -- and the deleted ones whose types mention a kept one, which cannot stay
-    -- fixed while it varies and so are bound beside it.  They are bound and not
-    -- generalised: the caller's motive is about one of them and no other, so the
-    -- table still has a column only where the deleted index is unchanged
+    -- fixed while it varies and so are bound beside it
     let mut gp : Array Nat := #[]
     let mut gf : Array FVarId := #[]
     for q in m.dropped.qsort (· < ·) do
@@ -8169,14 +6147,8 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
       withLocalDeclD `t (mkAppN (mkConst n b.lvls) args) fun t => do
         mkForallFVars #[t] (← mkArrow (belowOf args mot t) (mkApp mot t))
     withLocalDecl `motive .implicit (← mkArrow sub (mkSort lvl)) fun motive => do
-      -- the pre-block's recursor, with the member's own motive
-      -- `fun k v => ∀ w, generalised bodyOf` and every other member's trivial.
-      -- `second` says what the table holds at a recursive field beside the motive
-      -- there, and `mk` makes a minor of the member out of the constructor it is
-      -- about, the obligation it carries, and one (type, value) pair per field the
-      -- table has a column for.  `outerStep?` is the caller's step where the
-      -- declaration being built has one, which is also what says whether the
-      -- generalised motive needs a step beside it
+      -- the pre-block's recursor, with the member's own motive `fun k v => ∀ w,
+      -- generalised bodyOf` and every other member's trivial
       let drive (outerStep? : Option Expr) (bodyOf : Restated → Expr → Expr → MetaM Expr)
           (second : Restated → Expr → Expr → Expr → Expr)
           (mk : Restated → Expr → Expr → Array (Expr × Expr) → MetaM Expr) : MetaM Expr := do
@@ -8374,50 +6346,8 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
         modifyEnv (addProtected · eqName)
 
 /--
-`below`, `brecOn.go`, `brecOn` and `brecOn.eq` for a data member's wrapper, which
-is what lets a definition by recursion over the member be structural.
-
-The equation compiler decides a recursion is structural by unfolding the
-argument's type, asking which inductive that is, and looking for the inductive's
-`.brecOn`.  A member unfolds to its wrapper, so the wrapper is what has to carry
-one.  The wrapper's *own* kernel recursion is over a pair and offers no
-hypothesis about anything smaller -- the recursion the writer means lives in the
-well-formedness predicate, and `X.recD` is already that recursion stated at the
-member.  So the course-of-values table is built out of `X.recD`, under the four
-names `Lean.Meta.mkBRecOn` uses, and everything the equation compiler does from
-there follows: a structural definition rather than a well-founded one, hence
-equations that hold by `rfl`, a `decide` that goes through, and the unsafe
-recursive implementation Lean supplies its own structural definitions with.
-
-Nothing has to be done to keep the result computable, and in particular no
-`csimp` lemma: the compiler never sees `brecOn`.  Lean compiles the equations as
-written, through the `_unsafe_rec` it emits beside the definition, so the code
-that runs is already the plain recursion and there is nothing to redirect.  The
-four declarations below are left uncompiled the way Lean leaves its own.
-
-Only for a member with no index of its own.  `below t` tabulates the motive at
-fixed parameters, and `X.recD` visits every index at once, so a member with one
-goes to `emitIndexedBRecOn` instead -- which builds the same four names on the
-pre-type, where a deleted index is already fixed and a kept one is bound by the
-recursor and generalised over.
-
-What no table can cover is a recursive call at a *different* index.  An
-index-quantified motive is what `mkBRecOnMotive` would need, so `below` could
-take one only if `X._sub` took the member's extra arguments as indices; but
-`isNonRecStructure` reads `numIndices == 0` off the arity, so an indexed wrapper
-has no eta, and eta is what makes this lowering work at all.  `X.rec` *is* the
-auxiliary recursion at `t.val` and `t.property`, which answers the caller's
-question only because `mk t.val t.property` and `t` are the same term.  Restoring
-that by transport along an explicit eta lemma almost works: on a constructor the
-cast reduces away to `rfl`.  It is at a *variable* that it sticks, and a variable
-is precisely where an induction hypothesis sits, so reducing `X.rec (pi ..)`
-leaves the raw recursion at `B.val` facing the writer's `B.depth`, the same term
-under a cast that will not move.  Pushing the cast into the auxiliary motive
-reproduces the mismatch one level down, and a motive that ignores its major
-premise does not make `Eq.rec` reduce.  So the choice is between a table that
-crosses indices and iota rules that hold by `rfl`, and the iota rules are worth
-more -- `Ty.depth` over a `pi` whose body is at `Γ.snoc A` stays well-founded.
--/
+`below`, `brecOn.go`, `brecOn` and `brecOn.eq` for a data member's wrapper,
+which is what lets a definition by recursion over the member be structural. -/
 def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit := do
   let m := b.members[i]!
   let n := subName m.name
@@ -8451,10 +6381,7 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
     withLocalDecl `motive .implicit (← mkArrow sub (mkSort lvl)) fun motive => do
       let belowOf (t : Expr) : Expr := mkAppN (mkConst (n ++ `below) ls) (ps ++ #[motive, t])
       -- `X.recD` or `X.casesD` at motive level `l`, with `motiveOf` for the
-      -- motive and `mk` for each minor premise, stopping short of the major.
-      -- `mk` is handed the constructor its minor is about, the types of the
-      -- hypotheses that minor offers -- `second` saying what the table holds at
-      -- a recursive field -- and those hypotheses themselves
+      -- motive and `mk` for each minor premise, stopping short of the major
       let build (info : ConstantInfo) (mlvl : Name) (l : Level) (motiveOf : Expr → MetaM Expr)
           (subst : Expr → Expr) (second : Expr → Expr → Array Expr → Expr)
           (mk : Expr → Array Expr → Array Expr → MetaM Expr) : MetaM Expr := do
@@ -8479,10 +6406,7 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
               mkLambdaFVars fields (← mk concl.appArg! entries ihs)
             vals := vals.push (substMot mot subst v)
           return mkAppN (mkConst info.name us) ((ps.push motiveVal) ++ vals)
-      -- 1. the table: what is known about everything below `t`.  A constructor
-      -- with no recursive field knows nothing, and one with several holds them
-      -- nested to the right without a unit to close, which is the shape the
-      -- equation compiler reads back
+      -- 1. the table: what is known about everything below `t`
       let belowVal ← build recInfo recMLvl (mkLevelSucc w)
         (fun dom => return .lam `t dom (mkSort w) .default)
         (fun _ => mkSort w)
@@ -8559,24 +6483,15 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
         addDecl (.thmDecl { name := eqName, levelParams := lps, type := eqTy, value := eqPrf })
         modifyEnv (addProtected · eqName)
 
-/--
-Emit the whole encoding for a prepared block.
-
-Everything here telescopes over types that mention the block's members, so the
-order matters twice over: the pre-world declarations of steps 1--3 come out of
-the `Plan` already built (they could only be built while the scratch axioms were
-in scope), and from step 4 on each member is a real constant by the time a later
-step looks through its type.
--/
+/-- Emit the whole encoding for a prepared block. -/
 def emit (p : Plan) : TermElabM Unit := do
   let docCtx := (← getLCtx, ← getLocalInstances)
   let dIdxs := p.block.dataIdxs
   let copyNames := p.copies.map (·.1)
-  -- a `Prop` member whose arity runs over a copy is emitted under a hidden name:
-  -- `Ok : List Ctx → Prop` is not a statement the block can make until `ofOrig`
-  -- exists to send a `List Ctx` to the copy the raw member is really over.  The
-  -- bridge at the end gives the plain name the arity that was written, and if it
-  -- cannot, the plain name is an alias
+  -- a `Prop` member whose arity runs over a copy is emitted under a hidden
+  -- name: `Ok : List Ctx → Prop` is not a statement the block can make until
+  -- `ofOrig` exists to send a `List Ctx` to the copy the raw member is really
+  -- over
   let rawMemberName : Name → Name := fun n => Id.run do
     for j in p.block.propIdxs do
       let m := p.block.members[j]!
@@ -8596,13 +6511,8 @@ def emit (p : Plan) : TermElabM Unit := do
           return Name.mkStr m.name ("_nested_" ++ n.getString!)
     return n
   -- a raw declaration lives in the world where the copies *are* the types, so a
-  -- type that mentions a constructor the bridge is going to rename has to
-  -- mention the hidden name instead.  It happens when a proposition's index pins
-  -- a data constructor -- `Q.mk (x : WFTree R) : Q (.mk x)` -- and the pinned
-  -- constructor is one with a copy-typed field, and again when a constructor
-  -- builds an index the erasure deletes out of a copy-typed field of its own.
-  -- The block carries the renaming so that `Block.withAlt`, which is where the
-  -- second of those is read, does not have to be handed it
+  -- type mentioning a constructor the bridge will rename must mention the
+  -- hidden name instead
   let b := { p.block with rawCtor := rawCtorName, rawMember := rawMemberName }
   let toRaw := b.toRaw
   -- position of a data member among the motives
@@ -8627,10 +6537,7 @@ def emit (p : Plan) : TermElabM Unit := do
     addDef name b.us type (widenPreRecLevels p preRecUnivs value) (compile := false)
 
   -- 4. the members themselves, each after the ones its arity names: `Ty Γ` is a
-  -- subtype whose predicate is applied to `Γ.val`, and that names `Ctx`.  Data
-  -- and propositions go in one pass because the dependency runs both ways -- `Ok
-  -- : Ctx → Prop` wants the data first, `Tm : (Γ : Ctx) → Ok Γ → Type` wants the
-  -- proposition first -- and only a cycle is refused
+  -- subtype whose predicate is applied to `Γ.val`, and that names `Ctx`
   for i in ← memberOrder b (b.dataIdxs ++ b.propIdxs) do
     let m := b.members[i]!
     if m.isProp then
@@ -8643,11 +6550,7 @@ def emit (p : Plan) : TermElabM Unit := do
         return ← mkLambdaFVars idxs (b.subtype i (← b.valArgs i idxs))
       addDef m.name b.us m.type value (compile := false)
 
-  -- 5. the constructors, each after the ones its own type names.  Data and
-  -- propositions go in the one pass for the reason their members did: a data
-  -- constructor may build an index at a proposition -- `Tm.top : Tm .nil .nil`
-  -- names `Ok.nil` -- and a proposition's constructor is routinely indexed by a
-  -- data term
+  -- 5. the constructors, each after the ones its own type names
   for (i, c) in ← ctorOrder b (← memberOrder b (b.dataIdxs ++ b.propIdxs)) do
     if b.members[i]!.isProp then
       let cty := toRaw c.type
@@ -8697,18 +6600,14 @@ def emit (p : Plan) : TermElabM Unit := do
   let lvl := Level.param lp
   let recAuxName (i : Nat) : Name := b.members[i]!.name ++ `recAux
   -- a member of an induction-inductive block is a `def`, so Lean generates no
-  -- `X.rec` for it and the name is free -- which is the one users reach for.
-  -- It is still checked, in case a member is named under something that has one
+  -- `X.rec` for it and the name is free -- which is the one users reach for
   let env ← getEnv
   let pubRecName (i : Nat) : Name :=
     let n := b.members[i]!.name ++ `rec
     if (env.find? n).isNone then n else b.members[i]!.name ++ `recursor
   -- when members were peeled off, everything below states the recursion over
   -- what is left under a name of its own, and the writer's name is given the
-  -- shape the whole block would have had.  See `widenWithPeeled`; a peeled
-  -- proposition is left out of that, since a `Prop` motive in a recursor over
-  -- the whole block is bundled with the data recursion's value at the index it
-  -- is stated over, and a member that left has no such value to offer
+  -- shape the whole block would have had
   let peeledAllData := p.peeled.all fun t =>
     match t.type.getForallBody with
     | .sort u => u.normalize != Level.zero
@@ -8718,18 +6617,13 @@ def emit (p : Plan) : TermElabM Unit := do
     if widen then Name.mkStr b.members[i]!.name "_core_rec" else pubRecName i
   -- a member the writer declared, in a block with copies in it, gets its
   -- recursor twice over: the kernel-facing one, whose motives are over the
-  -- copies, under a hidden name, and `X.rec` stated over the originals.  A copy
-  -- is not a name anyone reaches for, so its recursor is only the raw one
+  -- copies, under a hidden name, and `X.rec` stated over the originals
   let rawRecName (i : Nat) : Name :=
     if p.copies.isEmpty || copyNames.contains b.members[i]!.name then recName i
     else Name.mkStr b.members[i]!.name "_nested_rec"
   -- an induction-inductive block wants one recursor over all of its members at
-  -- once, so that a `Prop` motive can mention the value the recursion produced
-  -- at the data member it is indexed by.  It does not always exist, and the
-  -- block falls back to the split recursors of steps 8 and 9 when it does not.
-  -- With copies in the block the bridge of step 10 is built out of the split
-  -- ones, so both families are emitted and only the grand one is restated over
-  -- the originals; the names have to be kept apart for that
+  -- once, and falls back to the split recursors of steps 8 and 9 when there is
+  -- none
   let grandRecName (i : Nat) : Name :=
     if p.copies.isEmpty then recName i else Name.mkStr b.members[i]!.name "_nested_grand"
   let grandAuxName (i : Nat) : Name :=
@@ -8743,8 +6637,7 @@ def emit (p : Plan) : TermElabM Unit := do
       -- what a deleted index arrives under is a choice, and neither way is the
       -- weaker one: carrying the propositions about it covers a `Prop`
       -- constructor that names one of them, and carrying only the value covers
-      -- a deleted index built out of a constructor.  So both are tried, and
-      -- only the second one's reason is worth a trace
+      -- a deleted index built out of a constructor
       let env ← getEnv
       try
         emitGrandRecs b docCtx lp grandRecName grandAuxName rawCtorName true
@@ -8795,12 +6688,8 @@ def emit (p : Plan) : TermElabM Unit := do
                   ihDels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
                 let mut ihs : Array Expr := #[]
                 for k in b.ihPositions kinds do
-                  -- a deleted field is not a field of the pre-term, so
-                  -- there is nothing here to recurse at.  It is one of
-                  -- the indices instead, and the hypothesis the minor
-                  -- wants about it is the one the recursion was handed
-                  -- when it was called, already in scope and already
-                  -- at this very term
+                  -- a deleted field is not a field of the pre-term, so there is
+                  -- nothing here to recurse at
                   if kinds[k]!.isDeleted then
                     let some q := ihDels.findIdx? (· == xs[k]!)
                       | throwError "The deleted field `{xs[k]!}` of `{c.name}` is \
@@ -8861,26 +6750,10 @@ def emit (p : Plan) : TermElabM Unit := do
       addDef (rawRecName dIdxs[q]!) (lp :: b.us) results[q]!.type results[q]!.value
       markElabAsElim (rawRecName dIdxs[q]!)
 
-  -- 7. `X.rec` for the `Prop` members the writer declared, out of the pre-block's
-  -- own recursor.  A copy is not a name anyone reaches for, and the type it
-  -- copies has a real recursor of Lean's own already, so a copy gets none of its
-  -- own -- but a member whose recursion runs into one is recursing over the
-  -- container, so the copy joins the group and its motive is the container's.
-  -- The recursor that comes out here names it, and step 10 puts the original
-  -- back in its place.
-  --
-  -- When the grand recursors took the plain names, only the members they left
-  -- out are still owed one; `emitGrandRecs` leaves out exactly the free-standing
-  -- ones, and has already made sure that none of them recurses into a member it
-  -- did cover, so the closure below cannot cross back
-  -- a group of `Prop` members has to be closed under recursion into another of
-  -- them: the recursion is one recursion, and a member left out of it has only
-  -- the trivial motive, which is nothing to state an induction hypothesis with
-  --
-  -- the propositions are not always one mutual inductive either: one indexed by
-  -- another is declared in a layer after it, and each layer recurses on its
-  -- own.  Which members share a layer is read back off the pre-recursors, so
-  -- that nothing here has to be told how the plan split them
+  -- 7.  `X.rec` for the `Prop` members the writer declared, out of the
+  -- pre-block's own recursor.  A copy gets no recursor of its own, but a member
+  -- whose recursion runs into one is recursing over the container, so the copy
+  -- joins the group with the container's motive; step 10 puts the original back
   let mut propGroups : Array (Array Nat) := #[]
   for j in b.propIdxs do
     unless propGroups.any (·.contains j) do
@@ -8902,10 +6775,7 @@ def emit (p : Plan) : TermElabM Unit := do
     !copyNames.contains b.members[j]!.name && (!grandOnly || grandFree.contains j)
   -- not every `Prop` member has a derivable recursor: a constructor with a data
   -- field the conclusion's indices do not reach cannot have that field put back
-  -- at its subtype.  The kept members share one erased recursion, so one such
-  -- constructor costs the whole group its recursor -- but the group does not
-  -- have to be all of them.  The data members are unaffected and the `Prop`
-  -- members keep their constructors either way
+  -- at its subtype
   let buildProps (rep : Nat) (keep : Array Nat) : TermElabM (Option BridgeCtx.PropRecs) := do
     let some s ← BridgeCtx.propRecs? b lp rep keep | return none
     let ok ← attempted `Mumi.indind "no recursor for the `Prop` members" <|
@@ -8920,10 +6790,7 @@ def emit (p : Plan) : TermElabM Unit := do
     | some s => propRecs := propRecs.push s
     | none =>
       -- whose fault it was, asked one member at a time and with the environment
-      -- put back after each, so that asking costs nothing.  What fails is a
-      -- constructor of a kept member and nothing else, so a member that stands
-      -- on its own stands in any group it is closed in, and the ones that stand
-      -- can simply be unioned back together and built once
+      -- put back after each, so that asking costs nothing
       let mut ok : Array Nat := #[]
       for j in gKeep do
         if ok.contains j then continue
@@ -8984,11 +6851,10 @@ def emit (p : Plan) : TermElabM Unit := do
         c.addRoundTrips needed rawRecName
         c.addBackTrips needed
         -- a `Prop` member the recursion over the whole block covers wants to be
-        -- restated from *that* one and not from its split recursor, for the same
-        -- reason it was covered: read off the grand one its motive takes the
-        -- value the data recursion returned, and read off the split one it does
-        -- not.  So the two families are restated by one loop, and the fallbacks
-        -- differ only in which split recursor is the one to fall back to
+        -- restated from *that* one and not from its split recursor, for the
+        -- same reason it was covered: read off the grand one its motive takes
+        -- the value the data recursion returned, and read off the split one it
+        -- does not
         let mut grandDone : Array Nat := #[]
         for i in dIdxs ++ b.propIdxs do
           if (c.copyAt? i).isSome then continue
@@ -9004,9 +6870,7 @@ def emit (p : Plan) : TermElabM Unit := do
           else unless b.members[i]!.isProp do
             c.addNiceRec i lp rawRecName (recName i) rawCtorName
         -- and the same for the `Prop` members, whose recursors name a copy
-        -- exactly when their recursion runs into one.  Each is a leaf: nothing
-        -- else is stated in terms of it, so one that will not go across costs
-        -- only its own plain name and the block keeps everything else
+        -- exactly when their recursion runs into one
         for s in propRecs do
           for j in s.kIdxs do
             if (c.copyAt? j).isSome || grandDone.contains j then continue
@@ -9050,13 +6914,7 @@ def emit (p : Plan) : TermElabM Unit := do
 
   -- 9. the members that left the block rather than being erased with it, as the
   -- ordinary inductive types they already were.  After the bridge, because what
-  -- they are stated over is the block the writer reads and step 10 is where that
-  -- becomes something the environment holds.  They come out of `addInd` with
-  -- everything an inductive gets -- a recursor, `casesOn`, `noConfusion`,
-  -- `brecOn`, and so `match` and the equation compiler -- which is the whole
-  -- reason for peeling them.  Their motives and minors then go back into the
-  -- recursors of the members that stayed, so that a block written as a `mutual`
-  -- still reads as one
+  -- they are stated over is the block the writer reads
   unless p.peeled.isEmpty do
     if !widen then
       addInd b.us b.numParams p.peeled
@@ -9064,18 +6922,7 @@ def emit (p : Plan) : TermElabM Unit := do
       -- the inductive is declared one name over and the writer's name is given
       -- to a definition that unfolds to it, because the kernel writes `X.rec`
       -- for whatever it is handed as an inductive `X` and `X.rec` is wanted for
-      -- the recursion over the whole block.  Everything the match machinery does
-      -- begins by reducing a type to its head, so the definition is no obstacle
-      -- to it; and the constructors keep the names that were written, since
-      -- nothing obliges a constructor to sit inside its own type's namespace.  A
-      -- `match`, the goals a `cases` leaves and the `injEq`s all read as the
-      -- block does, and only `#print X` gives away where the type really lives
-      -- and one at a time where they can be, since only a member that is
-      -- genuinely mutual with another has to share a declaration with it.  What
-      -- that buys is a kernel recursor at one motive, which is the only shape
-      -- the compiled companion in `widenWithPeeled` knows how to write; and it
-      -- keeps a peeled member's name, rather than the inductive behind it,
-      -- in the fields of every other one that mentions it
+      -- the recursion over the whole block
       let names := p.peeled.map (·.name)
       let uses := p.peeled.map fun t =>
         let cs := t.ctors.foldl (fun acc c => acc ++ c.type.getUsedConstants) #[]
@@ -9110,10 +6957,9 @@ def emit (p : Plan) : TermElabM Unit := do
           let t := p.peeled[a]!
           addDef t.name b.us t.type (mkConst (peelIndName t.name) (b.us.map Level.param))
           -- the one place the head is `Tm._ind` regardless is a field of a
-          -- constructor, since an inductive's own occurrences in its constructors
-          -- are the one thing the kernel will not let a definition stand in for.
-          -- So `.var` in an argument of `Tm.lam` looks for `Tm._ind.var`, and it
-          -- is pointed at the constructor that is really there
+          -- constructor, since an inductive's own occurrences in its
+          -- constructors are the one thing the kernel will not let a definition
+          -- stand in for
           for c in t.ctors do
             modifyEnv (Lean.addAlias · (Name.str (peelIndName t.name) c.name.getString!) c.name)
       let total := b.size + p.peeled.size
@@ -9148,12 +6994,7 @@ def emit (p : Plan) : TermElabM Unit := do
 
   -- 10. one recursor per member with the other members' motives discharged,
   -- which is the shape `induction` can drive, and the same one without its
-  -- hypotheses, which is the shape `cases` can drive.  Both are asked for
-  -- `evenIfWeaker`: a member here is a `def`, so a tactic that finds no
-  -- eliminator of its own does not stop but unfolds it, and what it offers a
-  -- split on is `Subtype.mk`.  A principle that has lost a sibling's
-  -- hypotheses beats one stated in the encoding, and the recursion over the
-  -- whole block is still there under `using`.  A failure is traced and dropped
+  -- hypotheses, which is the shape `cases` can drive
   for i in *...b.size do
     let m := b.members[i]!
     if copyNames.contains m.name then continue
@@ -9163,11 +7004,9 @@ def emit (p : Plan) : TermElabM Unit := do
         (evenIfWeaker := true)
     discard <| attempt? `Mumi.indind m!"no cases eliminator for `{m.name}`" <|
       addSoloElim b.numParams #[lp] m.isProp (pubRecName i) (solo `cases) (forCases := true)
-  -- a member that left the block has a real recursion of its own already, but it
-  -- is the kernel's, over `Tm._ind`, and every goal `induction` leaves says so.
-  -- The same one cut out of the block's is stated in the writer's names, and it
-  -- is no weaker: discharging the other motives only drops the hypotheses at
-  -- fields the kernel's recursor never offered one at either
+  -- a member that left the block has a real recursion of its own already, but
+  -- it is the kernel's, over `Tm._ind`, and every goal `induction` leaves says
+  -- so
   if widen then
     for t in p.peeled do
       discard <| attempt? `Mumi.indind m!"no one-motive recursor for `{t.name}`" <|
@@ -9179,10 +7018,7 @@ def emit (p : Plan) : TermElabM Unit := do
 
   -- 10b. the course-of-values recursion over each data member, which is what
   -- the equation compiler looks for when it decides whether a definition by
-  -- recursion over a member can be structural.  It is built out of the
-  -- one-motive recursor of step 10, so it has to come after it; a member that
-  -- did not get one, or whose indices the pre-type kept, keeps the well-founded
-  -- fallback and nothing here is emitted for it
+  -- recursion over a member can be structural
   for i in b.dataIdxs do
     if copyNames.contains b.members[i]!.name then continue
     discard <| attempt? `Mumi.indind
@@ -9190,20 +7026,15 @@ def emit (p : Plan) : TermElabM Unit := do
       emitBRecOn p preRecUnivs b i
 
   -- 11. injectivity of the data constructors, which has to come after the
-  -- bridge: what is stated is stated about the type the writer wrote, and
-  -- until step 10 has run that is not yet what the constructor's own type
-  -- says.  A `Prop` member's constructors are proofs and there is nothing to
-  -- state.  A failure is traced and dropped
+  -- bridge: what is stated is stated about the type the writer wrote, and until
+  -- step 10 has run that is not yet what the constructor's own type says
   let ofInjs ← copyNames.filterM fun n => return (← getEnv).contains (n ++ `ofOrig_inj)
   for (i, c) in b.ctorsOf b.dataIdxs do
     if copyNames.contains b.members[i]!.name then continue
     discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
       addInjEqs b (ofInjs.map (· ++ `ofOrig_inj)) i c
 
-  -- 12. what `match` is driven through.  A data member is a definition over a
-  -- wrapper and the equation compiler reduces its way to that wrapper, so it is
-  -- given a view -- a real inductive over the member -- to split on instead,
-  -- along with the `SizeOf` a definition by recursion over it needs
+  -- 12. what `match` is driven through
   addViews b.numParams <| b.dataIdxs.filterMap fun i =>
     let m := b.members[i]!
     if copyNames.contains m.name then none else some (m.name, m.ctors.map (·.name))
@@ -9212,10 +7043,7 @@ def emit (p : Plan) : TermElabM Unit := do
 
 /--
 Whether some member's arity mentions a sibling -- the syntactic signature of
-induction-induction, and the reason the block does not elaborate.  Used only
-after header elaboration has already failed, so a block that happens to mention
-a *global* of the same name is not affected: that one elaborates.
--/
+induction-induction, and the reason the block does not elaborate. -/
 def viewsAreInductionInductive (views : Array InductiveView) : Bool := Id.run do
   let names := views.map (·.shortDeclName)
   let mentions (stx : Syntax) : Bool :=
@@ -9233,18 +7061,7 @@ private def groupCommand (elems : Array Syntax) (g : Array Nat) : Syntax :=
   else mkNode ``Lean.Parser.Command.mutual
     #[mkAtomFrom es[0]! "mutual", mkNullNode es, mkAtomFrom es.back! "end"]
 
-/--
-Carry the docstrings the writer put on the block through to what was built.
-
-Lean's own inductive elaborator adds these in a pass of its own, after the
-declarations exist, so that a docstring may refer to the type and to its
-constructors; nothing on this route does that for us, and a member here is a
-`def` and a `Prop` constructor a `theorem`, neither of which the writer named.
-
-Each one is guarded on its name being in the environment.  A block can lose a
-constructor on the way through -- a `Prop` member's, when its `Prop` is one the
-encoding cannot reach -- and there is nothing to attach a docstring to then.
--/
+/-- Carry the docstrings the writer put on the block through to what was built. -/
 def addViewDocStrings (views : Array InductiveView) : TermElabM Unit := do
   let some view0 := views[0]? | return
   Term.withDeclName view0.declName do
@@ -9259,12 +7076,7 @@ def addViewDocStrings (views : Array InductiveView) : TermElabM Unit := do
 
 /--
 Run `x`, and if it does not go through cleanly leave nothing of it behind --
-neither what it added to the environment nor what it complained about.
-
-A deriving handler reports by logging as often as by throwing, so "did it work"
-is two questions, and undoing it is a matter of putting the whole command state
-back rather than just the environment.
--/
+neither what it added to the environment nor what it complained about. -/
 private def tentatively (x : CommandElabM Unit) : CommandElabM Bool := do
   let s ← get
   try
@@ -9279,12 +7091,7 @@ private def tentatively (x : CommandElabM Unit) : CommandElabM Bool := do
 
 /--
 As `tentatively`, but handing back what went wrong rather than only that
-something did.
-
-The reason has to be read out of the log before the state that holds the log is
-put back, which is the whole difficulty: a handler that logged its complaint
-instead of throwing it says nothing to a caller that only restores.
--/
+something did. -/
 private def tentatively? (x : CommandElabM Unit) : CommandElabM (Option MessageData) := do
   let s ← get
   let n := s.messages.reportedPlusUnreported.size
@@ -9299,29 +7106,7 @@ private def tentatively? (x : CommandElabM Unit) : CommandElabM (Option MessageD
     set s
     return some ex.toMessageData
 
-/--
-Instance the member from a constructor that can be applied, if one can.
-
-`Inhabited` is not a class the wrapper a data member comes back as can lift,
-so the delta route below cannot reach it the way `DecidableEq` and `Repr` are
-reached.  It does not need to.  A type is inhabited as soon as one of its
-constructors can be applied, and a member's visible constructors are ordinary
-functions into it, subtype or not -- so the instance the writer would have had
-to write by hand can be written here instead, and it is the same one they would
-have written.
-
-A field is filled by whatever `Inhabited` says its own type is, so a
-constructor with no fields always serves and one whose fields are inhabited
-serves too.  A field of the block is not, since the instance being built is the
-one that would have answered, so a member whose every constructor needs a value
-of the block declines, and the delta route gets it after all and reports the
-failure the way it reports any other.  Declining is the right answer rather
-than a wrong one: such a member may genuinely be empty.
-
-Parameters that are types get an `Inhabited` hypothesis apiece, which is what
-Lean's own handler does for an ordinary inductive, and what makes the instance
-useful at a parameter that is not itself inhabited.
--/
+/-- Instance the member from a constructor that can be applied, if one can. -/
 def inhabitedFromCtor? (declName : Name) (ctors : Array Name) : MetaM (Option Declaration) := do
   let info ← getConstInfo declName
   let lvls := info.levelParams.map Level.param
@@ -9359,40 +7144,7 @@ def inhabitedFromCtor? (declName : Name) (ctors : Array Name) : MetaM (Option De
           hints := .abbrev, safety := .safe })
       return none
 
-/--
-`deriving` on an induction-inductive block, asked for twice over.
-
-A data member `X` of one of these is not an inductive but a `def`: the subtype
-of `X._pre` that `X._wf` cuts out.  A handler that wants to see constructors
-therefore has nothing to work with, and the one route left open is the one
-Lean calls *delta* deriving -- unfold the member and derive for what is under
-it.  The wrapper carries instances of its own, given ones for the type it cuts
-down, so what that needs is the class on the pre-type, where the constructors
-really are.
-
-Hence: ask on the pre-types first, quietly, and then delta derive the members.
-`DecidableEq` and `Repr` come across that way -- `Repr` showing the pre-term,
-constructor names and all, since that is the value it is handed.  A class with
-no instance on the wrapper to lift does not come across, and says so -- but by then
-the block is already in the environment, which is the part worth keeping, so
-the complaint is logged rather than thrown.
-
-`Inhabited` used to be the headline member of that unlucky class.  It no longer
-is: a member's visible constructors are ordinary functions into it, so
-`inhabitedFromCtor?` writes the instance the writer would have written and the
-delta route is never asked.
-
-Whether what is left over failing is an error or a warning is the caller's to
-say.  A caller with another route to try wants the error, since a logged one is
-how a route declines and lets the next one have the block; the caller of last
-resort wants the warning, because by then the choice is between a block with a
-class missing and no block at all, and the first is plainly better.
-
-The pre-types are asked for as one array first, since a class that recurses
-needs to see a whole mutual inductive at once, and singly after that: the data
-members' pre-types are one block and the `Prop` members' another, so a block
-with `deriving` on both would not go through together.
--/
+/-- `deriving` on an induction-inductive block, asked for twice over. -/
 private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool) :
     CommandElabM Unit := do
   let mut processed : NameSet := {}
@@ -9411,8 +7163,7 @@ private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool)
         -- a peeled member never went through the erasure, so it is an inductive
         -- like any other and its handlers are applied to it directly -- to the
         -- inductive behind it, where the member had to give up its own name so
-        -- that the block could keep `X.rec`.  Only the members that came back as
-        -- subtypes need the two-step treatment below
+        -- that the block could keep `X.rec`
         let peelOf (n : Name) : Option Name :=
           match env.find? n with
           | some (.inductInfo _) => some n
@@ -9434,8 +7185,7 @@ private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool)
               unless ← tentatively (classView.applyHandlers #[p]) do
                 trace[Mumi.indind] "nothing to derive `{className}` for on `{p}`"
         -- a member a constructor can instance is instanced from it, and only
-        -- what is left over goes the delta route.  `Inhabited` is the class
-        -- this comes up for, and it is the one a constructor answers directly
+        -- what is left over goes the delta route
         let declNames ← if className != ``Inhabited then pure declNames else
           declNames.filterM fun n => do
             let some view := views.find? (·.declName == n) | return true
@@ -9478,30 +7228,7 @@ def elemViews (elems : Array Syntax) : CommandElabM (Array InductiveView) := do
   let elabs ← runTermElabM fun _ => inductives.mapM fun (m, s) => mkInductiveView m s
   return elabs.map (·.view)
 
-/--
-Elaborate an induction-inductive block by erasing its proof fields.
-
-The block is denested on the way in.  A block somebody wrote by hand may nest
-too -- `Ctx.snoc` taking a `List Ty` is the ordinary way to write a context of
-several types -- and `denestRaw` returns a block with no nested occurrence
-untouched, so this costs the common case nothing.
-
-Denesting is *best effort* here, unlike on the rescue path, where it is the
-whole reason we were called.  This block was written as a `mutual`, so it has
-its own reasons to be well or ill formed, and they are the ones worth reporting:
-a nesting that cannot be specialised gets the block lowered undenested instead,
-which either works or fails with a complaint about the field itself.  `set_option
-trace.Mumi.indind true` says when that happened and why.
-
-`requireIndInd` is for the caller that reaches here as a *retry*, after Lean has
-already turned the block down.  A block whose members shadow globals of the same
-name elaborates its arities against those globals -- Lean reads every arity
-before any member is in scope -- so it is never routed here, and Lean rejects it
-at the constructors instead, where the members *are* in scope and no longer
-agree with the arities.  Reading it again with the members in scope throughout
-is what it must have meant, but only if some arity names a sibling at all;
-otherwise the block failed for its own reasons and they are the ones to report.
--/
+/-- Elaborate an induction-inductive block by erasing its proof fields. -/
 def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
     (requireDeriving := true) : CommandElabM Unit := do
   let views ← elemViews elems
@@ -9512,20 +7239,15 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
   -- second reading of the block to fall back on
   let peeled ← IO.mkRef false
   -- and, when the peel takes the whole reason for being here with it, the two
-  -- halves to hand back to Lean instead.  Set from inside the run, because what
-  -- peels is only known once the block's types have been elaborated
+  -- halves to hand back to Lean instead
   let split ← IO.mkRef (none : Option (Array Nat × Array Nat))
   let go (peel : Bool) : CommandElabM Unit := do
     runTermElabM fun vars => do
       emit (← withRaw views vars fun r => do
         let r ← if peel then markPeeled r else pure r
         peeled.set (!r.peeled.isEmpty)
-        -- what stays may no longer be induction-inductive at all: the arity that
-        -- named a sibling can have been the peeled member's own.  Then there is
-        -- nothing here for the block to gain -- the erasure's recursion over
-        -- everything at once needs a proposition indexed by a member to have any
-        -- content, and a block with no such member has none -- while Lean's own
-        -- reading gives real inductives, with `match` and with its denesting
+        -- what stays may no longer be induction-inductive at all: the arity
+        -- that named a sibling can have been the peeled member's own
         unless r.peeled.isEmpty do
           let core := (Array.range views.size).filter (!r.peeled.contains ·)
           unless viewsAreInductionInductive (core.map (views[·]!)) do
@@ -9541,10 +7263,7 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       addViewDocStrings views
     applyDeriving views requireDeriving
   -- peeling is an improvement and not a requirement, so a block it does not
-  -- suit is read again without it.  What it can cost is a member stated over
-  -- something the bridge did not manage to restate -- the peeled type is
-  -- written against the block as the writer sees it, and if the writer's own
-  -- names did not come back then it is over nothing that exists
+  -- suit is read again without it
   let s ← get
   try
     go true
@@ -9567,23 +7286,7 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       set s
       go false
 
-/--
-Elaborate a *nested* inductive whose denesting is one the kernel refuses.
-
-Denesting must add a member, and then either leave some member's arity
-mentioning the block, or have needed a field of a constructor as an index of a
-copy.  Those are exactly the two the kernel's own denesting will not do -- it
-specialises a nesting type only when the copy's arity comes out free of the
-block, and only when the parameters it specialises at are closed -- so nothing
-that already works reaches here.
-
-The second is also something `Mumi.Lowering` can take, so the two routes have to
-be ordered.  Neither wins outright: this one states the block over the original
-nesting types where it can bridge, which lowering never does, but when the
-bridge does not go through it leaves the copies visible, and lowering's own
-`eq_orig` is then the better answer.  So `requireBridge` lets a caller ask for
-the good case first, fall back to lowering, and come back here without it.
--/
+/-- Elaborate a *nested* inductive whose denesting is one the kernel refuses. -/
 def elabNestedInductive (elems : Array Syntax) (requireBridge := false)
     (requireDeriving := true) : CommandElabM Unit := do
   let views ← elemViews elems

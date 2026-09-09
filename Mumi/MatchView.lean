@@ -15,9 +15,9 @@ public meta import Lean.Elab.Do.Basic
 Importing this module makes `match` work on the members of an
 induction-inductive block.  Nothing else about `match` changes.
 
-`Mumi.View` explains why the equation compiler cannot be pointed at a member
-directly and what a view is.  This module is the rewrite that puts one in the
-way: an alternative written against the member
+`Mumi.View` says why the equation compiler cannot be pointed at a member
+directly, and what a view is.  This module is the rewrite that puts one in the
+way.  An alternative written against the member,
 
 ```lean
 def len (c : Ctx) : Nat :=
@@ -26,7 +26,7 @@ def len (c : Ctx) : Nat :=
   | .snoc Γ _ => len Γ + 1
 ```
 
-is elaborated as if it had been written against the view,
+is elaborated as if written against the view:
 
 ```lean
 def len (c : Ctx) : Nat :=
@@ -35,40 +35,35 @@ def len (c : Ctx) : Nat :=
   | _, .snoc Γ _ => len Γ + 1
 ```
 
-which is a `match` on a genuine inductive and goes through as it stands.  The
-member is still a discriminant, and still listed first, so it is generalised
-before the view is looked at and the view's index refines it: each alternative
-sees `c` as the constructor it matched, exactly as it would have.
+That is a `match` on a genuine inductive.  The member is still a discriminant
+and still listed first, so it is generalised before the view is read and the
+view's index refines it; each alternative sees `c` as the constructor it
+matched.
 
 The mechanism is the one `Mumi.Mutual` uses for `mutual`.  A `@[term_elab]`
 registered downstream is tried before the builtin one, and
-`throwUnsupportedSyntax` hands the term back with any state the override
-touched rolled back.  So this is a filter, and it is a narrow one: a file with
-no member that has a view never gets past the first line, and a `match` whose
-alternatives name no constructor of such a member never gets past the third.
+`throwUnsupportedSyntax` hands the term back with any state the override touched
+rolled back.  The filter is narrow: a file with no viewed member stops at the
+first line, and a `match` naming no constructor of one stops at the third.
 
-A `do` block's `match` is a `do` element rather than a term and has an
-elaborator of its own, so it gets an override of its own on the same plan.  The
-rewritten `match` goes back to that elaborator rather than to a term one, which
-is what keeps `return`, `break`, `continue` and mutable variables working
-inside an alternative.
+A `do` block's `match` is a `do` element with its own elaborator, so it gets its
+own override on the same plan.  The rewritten `match` goes back to that
+elaborator, which keeps `return`, `break`, `continue` and mutable variables
+working inside an alternative.
 
 ## What is not rewritten
 
-An explicit `(motive := ..)` fixes the number of alternatives' patterns, which
-the rewrite changes, so a `match` that has one falls through to Lean, which
-says what it always said.
+An explicit `(motive := ..)` fixes the number of patterns per alternative, which
+the rewrite changes, so such a `match` falls through to Lean.
 
-Two shapes are rewritten as far as they go and then reported here, because
-Lean, asked about them, would answer in terms of a view the writer never
-mentioned.  One is a constructor written inside another pattern: a view
-presents the constructor a member was built by and stops there, so what is
-under one is out of its reach and has to be reached by a `match` of its own.
-
-The other is a promoted argument -- one the view carries as a parameter rather
-than as a field, see `Mumi.View`.  It is settled by the discriminant's type, so
-the pattern cannot constrain it; where the writer merely named one it is bound
-by a `let` on the right-hand side instead, to the index that type supplies.
+Two shapes are rewritten as far as they go and then reported here, because Lean
+would answer in terms of a view the writer never mentioned.  One is a
+constructor written inside another pattern: a view presents the constructor a
+member was built by and stops, so what is under one needs a `match` of its own.
+The other is a promoted argument -- one the view carries as a parameter, see
+`Mumi.View`.  It is settled by the discriminant's type, so a pattern cannot
+constrain it; where the writer merely named one it is bound by a `let` on the
+right-hand side, to the index that type supplies.
 -/
 
 public section
@@ -81,13 +76,7 @@ namespace Mumi
 private meta def patHead (p : Syntax) : Syntax × Array Syntax :=
   if p.getKind == ``Lean.Parser.Term.app then (p[0], p[1].getArgs) else (p, #[])
 
-/--
-The constructor of `mem` a pattern names, and the arguments it was given.
-
-`none` covers everything that is not one, which is most of what can be written:
-a variable, a hole, a literal, a constructor of some other type.  An identifier
-that does not resolve is a pattern variable and is one of those.
--/
+/-- The constructor of `mem` a pattern names, and the arguments it was given. -/
 private meta def ctorOf? (mem : Name) (ctors : NameSet) (p : Syntax) :
     TermElabM (Option (Name × Array Syntax)) := do
   let (fn, args) := patHead p
@@ -100,14 +89,7 @@ private meta def ctorOf? (mem : Name) (ctors : NameSet) (p : Syntax) :
       if ctors.contains c then return some (c, args)
   return none
 
-/--
-Whether a pattern is headed by a name some viewed constructor goes by.
-
-This is the whole of what the rewrite costs a `match` it has no business with:
-the alternatives are read as they were written, before any discriminant has
-been elaborated or any name resolved.  A name that only looks like one of ours
-gets a little further and then finds no member.
--/
+/-- Whether a pattern is headed by a name some viewed constructor goes by. -/
 private meta def headsAtViewed (viewed : NameSet) (p : Syntax) : Bool :=
   let fn := (patHead p).1
   let nm :=
@@ -153,15 +135,7 @@ private structure Through where
 private meta def mkDiscr (name : Syntax) (t : Term) : Syntax :=
   Syntax.node .none ``Lean.Parser.Term.matchDiscr #[name, t.raw]
 
-/--
-A `.c`, positioned at `src`.
-
-The view's constructor is named this way rather than outright because a pattern
-that spells a constructor out in full is elaborated without the expected type in
-hand, and a view whose parameters are only there to be read off that type is
-then left with them unsolved.  Dot notation asks for the type first, so the
-parameters are known before the constructor is looked at.
--/
+/-- A `.c`, positioned at `src`. -/
 private meta def mkDotIdent (src : Syntax) (c : Name) : Term :=
   ⟨Syntax.node (.fromRef src) ``Lean.Parser.Term.dotIdent
     #[mkAtomFrom src ".", mkIdentFrom src c]⟩
@@ -176,13 +150,9 @@ private meta def sepNode (sep : String) (elems : Array Syntax) : Syntax :=
       out := out.push e
     return out
 
-/--
-The member a discriminant's type is at, if it has a view.
-
-Read under a sandbox that is thrown away: what comes out is a name, and the
-elaboration that found it happens again in earnest only if the rewrite is going
-to happen at all.
--/
+/-- The member a discriminant's type is at, if it has a view.  Read under a
+sandbox that is thrown away; the elaboration that found it happens again in
+earnest only if the rewrite is going to happen at all. -/
 private meta def memberOf? (d : Syntax) : TermElabM (Option Name) :=
   withoutModifyingState do
     try
@@ -199,16 +169,7 @@ private meta def anyHeadsAtViewed (viewed : NameSet) (alts : Array Syntax) : Boo
   alts.any fun alt =>
     alt[1].getSepArgs.any fun pl => pl.getSepArgs.any (headsAtViewed viewed)
 
-/--
-The discriminants and alternatives a `match` on a member is elaborated as.
-
-`withLets` puts the bindings a promoted argument asks for in front of an
-alternative's right-hand side, which is a term for `match` and a sequence for
-the `match` in a `do` block.
-
-Steps aside -- `throwUnsupportedSyntax`, which hands the `match` to Lean's own
-elaborator with nothing changed -- wherever the rewrite does not apply.
--/
+/-- The discriminants and alternatives a `match` on a member is elaborated as. -/
 private meta def throughView (discrs alts : Array Syntax)
     (withLets : Array (Ident × Term) → Syntax → TermElabM Syntax) :
     TermElabM (Array Syntax × Array Syntax) := do
@@ -284,9 +245,7 @@ private meta def throughView (discrs alts : Array Syntax)
             let head := mkDotIdent p (Name.mkSimple c.getString!)
             let rest := args.extract t.promoted args.size
             -- a view presents the constructor a member was built by and stops
-            -- there, so a constructor written under one is out of its reach.
-            -- Only a pattern that is not already a variable can be one, and
-            -- `..` is a run of them however many fields are left
+            -- there, so a constructor written under one is out of its reach
             let isVar (a : Syntax) := a.isIdent
               || a.getKind == ``Lean.Parser.Term.hole
               || a.getKind == ``Lean.Parser.Term.ellipsis
@@ -329,14 +288,7 @@ private meta def doLets (lets : Array (Ident × Term)) (seq : Syntax) : TermElab
   let i := if seq.getKind == ``Lean.Parser.Term.doSeqBracketed then 1 else 0
   return seq.setArg i (mkNullNode (items ++ seq[i].getArgs))
 
-/--
-Elaborate a `match` on a member by elaborating the same `match` on its view.
-
-The mechanism is the one `Mumi.Mutual` uses for `mutual`: a `@[term_elab]`
-registered downstream is tried before the builtin one, and
-`throwUnsupportedSyntax` hands the term back with any state the override
-touched rolled back.
--/
+/-- Elaborate a `match` on a member by elaborating the same `match` on its view. -/
 @[term_elab Lean.Parser.Term.match]
 meta def elabMatchThroughView : TermElab := fun stx expectedType? => do
   let viewed := viewedCtors (← getEnv)
@@ -350,15 +302,7 @@ meta def elabMatchThroughView : TermElab := fun stx expectedType? => do
   trace[Mumi.view] "matching through a view:{indentD m!"{stx}"}"
   elabTerm stx expectedType?
 
-/--
-The same, for the `match` of a `do` block, which has an elaborator of its own
-and so needs an override of its own.
-
-Going by way of a term `match` instead would work, but a `do` block's `match`
-is where `return`, `break` and mutable variables are handled, and the
-alternative that keeps all of that is to leave the sequences alone and hand the
-rewritten `match` back to the elaborator they belong to.
--/
+/-- The same, for the `match` of a `do` block, which has its own elaborator. -/
 @[doElem_elab Lean.Parser.Term.doMatch]
 meta def elabDoMatchThroughView : Lean.Elab.Do.DoElab := fun stx cont => do
   let viewed := viewedCtors (← getEnv)

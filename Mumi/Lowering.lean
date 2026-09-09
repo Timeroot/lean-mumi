@@ -20,10 +20,9 @@ public section
 /-!
 # Lowering a universe-heterogeneous mutual inductive block
 
-Lean requires every member of a mutual inductive block to live in the same
-universe.  The restriction is checked three times over: once while the headers
-are elaborated, once after the constructors are, and once by the kernel.  So a
-block like
+Lean requires every member of a mutual inductive block to be in the same
+universe.  The restriction is checked three times: while the headers are
+elaborated, after the constructors are, and by the kernel.  So a block like
 
 ```
 mutual
@@ -38,79 +37,71 @@ inductive C : Type 2 where
 end
 ```
 
-is rejected, even though it denotes something perfectly sensible.
+is rejected, although it denotes a well-defined family.
 
-This module implements the lowering behind this library's `mutual`, which
-accepts such a block by translating it into ordinary declarations.  Everything
-it adds to the environment is an ordinary inductive type, definition or
-theorem, so no part of it asks anything new of the kernel and the worst it can
-do is fail.
+This module is the lowering behind this library's `mutual`.  It translates such
+a block into ordinary declarations.  Every declaration it adds is an ordinary
+inductive type, definition or theorem, so it asks nothing new of the kernel.
 
 ## The translation
 
-1. An all-`Prop` **shadow** of the whole block, `X_i._shadow`.  Every block has
-   one: the side condition on a constructor field of a `Prop`-valued inductive
+1.  An all-`Prop` **shadow** of the whole block, `X_i._shadow`.  Every block has
+   one.  The side condition on a constructor field of a `Prop`-valued inductive
    is `imax l' 0 ≤ 0`, which is vacuous, so the fields can be copied verbatim
    with member occurrences redirected to the shadow.
 
-2. The **data** members, declared under the users' own names, against the
-   shadow.  They are grouped into strongly connected components of the
-   data-only dependency graph and emitted in topological order.  Each SCC is
-   necessarily universe-homogeneous -- an edge `i → j` forces `l_j ≤ l_i`, so a
-   cycle forces equality -- hence each is an ordinary mutual block.
+2.  The **data** members, declared under the users' own names, against the
+   shadow.  They are grouped into strongly connected components of the data-only
+   dependency graph and emitted in topological order.  Each SCC is
+   universe-homogeneous -- an edge `i → j` forces `l_j ≤ l_i`, so a cycle forces
+   equality -- hence each is an ordinary mutual block.
 
-   Not every member reaches this step.  A copy that only the shadow needs --
-   `Mumi.Denest` calls it a *ghost*, and marks it with a `GhostInfo` -- is
-   passed over here, and everything from step 3 on writes the type it copies
-   where the shadow writes the member.  So a ghost's constructors and `casesOn`
-   are the copied type's, and the writer never meets its name.
+   A copy that only the shadow needs -- `Mumi.Denest` calls it a *ghost* and
+   marks it with a `GhostInfo` -- is skipped here.  From step 3 on, the type it
+   copies is written wherever the shadow writes the member, so its constructors
+   and `casesOn` are the copied type's and the writer never sees its name.
 
-   Its recursor is the copied type's too where the occurrences it stands for all
-   sit in `Prop` members' constructors, which the lowering emits as definitions.
-   Where a data member has a field at one, the occurrence goes to the kernel
-   written out in full, the kernel denests it as it would have done had no
-   `Prop` forced a copy at all, and the ghost's recursor is the `X.rec_k` that
-   comes back.
+   Its recursor is the copied type's when every occurrence it stands for is in a
+   `Prop` member's constructor, which the lowering emits as a definition.  When a
+   data member has a field at one, the occurrence reaches the kernel written out
+   in full, the kernel denests it, and the ghost's recursor is the resulting
+   `X.rec_k`.
 
-3. The `Prop` members' user-facing names (reducible abbreviations for their
-   shadows) and constructors, the squash maps `X._squash : X → X._shadow`, and
-   a block-wide recursor `X.mutualRec` for every member.
+3.  The `Prop` members' user-facing names (reducible abbreviations for their
+   shadows) and constructors, the squash maps `X._squash : X → X._shadow`, and a
+   block-wide recursor `X.mutualRec` for every member.
 
-A data SCC may come back from `addDecl` larger than it went in: a nesting the
-kernel can denest is one it *does* denest, giving itself a type for the
-occurrence and an extra recursor `X.rec_k` at it.  Those extras are carried
-through rather than hidden, so the block's recursors range over them too and
-the constructor keeps the type the writer wrote; see the section on what the
-kernel denested.
+A data SCC may come back from `addDecl` larger than it went in: the kernel
+denests what it can, adding a type for the occurrence and an extra recursor
+`X.rec_k` at it.  Those extras are kept, so the block's recursors range over them
+too and the constructor keeps the type the writer wrote; see the section on what
+the kernel denested.
 
-Only the `Prop` members are mangled.  Data members are honest inductive types
+Only the `Prop` members are mangled.  Data members are ordinary inductive types
 under the names the user wrote, so `match`, `induction`, `cases`, `injection`,
-`noConfusion`, `deriving`, `sizeOf` and the code generator all work on them as
-usual, and the block's computational content stays computable.  A `Prop`
-member's constructors have to be re-derived, because their fields have the
+`noConfusion`, `deriving`, `sizeOf` and the code generator work on them as usual.
+A `Prop` member's constructors must be re-derived, because their fields have the
 wrong types in the shadow: `A.fromB` must take a real `B`, not a `B._shadow`.
 
 ## Why the recursors come out right
 
-* A `Prop` member of a block with at least two members is never
-  large-eliminating, and the shadow has the same number of members, so it has
-  exactly the original's elimination strength.  Squashing the data members
-  loses nothing.  (This is also the safety boundary: we derive *universes* per
-  member, never *elimination* per member.)
-* A `Prop` member's iota rules are equations between proofs, so they hold by
-  proof irrelevance.
-* All computational content sits in the data recursors, which are the native
-  recursors of the honestly-declared data members, so their iota rules hold by
-  delta on `mutualRec` followed by native iota.
+* A `Prop` member of a block with at least two members never large-eliminates,
+  and the shadow has the same number of members, so it has the original's
+  elimination strength.  Squashing the data members loses nothing.  This is the
+  safety boundary: universes are derived per member, elimination never is.
+* A `Prop` member's iota rules are equations between proofs, so proof
+  irrelevance discharges them.
+* All computational content is in the data recursors, which are the native
+  recursors of the data members, so their iota rules hold by delta on
+  `mutualRec` followed by native iota.
 
-The one place a choice principle is unavoidable is a `Prop` member with a
-constructor field that is a *function into* a data member: the data witnesses
-then have to be selected pointwise, which needs `Classical.choice`.  A block
-without such a field produces axiom-free recursors.
+Choice is unavoidable in one case: a `Prop` member with a constructor field that
+is a *function into* a data member.  The data witnesses must then be selected
+pointwise, which needs `Classical.choice`.  A block without such a field produces
+axiom-free recursors.
 
-The recursors are also computable, which takes a little work, as the code
-generator compiles no recursor application at all; see the section on
-implementations below.
+The recursors are also computable.  The code generator compiles no recursor
+application, so this takes extra work; see the section on implementations.
 -/
 
 namespace Lean.Elab.MultiuniverseInductive
@@ -133,19 +124,14 @@ def squashName (n : Name) : Name := n ++ `_squash
 def reroot (memberName newRoot ctorName : Name) : Name :=
   ctorName.replacePrefix memberName newRoot
 
-/-- The last component of a name, for building a readable auxiliary name.  A
-component the elaborator added rather than the writer -- `T._shadow`, which is
-what `lower` leaves behind a member of a block it took over -- is stepped past,
-so that nesting over a lowered type still names the type the writer wrote. -/
+/-- The last component of a name, for building a readable auxiliary name. -/
 def shortName : Name → String
   | .str p s => if s.startsWith "_" then shortName p else s
   | _        => "nested"
 
 /--
-Unfold definitions at the head of `e` until an inductive type constructor is
-exposed, so that a nested occurrence behind an `abbrev` is still seen.  Gives up
-after a few steps, and on anything that is not a definition.
--/
+Unfold definitions at the head of `e` until an inductive type is exposed, so a
+nested occurrence behind an `abbrev` is still seen. -/
 def exposeInduct (e : Expr) : MetaM Expr := do
   let mut e := e
   for _ in *...8 do
@@ -157,63 +143,34 @@ def exposeInduct (e : Expr) : MetaM Expr := do
 
 /-! ## Input -/
 
-/--
-What a member that exists only in the *shadow* stands for in the real world.
-
-A nesting under a `Prop` head has to become a member of the block: the shadow
-copies every constructor field with the members redirected to their shadows, and
-a redirected `List B` would read `List B._shadow`, which is not even well-typed,
-so the shadow needs a `Prop` analogue of `List B` of its own.  But that argument
-is about the shadow alone.  In the real world the occurrence sits in a `Prop`
-member's constructor, which the lowering emits as a *definition* rather than as
-a kernel constructor, so nothing there stops it from being stated at `List B`
-itself.
-
-So such a member is declared in the shadow and nowhere else, and everything the
-real world would have said about it is said about the type it copies instead:
-its constructors are that type's, its recursor is built from that type's, and
-`List B` is what the writer reads.  `Mumi.Denest` decides which copies can be
-treated this way and lists the conditions.
-
-A ghost a *data* member has a field at goes one step further.  There the
-occurrence is not in a definition but in a kernel constructor, so `List B` is
-written into the block the kernel is handed -- and the kernel denests it, which
-is what it would have done had there been no `Prop` member to force a copy in
-the first place.  Such a ghost's recursion is the kernel's own `B.rec_1`, and
-`nativeRec?` is where `mkNests` records it once the kernel has answered.
--/
+/-- What a member that exists only in the *shadow* stands for in the real world. -/
 structure GhostInfo where
   /-- `fun params => I p₁ … p_k`: the type the member copies, with the block's
   own members still free variables.  The member's indices are `I`'s own, so its
-  type at some indices is this applied to the parameters and then to them. -/
+  type at given indices is this applied to the parameters and then to them. -/
   value     : Expr
   /-- `I` itself, whose recursor, `casesOn` and constructors do the work. -/
   head      : Name
   levels    : List Level
-  /-- How many parameters `I` takes, so that the indices of a value of this
-  member's type can be read off it -- the block's own parameter count says
-  nothing about them. -/
+  /-- How many parameters `I` takes, so the indices of a value of this member's
+  type can be read off it.  The block's own parameter count does not apply. -/
   numParams : Nat
   /-- `I`'s constructors, in `I`'s order, which is the order the copy's own
   constructors were made in. -/
   ctors     : Array Name
-  /-- The kernel's recursor at this type, for a ghost the kernel denested, and
-  `none` for one whose occurrences all sit in definitions.  Filled in by
-  `mkNests`, which is the first point at which the kernel has been asked. -/
+  /-- The kernel's recursor at this type for a ghost the kernel denested; `none`
+  for one whose occurrences are all in definitions.  Filled in by `mkNests`, the
+  first point at which the kernel has answered. -/
   nativeRec? : Option Name := none
   deriving Inhabited
 
 /--
-The elaborated block, as the elaborator hands it to the lowering.  This
-is exactly the information `Lean.Elab.Command.mkInductiveDeclCore` has already
-computed, with the members still represented by free variables.
--/
+The elaborated block, as the elaborator hands it to the lowering: the
+information `Lean.Elab.Command.mkInductiveDeclCore` has computed, with the
+members still represented by free variables. -/
 structure Input where
   levelParams : List Name
-  /-- Number of leading section `variable`s; `numVars ≤ numParams`.  A member's
-  free variable stands for the member *already applied* to these, so
-  substituting a constant for it means applying that constant to them, exactly
-  as `replaceIndFVarsWithConsts` does. -/
+  /-- Number of leading section `variable`s; `numVars ≤ numParams`. -/
   numVars     : Nat
   numParams   : Nat
   /-- The free variables standing for the members. -/
@@ -227,10 +184,7 @@ structure Input where
   /-- Whether the block declares classes; if so, `SizeOf` instances and
   injectivity theorems are not generated, as for `mutual`. -/
   isClass     : Bool := false
-  /-- Set by `denest` when a copy takes a constructor-local as an index of its
-  own.  The kernel's denesting refuses that outright -- *nested inductive
-  datatypes parameters cannot contain local variables* -- so a block that needed
-  it is one Lean could not have elaborated, however homogeneous it came out. -/
+  /-- Set by `denest` when a copy takes a constructor-local as an index of its own. -/
   localIndices : Bool := false
   /-- Set by `denest` for a copy that is to exist in the shadow only; `none` at
   every member the writer declared.  Empty when there is nothing to say. -/
@@ -242,9 +196,9 @@ structure Input where
 structure RecField where
   /-- Index of the member this field recurses into. -/
   member : Nat
-  /-- Number of leading `∀` binders before the member is reached.  Nonzero
-  means the field is a *function into* the member; these are the fields that
-  force `Classical.choice` when the recursor's target is a `Prop`. -/
+  /-- Number of leading `∀` binders before the member is reached.  Nonzero means
+  the field is a *function into* the member; such fields force
+  `Classical.choice` when the recursor's target is a `Prop`. -/
   arity  : Nat
   deriving Inhabited, Repr
 
@@ -292,18 +246,15 @@ structure Block where
   /-- Whether any member is a `Prop`, i.e. whether a shadow is needed. -/
   hasProp     : Bool
   isClass     : Bool
-  /-- Each member as the real world names it: the constant it is declared as,
-  or, for a ghost, `fun params => I p₁ … p_k` -- the type it stands for, with
-  the other members already substituted.  `Block.realTypeAt` reads it. -/
+  /-- Each member as the real world names it: the constant it is declared as, or,
+  for a ghost, `fun params => I p₁ … p_k`, the type it stands for with the other
+  members substituted.  Read by `Block.realTypeAt`. -/
   userTargets : Array Expr
   deriving Inhabited
 
 def Block.size (b : Block) : Nat := b.members.size
 
-/--
-The name a member is actually declared under.  Data members keep the users'
-own names and are honest inductives; only `Prop` members are mangled.
--/
+/-- The name a member is declared under. -/
 def Block.realName (b : Block) (i : Nat) : Name :=
   let m := b.members[i]!
   if m.isProp then shadowName m.name else m.name
@@ -317,15 +268,11 @@ def Block.hasGhost (b : Block) : Bool := b.members.any (·.ghost?.isSome)
 /--
 Member `j`'s type as the real world states it, at the block's parameters and
 that member's own indices: the member itself, or, for a ghost, the type it
-stands for.
--/
+stands for. -/
 def Block.realTypeAt (b : Block) (j : Nat) (params idxs : Array Expr) : Expr :=
   b.userTargets[j]!.beta (params ++ idxs)
 
-/--
-The indices in a type of the form `X_j params idxs`.  A ghost's are the copied
-type's, which start after *its* parameters and not after the block's.
--/
+/-- The indices in a type of the form `X_j params idxs`. -/
 def Block.memberIdxs (b : Block) (j : Nat) (ty : Expr) : Array Expr :=
   let args := ty.getAppArgs
   match b.members[j]!.ghost? with
@@ -334,10 +281,7 @@ def Block.memberIdxs (b : Block) (j : Nat) (ty : Expr) : Array Expr :=
 
 /--
 The universe of `X_i`'s motive: `Prop` for a `Prop` member, the member's SCC
-parameter otherwise.  Members of one SCC must share a parameter, because the
-native recursor of an SCC has a single elimination universe -- and they are
-universe-homogeneous anyway.
--/
+parameter otherwise. -/
 def Block.motiveLevel (b : Block) (i : Nat) : Level :=
   match b.sccOf[i]! with
   | none   => .zero
@@ -347,11 +291,7 @@ def Block.ownLevels (b : Block) : List Level := b.levelParams.map .param
 
 /--
 Constructor `c` as the real world writes it, at the block's parameters and the
-constructor's own fields.  A ghost's constructors are the copied type's, taken
-at that type's parameters -- which is well-typed exactly because the copy's
-fields were the original's with nothing but ghosts and members rewritten into
-them.
--/
+constructor's own fields. -/
 def Block.userCtorApp (b : Block) (c : CtorInfo) (params fields : Array Expr) : Expr :=
   match b.members[c.owner]!.ghost? with
   | none   => mkAppN (mkConst c.name b.ownLevels) (params ++ fields)
@@ -362,14 +302,7 @@ def Block.userCtorApp (b : Block) (c : CtorInfo) (params fields : Array Expr) : 
 
 /--
 The native recursor member `i`'s component eliminates with, the levels it is
-instantiated at, and the parameters it takes.  A ghost has none of its own, so
-it borrows the copied type's -- which is the whole point of being one.
-
-A ghost the kernel denested borrows nothing: the kernel wrote it a recursor of
-its own, over the component it belongs to, and only that one recurses back into
-the component's members.  `List.rec` would offer an induction hypothesis for the
-tail and none for the head.
--/
+instantiated at, and the parameters it takes. -/
 def Block.memberRecOf (b : Block) (i : Nat) (params : Array Expr) :
     Name × List Level × Array Expr :=
   match b.members[i]!.ghost? with
@@ -392,20 +325,7 @@ def Block.recLevels (b : Block) : List Level := b.recLevelParams.map .param
 
 /--
 The block-wide recursor: motives and minor premises for *every* member of the
-block.  Data members already have a native `X.rec`, whose motives range over
-their own SCC only, so the block-wide one needs a name of its own.  A `Prop`
-member has no native recursor under its user-facing name, so it additionally
-answers to `X.rec`.
-
-A ghost is not declared at all, so its cannot be named after it.  It takes the
-name the recursor over a type the *kernel* denested would have taken -- the
-`X.mutualRec_1` that sits beside `X.mutualRec`.  For a ghost the kernel really
-did denest, that *is* the name: `X` is its component's first declared member and
-the index is the one the kernel gave `X.rec_1`, so the pair reads as it would in
-a block with no `Prop` member.  For a ghost of its own, there is no component to
-name it after and nothing occupying the name either -- the kernel denested
-nothing for that component -- so it hangs off the block's first member.
--/
+block. -/
 def Block.recName (b : Block) (i : Nat) : Name :=
   if !b.isGhost i then b.members[i]!.name ++ `mutualRec
   else
@@ -420,12 +340,11 @@ def Block.recName (b : Block) (i : Nat) : Name :=
 
 /-! ## Moving between the three "worlds"
 
-During elaboration the members are free variables.  Emitting a declaration
-means replacing those free variables by constants: by the shadow names, or by
-the names the members are declared under (which for a data member is the
-user-facing name).  The substitution has to happen underneath the parameter
-telescope, because a member free variable stands for the member applied to the
-section variables.
+During elaboration the members are free variables.  Emitting a declaration means
+replacing them by constants: the shadow names, or the names the members are
+declared under (for a data member, the user-facing name).  The substitution
+happens underneath the parameter telescope, because a member free variable stands
+for the member applied to the section variables.
 -/
 
 def Block.substIn (b : Block) (targets vars : Array Expr) (body : Expr) : MetaM Expr := do
@@ -445,7 +364,7 @@ private def Block.substMembers (b : Block) (targets : Array Expr) (ctorType : Ex
     mkForallFVars params (← b.substIn targets (params.extract 0 b.numVars) body)
 
 /-- Substitute the shadow names of all members.  A ghost has a shadow like any
-other member; it is only the real world it is missing from. -/
+other member; only the real world is missing it. -/
 def Block.toShadow (b : Block) (e : Expr) : MetaM Expr :=
   b.substMembers (b.members.map fun m => mkConst (shadowName m.name) b.ownLevels) e
 
@@ -454,13 +373,7 @@ ghost, the type it stands for. -/
 def Block.toUser (b : Block) (e : Expr) : MetaM Expr :=
   b.substMembers b.userTargets e
 
-/--
-What `toUser` substitutes, worked out once, when the block is analysed.
-
-A ghost's stand-in is stated in the writer's terms and so mentions the block's
-members, which have to be substituted into it in turn.  One pass is enough:
-being in the writer's terms is also why it never mentions another copy.
--/
+/-- What `toUser` substitutes, computed once when the block is analysed. -/
 private def Block.computeUserTargets (b : Block) : MetaM (Array Expr) := do
   let mut targets : Array Expr := b.members.map fun m => mkConst m.name b.ownLevels
   for h : i in *...b.members.size do
@@ -485,16 +398,7 @@ private partial def resultToProp : Expr → Expr
   | .forallE n d b bi => .forallE n d (resultToProp b) bi
   | _ => mkSort .zero
 
-/--
-Add a plain safe definition and hand it to the code generator.  `logErrors :=
-false` makes the compiler mark a declaration `noncomputable` rather than report
-an error.
-
-`compile := false` leaves code generation to someone else, and is how the data
-members' recursors are added: their bodies are recursor applications and so are
-not compilable as written, and the implementations emitted afterwards supply
-their code instead.
--/
+/-- Add a plain safe definition and hand it to the code generator. -/
 def addDef (name : Name) (levelParams : List Name) (type value : Expr)
     (hints : ReducibilityHints := .regular 0) (compile := true) : MetaM Unit := do
   let decl := Declaration.defnDecl { name, levelParams, type, value, hints, safety := .safe }
@@ -502,20 +406,7 @@ def addDef (name : Name) (levelParams : List Name) (type value : Expr)
   if compile then
     compileDecl decl (logErrors := false)
 
-/--
-Run `act`, and if it throws, wind the environment back and carry on without it.
-
-Several of the constructions this library makes are optional: a recursor over a
-whole block, a bridge back to the original nesting types, an extra recursor the
-`induction` tactic can drive.  The block is emitted either way -- what a failure
-costs is what sits on top of it -- so none of them may take the declaration down
-with it.  What a failure must not leave behind is half of itself, since the
-plain names are exactly the ones whatever runs instead will want.  So the
-environment goes back to where it was and the reason goes to the trace, which
-`set_option trace.Mumi true` shows.
-
-`none` says the attempt did not go through.
--/
+/-- Run `act`; if it throws, restore the environment and continue without it. -/
 def attempt? {m : Type → Type} [Monad m] [MonadEnv m] [MonadExcept Exception m]
     [MonadTrace m] [MonadRef m] [AddMessageContext m] [MonadOptions m] {α}
     (cls : Name) (what : MessageData) (act : m α) : m (Option α) := do
@@ -528,30 +419,14 @@ def attempt? {m : Type → Type} [Monad m] [MonadEnv m] [MonadExcept Exception m
     return none
 
 /--
-`attempt?` for a construction whose result is nothing but whether it went
-through.
+`attempt?` for a construction whose only result is whether it went through.
 -/
 def attempted {m : Type → Type} [Monad m] [MonadEnv m] [MonadExcept Exception m]
     [MonadTrace m] [MonadRef m] [AddMessageContext m] [MonadOptions m]
     (cls : Name) (what : MessageData) (act : m Unit) : m Bool :=
   Option.isSome <$> attempt? cls what act
 
-/--
-Can the `induction` tactic supply every argument of `n` by itself?
-
-It builds the motive out of the goal, reads the targets off the term being
-inducted on, and turns the explicit remainder into goals.  Anything else
-implicit is filled only if solving the motive solves it -- which is how a
-parameter like `List.rec`'s `{α}` gets filled, since it appears in the motive's
-own type.
-
-The binder that is not filled is a *second* motive, which the recursor over a
-whole block has one of per member.  `induction` would leave it as a
-metavariable, and the tactic reports that as a stuck instance problem in the
-first branch rather than as anything to do with the eliminator, so such a
-recursor is left `using`-only -- as Lean leaves the recursor of any mutual or
-nested inductive.
--/
+/-- Can the `induction` tactic supply every argument of `n` by itself? -/
 def elimIsSelfContained (n : Name) : MetaM Bool := do
   let info ← getElimInfo n
   forallTelescopeReducing info.elimType fun xs _ => do
@@ -564,31 +439,7 @@ def elimIsSelfContained (n : Name) : MetaM Bool := do
         return false
     return true
 
-/--
-Tag a recursor `@[elab_as_elim]`, as Lean's own recursors are.  Without it an
-application is elaborated left to right and the motive is whatever unification
-happens to pin down from the expected type; with it the motive is generalised
-from the expected type over the major premises first, so that
-`Ctx.rec .. Γ : C Γ` elaborates its minors at the general statement rather than
-at the one instance the goal mentions.
-
-Two things have to hold first.  Every argument the conclusion applies the motive
-to must be a local, because those are the targets the expected type gets
-abstracted over; a predicate motive of an induction-inductive block takes the
-*value* the data motive computed, which is not one, and tagging it would turn
-applications that elaborate today into "invalid motive".  And
-`getElabElimInfo` -- the check the attribute itself runs -- has to accept it.
-
-A recursor that fails either keeps working and merely elaborates left to right,
-which is a better outcome than refusing the block; `trace.Mumi` says which.
-
-One that `elimIsSelfContained` accepts is registered as the `induction` tactic's
-default eliminator for the member as well.  Without that, `induction` reaches
-for the recursor of whatever the member unfolds to and reports the pre-block --
-`the induction tactic does not support the type Ctx._pre` -- which names a
-declaration the writer never wrote.  `induction := false` registers it for
-`cases` instead, which is what a hypothesis-free eliminator is for.
--/
+/-- Tag a recursor `@[elab_as_elim]`, as Lean's own recursors are. -/
 def markElabAsElim (n : Name) (induction := true) : MetaM Unit := do
   let simple ← forallTelescopeReducing (← getConstInfo n).type fun _ concl =>
     pure (concl.getAppFn.isFVar && concl.getAppArgs.all (·.isFVar))
@@ -607,37 +458,15 @@ def markElabAsElim (n : Name) (induction := true) : MetaM Unit := do
     let what := if induction then "induction" else "cases"
     trace[Mumi] "`{n}` does not take `@[{what}_eliminator]`: {e.toMessageData}"
 
-/--
-Add an inductive declaration and everything Lean normally builds alongside one.
-This mirrors `Lean.Elab.Command.elabInductiveViews`: compile first (`sizeOf`
-and friends depend on it), then the per-member constructions, then `brecOn` in
-a second pass, then the block-wide ones.  `brecOn` in particular is what
-structural recursion and the equation compiler need, so without it a `match`
-on a member would not elaborate.
-
-`genSizeOf := false` leaves out the `SizeOf` instance and its lemmas.  That is
-for a type whose fields are members of a block that is being measured by hand:
-the instances there are deliberately left uncompiled, and generating one on top
-of them would ask the code generator for something it will not find.
-
-`genBRecOn := false` leaves out `below` and `brecOn`.  That is for a type whose
-recursion is not the one the kernel would write: a member's wrapper is a pair
-and recurses on nothing, so the generated `brecOn` would offer no hypotheses and
-structural recursion would take it and then find no recursive call to make.  The
-one written by hand afterwards recurses through the well-formedness predicate,
-which is where the member's own structure actually is.
--/
+/-- Add an inductive declaration and everything Lean normally builds alongside one. -/
 def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
     (isClass : Bool := false) (genSizeOf : Bool := true) (genBRecOn : Bool := true) :
     MetaM Unit := do
   let decl := Declaration.inductDecl levelParams numParams indTypes.toList false
   addDecl decl
   let names := indTypes.map (·.name)
-  -- a nested occurrence is denested by the kernel, which declares a type for it
-  -- and a recursor `X.rec_k` with the major premise there.  The kernel knows
-  -- about those, but the environment the elaborator reads does not until it is
-  -- told, one by one until there are no more -- the kernel is the only record of
-  -- how many there were
+  -- the kernel denests a nested occurrence, declaring a type for it and a
+  -- recursor `X.rec_k` with the major premise there
   for name in names do
     let mut k := 1
     repeat
@@ -675,23 +504,10 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
 /-! ## An eliminator with one motive -/
 
 /--
-Walk the minors of a recursion whose other motives have been discharged,
-keeping the ones that conclude at the motive `kept`, dropping the rest, and
-handing the continuation the binders that survived alongside the arguments the
-original recursor is to be applied to.
-
-`mots`/`motVals` are the recursion's motives and what each is being replaced
-by, and `others` the motives being discharged.  A minor's type can mention both
-the motives and the minors before it -- that is what makes a recursion over a
-whole block one recursion -- so each is put across under everything before it.
-
-Within a surviving minor, a binder whose type mentions a motive that is going is
-an induction hypothesis about a member the caller will learn nothing about, and
-goes with it.  `forCases` counts the kept motive among those, which is what
-turns the recursion into a case split: a minor concludes at the motive applied
-to the constructor, which mentions the fields and never the hypotheses, so
-dropping them all leaves every minor saying what it said.
--/
+Walk the minors of a recursion whose other motives have been discharged, keep
+the ones that conclude at the motive `kept`, drop the rest, and hand the
+continuation the surviving binders together with the arguments the original
+recursor is to be applied to. -/
 private partial def soloMinors {α} [Inhabited α] (others mots motVals mins : Array Expr)
     (kept : Expr) (forCases : Bool) (q : Nat) (newMins minVals : Array Expr)
     (k : Array Expr → Array Expr → MetaM α) : MetaM α := do
@@ -700,8 +516,8 @@ private partial def soloMinors {α} [Inhabited α] (others mots motVals mins : A
     let origTy ← inferType orig
     let isGone (id : FVarId) :=
       others.any (·.fvarId! == id) || (forCases && kept.fvarId! == id)
-    -- read off before the substitution: what it leaves at the conclusion's head
-    -- is no longer a motive, and a hypothesis at a discharged motive no longer
+    -- read off before the substitution: afterwards the conclusion's head is no
+    -- longer a motive, and a hypothesis at a discharged motive no longer
     -- mentions one
     let atKept ← forallTelescope origTy fun _ c => pure (c.getAppFn == kept)
     let drop ← forallTelescope origTy fun as _ =>
@@ -710,9 +526,9 @@ private partial def soloMinors {α} [Inhabited α] (others mots motVals mins : A
       (as.zip drop).filterMap fun (a, d) => if d then none else some a
     let ty ← Core.betaReduce (origTy.replaceFVars (mots ++ mins.extract 0 q) (motVals ++ minVals))
     if atKept then
-      -- the minors of the members that go carry the names the recursion over
-      -- the whole block had to disambiguate them into, so each surviving one is
-      -- renamed after the constructor it is for: `induction ... with | snoc`
+      -- the block-wide recursion had to disambiguate its minor names, so each
+      -- surviving minor is renamed after the constructor it is for, giving
+      -- `induction ... with | snoc`
       let ctor? ← forallTelescope origTy fun _ c =>
         pure (c.getAppArgs.back?.bind (·.getAppFn.constName?))
       let name ← match ctor? with
@@ -732,60 +548,7 @@ private partial def soloMinors {α} [Inhabited α] (others mots motVals mins : A
 
 /--
 An eliminator with one motive, for a member whose siblings' motives can be
-filled in with nothing.
-
-The recursion over the whole block asks for a motive at every member, which is
-what makes it strong -- and what stops `induction` from driving it, since
-nothing determines the motives the goal does not mention.  Discharge every
-motive but one and what comes out is the shape `induction` expects, at the cost
-of the hypotheses at the discharged members.
-
-Those hypotheses are only worth their cost in two arrangements.  A block with
-one data member and any number of propositions gives the data member a recursor
-into any sort; a block with one proposition gives that one a recursor into
-`Prop`.  Both are as strong as a one-motive statement can be: a motive at a
-single member cannot mention what the recursion computed at another, so what is
-dropped is what it could not have used.
-
-Any other arrangement would discharge a second *data* motive, which does lose
-hypotheses a caller could have wanted, so `src` is left as the only recursor
-there.  Nothing is emitted then, and nothing is reported: this is an extra, and
-a block that cannot have one is not thereby worse off.
-
-`evenIfWeaker` asks for it anyway, whatever the arrangement costs.  What makes
-the refusal above safe is that the member is a real inductive, so a caller who
-writes `induction` and gets nothing gets mainline's own refusal -- "does not
-support the type, because it is mutually inductive" -- and goes looking for the
-recursor.  A member of an induction-inductive block is a `def`, and there is no
-such refusal to fall back on: `induction` unfolds it to the wrapper it is
-encoded as and offers a case split on that wrapper's `.mk`, binding a pre-term
-and a proof of its well-formedness.  Weighed against that, a one-motive principle
-that has lost a sibling's hypotheses is the better default by some way, and the
-recursion over the whole block is a `using` away.
-
-`forCases` asks instead for the eliminator a case split needs, which is the
-same one with every minor's hypotheses gone.  A case split uses no hypothesis at
-any member, so there is none to weigh and no arrangement to refuse: every other
-motive is discharged whatever kind it is, and a block whose recursion already
-had one motive still has hypotheses worth dropping out of it.  That leaves
-`cases` working where `induction` does not, which is where mainline leaves them
-too -- a mutual inductive gets a `casesOn` at one motive and is refused by
-`induction` outright.
-
-Emitting one at all is the point.  `cases` on a member of an erased block
-reaches for whatever the member unfolds to, and so asks for its `.mk` -- the
-encoding's constructor, under a name the writer never wrote and cannot usefully
-name the fields of, since what it binds is a pre-term and a proof rather than
-the constructor's arguments.  A `Prop` member fares no better for being a real
-inductive underneath: splitting one whose data index is a variable makes the
-tactic solve `Γ.1 = Ctx._pre.nil`, which is the encoding again and which it
-cannot do.  Registering one of these instead leaves the block's own constructors
-as the cases, and the unification that would have gone through the subtype does
-not arise.
-
-`elimLevels` are the universe parameters `src` carries for its data motives --
-one per data SCC on this route, one overall on the induction-inductive one.
--/
+discharged. -/
 def addSoloElim (nParams : Nat) (elimLevels : Array Name) (keepIsProp : Bool)
     (src soloName : Name) (forCases : Bool) (evenIfWeaker := false) : MetaM Unit := do
   let some info := (← getEnv).find? src | return
@@ -805,18 +568,15 @@ def addSoloElim (nParams : Nat) (elimLevels : Array Name) (keepIsProp : Bool)
     let isProp ← mots.mapM fun m => do
       forallTelescope (← inferType m) fun _ c =>
         pure (match c with | .sort u => u.isZero | _ => false)
-    -- every other motive has to be of the other kind, or discharging it would
-    -- cost a hypothesis worth having -- which a case split has not got, and
-    -- which a block with no refusal to fall back on would rather pay
+    -- every other motive must be of the other kind, or discharging it costs a
+    -- hypothesis worth having -- which a case split does not have, and which a
+    -- block with no refusal to fall back on would rather pay
     unless forCases || evenIfWeaker ||
         (Array.range nMot).all fun q => q == kq || isProp[q]! != keepIsProp do
       return
-    -- whether what comes out is itself a proof, which is not the same question as
-    -- whether the member is a `Prop`: a subsingleton's recursor eliminates into
-    -- any sort, and the eliminator built from it has to go on carrying the
-    -- universe it does that in.  Where it *is* a proof, the sorts the data motives
-    -- were polymorphic in have nothing left to range over, and are pinned rather
-    -- than carried
+    -- whether the result is itself a proof.  This differs from whether the
+    -- member is a `Prop`: a subsingleton's recursor eliminates into any sort,
+    -- and the eliminator built from it must keep carrying that universe
     let intoProp := keepIsProp && isProp[kq]!
     let pinned := if intoProp then elimLevels.filter (info.levelParams.contains ·) else #[]
     let pin (e : Expr) : Expr :=
@@ -824,15 +584,15 @@ def addSoloElim (nParams : Nat) (elimLevels : Array Name) (keepIsProp : Bool)
     let outLvls := info.levelParams.filter (!pinned.contains ·)
     let others := (Array.range nMot).filterMap fun q => if q == kq then none else some mots[q]!
     let isOther (id : FVarId) := others.any (·.fvarId! == id)
-    -- a discharged motive is filled in with the one-element type at its own
-    -- sort, which is the only thing to fill a *data* motive in with while the
-    -- sort it lands in is still a parameter the kept motive needs
+    -- a discharged motive is filled with the one-element type at its own sort,
+    -- the only choice for a *data* motive while the sort it lands in is still a
+    -- parameter the kept motive needs
     let triv (ty : Expr) : MetaM Expr :=
       forallTelescope ty fun as c => mkLambdaFVars as (mkConst ``PUnit [c.sortLevel!])
     let subst (e : Expr) (vals : Array Expr) : MetaM Expr :=
       Core.betaReduce (e.replaceFVars (mots.extract 0 vals.size) vals)
-    -- the discharged motives before the kept one, so that its own type can be
-    -- put across before its binders are counted
+    -- the discharged motives before the kept one, so its type can be substituted
+    -- into before its binders are counted
     let mut motVals : Array Expr := #[]
     for q in *...kq do
       motVals := motVals.push (← triv (← subst (← inferType mots[q]!) motVals))
@@ -849,8 +609,8 @@ def addSoloElim (nParams : Nat) (elimLevels : Array Name) (keepIsProp : Bool)
         forallTelescope keptTy' fun as _ => mkLambdaFVars as (mkAppN d (keptOf as)))
       for q in (kq + 1)...nMot do
         motVals := motVals.push (← triv (← subst (← inferType mots[q]!) motVals))
-      -- a minor is a binder concluding at a motive; what follows them is the
-      -- indices and the major, which pass through untouched
+      -- a minor is a binder concluding at a motive; what follows is the indices
+      -- and the major, which pass through untouched
       let rest' := xs.extract nMot xs.size
       let mut nMin := 0
       for x in rest' do
@@ -875,20 +635,16 @@ def addSoloElim (nParams : Nat) (elimLevels : Array Name) (keepIsProp : Bool)
       markElabAsElim soloName (induction := !forCases)
 
 /--
-`Nonempty ((w : α) ×' β w)`: a `Prop` that still remembers a data witness, and
-whose eliminator lands in `Prop`, which is all the minor premises of a `Prop`
-member's recursor ever need.
--/
+`Nonempty ((w : α) ×' β w)`: a `Prop` that remembers a data witness and whose
+eliminator lands in `Prop`, which is all the minor premises of a `Prop` member's
+recursor need. -/
 private def mkNESig (α β : Expr) : MetaM Expr := do
   mkAppM ``Nonempty #[← mkAppOptM ``PSigma #[some α, some β]]
 
 /--
-The levels to instantiate the eliminator `elimName` -- a recursor or a
-`casesOn` -- at, given that its motives live at `elim` and the block's own
-levels are `own`.  A small-eliminating `Prop` has no separate elimination
-universe, so the extra level is only prepended when the eliminator actually has
-one.
--/
+The levels to instantiate the eliminator `elimName` -- a recursor or a `casesOn`
+-- at, given that its motives are at `elim` and the block's own levels are
+`own`. -/
 private def elimLevelsFor (elimName : Name) (elim : Level) (own : List Level) :
     MetaM (List Level) := do
   let info ← getConstInfo elimName
@@ -905,18 +661,7 @@ lowering cannot express.
 
 /--
 Condensation of the data-only dependency graph, in topological order
-(dependencies first).  Returns the components and, for each member, its
-component index (`none` for a `Prop` member).
-
-A `Prop` member is a sink: the shadow declares every member of the block before
-any data member is, and a data member's field at a `Prop` sibling is a field at
-that shadow, already a constant.  So a path that leaves the data members is a
-path that does not come back, and closing over one would group components that
-can perfectly well be declared one after another.
-
-`n` is the number of members of one `mutual` block, so the cubic reachability
-closure is not worth optimising.
--/
+(dependencies first). -/
 def computeSCCs (n : Nat) (isData : Array Bool) (edges : Array (Array Bool)) :
     Array (Array Nat) × Array (Option Nat) := Id.run do
   -- transitive closure, relaying through the data members alone
@@ -940,8 +685,8 @@ def computeSCCs (n : Nat) (isData : Array Bool) (edges : Array (Array Bool)) :
       for j in c do
         compOf := compOf.set! j (some comps.size)
       comps := comps.push c
-  -- topologically order the condensation: a component may be emitted once
-  -- every component it depends on has been emitted
+  -- topologically order the condensation: a component may be emitted once every
+  -- component it depends on has been
   let m := comps.size
   let mut emitted : Array Bool := Array.replicate m false
   let mut order : Array Nat := #[]
@@ -987,29 +732,16 @@ def freshLevelNames (avoid : List Name) (n : Nat) : Array Name := Id.run do
 private def mentionsMember (fvars : Array Expr) (e : Expr) : Bool :=
   fvars.any fun f => e.containsFVar f.fvarId!
 
-/--
-What a constructor field turns out to be.
--/
+/-- What a constructor field is. -/
 private inductive FieldKind where
-  /-- Recurses into a member, or mentions none at all: `none` for the latter. -/
+  /-- Recurses into a member, or mentions none; `none` for the latter. -/
   | plain (rf : Option RecField)
-  /-- Mentions members only from inside another type constructor's parameters,
-  as `List B` and `Tree S` do.  `denest` leaves such an occurrence alone and
-  hands it to the kernel, which either finds the type closed already -- `B` is
-  declared before `A` -- or denests it itself.  Either way there is nothing for
-  the lowering to recurse into, but the emission order still has to respect the
-  members the occurrence names. -/
+  /--
+  Mentions members only inside another type constructor's parameters, as `List
+  B` and `Tree S` do. -/
   | inert (deps : Array Nat) (why : MessageData)
 
-/--
-Classify one constructor field.
-
-Accepts a non-recursive field (no member occurrence at all), a field of the
-form `∀ ys, X_j params idxs` where neither the `ys` domains nor the `idxs`
-mention any member, or a *nested* occurrence such as `List (X_j ...)`.  The last
-of those is only accepted provisionally: `analyze` checks below that the block
-is one whose nested occurrences reach the kernel at all.
--/
+/-- Classify one constructor field. -/
 private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) :
     MetaM FieldKind := do
   if !mentionsMember inp.memberFVars fieldTy then
@@ -1025,10 +757,8 @@ private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) 
       | let bad := m!"Unsupported constructor field in a multiuniverse block: field \
             {k + 1} of `{ctor}` mentions a member of the block in a nested position, in the \
             type{indentExpr fieldTy}"
-        -- a nested occurrence goes one of two ways: left as written, for the
-        -- kernel to denest, or copied into a member of the block.  A head that
-        -- is not an inductive type is out of reach of both -- there is nothing
-        -- for the kernel to denest and no constructors to copy
+        -- a nested occurrence goes one of two ways: left as written for the
+        -- kernel to denest, or copied into a member of the block
         let head? := body.getAppFn.constName?.bind (← getEnv).find?
         unless head? matches some (.inductInfo _) do
           throwError bad ++ .note "The head of the occurrence is not an inductive type, so \
@@ -1052,19 +782,7 @@ private def analyzeField (inp : Input) (fieldTy : Expr) (ctor : Name) (k : Nat) 
 
 /--
 Reject a constructor whose *result indices* depend on a field of data-member
-type.
-
-The lowering identifies the shadow world and the real world at every index
-position: the shadow constructor is applied to shadow fields, the real one to
-real fields, and the two must land at the same indices.  Fields that are not
-members, and fields of `Prop`-member type, are literally the same variable in
-both worlds; a field of data-member type is not.
-
-This is a defensive check.  Reaching it needs a function from a member of the
-block into an index type, and there is none to be had: headers are elaborated
-before any member is in scope, so no member's indices can mention another
-member, and nested occurrences are rejected outright.
--/
+type. -/
 private def checkIndices (isProp : Array Bool) (c : CtorInfo)
     (fields : Array Expr) (idxs : Array Expr) : MetaM Unit := do
   let mut bad : Array Expr := #[]
@@ -1133,19 +851,15 @@ def analyze (inp : Input) : MetaM Block := do
       { name := inp.memberNames[i]!, type := inp.memberTypes[i]!,
         level := levels[i]!, isProp := isProp[i]!, ctors,
         ghost? := inp.memberGhost[i]?.join }
-  -- an inert field recurses into nothing, but the member it names still has to
-  -- exist by the time this one is declared
+  -- an inert field recurses into nothing, but the member it names must exist by
+  -- the time this one is declared
   for (i, d, _) in inert do
     if !isProp[i]! && !isProp[d]! then
       edges := edges.set! i (edges[i]!.set! d true)
   -- 3. condensation of the data-only graph
   let isData := isProp.map not
   let (sccs, sccOf) := computeSCCs n isData edges
-  -- a ghost goes last in its component.  What the kernel is handed is the
-  -- component's other members, with the ghost written out as the type it stands
-  -- for, and what comes back has a motive and minor premises for each of those
-  -- first and for what it denested after; keeping the block's order the same
-  -- lets one list of motives serve both
+  -- a ghost goes last in its component
   let ghostly := fun (i : Nat) => (inp.memberGhost[i]?.join).isSome
   let sccs := sccs.map fun c => c.filter (!ghostly ·) ++ c.filter ghostly
   -- `denest` copies every nested occurrence of a block with a `Prop` member, so
@@ -1161,8 +875,8 @@ def analyze (inp : Input) : MetaM Block := do
       userTargets := #[] }
   return { b with userTargets := ← b.computeUserTargets }
 
-/-- Is every member at the same universe?  Then the block is an ordinary
-`mutual` block and the lowering should not touch it. -/
+/-- Is every member at the same universe?  If so the block is an ordinary
+`mutual` block and the lowering must not touch it. -/
 def Block.isHomogeneous (b : Block) : Bool :=
   b.members.all fun m => m.level.normalize == b.members[0]!.level.normalize
 
@@ -1171,21 +885,21 @@ def Block.isHomogeneous (b : Block) : Bool :=
 Emission order; each step only mentions constants emitted by earlier steps.
 
 0. if the block is homogeneous, emit it natively and stop;
-1. `X_i._shadow`   -- the all-`Prop` shadow of the whole block;
-2. `X_i` for `Prop` members -- reducible abbreviations for their shadows;
-3. `X_i` for data members   -- honest inductives, one SCC at a time, in
+1.  `X_i._shadow`   -- the all-`Prop` shadow of the whole block;
+2.  `X_i` for `Prop` members -- reducible abbreviations for their shadows;
+3.  `X_i` for data members   -- honest inductives, one SCC at a time, in
                               topological order;
-4. `X_i._squash`   -- `X_i → X_i._shadow`, one SCC at a time;
-5. `X_i.c` for `Prop` members -- the user-facing constructors;
-6. `X_i.mutualRec` for `Prop` members -- from the shadow recursor;
-7. `X_i.mutualRec` for data members, in SCC order -- from the native recursors.
+4.  `X_i._squash`   -- `X_i → X_i._shadow`, one SCC at a time;
+5.  `X_i.c` for `Prop` members -- the user-facing constructors;
+6.  `X_i.mutualRec` for `Prop` members -- from the shadow recursor;
+7.  `X_i.mutualRec` for data members, in SCC order -- from the native recursors.
 
 Step 6 only mentions data *constructors*, never data recursors, so 6 and 7 do
 not form a cycle.
 -/
 
-/-- Walk `n` `∀`-binders of `ty`, building an argument for each via `mk` and
-instantiating as we go, so later domains see the earlier arguments. -/
+/-- Walk `n` `∀`-binders of `ty`, building an argument for each with `mk` and
+instantiating as it goes, so later domains see the earlier arguments. -/
 private def buildArgs (ty : Expr) (n : Nat) (mk : Nat → Expr → MetaM Expr) :
     MetaM (Array Expr) := do
   let mut ty := ty
@@ -1211,8 +925,7 @@ private def sccCtorIndices (b : Block) (s : Nat) : Array Nat := Id.run do
   return out
 
 /-- `X_i.mutualRec := X_i.rec`, for a block whose native recursor already ranges
-over every member.  Keeps the generated API the same on the native path as on
-the lowered one. -/
+over every member.  Keeps the generated API the same on both paths. -/
 private def aliasNativeRecs (b : Block) : MetaM Unit := do
   for i in *...b.size do
     let rn := b.members[i]!.name ++ `rec
@@ -1221,8 +934,8 @@ private def aliasNativeRecs (b : Block) : MetaM Unit := do
       (mkConst rn (info.levelParams.map Level.param)) (compile := false)
     markElabAsElim (b.recName i)
 
-/-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so
-that this library's `mutual` is a strict superset of Lean's. -/
+/-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so this
+library's `mutual` is a strict superset of Lean's. -/
 private def emitNative (b : Block) : MetaM Unit := do
   let mut indTypes : Array InductiveType := #[]
   for i in *...b.size do
@@ -1234,8 +947,8 @@ private def emitNative (b : Block) : MetaM Unit := do
   aliasNativeRecs b
 
 /-- The all-`Prop` shadow.  Only the resulting sorts change: constructor fields
-are copied verbatim, with member occurrences redirected to the shadow, which is
-legal because a `Prop`-valued inductive imposes no constraint on its fields. -/
+are copied verbatim with member occurrences redirected to the shadow, which is
+legal because a `Prop`-valued inductive constrains none of its fields. -/
 private def emitShadow (b : Block) : MetaM Unit := do
   let mut indTypes : Array InductiveType := #[]
   for i in *...b.size do
@@ -1246,9 +959,9 @@ private def emitShadow (b : Block) : MetaM Unit := do
     indTypes := indTypes.push { name := sn, type := resultToProp m.type, ctors := ctors.toList }
   addInd b.levelParams b.numParams indTypes
 
-/-- A `Prop` member *is* its shadow -- the shadow only squashes data members --
-so its user-facing name is a reducible abbreviation.  These come before the
-data members, whose constructors mention them. -/
+/-- A `Prop` member *is* its shadow, since the shadow squashes data members only,
+so its user-facing name is a reducible abbreviation.  These come before the data
+members, whose constructors mention them. -/
 private def emitPropAliases (b : Block) : MetaM Unit := do
   for i in *...b.size do
     let m := b.members[i]!
@@ -1256,17 +969,7 @@ private def emitPropAliases (b : Block) : MetaM Unit := do
       addDef m.name b.levelParams m.type (mkConst (b.realName i) b.ownLevels) .abbrev
       setReducibleAttribute m.name
 
-/--
-One SCC of the data-only dependency graph, declared under the users' own names.
-Its members are necessarily at the same universe (an edge `i → j` forces
-`l_j ≤ l_i`, so a cycle forces equality), hence this is an ordinary,
-homogeneous mutual block.  Fields of `Prop`-member type refer to the aliases,
-which the kernel unfolds to the shadow; being outside the block, they impose no
-positivity obligation.
-
-A ghost is passed over: the real world says nothing about it, and a component
-of nothing but ghosts declares nothing at all.
--/
+/-- One SCC of the data-only dependency graph, declared under the users' own names. -/
 private def emitDataSCC (b : Block) (s : Nat) : MetaM Unit := do
   let mut indTypes : Array InductiveType := #[]
   for i in b.sccs[s]! do
@@ -1341,11 +1044,7 @@ private def emitSquashSCC (b : Block) (s : Nat) : MetaM Unit := do
             (mkAppN recFn (rparams ++ motives ++ minors ++ idxs ++ #[tv]))
           addDef (squashName m.name) b.levelParams ty val
 
-/--
-The `Prop` members' constructors.  The data members' constructors are the
-native ones and need no help; a `Prop` member's shadow constructor wants shadow
-arguments, so each data field is sent through its squash map.
--/
+/-- The `Prop` members' constructors. -/
 private def emitPropCtors (b : Block) : MetaM Unit := do
   for i in *...b.size do
     let m := b.members[i]!
@@ -1371,17 +1070,17 @@ private def emitPropCtors (b : Block) : MetaM Unit := do
 
 /-! ### What the kernel denested
 
-`Mumi.Denest` leaves a nested occurrence the kernel can take to the kernel, so
-`S.t` really is stated at `Tree S`, and the type the kernel invents for `Tree S`
-is declared alongside `S`.  What that costs is that the component's native
-recursor ranges over more than the component's members: it has a motive for
-each invented type and minor premises for its constructors.  Everything the
-lowering builds out of that recursor has to offer the same.
+`Mumi.Denest` passes a nested occurrence the kernel can take to the kernel, so
+`S.t` is stated at `Tree S` and the type the kernel invents for `Tree S` is
+declared alongside `S`.  The cost is that the component's native recursor ranges
+over more than the component's members: it has a motive for each invented type and
+minor premises for its constructors.  Everything built from that recursor must
+offer the same.
 
-They go at the end of their kind -- every member's motive first and then the
-invented ones, every constructor of the block first and then theirs -- so a
-block with nothing nested reads exactly as it did, and one with a nesting reads
-as the recursor Lean writes for a `mutual` block that nests.
+They go at the end of their kind -- every member's motive first, then the invented
+ones; every constructor of the block first, then theirs -- so a block with nothing
+nested reads unchanged, and one with a nesting reads like the recursor Lean writes
+for a `mutual` block that nests.
 -/
 
 /-- One type the kernel denested, and where it lands in the block-wide recursors. -/
@@ -1421,8 +1120,8 @@ def Nests.spec? (ns : Nests) (e : Nat) : Option NestSpec :=
     if sp.motive == e then some sp else none
 
 /-- The implementation of a block-wide recursor, and the `@[csimp]` theorem for
-it.  Named as a member's are, so that a nesting's recursor and a member's are
-told apart only by which of them they belong to. -/
+it.  Named as a member's are, so a nesting's recursor and a member's differ only
+in what they belong to. -/
 def NestSpec.implName (sp : NestSpec) : Name := sp.recName ++ `impl
 
 @[inherit_doc NestSpec.implName]
@@ -1437,36 +1136,17 @@ private def memberRecAt (b : Block) (i : Nat) (params vals : Array Expr) :
   let ty ← instantiateForall (← inferType recFn) rparams
   return (recFn, ← instantiateForall ty vals)
 
-/-- The motive values a component's native recursor is applied at, in its own
-order: the block's motive for each of the component's members, then the block's
-motive for each type the kernel denested for the component.
-
-They are passed as they stand rather than eta-expanded, so that the induction
-hypotheses read back off the recursor mention the motive itself.  Whoever reads
-them has to recognise which motive an induction hypothesis is about, and a
-`(fun t => motive_1 t) a` in a minor premise the writer will read is worse
-besides. -/
+/--
+The motive values a component's native recursor is applied at, in its own order:
+the block's motive for each of the component's members, then the block's motive
+for each type the kernel denested for the component. -/
 private def sccMotiveVals (b : Block) (ns : Nests) (s : Nat) (motives : Array Expr) :
     Array Expr :=
   b.sccs[s]!.map (motives[·]!) ++ (ns.forScc s).map fun sp => motives[sp.motive]!
 
 /--
 Read off what the kernel denested for each component, by comparing that
-component's native recursor with the component the lowering handed it.  A
-recursor with more motives than its component has *declared* members has them
-for types the kernel invented, and there is no other way for one to arise.
-
-Some of those the block already has a member for: a ghost the kernel denested is
-one of the block's own slots, with its own motive, minor premises and recursor,
-and all it wants from here is the name of the kernel's recursor at it.  Those are
-matched up by the type each stands for and the component reordered to agree with
-the kernel, so that one list of motives serves the block's recursors and the
-native one alike.  What is left over -- a nesting the writer wrote in a block
-with no ghost in it -- becomes a `NestSpec`.
-
-Both cannot happen at once: a ghost exists only in a block with a `Prop` member,
-and there the shadow has no way to follow a nesting it has no member for.
--/
+component's native recursor with the component the lowering handed it. -/
 private def mkNests (b : Block) : MetaM (Block × Nests) := do
   let mut b := b
   let mut perScc : Array (Array NestSpec) := #[]
@@ -1475,8 +1155,8 @@ private def mkNests (b : Block) : MetaM (Block × Nests) := do
   for s in *...b.sccs.size do
     let i := b.sccs[s]![0]!
     let name := b.members[i]!.name
-    -- a component of ghosts was never handed to the kernel, so it has nothing
-    -- to report; the type a ghost stands for is one the kernel already knows
+    -- a component of ghosts never reached the kernel, so it has nothing to
+    -- report; the kernel already knows the type a ghost stands for
     if b.isGhost i then
       perScc := perScc.push #[]
       continue
@@ -1484,9 +1164,7 @@ private def mkNests (b : Block) : MetaM (Block × Nests) := do
     let ghosts := b.sccs[s]!.filter b.isGhost
     let decl := b.sccs[s]!.size - ghosts.size
     -- each extra motive's major premise, as `∀ idxs, T idxs` under the
-    -- component's parameters.  That is exactly how a ghost states the type it
-    -- stands for, so which motive is whose is settled by comparing the two and
-    -- not by their heads, which two ghosts may well share
+    -- component's parameters
     let (heads, ordered) ←
       forallBoundedTelescope b.members[i]!.type (some b.numParams) fun params _ => do
         let (_, ty) ← memberRecAt b i params #[]
@@ -1555,9 +1233,9 @@ private def nestMotiveTypes (b : Block) (ns : Nests) (s : Nat) (params : Array E
   forallBoundedTelescope ty (some (sz + e)) fun xs _ =>
     (xs.extract sz (sz + e)).mapM inferType
 
-/-- The minor premises it asks for beyond its members' constructors, stated at
-the block's own motives.  No minor premise's type mentions the ones before it, so
-reading them all off one telescope is enough. -/
+/-- The minor premises it asks for beyond its members' constructors, stated at the
+block's own motives.  No minor premise's type mentions the ones before it, so one
+telescope reads them all. -/
 private def nestMinorTypes (b : Block) (ns : Nests) (s : Nat) (params motives : Array Expr) :
     MetaM (Array Expr) := do
   let specs := ns.forScc s
@@ -1570,13 +1248,7 @@ private def nestMinorTypes (b : Block) (ns : Nests) (s : Nat) (params motives : 
 
 /--
 The induction hypotheses the kernel's own recursor offers for `c` that the
-block's field analysis does not: one for each occurrence the kernel denested.
-
-Each comes back as the index of the field it is about, and its type abstracted
-over the constructor's fields, for the caller to restate at whichever copies of
-them it holds.  Which field a hypothesis is about is not guessed: it is the one
-whose variable the hypothesis mentions.
--/
+block's field analysis does not: one for each occurrence the kernel denested. -/
 private def nestIHs (b : Block) (ns : Nests) (params motives : Array Expr) (c : CtorInfo) :
     MetaM (Array (Nat × Expr)) := do
   let some s := b.sccOf[c.owner]! | return #[]
@@ -1618,23 +1290,22 @@ and result:
 ```
 
 with `motive_j` at `Prop` for a `Prop` member and at that member's SCC universe
-otherwise (and named plain `motive` when the block has only one member, which is
-`motiveNames` below).  This uniformity is what lets a data recursor plug `X_j.mutualRec`
-in as the induction hypothesis for a field it has no native IH for: the
-arguments it already has are exactly the ones `X_j.mutualRec` wants.
+otherwise (named plain `motive` when the block has one member; see `motiveNames`
+below).  This uniformity lets a data recursor plug `X_j.mutualRec` in as the
+induction hypothesis for a field it has no native IH for: the arguments it already
+has are the ones `X_j.mutualRec` wants.
 -/
 
-/-- What to call the motives of a recursor that has `n` of them: `motive` on its
-own when there is only one, `motive_1 .. motive_n` otherwise.  Lean names its own
-recursors this way, and every recursor we emit follows it, so that a caller who
-has to name a motive names it the same whichever member it came from. -/
+/--
+What to call the motives of a recursor that has `n` of them: `motive` alone when
+there is one, `motive_1 .. motive_n` otherwise. -/
 def motiveNames (n : Nat) : Array Name :=
   if n == 1 then #[`motive]
   else Array.ofFn (n := n) fun j => Name.mkSimple s!"motive_{j.val + 1}"
 
 /-- The type of the minor premise for constructor `c`: all fields, then one
 induction hypothesis per recursive field and per field the kernel denested, in
-field order -- which is the order the kernel's own recursors use. -/
+field order, as the kernel's own recursors do. -/
 private def mkMinorType (b : Block) (ns : Nests) (params motives : Array Expr) (c : CtorInfo) :
     MetaM Expr := do
   let nested ← nestIHs b ns params motives c
@@ -1652,7 +1323,7 @@ private def mkMinorType (b : Block) (ns : Nests) (params motives : Array Expr) (
         ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
       else if let some ih := nestIH? nested k fields then
         ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
-    -- no induction hypothesis is ever referred to, so plain `forallE` is safe
+    -- no induction hypothesis is referred to, so plain `forallE` is safe
     for (nm, t) in ihs.reverse do
       concl := .forallE nm t concl .default
     mkForallFVars fields concl
@@ -1667,9 +1338,9 @@ private def recBinderInfos (b : Block) (ns : Nests) (nidxs : Nat) : Array Binder
     ++ Array.replicate nidxs BinderInfo.implicit
     ++ #[BinderInfo.default]
 
-/-- Set up the front of the telescope every recursor in the block shares -- one
+/-- Build the front of the telescope every recursor in the block shares -- one
 motive per member and per type the kernel denested, then one minor premise per
-constructor of each -- and hand it to `k`. -/
+constructor of each -- and pass it to `k`. -/
 private def withRecFront {α} [Inhabited α] (b : Block) (ns : Nests) (params : Array Expr)
     (k : Array Expr → Array Expr → MetaM α) : MetaM α := do
   let mut motiveTys : Array Expr := #[]
@@ -1696,8 +1367,8 @@ private def withRecFront {α} [Inhabited α] (b : Block) (ns : Nests) (params : 
         (Name.mkSimple s!"case_{q + 1}", .default, fun _ => pure minorTys[q]!)
     withLocalDecls minorDecls fun minors => k motives minors
 
-/-- Set up the whole telescope of `X_i.mutualRec` and hand the body builder the
-pieces. -/
+/-- Build the whole telescope of `X_i.mutualRec` and pass the pieces to the body
+builder. -/
 private def withRecTelescope (b : Block) (ns : Nests) (i : Nat)
     (mkBody : Array Expr → Array Expr → Array Expr → Array Expr → Expr → MetaM Expr) :
     MetaM (Expr × Expr) := do
@@ -1729,10 +1400,10 @@ private def withNestRecTelescope (b : Block) (ns : Nests) (s : Nat) (sp : NestSp
           let ty ← mkForallFVars all (mkAppN motives[sp.motive]! (idxs ++ #[major]))
           return (forceBinderInfos ty (recBinderInfos b ns idxs.size), ← mkLambdaFVars all body)
 
-/-- `nameOf j` -- `X_j.mutualRec`, or the implementation of it built below --
-applied at the current motives and minors, lifted pointwise through any leading
-`∀`s of `v`'s type.  Every recursor in the block takes the same arguments, so
-the ones we already have are exactly the ones it wants. -/
+/-- `nameOf j` -- `X_j.mutualRec`, or its implementation built below -- applied at
+the current motives and minors, lifted pointwise through any leading `∀`s of `v`'s
+type.  Every recursor in the block takes the same arguments, so the ones in hand
+are the ones it wants. -/
 private def recCallTo (b : Block) (nameOf : Nat → Name) (levels : List Level)
     (params motives minors : Array Expr) (j : Nat) (v : Expr) : MetaM Expr := do
   forallTelescope (← inferType v) fun ys body => do
@@ -1745,15 +1416,7 @@ private def recCall (b : Block) (params motives minors : Array Expr) (j : Nat) (
     MetaM Expr :=
   recCallTo b b.recName b.recLevels params motives minors j v
 
-/--
-Build the body of a shadow minor premise, walking the constructor's fields.
-
-The shadow's fields for data members are useless -- they carry no data -- so we
-*discard* them and take the real element out of the corresponding induction
-hypothesis, whose motive was chosen to be `Nonempty ((w : X_j) ×' motive_j w)`
-precisely so that it would still contain one.  This is legal because everything
-built here is a `Prop`.
--/
+/-- Build the body of a shadow minor premise, walking the constructor's fields. -/
 private partial def propMinorBody (b : Block) (params motives minors : Array Expr)
     (c : CtorInfo) (q : Nat) (sf sih : Array Expr) (target : Expr)
     (k ihPos : Nat) (realF realIH : Array Expr) : MetaM Expr := do
@@ -1794,8 +1457,8 @@ private partial def propMinorBody (b : Block) (params motives minors : Array Exp
           let mot := Expr.lam `h ihTy target .default
           return mkAppN (mkConst ``Nonempty.rec [lvl]) #[sigTy, mot, f, ih]
       else
-        -- a function *into* a data member: the witnesses have to be selected
-        -- pointwise, which is the one place `Classical.choice` is unavoidable
+        -- a function *into* a data member: the witnesses must be selected
+        -- pointwise, the one place `Classical.choice` is unavoidable
         let ihTy ← inferType ih
         let kf ← forallTelescope ihTy fun ys neBody => do
           let sigTy := (← whnf neBody).appArg!
@@ -1839,20 +1502,7 @@ private def mkPropRecBody (b : Block) (i : Nat)
 
 /--
 The body of a data recursor: one application of the kernel's own recursor for
-the component, at the block's motives.
-
-`recName` says which one -- a member's `rec`, or the `rec_k` the kernel gave a
-type it denested for the component -- and `base` and `rparams` are the levels
-and parameters it takes, which for a ghost's are the copied type's.  All of them
-have the same motives and minor premises, so the same body serves for any; only
-the major premise differs.
-
-The minor premises for the component's own constructors are the block's,
-supplied with an induction hypothesis for every field: the kernel's own where it
-has one, and a call to the block-wide recursor where the field points outside the
-component.  The ones the kernel added for what it denested are passed through
-untouched, since the block asks for them in exactly the form the kernel does.
--/
+the component, at the block's motives. -/
 private def mkSccRecBody (b : Block) (ns : Nests) (s : Nat) (recName : Name)
     (base : List Level) (rparams : Array Expr)
     (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
@@ -1883,9 +1533,8 @@ private def mkSccRecBody (b : Block) (ns : Nests) (s : Nat) (recName : Name)
             userIH := userIH.push nih[p]!
             p := p + 1
           else
-            -- a `Prop` member, or a data member of an earlier SCC: its
-            -- block-wide recursor is already defined and takes exactly our
-            -- arguments
+            -- a `Prop` member, or a data member of an earlier SCC: its block-wide
+            -- recursor is already defined and takes the same arguments
             userIH := userIH.push (← recCall b params motives minors rf.member fields[k]!)
         else if (nestIH? nested k fields).isSome then
           -- an occurrence the kernel denested, so the native recursor has it
@@ -1905,27 +1554,23 @@ private def emitRec (b : Block) (ns : Nests) (i : Nat) : MetaM Unit := do
       let (recName, base, rparams) := b.memberRecOf i params
       mkSccRecBody b ns s recName base rparams params motives minors idxs major
   -- a data member's recursor is left uncompiled: its body is a recursor
-  -- application, so compiling it here would fail and mark it `noncomputable`,
-  -- and its code comes instead from the implementation emitted afterwards.  A
-  -- `Prop` member's is a proof, so it erases and may as well go through now
+  -- application, so compiling it here would fail and mark it `noncomputable`
   addDef (b.recName i) b.recLevelParams ty val (compile := m.isProp)
   markElabAsElim (b.recName i)
   -- a `Prop` member has no native recursor under its user-facing name, so the
-  -- block-wide one may as well also answer to `X.rec`
+  -- block-wide one also answers to `X.rec`
   if m.isProp then
     addDef (m.name ++ `rec) b.recLevelParams ty val
     markElabAsElim (m.name ++ `rec)
     -- neither of those is a shape `induction` can drive: both ask for a motive
-    -- at every data member of the block, and the goal determines none of them.
-    -- `X.recP` has them discharged at `Unit`, which costs nothing a proof about
-    -- a `Prop` member could have used
+    -- at every data member of the block, and the goal determines none of them
     discard <| attempt? `Mumi m!"no one-motive recursor for `{m.name}`" <|
       addSoloElim b.numParams b.sccLevel true (b.recName i) (m.name ++ `recP)
         (forCases := false)
 
 /-- The block-wide recursor whose major premise is a type the kernel denested.
-Lean declares one of these for every mutual block that nests, so a block lowered
-here has them too, under the names a `mutual` block's would have. -/
+Lean declares one for every mutual block that nests, so a block lowered here has
+them too, under the names a `mutual` block's would have. -/
 private def emitNestRec (b : Block) (ns : Nests) (s : Nat) (sp : NestSpec) : MetaM Unit := do
   let (ty, val) ← withNestRecTelescope b ns s sp fun params motives minors idxs major =>
     mkSccRecBody b ns s sp.nativeRec b.ownLevels params params motives minors idxs major
@@ -1934,17 +1579,16 @@ private def emitNestRec (b : Block) (ns : Nests) (s : Nat) (sp : NestSpec) : Met
 
 /-! ### Making the recursors computable
 
-The code generator compiles no recursor application at all -- `X.rec` exactly
-as little as `Nat.rec` -- so a `mutualRec` whose body is one would be
-`noncomputable`, and so would everything downstream of it.  That would be a real
-loss: the point of keeping the data members as honest inductives is that the
-block stays computable, and `mutualRec` is the only way to write a recursion
-that genuinely crosses members.
+The code generator compiles no recursor application -- `X.rec` no more than
+`Nat.rec` -- so a `mutualRec` whose body is one would be `noncomputable`, and so
+would everything downstream.  That defeats the purpose: the data members are kept
+as ordinary inductives so the block stays computable, and `mutualRec` is the only
+way to write a recursion that crosses members.
 
-The restriction is about the shape of the term, not about the function: the
-same recursion written by cases compiles fine, in a lowered block and in an
-ordinary `mutual` one alike.  So each data member's `mutualRec` is paired with
-an *implementation*
+The restriction is on the shape of the term, not on the function: the same
+recursion written by cases compiles, in a lowered block and in an ordinary
+`mutual` one alike.  So each data member's `mutualRec` is paired with an
+*implementation*
 
 ```
 X_i.mutualRec.impl : <the type of X_i.mutualRec, verbatim>
@@ -1960,25 +1604,24 @@ X_i.mutualRec.eq_impl : @X_i.mutualRec = @X_i.mutualRec.impl
 tagged `@[csimp]`, which is what makes the code generator emit the
 implementation's code wherever `X_i.mutualRec` is used.
 
-Nothing about this is taken on trust.  The implementation is a `def` like any
-other, handed to Lean's own structural recursion (`Structural.structuralRecursion`,
-not `addPreDefinitions`, which would quietly fall back to `partial` or `sorry`
-on failure), so it is only accepted if that machinery can see it terminates.
-The theorem is an ordinary proof, checked by the kernel.  A wrong one is an
-error at the point of the block, which is the right place to find out that the
-proof generator needs work; the alternative -- an unchecked companion the code
-generator believes -- would be a miscompilation instead.
+Nothing here is taken on trust.  The implementation is an ordinary `def`, handed
+to Lean's structural recursion (`Structural.structuralRecursion`, not
+`addPreDefinitions`, which falls back to `partial` or `sorry` on failure), so it
+is accepted only if that machinery sees it terminates.  The theorem is an ordinary
+proof, checked by the kernel.  A wrong one is an error at the point of the block,
+which is where to find out that the proof generator needs work; an unchecked
+companion the code generator believes would be a miscompilation.
 
-`mutualRec` itself is untouched: the iota rules and `#print axioms` are exactly
-what they were, and `eq_impl`'s use of `funext` stays inside `eq_impl`.  A `Prop`
-member needs no implementation at all: the result of its recursor is a `Prop`,
-hence so is the recursor's whole type, so it is a proof and is erased.
+`mutualRec` itself is untouched: the iota rules and `#print axioms` are unchanged,
+and `eq_impl`'s use of `funext` stays inside `eq_impl`.  A `Prop` member needs no
+implementation: its recursor's result is a `Prop`, so the recursor is a proof and
+is erased.
 
-The implementations recurse directly only within their own SCC.  For a field in
-an earlier SCC an implementation calls that member's `mutualRec`, whose
-`@[csimp]` theorem is registered by then and rewrites the call when the code
-generator gets to it; that keeps each proof one congruence deep and means
-nothing has to be threaded across components by hand.
+The implementations recurse directly only within their own SCC.  For a field in an
+earlier SCC an implementation calls that member's `mutualRec`, whose `@[csimp]`
+theorem is registered by then and rewrites the call when the code generator
+reaches it.  That keeps each proof one congruence deep and threads nothing across
+components by hand.
 -/
 
 /-- The computable implementation of `X_i.mutualRec`. -/
@@ -1987,13 +1630,13 @@ def Block.implName (b : Block) (i : Nat) : Name := b.recName i ++ `impl
 /-- The `@[csimp]` theorem `@X_i.mutualRec = @X_i.mutualRec.impl`. -/
 def Block.implEqName (b : Block) (i : Nat) : Name := b.recName i ++ `eq_impl
 
-/-! A *slot* is a position among the block's motives: a member below `b.size`,
-and a type the kernel denested above it.  The implementations are written over
-slots throughout, since a member's recursion into a nesting and back is one
-mutual recursion and has to be defined as one. -/
+/-! A *slot* is a position among the block's motives: a member below `b.size`, a
+type the kernel denested above it.  The implementations are written over slots
+throughout, since a member's recursion into a nesting and back is one mutual
+recursion and must be defined as one. -/
 
 /-- What a slot's own `NestSpec` calls something, or what the block calls it at a
-member.  Every name ever asked of a slot is asked this way. -/
+member.  Every name asked of a slot goes through this. -/
 private def slotName (ns : Nests) (e : Nat) (ofNest : NestSpec → Name)
     (ofMember : Nat → Name) : Name :=
   match ns.spec? e with
@@ -2013,8 +1656,8 @@ private def slotImplEqName (b : Block) (ns : Nests) (e : Nat) : Name :=
   slotName ns e (·.implEqName) b.implEqName
 
 /-- Which slot an induction hypothesis is about, and how many arguments it is
-lifted through.  Its conclusion is an application of exactly one of the motives,
-so neither has to be guessed from the field it came from. -/
+lifted through.  Its conclusion applies exactly one motive, so neither is guessed
+from the field it came from. -/
 private def ihSlot (motives : Array Expr) (ihTy : Expr) : MetaM (Nat × Nat) :=
   forallTelescope ihTy fun ys body => do
     let some e := motives.findIdx? (· == body.getAppFn)
@@ -2022,10 +1665,9 @@ private def ihSlot (motives : Array Expr) (ihTy : Expr) : MetaM (Nat × Nat) :=
           of the block's motives:{indentExpr ihTy}"
     return (e, ys.size)
 
-/-- An induction hypothesis of type `ihTy`, built by recursing with `nameOf` on
-the slot the hypothesis is about.  Every recursor in the block takes the same
-arguments before the indices, so the ones we already hold are the ones it wants,
-and the indices and the value it wants are the hypothesis' own. -/
+/--
+An induction hypothesis of type `ihTy`, built by recursing with `nameOf` on the
+slot the hypothesis is about. -/
 private def implIH (levels : List Level) (nameOf : Nat → Name)
     (params motives minors : Array Expr) (ihTy : Expr) : MetaM Expr :=
   forallTelescope ihTy fun ys body => do
@@ -2034,8 +1676,8 @@ private def implIH (levels : List Level) (nameOf : Nat → Name)
       (mkAppN (mkConst (nameOf e) levels) (params ++ motives ++ minors ++ body.getAppArgs))
 
 /-- A minor premise of a block-wide recursor, applied to a constructor's fields
-and to induction hypotheses built by recursing.  `casesOn` offers no hypotheses
-of its own, so which ones are wanted is read off the minor premise's own type. -/
+and to induction hypotheses built by recursing.  `casesOn` offers no hypotheses,
+so which ones are needed is read off the minor premise's own type. -/
 private def applyMinor (levels : List Level) (nameOf : Nat → Name)
     (params motives minors : Array Expr) (minor : Expr) (fields : Array Expr) : MetaM Expr := do
   forallTelescope (← instantiateForall (← inferType minor) fields) fun ihs _ => do
@@ -2045,17 +1687,7 @@ private def applyMinor (levels : List Level) (nameOf : Nat → Name)
 
 /--
 One `casesOn` at `motive`, with every induction hypothesis its minor premises
-ask for supplied by a direct call.
-
-Both implementations below are this, and differ only in where the `casesOn` and
-its parameters come from: a member's are the block's, a denested type's are read
-off the major premise.  `alts` is that type's constructors as the number of
-fields each binds and the minor premise the recursor holds for it.
-
-A call goes to a sibling's implementation inside `group`, and to `mutualRec`
-outside it -- an earlier SCC, or a `Prop` member, whose recursor is a proof and
-needs no implementation -- where that member's own `@[csimp]` theorem takes over.
--/
+ask for supplied by a direct call. -/
 private def mkCasesImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
     (motive : Expr) (casesName : Name) (baseLvls : List Level) (cparams : Array Expr)
     (alts : Array (Nat × Expr)) (params motives minors idxs : Array Expr) (major : Expr) :
@@ -2080,10 +1712,8 @@ private def mkCasesImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels
 /--
 The body of `X_i.mutualRec.impl`: one `X_i.casesOn`, with every induction
 hypothesis supplied by a direct call -- to a sibling's implementation inside
-`group`, and to `X_j.mutualRec` outside it, where that member's own `@[csimp]`
-theorem takes over.  `levels` are the levels the recursors are instantiated at,
-which differ between the lowered and the native path.
--/
+`group`, to `X_j.mutualRec` outside it, where that member's `@[csimp]` theorem
+takes over. -/
 private def mkImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
     (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
   let (casesName, base, cparams) := b.memberCasesOf i params
@@ -2094,12 +1724,7 @@ private def mkImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : Li
   mkCasesImplBody b ns group levels motives[i]! casesName base cparams alts
     params motives minors idxs major
 
-/--
-The same, for the implementation of a recursor over a type the kernel denested.
-That type is not a member of the block, so the cases are its own and the
-parameters they are taken at are the major premise's, not the block's; from
-there the induction hypotheses are built exactly as a member's are.
--/
+/-- The same, for the implementation of a recursor over a type the kernel denested. -/
 private def mkNestImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
     (sp : NestSpec) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
   let dinfo ← getConstInfoInduct sp.head
@@ -2112,14 +1737,8 @@ private def mkNestImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels 
 
 /--
 Open the telescope of `X_i.mutualRec` -- `{params} {motive_1 .. motive_n}
-(case_1 .. case_K) {idxs} (t)` -- and hand `k` the whole telescope and each of
-its five parts.
-
-Both paths agree on the split.  A lowered block's recursors have this signature
-by construction, and a homogeneous block's `mutualRec` is an alias of a native
-recursor, whose motives and minor premises range over the whole block; the
-caller checks that.
--/
+(case_1 .. case_K) {idxs} (t)` -- and pass `k` the whole telescope and each of
+its five parts. -/
 private def withMutualRecTelescope {α} [Inhabited α] (b : Block) (ns : Nests) (i : Nat)
     (k : Array Expr → Array Expr → Array Expr → Array Expr → Array Expr → Expr → MetaM α) :
     MetaM α := do
@@ -2143,10 +1762,9 @@ private def mkFunExtN (h : Expr) (n : Nat) : MetaM Expr := do
       p ← mkFunExt (← mkLambdaFVars #[ys[n - 1 - k]!] p)
     return p
 
-/-- The constructors of the slots in `group`, in the order the recursor whose
-motives range over exactly `group` expects its minor premises, each as its
-position among the block's minor premises, the slot that owns it, and how many
-fields it has. -/
+/--
+The constructors of the slots in `group`, in the order the recursor whose
+motives range over exactly `group` expects its minor premises. -/
 private def groupCtorIndices (b : Block) (ns : Nests) (group : Array Nat) :
     MetaM (Array (Nat × Nat × Nat)) := do
   let mut out := #[]
@@ -2164,22 +1782,7 @@ private def groupCtorIndices (b : Block) (ns : Nests) (group : Array Nat) :
 
 /--
 A proof of `X_i.mutualRec args idxs major = X_i.mutualRec.impl args idxs major`,
-by induction on `major` with `X_i.rec`.
-
-`motiveGroup` is what that recursor's motives range over, `implGroup` the
-members being implemented -- the same thing on the lowered path, where the
-recursor belongs to the SCC, but not on the native one, where it belongs to the
-whole block.  For a member of `motiveGroup` outside `implGroup` the two sides of
-the equation are the same term, so its statement is reflexive and its minor
-premises are `rfl`.
-
-Everywhere else the two sides differ only at the induction hypotheses: the
-recursor's iota rule leaves `X_l.mutualRec .. field` where the implementation
-leaves `X_l.mutualRec.impl .. field`, for `l` in `implGroup`, and the same term
-otherwise.  So each minor premise is a chain of congruences over the induction
-hypotheses -- legal because no minor premise's later argument types depend on
-them -- and closes by `rfl` at the head.
--/
+by induction on `major` with `X_i.rec`. -/
 private def mkImplEqBody (b : Block) (ns : Nests) (implGroup motiveGroup : Array Nat)
     (levels : List Level) (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) :
     MetaM Expr := do
@@ -2211,7 +1814,7 @@ private def mkImplEqBody (b : Block) (ns : Nests) (implGroup motiveGroup : Array
       let nih := args.extract numFields args.size
       -- the block's minor premise says which induction hypotheses the two sides
       -- differ at; the recursor offers one for each whose slot it has a motive
-      -- for, and only those
+      -- for, and no others
       let bihs ← forallTelescope (← instantiateForall (← inferType minors[gq]!) fields)
         fun ihs _ => ihs.mapM inferType
       let mut pf ← mkEqRefl (mkAppN minors[gq]! fields)
@@ -2232,13 +1835,7 @@ private def mkImplEqBody (b : Block) (ns : Nests) (implGroup motiveGroup : Array
 
 /--
 The implementations of one group of members' recursors, and their `@[csimp]`
-theorems.
-
-`implGroup` is a strongly connected component of the data-only dependency
-graph, so its implementations are exactly the ones that have to be defined by
-mutual recursion; `motiveGroup` is what the native recursors used to prove the
-theorems range over, which on the native path is the whole block.
--/
+theorems. -/
 private def emitImplGroup (b : Block) (ns : Nests) (implGroup motiveGroup : Array Nat) :
     TermElabM Unit := do
   if implGroup.isEmpty then return
@@ -2257,9 +1854,9 @@ private def emitImplGroup (b : Block) (ns : Nests) (implGroup motiveGroup : Arra
       { ref := .missing, kind := .def, levelParams := info.levelParams, modifiers := {},
         declName := slotImplName b ns i, binders := .missing, type := info.type, value,
         termination := TerminationHints.none }
-  -- `structuralRecursion` throws if it cannot see that the definitions
-  -- terminate; `addPreDefinitions` would instead fall back to `partial` or
-  -- `sorry`, which is exactly the silent degradation we are avoiding
+  -- `structuralRecursion` throws if it cannot see that the definitions terminate;
+  -- `addPreDefinitions` would fall back to `partial` or `sorry`, the silent
+  -- degradation this avoids
   if preDefs.any fun p => p.value.getUsedConstants.any (names.contains ·) then
     Structural.structuralRecursion docCtx preDefs
       (preDefs.map fun _ => (none : Option TerminationMeasure))
@@ -2272,8 +1869,8 @@ private def emitImplGroup (b : Block) (ns : Nests) (implGroup motiveGroup : Arra
     let value ← withMutualRecTelescope b ns i fun xs params motives minors idxs major => do
       let mut pf ←
         mkImplEqBody b ns implGroup motiveGroup levels i params motives minors idxs major
-      -- `∀ args, f args = g args` becomes `f = g`, which is `@X_i.mutualRec =
-      -- @X_i.mutualRec.impl` up to eta -- the shape `csimp` wants
+      -- `∀ args, f args = g args` becomes `f = g`, which up to eta is
+      -- `@X_i.mutualRec = @X_i.mutualRec.impl`, the shape `csimp` wants
       for k in *...xs.size do
         pf ← mkFunExt (← mkLambdaFVars #[xs[xs.size - 1 - k]!] pf)
       return pf
@@ -2284,13 +1881,12 @@ private def emitImplGroup (b : Block) (ns : Nests) (implGroup motiveGroup : Arra
 
 /--
 Implementations for a homogeneous block, whose `mutualRec`s are aliases of the
-native recursors and so have the native signature -- one elimination universe
-for the whole block rather than one per component, and motives ranging over
-every member.
--/
+native recursors and so have the native signature: one elimination universe for
+the whole block rather than one per component, and motives ranging over every
+member. -/
 private def emitNativeImpls (b : Block) : TermElabM Unit := do
-  -- compile the aliases as they stand: this erases the small-eliminating ones
-  -- and leaves anything else `noncomputable`, just as its own `rec` is
+  -- compile the aliases as they stand: this erases the small-eliminating ones and
+  -- leaves anything else `noncomputable`, as its own `rec` is
   let compileAliases : TermElabM Unit := do
     for i in *...b.size do
       Lean.compileDecl (.defnDecl (← getConstInfoDefn (b.recName i))) (logErrors := false)
@@ -2299,22 +1895,17 @@ private def emitNativeImpls (b : Block) : TermElabM Unit := do
   if b.members.all (·.isProp) then
     return ← compileAliases
   let info ← getConstInfoRec (b.members[0]!.name ++ `rec)
-  -- the native recursor of a mutual block ranges over every member; if some
-  -- future change makes that false, fall back to the aliases as they stand
+  -- the native recursor of a mutual block ranges over every member; if a future
+  -- change makes that false, fall back to the aliases as they stand
   unless info.numParams == b.numParams && info.numMotives == b.size
       && info.numMinors == b.allCtors.size do
     return ← compileAliases
-  -- a homogeneous block that is not all-`Prop` has no `Prop` member at all, so
-  -- every member is in one of the data SCCs
+  -- a homogeneous block that is not all-`Prop` has no `Prop` member, so every
+  -- member is in one of the data SCCs
   for s in *...b.sccs.size do
     emitImplGroup b (Nests.empty b.sccs.size) b.sccs[s]! (Array.range b.size)
 
-/--
-Lower an elaborated multiuniverse block to ordinary declarations.
-
-A homogeneous block is emitted natively, so this library's `mutual` accepts
-everything Lean's does and means the same thing by it.
--/
+/-- Lower an elaborated multiuniverse block to ordinary declarations. -/
 def lower (inp : Input) : TermElabM Unit := do
   let b ← analyze inp
   if b.isHomogeneous then
@@ -2326,7 +1917,7 @@ def lower (inp : Input) : TermElabM Unit := do
     emitPropAliases b
   for s in *...b.sccs.size do
     emitDataSCC b s
-  -- what the kernel denested is only knowable once it has been handed the block
+  -- what the kernel denested is knowable only once it has been handed the block
   let (b, ns) ← mkNests b
   if b.hasProp then
     for s in *...b.sccs.size do
@@ -2335,8 +1926,8 @@ def lower (inp : Input) : TermElabM Unit := do
     for i in *...b.size do
       if b.members[i]!.isProp then
         emitRec b ns i
-  -- one SCC at a time, so that an implementation's calls into an earlier
-  -- component are already backed by a `@[csimp]` theorem
+  -- one SCC at a time, so an implementation's calls into an earlier component are
+  -- already backed by a `@[csimp]` theorem
   for s in *...b.sccs.size do
     for i in b.sccs[s]! do
       emitRec b ns i

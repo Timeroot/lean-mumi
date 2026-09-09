@@ -11,21 +11,19 @@ public import Lean.Message
 /-!
 # Marking an error as being about a block we recognised
 
-`Mumi.Rescue` reports the error Lean gave and not the ones its retries gave,
-because a retry that fails has almost always failed on a block that was never
-ours, and saying otherwise would be a guess dressed up as a diagnosis.
+`Mumi.Rescue` reports Lean's error and not the errors from its retries.  A
+failed retry almost always ran on a block that was never ours, so reporting it
+would be a guess.
 
-Some failures are the other way round.  A block really can be an
-induction-inductive one and still be outside the narrow class that can be
-encoded; Lean's own error is then about the enlarged block it could not build,
-which is true and beside the point.  An error thrown through `owning` carries a
-tag saying so, and `Mumi.Rescue.rescuing` reports those next to Lean's rather
-than only in the trace.
+Some failures are the other way round.  A block can be induction-inductive and
+still lie outside the class this library encodes.  Lean's own error is then
+about the enlarged block it could not build, which is true but unhelpful.  An
+error thrown through `owning` carries a tag saying so, and `Mumi.Rescue.rescuing`
+reports tagged errors next to Lean's.
 
-This lives in a module of its own because the two sides of the tag are in
-different compilation phases: `rescuing` is `meta`, the checks that raise a
-marked error are not, and neither phase may reach a declaration of the other
-within a single module.
+This is a separate module because the two sides of the tag are in different
+compilation phases: `rescuing` is `meta`, the checks that raise a marked error
+are not, and one module cannot have a declaration of each phase reach the other.
 -/
 
 public section
