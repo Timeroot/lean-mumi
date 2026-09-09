@@ -1677,15 +1677,67 @@ def Block.transportBuilt (b : Block) (i : Nat) (a : AltFields)
   return mkAppN term (proofs ++ #[a.wc])
 
 /-- `withLocalDeclsD`, but the binders come out implicit. -/
-partial def withImplicits {α} [Inhabited α] (decls : Array (Name × (Array Expr → TermElabM Expr)))
+def withImplicits {α} [Inhabited α] (decls : Array (Name × (Array Expr → TermElabM Expr)))
     (k : Array Expr → TermElabM α) : TermElabM α :=
-  go 0 #[]
-where
-  go (i : Nat) (acc : Array Expr) : TermElabM α := do
-    if h : i < decls.size then
-      withLocalDecl decls[i].1 .implicit (← decls[i].2 acc) fun x => go (i + 1) (acc.push x)
-    else
-      k acc
+  withLocalDecls (decls.map fun (n, ty) => (n, .implicit, ty)) k
+
+/--
+What tells one recursor's front from another's.
+
+Every recursor built here opens the same way -- a motive per member it runs over,
+then a minor premise per constructor of one -- and the four that are built differ
+only in the five answers below.  Holding them in one record is what lets
+`Block.withRawFront` and `BridgeCtx.withNiceFront` each be written once instead
+of once per recursor.
+-/
+structure Front where
+  /-- The members the motives run over, in the order the recursor takes them. -/
+  members : Array Nat
+  /-- Where a member's motive sits among them. -/
+  pos : Nat → Nat
+  /-- The sort the motives land in. -/
+  lvl : Level
+  /-- What the thing a motive is about is called: `t` for a value, `h` for a proof. -/
+  major : Name
+  /-- The fields a minor premise takes an induction hypothesis about. -/
+  ihPos : Array FieldKind → Array Nat
+
+/--
+The front of a recursor stated in the raw world, handed to `k` as the motives and
+the minors.
+
+Everything here is spelled the way the pre-block spells it: a motive is over the
+member's own arity at the member's own constant, a minor is over the raw
+constructor's fields and concludes at the raw constructor.  A caller that wants
+the writer's spelling instead wants `BridgeCtx.withNiceFront`.
+-/
+def Block.withRawFront {α} [Inhabited α] (b : Block) (ps : Array Expr) (f : Front)
+    (k : Array Expr → Array Expr → TermElabM α) : TermElabM α := do
+  let mnames := motiveNames f.members.size
+  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+    f.members.mapIdx fun q j => (mnames[q]!, fun _ => do
+      forallTelescope (← instantiateForall b.members[j]!.type ps) fun idxs _ =>
+        withLocalDeclD f.major (mkAppN (b.memberCst j) (ps ++ idxs)) fun t =>
+          mkForallFVars (idxs ++ #[t]) (mkSort f.lvl))
+  withImplicits motiveDecls fun motives => do
+    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
+    for j in f.members do
+      for cc in b.members[j]!.ctors do
+        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
+          forallTelescope (← b.ctorType cc ps) fun xs concl => do
+            let kinds := b.fieldKinds cc.kinds
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+              (f.ihPos kinds).map fun z => (`ih, fun _ => do
+                let r? ← b.withRecTarget? (← inferType xs[z]!) fun ys m args =>
+                  mkForallFVars ys
+                    (mkAppN motives[f.pos m]! (b.idxArgs args ++ #[mkAppN xs[z]! ys]))
+                let some e := r? | throwError "Not a recursive field of `{cc.name}`"
+                return e)
+            withLocalDeclsD ihDecls fun ihs =>
+              mkForallFVars (xs ++ ihs) (mkAppN motives[f.pos j]!
+                (b.idxArgs concl.getAppArgs ++
+                  #[mkAppN (b.cst (b.rawCtor cc.name)) (ps ++ xs)])))
+    withLocalDeclsD minorDecls fun minors => k motives minors
 
 /-! ## Elaborating the headers, with the members as scratch axioms
 
@@ -3529,18 +3581,14 @@ private def specHit? (names : Array Name) (specs : Array AuxSpec) (e : Expr) :
 private partial def rwExpr (names : Array Name) (specs : Array AuxSpec) (ps : Array Expr)
     (auxLvls : List Level) (e : Expr) : MetaM Expr := do
   let rw := rwExpr names specs ps auxLvls
-  match e with
-  | .app .. =>
-    if mentionsNames names e then
-      if let some (aux, rest) ← specHit? names specs e then
-        return mkAppN (.const aux auxLvls) (ps ++ (← rest.mapM rw))
-    return mkAppN (← rw e.getAppFn) (← e.getAppArgs.mapM rw)
-  | .forallE n d b bi => return .forallE n (← rw d) (← rw b) bi
-  | .lam n d b bi => return .lam n (← rw d) (← rw b) bi
-  | .letE n t v b nd => return .letE n (← rw t) (← rw v) (← rw b) nd
-  | .mdata m b => return .mdata m (← rw b)
-  | .proj s i b => return .proj s i (← rw b)
-  | _ => return e
+  Lean.Core.transform e (pre := fun e => do
+    match e with
+    | .app .. =>
+      if mentionsNames names e then
+        if let some (aux, rest) ← specHit? names specs e then
+          return .done (mkAppN (.const aux auxLvls) (ps ++ (← rest.mapM rw)))
+      return .done (mkAppN (← rw e.getAppFn) (← e.getAppArgs.mapM rw))
+    | _ => return .continue)
 
 /--
 Copy the first `n` binder names and annotations from `model` onto `e`.
@@ -3869,20 +3917,18 @@ def unCopyHead? (c : BridgeCtx) (hd : Name) (args : Array Expr) : MetaM (Option 
   return none
 
 /-- `e` with every copy, and every copy's constructor, put back as the original. -/
-partial def unCopy (c : BridgeCtx) (e : Expr) : MetaM Expr := do
-  match e with
-  | .app .. =>
-    let args ← e.getAppArgs.mapM c.unCopy
-    if let some hd := e.getAppFn.constName? then
-      if let some r ← c.unCopyHead? hd args then return r
-    return mkAppN (← c.unCopy e.getAppFn) args
-  | .const n _ => return (← c.unCopyHead? n #[]).getD e
-  | .forallE n d b bi => return .forallE n (← c.unCopy d) (← c.unCopy b) bi
-  | .lam n d b bi => return .lam n (← c.unCopy d) (← c.unCopy b) bi
-  | .letE n t v b nd => return .letE n (← c.unCopy t) (← c.unCopy v) (← c.unCopy b) nd
-  | .mdata m b => return .mdata m (← c.unCopy b)
-  | .proj s i b => return .proj s i (← c.unCopy b)
-  | _ => return e
+partial def unCopy (c : BridgeCtx) (e : Expr) : MetaM Expr :=
+  Lean.Core.transform e (pre := fun e => do
+    match e with
+    | .app .. =>
+      -- the head is read before it is rewritten: a copy's constructor is found
+      -- under the copy's name, and `unCopyHead?` is what puts the original back
+      let args ← e.getAppArgs.mapM c.unCopy
+      if let some hd := e.getAppFn.constName? then
+        if let some r ← c.unCopyHead? hd args then return .done r
+      return .done (mkAppN (← c.unCopy e.getAppFn) args)
+    | .const n _ => return .done ((← c.unCopyHead? n #[]).getD e)
+    | _ => return .continue)
 
 /--
 Member `i`'s arity as the writer stated it, at the block's parameters.
@@ -4650,6 +4696,31 @@ partial def wfParts (w : Expr) : MetaM (Array (Expr × Expr)) := do
   return out
 
 /--
+What both restatements of a raw `Prop` minor premise open with, handed to `k`.
+
+The minor binds the constructor's fields and then its induction hypotheses, so
+`args` splits at the number of fields.  `subTys` is what each field has to be
+rebuilt at to be handed to the constructor the writer wrote, and `parts` is every
+well-formedness proof the conclusion carries -- the material both restatements
+rebuild a field out of, whichever of the two is asking.
+
+`ws` is what the conclusion still binds once it is whnf'd, which the restatement
+has to abstract over again at the end; `parts` is exactly what those carry.
+-/
+def withRawPropMinor {α} (b : Block) (cc : CtorSpec) (ps : Array Expr)
+    (kinds : Array FieldKind) (args : Array Expr) (concl : Expr)
+    (k : Array Expr → Array Expr → Array Expr → Array (Expr × Expr) → Array Expr →
+      TermElabM α) : TermElabM α := do
+  let xs := args.extract 0 kinds.size
+  let ihs := args.extract kinds.size args.size
+  let subTys ← b.subFieldTys cc ps xs
+  forallTelescope (← whnf concl) fun ws _ => do
+    let mut parts : Array (Expr × Expr) := #[]
+    for w in ws do
+      parts := parts ++ (← wfParts w)
+    k xs ihs subTys parts ws
+
+/--
 Every wrapper's `property` the statement `want` puts within reach.
 
 A real value is a pre-term paired with its well-formedness, so any `.val` in a
@@ -4945,13 +5016,7 @@ def addToOrigProp (c : BridgeCtx) (k : Nat) : TermElabM Unit := do
           unless realMot[(pIdxs.findIdx? (· == j)).getD 0]! do
             return ← mkLambdaFVars args (mkConst ``True.intro)
           let cpj := c.copies[kj]!
-          let xs := args.extract 0 kinds.size
-          let ihs := args.extract kinds.size args.size
-          let subTys ← b.subFieldTys cc c.ps xs
-          forallTelescope (← whnf concl) fun ws _ => do
-            let mut parts : Array (Expr × Expr) := #[]
-            for w in ws do
-              parts := parts ++ (← wfParts w)
+          withRawPropMinor b cc c.ps kinds args concl fun xs ihs subTys parts ws => do
             let mut vals : Array Expr := #[]
             let mut nih := 0
             for z in *...xs.size do
@@ -5626,6 +5691,54 @@ def addBackTrips (c : BridgeCtx) (needed : Array Nat) : TermElabM Unit := do
       discard <| attempt? `Mumi.indind m!"no round trip out of `{c.copies[k]!.name}`" (prove grp k)
 
 /--
+The front of a recursor stated the way the writer wrote the block, handed to `k`
+as the motives and the minors.
+
+This is `Block.withRawFront` with every copy sent back to its original: a motive
+is over the arity the writer gave the member rather than the one the bridge had
+to give the raw one, and a minor is over the fields as the writer wrote them and
+concludes at the constructor under the name that was written.  What is left of
+the copies is the two `copyAt?` splits, which pick the original out of a copy
+where there is one to pick.
+-/
+def withNiceFront {α} [Inhabited α] (c : BridgeCtx) (f : Front)
+    (k : Array Expr → Array Expr → TermElabM α) : TermElabM α := do
+  let b := c.b
+  let mnames := motiveNames f.members.size
+  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+    f.members.mapIdx fun q m => (mnames[q]!, fun _ => do
+      match c.copyAt? m with
+      | some ci =>
+        let cp := c.copies[ci]!
+        forallTelescope (← inferType cp.app) fun jdxs _ =>
+          withLocalDeclD f.major (cp.origAt jdxs) fun t =>
+            mkForallFVars (jdxs ++ #[t]) (mkSort f.lvl)
+      | none =>
+        forallTelescope (← c.niceArity m) fun ids _ =>
+          withLocalDeclD f.major (mkAppN (b.cst b.members[m]!.name) (c.ps ++ ids)) fun t =>
+            mkForallFVars (ids ++ #[t]) (mkSort f.lvl))
+  withImplicits motiveDecls fun nmotives => do
+    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
+    for m in f.members do
+      for cc in b.members[m]!.ctors do
+        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
+          forallTelescope (← c.unCopy (← instantiateForall cc.type c.ps)) fun ys concl => do
+            let kinds := b.fieldKinds cc.kinds
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
+              (f.ihPos kinds).map fun z => (`ih, fun _ => do
+                let some mm := kinds[z]!.ihTarget? | throwError "Not a recursive field"
+                forallTelescope (← inferType ys[z]!) fun zs tgt => do
+                  mkForallFVars zs (mkAppN nmotives[f.pos mm]!
+                    ((← c.niceIdxArgs mm tgt) ++ #[mkAppN ys[z]! zs])))
+            withLocalDeclsD ihDecls fun ihs => do
+              let ctorApp := match c.copyAt? m with
+                | some ci => c.copies[ci]!.origCtor cc.name ys
+                | none    => mkAppN (b.cst cc.name) (c.ps ++ ys)
+              mkForallFVars (ys ++ ihs) (mkAppN nmotives[f.pos m]!
+                ((← c.niceIdxArgs m concl) ++ #[ctorApp])))
+    withLocalDeclsD minorDecls fun nminors => k nmotives nminors
+
+/--
 The recursor for a member the writer declared, with only originals in it.
 
 The motives are over the originals, the minors are over the originals'
@@ -5640,57 +5753,27 @@ def addNiceRec (c : BridgeCtx) (i : Nat) (lp : Name) (rawRec : Nat → Name)
   let b := c.b
   let lvl := Level.param lp
   let dIdxs := b.dataIdxs
-  let mnames := motiveNames dIdxs.size
-  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-    dIdxs.mapIdx fun q m => (mnames[q]!, fun _ => do
+  c.withNiceFront
+      { members := dIdxs, pos := c.dpos, lvl, major := `t, ihPos := b.ihPositions }
+      fun nmotives nminors => do
+    let rmotives ← dIdxs.mapM fun m =>
       match c.copyAt? m with
-      | some k =>
+      | none   => pure nmotives[c.dpos m]!
+      | some k => do
         let cp := c.copies[k]!
-        forallTelescope (← inferType cp.app) fun jdxs _ =>
-          withLocalDeclD `t (cp.origAt jdxs) fun t =>
-            mkForallFVars (jdxs ++ #[t]) (mkSort lvl)
-      | none =>
-        forallTelescope (← c.niceArity m) fun ids _ =>
-          withLocalDeclD `t (mkAppN (b.cst b.members[m]!.name) (c.ps ++ ids)) fun t =>
-            mkForallFVars (ids ++ #[t]) (mkSort lvl))
-  withImplicits motiveDecls fun nmotives => do
-    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
-    for m in dIdxs do
-      for cc in b.members[m]!.ctors do
-        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
-          forallTelescope (← c.unCopy (← instantiateForall cc.type c.ps)) fun ys concl => do
-            let kinds := b.fieldKinds cc.kinds
-            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (b.ihPositions kinds).map fun z => (`ih, fun _ => do
-                let some mm := b.ihTarget? kinds[z]! | throwError "Not a recursive field"
-                forallTelescope (← inferType ys[z]!) fun zs tgt => do
-                  mkForallFVars zs (mkAppN nmotives[c.dpos mm]!
-                    ((← c.niceIdxArgs mm tgt) ++ #[mkAppN ys[z]! zs])))
-            withLocalDeclsD ihDecls fun ihs => do
-              let ctorApp := match c.copyAt? m with
-                | some k => c.copies[k]!.origCtor cc.name ys
-                | none   => mkAppN (b.cst cc.name) (c.ps ++ ys)
-              mkForallFVars (ys ++ ihs) (mkAppN nmotives[c.dpos m]!
-                ((← c.niceIdxArgs m concl) ++ #[ctorApp])))
-    withLocalDeclsD minorDecls fun nminors => do
-      let rmotives ← dIdxs.mapM fun m =>
-        match c.copyAt? m with
-        | none   => pure nmotives[c.dpos m]!
-        | some k => do
-          let cp := c.copies[k]!
-          forallTelescope (← instantiateForall b.members[m]!.type c.ps) fun ids _ =>
-            withLocalDeclD `t (mkAppN (b.memberCst m) (c.ps ++ ids)) fun t => do
-              mkLambdaFVars (ids ++ #[t]) (mkAppN nmotives[c.dpos m]!
-                ((← c.toImages ids) ++
-                  #[mkAppN (mkConst cp.toName b.lvls) (c.ps ++ ids ++ #[t])]))
-      let recCst := mkConst (rawRec i) (lvl :: b.lvls)
-      let rminors ← c.withRawMinors recCst rmotives fun _ cc xs ihs concl => do
-        let vals ← c.toImages xs
-        let body := mkAppN nminors[b.minorIdx dIdxs cc.name]! (vals ++ ihs)
-        if rawOf cc.name == cc.name then return body
-        c.acrossFields cc xs concl body
-      c.addRestated i lp niceName nmotives nminors nmotives[c.dpos i]! recCst
-        rmotives rminors
+        forallTelescope (← instantiateForall b.members[m]!.type c.ps) fun ids _ =>
+          withLocalDeclD `t (mkAppN (b.memberCst m) (c.ps ++ ids)) fun t => do
+            mkLambdaFVars (ids ++ #[t]) (mkAppN nmotives[c.dpos m]!
+              ((← c.toImages ids) ++
+                #[mkAppN (mkConst cp.toName b.lvls) (c.ps ++ ids ++ #[t])]))
+    let recCst := mkConst (rawRec i) (lvl :: b.lvls)
+    let rminors ← c.withRawMinors recCst rmotives fun _ cc xs ihs concl => do
+      let vals ← c.toImages xs
+      let body := mkAppN nminors[b.minorIdx dIdxs cc.name]! (vals ++ ihs)
+      if rawOf cc.name == cc.name then return body
+      c.acrossFields cc xs concl body
+    c.addRestated i lp niceName nmotives nminors nmotives[c.dpos i]! recCst
+      rmotives rminors
 
 /--
 The recursor over the whole block, with only originals in it.
@@ -5949,120 +6032,93 @@ def addPropRecs (c : BridgeCtx) (s : PropRecs) (recNameOf : Nat → Name) :
   let ps := c.ps
   let { info := recInfo, pIdxs, kIdxs, lvl, recLvls, us } := s
   let ppos (m : Nat) : Nat := (kIdxs.findIdx? (· == m)).getD 0
-  let mnames := motiveNames kIdxs.size
-  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-    kIdxs.mapIdx fun q j => (mnames[q]!, fun _ => do
-      forallTelescope (← instantiateForall b.members[j]!.type ps) fun idxs _ =>
-        withLocalDeclD `h (mkAppN (b.memberCst j) (ps ++ idxs)) fun h =>
-          mkForallFVars (idxs ++ #[h]) (mkSort lvl))
-  withImplicits motiveDecls fun motives => do
-    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
-    for j in kIdxs do
-      for cc in b.members[j]!.ctors do
-        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
-          forallTelescope (← instantiateForall (b.toRaw cc.type) ps) fun xs concl => do
-            let kinds := b.fieldKinds cc.kinds
-            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (propRecPositions b s.pIdxs kinds).map fun z => (`ih, fun _ => do
-                let r? ← b.withRecTarget? (← inferType xs[z]!) fun ys m args =>
-                  mkForallFVars ys
-                    (mkAppN motives[ppos m]! (b.idxArgs args ++ #[mkAppN xs[z]! ys]))
-                let some e := r? | throwError "Not a recursive field of `{cc.name}`"
-                return e)
-            withLocalDeclsD ihDecls fun ihs =>
-              mkForallFVars (xs ++ ihs) (mkAppN motives[ppos j]!
-                (b.idxArgs concl.getAppArgs ++
-                  #[mkAppN (b.cst (b.rawCtor cc.name)) (ps ++ xs)])))
-    withLocalDeclsD minorDecls fun minors => do
-      -- a member nobody asked for is recursed into all the same, at `PUnit`,
-      -- which is a `Sort` at whatever level the raw recursor eliminates into
-      let trivMotive := mkConst ``PUnit [lvl]
-      let rmotives ← pIdxs.mapM fun j =>
-        c.withWfIdxs j fun pres ws reals =>
-          withLocalDeclD `h (mkAppN (b.cst (preName b.members[j]!.name)) (ps ++ pres)) fun h => do
-            let body ←
-              if kIdxs.contains j then
-                mkForallFVars ws (mkAppN motives[ppos j]! (reals.map (·.1) ++ #[h]))
-              else
-                pure trivMotive
-            mkLambdaFVars (pres ++ #[h]) body
-      let recTy ← instantiateForall
-        (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) (ps ++ rmotives)
-      let rminors ← forallBoundedTelescope recTy recInfo.numMinors fun ms _ => do
-        let order := b.ctorsOf pIdxs
-        -- `minors` runs over the kept members' constructors only, in the same order
-        let minorPos : Array (Option Nat) := Id.run do
-          let mut out : Array (Option Nat) := #[]
-          let mut acc := 0
-          for (j, _) in order do
+  b.withRawFront ps
+      { members := kIdxs, pos := ppos, lvl, major := `h,
+        ihPos := propRecPositions b s.pIdxs }
+      fun motives minors => do
+    -- a member nobody asked for is recursed into all the same, at `PUnit`,
+    -- which is a `Sort` at whatever level the raw recursor eliminates into
+    let trivMotive := mkConst ``PUnit [lvl]
+    let rmotives ← pIdxs.mapM fun j =>
+      c.withWfIdxs j fun pres ws reals =>
+        withLocalDeclD `h (mkAppN (b.cst (preName b.members[j]!.name)) (ps ++ pres)) fun h => do
+          let body ←
             if kIdxs.contains j then
-              out := out.push (some acc); acc := acc + 1
+              mkForallFVars ws (mkAppN motives[ppos j]! (reals.map (·.1) ++ #[h]))
             else
-              out := out.push none
-          return out
-        let mut out : Array Expr := #[]
-        for q in *...ms.size do
-          let (_, cc) := order[q]!
-          let some qm := minorPos[q]!
-            | out := out.push <| ← forallTelescope (← inferType ms[q]!) fun args _ =>
-                mkLambdaFVars args (mkConst ``PUnit.unit [lvl])
-              continue
-          let kinds := b.fieldKinds cc.kinds
-          let ihPos := propRecPositions b s.pIdxs kinds
-          out := out.push <| ←
-            forallBoundedTelescope (← inferType ms[q]!) (kinds.size + ihPos.size)
-              fun args concl => do
-                let xs := args.extract 0 kinds.size
-                let ihs := args.extract kinds.size args.size
-                let subTys ← b.subFieldTys cc ps xs
-                forallTelescope (← whnf concl) fun ws _ => do
-                  let mut parts : Array (Expr × Expr) := #[]
-                  for w in ws do
-                    parts := parts ++ (← wfParts w)
-                  let mut vals : Array Expr := #[]
-                  let mut nihs : Array Expr := #[]
-                  for z in *...xs.size do
-                    let ty ← inferType xs[z]!
-                    match kinds[z]! with
-                    | .plain | .erased => vals := vals.push xs[z]!
-                    | .deleted .. => throwError "A `Prop` member deleted an index"
-                    | .recur m =>
-                      if !b.members[m]!.isProp then
-                        -- a data field, rebuilt at the subtype from the proof in hand
-                        -- a minor lands in the motive's universe, and a stray
-                        -- field may be stood in for exactly when that is `Prop`
-                        vals := vals.push <| ←
-                          rebuiltField b cc parts xs[z]! subTys[z]!
-                            (strayOk := s.lvl == .zero)
-                      else
-                        -- the field itself passes through; its hypothesis is the
-                        -- raw one at the well-formedness the rebuild used -- and
-                        -- there is one only if this recursion runs over that
-                        -- member, which an earlier layer's it does not
-                        vals := vals.push xs[z]!
-                        if s.pIdxs.contains m then
-                          nihs := nihs.push (← atParts parts ihs[nihs.size]! ty)
-                  mkLambdaFVars (args ++ ws) (mkAppN minors[qm]! (vals ++ nihs))
+              pure trivMotive
+          mkLambdaFVars (pres ++ #[h]) body
+    let recTy ← instantiateForall
+      (recInfo.type.instantiateLevelParams recInfo.levelParams recLvls) (ps ++ rmotives)
+    let rminors ← forallBoundedTelescope recTy recInfo.numMinors fun ms _ => do
+      let order := b.ctorsOf pIdxs
+      -- `minors` runs over the kept members' constructors only, in the same order
+      let minorPos : Array (Option Nat) := Id.run do
+        let mut out : Array (Option Nat) := #[]
+        let mut acc := 0
+        for (j, _) in order do
+          if kIdxs.contains j then
+            out := out.push (some acc); acc := acc + 1
+          else
+            out := out.push none
         return out
-      for q in *...kIdxs.size do
-        let j := kIdxs[q]!
-        let m := b.members[j]!
-        let (type, value) ←
-          forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
-            withLocalDeclD `h (mkAppN (b.memberCst j) (ps ++ idxs)) fun h => do
-              let hide := hideRecBinders ps.size (motives.size + minors.size) idxs.size
-              let ty := hide (←
-                mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
-                  (mkAppN motives[q]! (idxs ++ #[h])))
-              let (pres, wfs) ← b.preAndWf idxs
-              let val := hide (←
-                mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
-                  (mkAppN (mkConst (mkRecName (preName m.name)) recLvls)
-                    (ps ++ rmotives ++ rminors ++ pres ++ #[h] ++ wfs)))
-              return (ty, val)
-        addDef (recNameOf j) us (← instantiateMVars type) (← instantiateMVars value)
-          (compile := false)
-        markElabAsElim (recNameOf j)
+      let mut out : Array Expr := #[]
+      for q in *...ms.size do
+        let (_, cc) := order[q]!
+        let some qm := minorPos[q]!
+          | out := out.push <| ← forallTelescope (← inferType ms[q]!) fun args _ =>
+              mkLambdaFVars args (mkConst ``PUnit.unit [lvl])
+            continue
+        let kinds := b.fieldKinds cc.kinds
+        let ihPos := propRecPositions b s.pIdxs kinds
+        out := out.push <| ←
+          forallBoundedTelescope (← inferType ms[q]!) (kinds.size + ihPos.size)
+            fun args concl => do
+              withRawPropMinor b cc ps kinds args concl fun xs ihs subTys parts ws => do
+                let mut vals : Array Expr := #[]
+                let mut nihs : Array Expr := #[]
+                for z in *...xs.size do
+                  let ty ← inferType xs[z]!
+                  match kinds[z]! with
+                  | .plain | .erased => vals := vals.push xs[z]!
+                  | .deleted .. => throwError "A `Prop` member deleted an index"
+                  | .recur m =>
+                    if !b.members[m]!.isProp then
+                      -- a data field, rebuilt at the subtype from the proof in hand
+                      -- a minor lands in the motive's universe, and a stray
+                      -- field may be stood in for exactly when that is `Prop`
+                      vals := vals.push <| ←
+                        rebuiltField b cc parts xs[z]! subTys[z]!
+                          (strayOk := s.lvl == .zero)
+                    else
+                      -- the field itself passes through; its hypothesis is the
+                      -- raw one at the well-formedness the rebuild used -- and
+                      -- there is one only if this recursion runs over that
+                      -- member, which an earlier layer's it does not
+                      vals := vals.push xs[z]!
+                      if s.pIdxs.contains m then
+                        nihs := nihs.push (← atParts parts ihs[nihs.size]! ty)
+                mkLambdaFVars (args ++ ws) (mkAppN minors[qm]! (vals ++ nihs))
+      return out
+    for q in *...kIdxs.size do
+      let j := kIdxs[q]!
+      let m := b.members[j]!
+      let (type, value) ←
+        forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
+          withLocalDeclD `h (mkAppN (b.memberCst j) (ps ++ idxs)) fun h => do
+            let hide := hideRecBinders ps.size (motives.size + minors.size) idxs.size
+            let ty := hide (←
+              mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
+                (mkAppN motives[q]! (idxs ++ #[h])))
+            let (pres, wfs) ← b.preAndWf idxs
+            let val := hide (←
+              mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[h])
+                (mkAppN (mkConst (mkRecName (preName m.name)) recLvls)
+                  (ps ++ rmotives ++ rminors ++ pres ++ #[h] ++ wfs)))
+            return (ty, val)
+      addDef (recNameOf j) us (← instantiateMVars type) (← instantiateMVars value)
+        (compile := false)
+      markElabAsElim (recNameOf j)
 
 /--
 `X.rec` for a `Prop` member, with only originals in it.
@@ -6090,83 +6146,55 @@ def addNicePropRec (c : BridgeCtx) (s : PropRecs) (j : Nat) (rawRec : Nat → Na
   let ps := c.ps
   let kIdxs := s.kIdxs
   let ppos (m : Nat) : Nat := (kIdxs.findIdx? (· == m)).getD 0
-  let mnames := motiveNames kIdxs.size
-  let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-    kIdxs.mapIdx fun q m => (mnames[q]!, fun _ => do
+  c.withNiceFront
+      { members := kIdxs, pos := ppos, lvl := s.lvl, major := `h,
+        ihPos := propRecPositions b s.pIdxs }
+      fun nmotives nminors => do
+    let rmotives ← kIdxs.mapM fun m =>
       match c.copyAt? m with
-      | some k =>
-        forallTelescope (← inferType c.copies[k]!.app) fun jdxs _ =>
-          withLocalDeclD `h (c.copies[k]!.origAt jdxs) fun h =>
-            mkForallFVars (jdxs ++ #[h]) (mkSort s.lvl)
-      | none =>
-        forallTelescope (← c.niceArity m) fun idxs _ =>
-          withLocalDeclD `h (mkAppN (b.cst b.members[m]!.name) (ps ++ idxs)) fun h =>
-            mkForallFVars (idxs ++ #[h]) (mkSort s.lvl))
-  withImplicits motiveDecls fun nmotives => do
-    let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
-    for m in kIdxs do
-      for cc in b.members[m]!.ctors do
-        minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
-          forallTelescope (← c.unCopy (← instantiateForall cc.type ps)) fun xs concl => do
-            let kinds := b.fieldKinds cc.kinds
-            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (propRecPositions b s.pIdxs kinds).map fun z => (`ih, fun _ => do
-                let .recur mm := kinds[z]! | throwError "Not a recursive field"
-                forallTelescope (← inferType xs[z]!) fun zs tgt => do
-                  mkForallFVars zs (mkAppN nmotives[ppos mm]!
-                    ((← c.niceIdxArgs mm tgt) ++ #[mkAppN xs[z]! zs])))
-            withLocalDeclsD ihDecls fun ihs => do
-              let ctorApp := match c.copyAt? m with
-                | some k => c.copies[k]!.origCtor cc.name xs
-                | none   => mkAppN (b.cst cc.name) (ps ++ xs)
-              mkForallFVars (xs ++ ihs) (mkAppN nmotives[ppos m]!
-                ((← c.niceIdxArgs m concl) ++ #[ctorApp])))
-    withLocalDeclsD minorDecls fun nminors => do
-      let rmotives ← kIdxs.mapM fun m =>
-        match c.copyAt? m with
-        | none   =>
-          if b.rawMember b.members[m]!.name == b.members[m]!.name then
-            pure nmotives[ppos m]!
-          else c.rawPropMotive m nmotives[ppos m]!
-        | some k => do
-          forallTelescope (← instantiateForall b.members[m]!.type ps) fun idxs _ =>
-            withLocalDeclD `h (mkAppN (b.memberCst m) (ps ++ idxs)) fun h => do
-              mkLambdaFVars (idxs ++ #[h]) (mkAppN nmotives[ppos m]!
-                ((← c.toImages idxs) ++
-                  #[mkAppN (mkConst c.copies[k]!.toName b.lvls) (ps ++ idxs ++ #[h])]))
-      let recCst := mkConst (rawRec j) (s.us.map Level.param)
-      let recTy ← instantiateForall (← inferType recCst) (ps ++ rmotives)
-      let mut numMinors := 0
-      for m in kIdxs do numMinors := numMinors + b.members[m]!.ctors.size
-      let rminors ← forallBoundedTelescope recTy numMinors fun ms _ => do
-        let mut out : Array Expr := #[]
-        let mut q := 0
-        for m in kIdxs do
-          for cc in b.members[m]!.ctors do
-            let kinds := b.fieldKinds cc.kinds
-            let nf := kinds.size
-            out := out.push <| ←
-              forallBoundedTelescope (← inferType ms[q]!)
-                  (nf + (propRecPositions b s.pIdxs kinds).size) fun args concl => do
-                let xs := args.extract 0 nf
-                let body := mkAppN nminors[q]!
-                  ((← c.toImages xs) ++ args.extract nf args.size)
-                mkLambdaFVars args (← c.acrossFields cc xs concl body)
-            q := q + 1
-        return out
-      let (type, value) ←
-        forallTelescope (← c.niceArity j) fun idxs _ =>
-          withLocalDeclD `h (mkAppN (b.cst b.members[j]!.name) (ps ++ idxs)) fun h => do
-            let hide := hideRecBinders ps.size (nmotives.size + nminors.size) idxs.size
-            let all := ps ++ nmotives ++ nminors ++ idxs ++ #[h]
-            let rIdxs ← c.ofImages idxs
-            let val ← c.backAcross (idxs ++ #[h])
-              (mkAppN recCst (ps ++ rmotives ++ rminors ++ rIdxs ++ #[h]))
-            return (hide (← mkForallFVars all (mkAppN nmotives[ppos j]! (idxs ++ #[h]))),
-                    hide (← mkLambdaFVars all val))
-      addDef niceName s.us (← instantiateMVars type) (← instantiateMVars value)
-        (compile := false)
-      markElabAsElim niceName
+      | none   =>
+        if b.rawMember b.members[m]!.name == b.members[m]!.name then
+          pure nmotives[ppos m]!
+        else c.rawPropMotive m nmotives[ppos m]!
+      | some k => do
+        forallTelescope (← instantiateForall b.members[m]!.type ps) fun idxs _ =>
+          withLocalDeclD `h (mkAppN (b.memberCst m) (ps ++ idxs)) fun h => do
+            mkLambdaFVars (idxs ++ #[h]) (mkAppN nmotives[ppos m]!
+              ((← c.toImages idxs) ++
+                #[mkAppN (mkConst c.copies[k]!.toName b.lvls) (ps ++ idxs ++ #[h])]))
+    let recCst := mkConst (rawRec j) (s.us.map Level.param)
+    let recTy ← instantiateForall (← inferType recCst) (ps ++ rmotives)
+    let mut numMinors := 0
+    for m in kIdxs do numMinors := numMinors + b.members[m]!.ctors.size
+    let rminors ← forallBoundedTelescope recTy numMinors fun ms _ => do
+      let mut out : Array Expr := #[]
+      let mut q := 0
+      for m in kIdxs do
+        for cc in b.members[m]!.ctors do
+          let kinds := b.fieldKinds cc.kinds
+          let nf := kinds.size
+          out := out.push <| ←
+            forallBoundedTelescope (← inferType ms[q]!)
+                (nf + (propRecPositions b s.pIdxs kinds).size) fun args concl => do
+              let xs := args.extract 0 nf
+              let body := mkAppN nminors[q]!
+                ((← c.toImages xs) ++ args.extract nf args.size)
+              mkLambdaFVars args (← c.acrossFields cc xs concl body)
+          q := q + 1
+      return out
+    let (type, value) ←
+      forallTelescope (← c.niceArity j) fun idxs _ =>
+        withLocalDeclD `h (mkAppN (b.cst b.members[j]!.name) (ps ++ idxs)) fun h => do
+          let hide := hideRecBinders ps.size (nmotives.size + nminors.size) idxs.size
+          let all := ps ++ nmotives ++ nminors ++ idxs ++ #[h]
+          let rIdxs ← c.ofImages idxs
+          let val ← c.backAcross (idxs ++ #[h])
+            (mkAppN recCst (ps ++ rmotives ++ rminors ++ rIdxs ++ #[h]))
+          return (hide (← mkForallFVars all (mkAppN nmotives[ppos j]! (idxs ++ #[h]))),
+                  hide (← mkLambdaFVars all val))
+    addDef niceName s.us (← instantiateMVars type) (← instantiateMVars value)
+      (compile := false)
+    markElabAsElim niceName
 
 end BridgeCtx
 
@@ -8728,130 +8756,104 @@ def emit (p : Plan) : TermElabM Unit := do
   -- the split recursors are what step 10 builds the bridge out of, so they are
   -- skipped only when there is no bridge to build
   let grandOnly := grand && p.copies.isEmpty
-  let mnames := motiveNames dIdxs.size
   -- the parameters are shared by every motive, minor and recursive call, so the
   -- whole group is built under one telescope of them
   let results ←
    if grandOnly then pure (#[] : Array SplitRec) else
     forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
-    let motiveDecls : Array (Name × (Array Expr → TermElabM Expr)) := dIdxs.mapIdx fun q i =>
-      (mnames[q]!, fun _ => do
-        forallTelescope (← instantiateForall b.members[i]!.type ps) fun idxs _ =>
-          withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun t =>
-            mkForallFVars (idxs ++ #[t]) (mkSort lvl))
-    withImplicits motiveDecls fun motives => do
-      -- one minor per constructor of every data member, in block order
-      let mut minorDecls : Array (Name × (Array Expr → TermElabM Expr)) := #[]
+    b.withRawFront ps
+        { members := dIdxs, pos := (dpos[·]!), lvl, major := `t, ihPos := b.ihPositions }
+        fun motives minors => do
+      -- what the recursion promises at a real value of a member's type
+      let ihTypeAt (v : Expr) : MetaM Expr := do
+        let r? ← b.withRecTarget? (← inferType v) fun _ mm args =>
+          pure (mkAppN motives[dpos[mm]!]! (b.idxArgs args ++ #[v]))
+        let some ty := r?
+          | throwError "Not a value of a member of the block:{indentExpr v}"
+        return ty
+      let dCtors := b.ctorsOf dIdxs
+      let mut out : Array SplitRec := #[]
       for i in dIdxs do
-        for c in b.members[i]!.ctors do
-          let kinds := b.fieldKinds c.kinds
-          minorDecls := minorDecls.push (Name.mkSimple c.name.getString!, fun _ => do
-            forallTelescope (← b.ctorType c ps) fun xs concl => do
-              let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-                (b.ihPositions kinds).map fun k =>
-                  (`ih, fun _ => do
-                    let r? ← b.withRecTarget? (← inferType xs[k]!) fun ys m args =>
-                      mkForallFVars ys
-                        (mkAppN motives[dpos[m]!]! (b.idxArgs args ++ #[mkAppN xs[k]! ys]))
-                    match r? with
-                    | some e => pure e
-                    | none => throwError "Not a recursive field of `{c.name}`")
-              withLocalDeclsD ihDecls fun ihs =>
-                mkForallFVars (xs ++ ihs)
-                  (mkAppN motives[dpos[i]!]!
-                    (b.idxArgs concl.getAppArgs ++
-                      #[mkAppN (b.cst (rawCtorName c.name)) (ps ++ xs)])))
-      withLocalDeclsD minorDecls fun minors => do
-        -- what the recursion promises at a real value of a member's type
-        let ihTypeAt (v : Expr) : MetaM Expr := do
-          let r? ← b.withRecTarget? (← inferType v) fun _ mm args =>
-            pure (mkAppN motives[dpos[mm]!]! (b.idxArgs args ++ #[v]))
-          let some ty := r?
-            | throwError "Not a value of a member of the block:{indentExpr v}"
-          return ty
-        let dCtors := b.ctorsOf dIdxs
-        let mut out : Array SplitRec := #[]
-        for i in dIdxs do
-          let m := b.members[i]!
-          let r ← withPreRec b i ps ihTypeAt fun idxs vargs delIhs t0 w => do
-            let mut alts : Array Expr := #[]
-            for c in m.ctors do
-              let alt ← b.withAlt i c ps fun a => do
-                let { kinds, xs, imgs, wc, conjs, real, recPos, dels, .. } := a
-                -- a deleted index arrives with its own hypothesis, which
-                -- is what a recursive call under it will be handed --
-                -- unless it is a proof, and then there is none to arrive
-                let ihDels := b.ihDrops i dels
-                let dDecls : Array (Name × (Array Expr → MetaM Expr)) :=
-                  ihDels.map fun d => (`ih, fun _ => ihTypeAt d)
-                withLocalDeclsD dDecls fun dIhs => do
-                  -- everything here is built over the fields as the
-                  -- constructor bound them and moved to the alternative's
-                  -- own binders at the end, because an induction
-                  -- hypothesis is found by the shape of the index term
-                  let mut ihAt : Array (FVarId × Expr) :=
-                    ihDels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
-                  let mut ihs : Array Expr := #[]
-                  for k in b.ihPositions kinds do
-                    -- a deleted field is not a field of the pre-term, so
-                    -- there is nothing here to recurse at.  It is one of
-                    -- the indices instead, and the hypothesis the minor
-                    -- wants about it is the one the recursion was handed
-                    -- when it was called, already in scope and already
-                    -- at this very term
-                    if kinds[k]!.isDeleted then
-                      let some q := ihDels.findIdx? (· == xs[k]!)
-                        | throwError "The deleted field `{xs[k]!}` of `{c.name}` is \
-                            not one of the alternative's indices"
-                      ihs := ihs.push dIhs[q]!
-                      continue
-                    let some q := recPos.findIdx? (· == k)
-                      | throwError "Not a recursive field of `{c.name}`"
-                    let y := (imgs[k]!).get!
-                    let pr := projConj conjs wc q
-                    let ih? ← b.withRecTarget? (← inferType xs[k]!) fun ys mm args => do
-                      let dihs ← (b.ihDrops mm (b.dropArgs mm args)).mapM
-                        (ihOfTerm b dCtors rawCtorName b.hasIh
-                          minors ihAt ·)
-                      let call := mkAppN (mkConst (recAuxName mm) (lvl :: b.lvls))
-                        (ps ++ motives ++ minors ++ b.idxArgs args ++ dihs ++
-                          #[mkAppN y ys, mkAppN pr ys])
-                      mkLambdaFVars ys call
-                    let some ih := ih?
-                      | throwError "Not a recursive field of `{c.name}`"
-                    ihs := ihs.push ih
-                    ihAt := ihAt.push (xs[k]!.fvarId!, ih)
-                  let core := mkAppN minors[b.minorIdx dIdxs c.name]!
-                    (real ++ ihs.map (·.replaceFVars xs real))
-                  mkLambdaFVars (keptImages kinds imgs ++ dels ++ dIhs ++ #[wc])
-                    (← b.transportBuilt i a
-                      (fun mIdxs vargs w =>
-                        return mkAppN motives[dpos[i]!]!
-                          (mIdxs ++ #[b.sMk i vargs a.head w]))
-                      (fun _ _ _ => return core))
-              alts := alts.push alt
-            let (recAuxType, recAuxValue) ← recAuxOver b i ps motives minors idxs delIhs t0 w
-              (mkAppN motives[dpos[i]!]! (idxs ++ #[b.sMk i vargs t0 w])) alts
-            let (recType, recValue) ←
-              withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun t => do
-                let hide := hideRecBinders ps.size (motives.size + minors.size) idxs.size
-                let ty := hide <| ←
-                  mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
-                    (mkAppN motives[dpos[i]!]! (idxs ++ #[t]))
-                -- `X.rec` is not inside the recursion, so the hypothesis at a
-                -- deleted index is a recursion of its own, at that index
-                let dihs ← (b.ihDrops i (b.dropIdxs i idxs)).mapM
-                  (valueIh b recAuxName lvl ps motives minors ·)
-                let val := hide <| ←
-                  mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
-                    (mkAppN (mkConst (recAuxName i) (lvl :: b.lvls))
-                      (ps ++ motives ++ minors ++ idxs ++ dihs ++
-                        #[b.sVal i vargs t, b.sProp i vargs t]))
-                return (ty, val)
-            return { auxType := recAuxType, auxValue := recAuxValue,
-                     type := recType, value := recValue }
-          out := out.push r
-        return out
+        let m := b.members[i]!
+        let r ← withPreRec b i ps ihTypeAt fun idxs vargs delIhs t0 w => do
+          let mut alts : Array Expr := #[]
+          for c in m.ctors do
+            let alt ← b.withAlt i c ps fun a => do
+              let { kinds, xs, imgs, wc, conjs, real, recPos, dels, .. } := a
+              -- a deleted index arrives with its own hypothesis, which
+              -- is what a recursive call under it will be handed --
+              -- unless it is a proof, and then there is none to arrive
+              let ihDels := b.ihDrops i dels
+              let dDecls : Array (Name × (Array Expr → MetaM Expr)) :=
+                ihDels.map fun d => (`ih, fun _ => ihTypeAt d)
+              withLocalDeclsD dDecls fun dIhs => do
+                -- everything here is built over the fields as the
+                -- constructor bound them and moved to the alternative's
+                -- own binders at the end, because an induction
+                -- hypothesis is found by the shape of the index term
+                let mut ihAt : Array (FVarId × Expr) :=
+                  ihDels.mapIdx fun q d => (d.fvarId!, dIhs[q]!)
+                let mut ihs : Array Expr := #[]
+                for k in b.ihPositions kinds do
+                  -- a deleted field is not a field of the pre-term, so
+                  -- there is nothing here to recurse at.  It is one of
+                  -- the indices instead, and the hypothesis the minor
+                  -- wants about it is the one the recursion was handed
+                  -- when it was called, already in scope and already
+                  -- at this very term
+                  if kinds[k]!.isDeleted then
+                    let some q := ihDels.findIdx? (· == xs[k]!)
+                      | throwError "The deleted field `{xs[k]!}` of `{c.name}` is \
+                          not one of the alternative's indices"
+                    ihs := ihs.push dIhs[q]!
+                    continue
+                  let some q := recPos.findIdx? (· == k)
+                    | throwError "Not a recursive field of `{c.name}`"
+                  let y := (imgs[k]!).get!
+                  let pr := projConj conjs wc q
+                  let ih? ← b.withRecTarget? (← inferType xs[k]!) fun ys mm args => do
+                    let dihs ← (b.ihDrops mm (b.dropArgs mm args)).mapM
+                      (ihOfTerm b dCtors rawCtorName b.hasIh
+                        minors ihAt ·)
+                    let call := mkAppN (mkConst (recAuxName mm) (lvl :: b.lvls))
+                      (ps ++ motives ++ minors ++ b.idxArgs args ++ dihs ++
+                        #[mkAppN y ys, mkAppN pr ys])
+                    mkLambdaFVars ys call
+                  let some ih := ih?
+                    | throwError "Not a recursive field of `{c.name}`"
+                  ihs := ihs.push ih
+                  ihAt := ihAt.push (xs[k]!.fvarId!, ih)
+                let core := mkAppN minors[b.minorIdx dIdxs c.name]!
+                  (real ++ ihs.map (·.replaceFVars xs real))
+                mkLambdaFVars (keptImages kinds imgs ++ dels ++ dIhs ++ #[wc])
+                  (← b.transportBuilt i a
+                    (fun mIdxs vargs w =>
+                      return mkAppN motives[dpos[i]!]!
+                        (mIdxs ++ #[b.sMk i vargs a.head w]))
+                    (fun _ _ _ => return core))
+            alts := alts.push alt
+          let (recAuxType, recAuxValue) ← recAuxOver b i ps motives minors idxs delIhs t0 w
+            (mkAppN motives[dpos[i]!]! (idxs ++ #[b.sMk i vargs t0 w])) alts
+          let (recType, recValue) ←
+            withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun t => do
+              let hide := hideRecBinders ps.size (motives.size + minors.size) idxs.size
+              let ty := hide <| ←
+                mkForallFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
+                  (mkAppN motives[dpos[i]!]! (idxs ++ #[t]))
+              -- `X.rec` is not inside the recursion, so the hypothesis at a
+              -- deleted index is a recursion of its own, at that index
+              let dihs ← (b.ihDrops i (b.dropIdxs i idxs)).mapM
+                (valueIh b recAuxName lvl ps motives minors ·)
+              let val := hide <| ←
+                mkLambdaFVars (ps ++ motives ++ minors ++ idxs ++ #[t])
+                  (mkAppN (mkConst (recAuxName i) (lvl :: b.lvls))
+                    (ps ++ motives ++ minors ++ idxs ++ dihs ++
+                      #[b.sVal i vargs t, b.sProp i vargs t]))
+              return (ty, val)
+          return { auxType := recAuxType, auxValue := recAuxValue,
+                   type := recType, value := recValue }
+        out := out.push r
+      return out
   unless grandOnly do
     addRecAuxs docCtx (lp :: b.us) <| results.mapIdx fun q r =>
       (recAuxName dIdxs[q]!, r.auxType, r.auxValue)

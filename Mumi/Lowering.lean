@@ -155,9 +155,6 @@ def exposeInduct (e : Expr) : MetaM Expr := do
     e := e'
   return e
 
-/-- `List.replicate` as an `Array`. -/
-private def rep {α : Type _} (n : Nat) (a : α) : Array α := (List.replicate n a).toArray
-
 /-! ## Input -/
 
 /--
@@ -932,7 +929,7 @@ def computeSCCs (n : Nat) (isData : Array Bool) (edges : Array (Array Bool)) :
           if r[k]![j]! && !r[i]![j]! then
             r := r.set! i (r[i]!.set! j true)
   -- raw components: `i ~ j` iff mutually reachable
-  let mut compOf : Array (Option Nat) := rep n none
+  let mut compOf : Array (Option Nat) := Array.replicate n none
   let mut comps : Array (Array Nat) := #[]
   for i in *...n do
     if isData[i]! && compOf[i]!.isNone then
@@ -946,7 +943,7 @@ def computeSCCs (n : Nat) (isData : Array Bool) (edges : Array (Array Bool)) :
   -- topologically order the condensation: a component may be emitted once
   -- every component it depends on has been emitted
   let m := comps.size
-  let mut emitted : Array Bool := rep m false
+  let mut emitted : Array Bool := Array.replicate m false
   let mut order : Array Nat := #[]
   for _pass in *...m do
     if order.size == m then
@@ -964,7 +961,7 @@ def computeSCCs (n : Nat) (isData : Array Bool) (edges : Array (Array Bool)) :
           emitted := emitted.set! a true
           order := order.push a
   -- renumber into topological order
-  let mut newOf : Array Nat := rep m 0
+  let mut newOf : Array Nat := Array.replicate m 0
   for pos in *...order.size do
     newOf := newOf.set! order[pos]! pos
   let sccs := order.map (comps[·]!)
@@ -1101,7 +1098,7 @@ def analyze (inp : Input) : MetaM Block := do
   -- 2. the constructors, and the data-only dependency graph
   let mut members : Array MemberInfo := #[]
   let mut allCtors : Array CtorInfo := #[]
-  let mut edges : Array (Array Bool) := rep n (rep n false)
+  let mut edges : Array (Array Bool) := Array.replicate n (Array.replicate n false)
   -- one entry per member an inert field names, to be checked in step 3
   let mut inert : Array (Nat × Nat × MessageData) := #[]
   for i in *...n do
@@ -1414,7 +1411,7 @@ structure Nests where
 
 /-- Nothing was denested: every block without a nesting, and the native path. -/
 def Nests.empty (n : Nat) : Nests :=
-  { perScc := rep n #[], numMotives := 0, numMinors := 0 }
+  { perScc := Array.replicate n #[], numMotives := 0, numMinors := 0 }
 
 def Nests.forScc (ns : Nests) (s : Nat) : Array NestSpec := ns.perScc[s]?.getD #[]
 
@@ -1664,10 +1661,10 @@ private def mkMinorType (b : Block) (ns : Nests) (params motives : Array Expr) (
 implicit, minor premises explicit, then the indices implicit and the major
 premise explicit. -/
 private def recBinderInfos (b : Block) (ns : Nests) (nidxs : Nat) : Array BinderInfo :=
-  rep b.numParams BinderInfo.implicit
-    ++ rep (b.size + ns.numMotives) BinderInfo.implicit
-    ++ rep (b.allCtors.size + ns.numMinors) BinderInfo.default
-    ++ rep nidxs BinderInfo.implicit
+  Array.replicate b.numParams BinderInfo.implicit
+    ++ Array.replicate (b.size + ns.numMotives) BinderInfo.implicit
+    ++ Array.replicate (b.allCtors.size + ns.numMinors) BinderInfo.default
+    ++ Array.replicate nidxs BinderInfo.implicit
     ++ #[BinderInfo.default]
 
 /-- Set up the front of the telescope every recursor in the block shares -- one
@@ -1995,23 +1992,25 @@ and a type the kernel denested above it.  The implementations are written over
 slots throughout, since a member's recursion into a nesting and back is one
 mutual recursion and has to be defined as one. -/
 
+/-- What a slot's own `NestSpec` calls something, or what the block calls it at a
+member.  Every name ever asked of a slot is asked this way. -/
+private def slotName (ns : Nests) (e : Nat) (ofNest : NestSpec → Name)
+    (ofMember : Nat → Name) : Name :=
+  match ns.spec? e with
+  | some sp => ofNest sp
+  | none => ofMember e
+
 /-- The block-wide recursor for a slot. -/
 private def slotRecName (b : Block) (ns : Nests) (e : Nat) : Name :=
-  match ns.spec? e with
-  | some sp => sp.recName
-  | none => b.recName e
+  slotName ns e (·.recName) b.recName
 
 /-- Its implementation. -/
 private def slotImplName (b : Block) (ns : Nests) (e : Nat) : Name :=
-  match ns.spec? e with
-  | some sp => sp.implName
-  | none => b.implName e
+  slotName ns e (·.implName) b.implName
 
 /-- Its `@[csimp]` theorem. -/
 private def slotImplEqName (b : Block) (ns : Nests) (e : Nat) : Name :=
-  match ns.spec? e with
-  | some sp => sp.implEqName
-  | none => b.implEqName e
+  slotName ns e (·.implEqName) b.implEqName
 
 /-- Which slot an induction hypothesis is about, and how many arguments it is
 lifted through.  Its conclusion is an application of exactly one of the motives,
@@ -2045,6 +2044,40 @@ private def applyMinor (levels : List Level) (nameOf : Nat → Name)
     return mkAppN minor (fields ++ vals)
 
 /--
+One `casesOn` at `motive`, with every induction hypothesis its minor premises
+ask for supplied by a direct call.
+
+Both implementations below are this, and differ only in where the `casesOn` and
+its parameters come from: a member's are the block's, a denested type's are read
+off the major premise.  `alts` is that type's constructors as the number of
+fields each binds and the minor premise the recursor holds for it.
+
+A call goes to a sibling's implementation inside `group`, and to `mutualRec`
+outside it -- an earlier SCC, or a `Prop` member, whose recursor is a proof and
+needs no implementation -- where that member's own `@[csimp]` theorem takes over.
+-/
+private def mkCasesImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
+    (motive : Expr) (casesName : Name) (baseLvls : List Level) (cparams : Array Expr)
+    (alts : Array (Nat × Expr)) (params motives minors idxs : Array Expr) (major : Expr) :
+    MetaM Expr := do
+  let mot ← forallTelescope (← inferType motive) fun zs _ =>
+    mkLambdaFVars zs (mkAppN motive zs)
+  let elim ← getLevel (mkAppN motive (idxs ++ #[major]))
+  let casesFn := mkConst casesName (← elimLevelsFor casesName elim baseLvls)
+  let ty0 ← instantiateForall (← inferType casesFn) cparams
+  let ty1 ← instantiateForall ty0 #[mot]
+  let ty2 ← instantiateForall ty1 (idxs ++ #[major])
+  let nameOf (e : Nat) : Name :=
+    if group.contains e then slotImplName b ns e else slotRecName b ns e
+  let cminors ← buildArgs ty2 alts.size fun q minorTy => do
+    let (numFields, minor) := alts[q]!
+    -- `casesOn` offers no induction hypotheses, so its minor premise binds the
+    -- fields and nothing else
+    forallBoundedTelescope minorTy (some numFields) fun fields _ => do
+      mkLambdaFVars fields (← applyMinor levels nameOf params motives minors minor fields)
+  return mkAppN casesFn (cparams ++ #[mot] ++ idxs ++ #[major] ++ cminors)
+
+/--
 The body of `X_i.mutualRec.impl`: one `X_i.casesOn`, with every induction
 hypothesis supplied by a direct call -- to a sibling's implementation inside
 `group`, and to `X_j.mutualRec` outside it, where that member's own `@[csimp]`
@@ -2053,31 +2086,13 @@ which differ between the lowered and the native path.
 -/
 private def mkImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels : List Level)
     (i : Nat) (params motives minors idxs : Array Expr) (major : Expr) : MetaM Expr := do
-  let mot ← forallTelescope (← inferType motives[i]!) fun zs _ =>
-    mkLambdaFVars zs (mkAppN motives[i]! zs)
   let (casesName, base, cparams) := b.memberCasesOf i params
-  let elim ← getLevel (mkAppN motives[i]! (idxs ++ #[major]))
-  let casesFn := mkConst casesName (← elimLevelsFor casesName elim base)
-  let ty0 ← instantiateForall (← inferType casesFn) cparams
-  let ty1 ← instantiateForall ty0 #[mot]
-  let ty2 ← instantiateForall ty1 (idxs ++ #[major])
-  -- outside the group -- an earlier SCC, or a `Prop` member, whose recursor is a
-  -- proof and needs no implementation -- go through `mutualRec` and let `csimp`
-  -- rewrite the call
-  let nameOf (e : Nat) : Name :=
-    if group.contains e then slotImplName b ns e else slotRecName b ns e
-  let mut ctorIdx := #[]
+  let mut alts : Array (Nat × Expr) := #[]
   for q in *...b.allCtors.size do
     if b.allCtors[q]!.owner == i then
-      ctorIdx := ctorIdx.push q
-  let cminors ← buildArgs ty2 ctorIdx.size fun q minorTy => do
-    let gq := ctorIdx[q]!
-    -- `casesOn` offers no induction hypotheses, so its minor premise binds the
-    -- fields and nothing else
-    forallBoundedTelescope minorTy (some b.allCtors[gq]!.numFields) fun fields _ => do
-      mkLambdaFVars fields
-        (← applyMinor levels nameOf params motives minors minors[gq]! fields)
-  return mkAppN casesFn (cparams ++ #[mot] ++ idxs ++ #[major] ++ cminors)
+      alts := alts.push (b.allCtors[q]!.numFields, minors[q]!)
+  mkCasesImplBody b ns group levels motives[i]! casesName base cparams alts
+    params motives minors idxs major
 
 /--
 The same, for the implementation of a recursor over a type the kernel denested.
@@ -2090,23 +2105,10 @@ private def mkNestImplBody (b : Block) (ns : Nests) (group : Array Nat) (levels 
   let dinfo ← getConstInfoInduct sp.head
   let majorTy ← whnf (← inferType major)
   let dparams := majorTy.getAppArgs.extract 0 dinfo.numParams
-  let mot ← forallTelescope (← inferType motives[sp.motive]!) fun zs _ =>
-    mkLambdaFVars zs (mkAppN motives[sp.motive]! zs)
-  let casesName := sp.head ++ `casesOn
-  let elim ← getLevel (mkAppN motives[sp.motive]! (idxs ++ #[major]))
-  let casesFn := mkConst casesName (← elimLevelsFor casesName elim majorTy.getAppFn.constLevels!)
-  let ty0 ← instantiateForall (← inferType casesFn) dparams
-  let ty1 ← instantiateForall ty0 #[mot]
-  let ty2 ← instantiateForall ty1 (idxs ++ #[major])
-  let nameOf (e : Nat) : Name :=
-    if group.contains e then slotImplName b ns e else slotRecName b ns e
-  let ctors := dinfo.ctors.toArray
-  let cminors ← buildArgs ty2 ctors.size fun q minorTy => do
-    let numFields := (← getConstInfoCtor ctors[q]!).numFields
-    forallBoundedTelescope minorTy (some numFields) fun fields _ => do
-      mkLambdaFVars fields
-        (← applyMinor levels nameOf params motives minors minors[sp.firstMinor + q]! fields)
-  return mkAppN casesFn (dparams ++ #[mot] ++ idxs ++ #[major] ++ cminors)
+  let alts ← dinfo.ctors.toArray.mapIdxM fun q cn =>
+    return ((← getConstInfoCtor cn).numFields, minors[sp.firstMinor + q]!)
+  mkCasesImplBody b ns group levels motives[sp.motive]! (sp.head ++ `casesOn)
+    majorTy.getAppFn.constLevels! dparams alts params motives minors idxs major
 
 /--
 Open the telescope of `X_i.mutualRec` -- `{params} {motive_1 .. motive_n}
