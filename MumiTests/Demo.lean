@@ -378,6 +378,22 @@ example (Γ : Ctx) (A : Ty Γ) : 1 ≤ dom A := by
   | base _ => simp [dom]
   | arr _ A B => simp [dom]
 
+/-! `Ctx.casesOn` and `Ctx.recOn` are there under the names an `inductive`
+answers to, so `using` names the same cases, and a case split written as a term
+still compiles. -/
+
+example (Γ : Ctx) : Nat := by
+  induction Γ using Ctx.casesOn with
+  | nil => exact 0
+  | snoc Δ A => exact len Δ + 1
+
+def isNil (Γ : Ctx) : Bool :=
+  Ctx.casesOn (motive := fun _ => Bool) Γ true (fun _ _ => false)
+
+/-- info: false -/
+#guard_msgs in
+#eval isNil (Ctx.snoc .nil (.base .nil))
+
 /-! Injectivity is a theorem and a `@[simp]` lemma, stated the way an ordinary
 constructor's is -- the dependent field compared with `HEq`. -/
 
@@ -389,19 +405,28 @@ info: Ctx.snoc.injEq : ∀ (Γ : Ctx) (A : Ty Γ) (Γ_1 : Ctx) (A_1 : Ty Γ_1), 
 
 example (Γ : Ctx) (A : Ty Γ) : Ctx.snoc Γ A ≠ .nil := by simp
 
-/-! ### What is missing
+/-! `noConfusion` is stated about the member, and says what an ordinary
+constructor's does: the same constructor twice compares the fields, two
+different ones prove anything. -/
 
-A constructor is a `def`, so there is no `noConfusion` at the name one would
-reach for.  `simp` covers the same ground, through a simproc that pushes the
-equation to the erased pre-block's own `noConfusion`. -/
-
-/-- error: Unknown constant `MumiTests.Demo.IndInd.Ctx.noConfusion` -/
+/--
+info: @Ctx.noConfusion : {P : Sort u_1} → {t t' : Ctx} → t = t' → Ctx.noConfusionType P t t'
+-/
 #guard_msgs in
 #check @Ctx.noConfusion
 
-/-! `injection` reduces the type in hand until it reaches an inductive, and what
-it reaches is the wrapper, so it leaves a goal about pre-terms.  `Ctx.snoc.inj`
-and `cases` on the equation are the way to the same place. -/
+example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (P : Sort u) :
+    Ctx.noConfusionType P (Γ.snoc A) (Δ.snoc B) = ((Γ = Δ → A ≍ B → P) → P) := rfl
+
+example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := Ctx.noConfusion h
+
+/-! ### What is missing
+
+`injection` and `contradiction` reduce the type in hand until they reach an
+inductive, and what they reach is the wrapper.  So `injection` leaves a goal
+about pre-terms, and `contradiction` sees the wrapper's one constructor on both
+sides and gives up.  `Ctx.noConfusion`, `Ctx.snoc.inj` and `simp` state the same
+things about the member. -/
 
 /--
 error: unsolved goals
@@ -417,6 +442,19 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B
 
 example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ :=
   (Ctx.snoc.inj h).1
+
+/--
+error: Tactic `contradiction` failed
+
+Γ : Ctx
+A : Ty Γ
+h : Ctx.nil = Γ.snoc A
+⊢ False
+-/
+#guard_msgs in
+example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by contradiction
+
+example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by simp at h
 
 /-! A view presents one constructor and stops, so a constructor written inside
 another pattern needs a `match` of its own.  Saying so is the whole of the fix
@@ -649,13 +687,13 @@ end CrossIndex
 
 /-! ## 7. A proposition over two data members
 
-A proposition indexed by *two* data members cannot be folded into either one's
-recursion, so it is taken out of the block and given its own recursor.  That
-recursor is everything a writer wants from it.  What it costs is the other
-direction: the block's recursor has a motive for each data member and none for
-the proposition, so an `induction` over the data carries no hypothesis about it.
+`C` and `D` do not mention each other and `R` is indexed by both, so no two
+members of the block depend on each other in a cycle.  The block separates and
+Lean reads the three declarations in turn.  Each is an ordinary `inductive` with
+its own recursor.  A `mutual` is still the right way to write it: Lean itself
+refuses the block, because `R`'s arity names its siblings.
 
-*Verdict: works, with a caveat.* -/
+*Verdict: works.* -/
 
 namespace TwoHosts
 
@@ -674,7 +712,7 @@ end
 info: @R.rec : ∀ {motive : (a : C) → (a_1 : D) → R a a_1 → Prop},
   motive C.nil D.nil R.nil →
     (∀ (c : C) (d : D) (h : R c d), motive c d h → motive c.cons d ⋯) →
-      ∀ {a : C} {a_1 : D} (h : R a a_1), motive a a_1 h
+      ∀ {a : C} {a_1 : D} (t : R a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @R.rec
@@ -691,15 +729,19 @@ theorem r_shape (c : C) (d : D) (h : R c d) : c = .nil ∨ ∃ k, c = .cons k :=
   | nil => exact .inl rfl
   | cons k _ _ => exact .inr ⟨k, rfl⟩
 
-/-! And the block's recursor is the one that is a motive short. -/
+/-! And `C` is Lean's, with the one motive, so `induction` takes it without
+`using`. -/
 
 /--
-info: @C.rec : {motive_1 : C → Sort u_1} →
-  {motive_2 : D → Sort u_1} →
-    motive_1 C.nil → ((c : C) → motive_1 c → motive_1 c.cons) → motive_2 D.nil → (t : C) → motive_1 t
+info: @C.rec : {motive : C → Sort u_1} → motive C.nil → ((c : C) → motive c → motive c.cons) → (t : C) → motive t
 -/
 #guard_msgs in
 #check @C.rec
+
+example (c : C) : c = c := by
+  induction c with
+  | nil => rfl
+  | cons k ih => rfl
 
 end TwoHosts
 
@@ -1075,25 +1117,46 @@ The erasure deletes a block-typed index by replacing it with its pre-type, so
 the index has to *be* a member applied to arguments.  `Nat → Ctx` is not one: it
 binds an argument first, and there is no pre-type to state the whole of it at.
 
-Nothing about the kernel or the encoding rules this out.  The erased index would
-be `Nat → Ctx._pre` and its well-formedness the pointwise `∀ n, Ctx._wf (f n)`,
-both perfectly statable; there is simply no case for it in the erasure, and a
-recursion over such a block would want a table indexed by a function.
+The erasure is only needed for a block whose members are genuinely simultaneous.
+`Ctx` does not mention `Ty`, so this block separates and Lean reads the two
+declarations in turn, which puts the index out of the erasure's reach entirely.
 
-*Verdict: rejected, not yet.* -/
+Add the back-edge and the rejection is there again.  Nothing about the kernel
+rules it out: the erased index would be `Nat → Ctx._pre` and its well-formedness
+the pointwise `∀ n, Ctx._wf (f n)`, both perfectly statable.  There is simply no
+case for it in the erasure, and a recursion over such a block would want a table
+indexed by a function.
+
+*Verdict: works when the block separates, rejected when it does not.* -/
 
 namespace FunIndex
 
-/--
-error: The index `a✝¹` of `MumiTests.Demo.FunIndex.Ty` binds arguments before reaching a member of the block, and the erasure has no pre-type to state it at:
-  Nat → Ctx
--/
-#guard_msgs in
 mutual
 inductive Ctx : Type where
   | nil : Ctx
 inductive Ty : (Nat → Ctx) → Type where
   | mk (f : Nat → Ctx) : Ty f
+end
+
+/-- info: Ty.mk : (f : Nat → Ctx) → Ty f -/
+#guard_msgs in
+#check @Ty.mk
+
+example (f : Nat → Ctx) (t : Ty f) : True := by
+  cases t with
+  | mk => trivial
+
+/--
+error: The index `a✝¹` of `MumiTests.Demo.FunIndex.TyC` binds arguments before reaching a member of the block, and the erasure has no pre-type to state it at:
+  Nat → CtxC
+-/
+#guard_msgs in
+mutual
+inductive CtxC : Type where
+  | nil : CtxC
+  | snoc (f : Nat → CtxC) (A : TyC f) : CtxC
+inductive TyC : (Nat → CtxC) → Type where
+  | mk (f : Nat → CtxC) : TyC f
 end
 
 end FunIndex

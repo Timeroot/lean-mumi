@@ -599,6 +599,20 @@ set_option mumi.enabled false
 
 Stock behaviour returns immediately, including the stock error message.
 
+## Keeping the joint recursor
+
+A block whose members have no cyclic dependency is a sequence of ordinary
+declarations, and is handed back to Lean one member at a time. Each member is
+then a genuine `inductive`, with everything Lean gives one. What it costs is the
+block's *joint* recursor, since separate declarations have separate recursors.
+
+```lean
+set_option mumi.separate false
+```
+
+keeps such a block on the encoding, and keeps that recursor. A block whose
+members really are simultaneous is unaffected either way.
+
 ## Limitations
 
 * A member's universe has to be decidably `Prop`-or-not, so `inductive X : Sort u`
@@ -652,11 +666,23 @@ Stock behaviour returns immediately, including the stock error message.
   underneath survive: data members that recurse into *one another* still have to
   agree, since an edge puts one universe at or below the other and a cycle makes
   them equal, and a field still has to fit inside the member it belongs to.
-* Its constructors are `def`s, so there is no `noConfusion` at the name one
-  would reach for, and `match` works through the view above rather than on the
-  member itself: a pattern may not constrain a field the view carries as a
-  parameter, and a constructor written inside another pattern needs a `match`
-  of its own. They do get `X.c.inj` and a
+* Its constructors are `def`s, so `match` works through the view above rather
+  than on the member itself: a pattern may not constrain a field the view
+  carries as a parameter, and a constructor written inside another pattern
+  needs a `match` of its own. The names an `inductive` answers to are there
+  anyway: `X.casesOn` and `X.recOn` permute the telescope of `X.casesD` and
+  `X.rec` the way `mkRecOn` permutes a recursor's, and `X.noConfusionType`,
+  `X.noConfusion` and `X.ctorIdx` restate the view's — the view being a real
+  inductive, those are Lean's own. Each is stated about the member, and each
+  reduces wherever the block's own iota rules reduce, so a nested constructor
+  leaves `X.noConfusionType` stuck exactly where it leaves `match` stuck. The
+  two eliminators are reducible definitions rather than tagged auxiliary
+  recursors, since the code generator reads a tagged `X.casesOn` as a case
+  split over constructors that a `def` does not have; untagged, they compile,
+  and `induction ... using X.casesOn` still names the cases that were written. A
+  `Prop` member has no view and needs none, and gets the two eliminators as
+  well, its `casesOn` off the one that eliminates into `Prop`.
+  Constructors also get `X.c.inj` and a
   `@[simp] X.c.injEq`, stated exactly
   as the ones a real inductive's constructors get — the field an index pins is
   shared rather than compared, a proof field is left out, a dependent field is

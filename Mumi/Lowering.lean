@@ -398,6 +398,13 @@ private partial def resultToProp : Expr → Expr
   | .forallE n d b bi => .forallE n d (resultToProp b) bi
   | _ => mkSort .zero
 
+/-- The type of constructor `ctor` at levels `lvls`, instantiated at `params`.
+An erased member's constructor is a definition rather than a constructor, so the
+name is looked up either way. -/
+def ctorTypeAt (ctor : Name) (lvls : List Level) (params : Array Expr) : MetaM Expr := do
+  let cinfo ← getConstInfo ctor
+  instantiateForall (cinfo.type.instantiateLevelParams cinfo.levelParams lvls) params
+
 /-- Add a plain safe definition and hand it to the code generator. -/
 def addDef (name : Name) (levelParams : List Name) (type value : Expr)
     (hints : ReducibilityHints := .regular 0) (compile := true) : MetaM Unit := do
@@ -425,6 +432,24 @@ def attempted {m : Type → Type} [Monad m] [MonadEnv m] [MonadExcept Exception 
     [MonadTrace m] [MonadRef m] [AddMessageContext m] [MonadOptions m]
     (cls : Name) (what : MessageData) (act : m Unit) : m Bool :=
   Option.isSome <$> attempt? cls what act
+
+/--
+Elaborate `by seq` at `goal`, and raise rather than report if it does not go
+through. -/
+def proveBy (goal : Expr) (seq : TSyntax ``Lean.Parser.Tactic.tacticSeq) :
+    TermElabM Expr := do
+  let log ← Core.getMessageLog
+  Core.setMessageLog {}
+  try
+    let e ← Term.withoutErrToSorry do
+      let e ← Term.elabTerm (← `(by $seq)) (some goal)
+      Term.synthesizeSyntheticMVarsNoPostponing
+      instantiateMVars e
+    if (← Core.getMessageLog).hasErrors || e.hasSorry || e.hasExprMVar then
+      throwError "the script left the goal unproved"
+    return e
+  finally
+    Core.setMessageLog log
 
 /-- Can the `induction` tactic supply every argument of `n` by itself? -/
 def elimIsSelfContained (n : Name) : MetaM Bool := do
@@ -934,16 +959,23 @@ private def aliasNativeRecs (b : Block) : MetaM Unit := do
       (mkConst rn (info.levelParams.map Level.param)) (compile := false)
     markElabAsElim (b.recName i)
 
-/-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so this
-library's `mutual` is a strict superset of Lean's. -/
-private def emitNative (b : Block) : MetaM Unit := do
+/-- Declare the members `which` as one inductive group, under the users' own
+names.  A ghost has no name of its own to be declared under and is skipped. -/
+private def emitUserGroup (b : Block) (which : Array Nat) (skipGhosts : Bool) : MetaM Unit := do
   let mut indTypes : Array InductiveType := #[]
-  for i in *...b.size do
+  for i in which do
+    if skipGhosts && b.isGhost i then continue
     let m := b.members[i]!
     let ctors ← m.ctors.mapM fun c =>
       return ({ name := c.name, type := ← b.toUser c.type } : Constructor)
     indTypes := indTypes.push { name := m.name, type := m.type, ctors := ctors.toList }
+  if indTypes.isEmpty then return
   addInd b.levelParams b.numParams indTypes b.isClass
+
+/-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so this
+library's `mutual` is a strict superset of Lean's. -/
+private def emitNative (b : Block) : MetaM Unit := do
+  emitUserGroup b (Array.range b.size) (skipGhosts := false)
   aliasNativeRecs b
 
 /-- The all-`Prop` shadow.  Only the resulting sorts change: constructor fields
@@ -970,16 +1002,8 @@ private def emitPropAliases (b : Block) : MetaM Unit := do
       setReducibleAttribute m.name
 
 /-- One SCC of the data-only dependency graph, declared under the users' own names. -/
-private def emitDataSCC (b : Block) (s : Nat) : MetaM Unit := do
-  let mut indTypes : Array InductiveType := #[]
-  for i in b.sccs[s]! do
-    if b.isGhost i then continue
-    let m := b.members[i]!
-    let ctors ← m.ctors.mapM fun c =>
-      return ({ name := c.name, type := ← b.toUser c.type } : Constructor)
-    indTypes := indTypes.push { name := m.name, type := m.type, ctors := ctors.toList }
-  if indTypes.isEmpty then return
-  addInd b.levelParams b.numParams indTypes b.isClass
+private def emitDataSCC (b : Block) (s : Nat) : MetaM Unit :=
+  emitUserGroup b b.sccs[s]! (skipGhosts := true)
 
 /-- `X_j._squash params idxs v`, lifted pointwise through any leading `∀`s of
 `v`'s type. -/

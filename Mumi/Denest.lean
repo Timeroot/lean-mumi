@@ -187,10 +187,7 @@ private partial def internNested (root : Name) (members ps : Array Expr) (body :
       ctors := info.ctors.toArray }
   modify fun s => { s with specs := s.specs.push spec }
   for c in info.ctors do
-    let cinfo ← getConstInfoCtor c
-    let cty ← instantiateForall
-      (cinfo.type.instantiateLevelParams cinfo.levelParams lvls) params
-    forallTelescope cty fun fields _ =>
+    forallTelescope (← ctorTypeAt c lvls params) fun fields _ =>
       for x in fields do
         scanPos root members ps (← inferType x)
 
@@ -348,10 +345,7 @@ private def specDecisions (inp : Input) (ps : Array Expr) (specs : Array AuxSpec
       let params := s.paramsAbs.map (·.instantiateRev xs)
       let mut ds : Array Nat := #[]
       for ctor in s.ctors do
-        let cinfo ← getConstInfoCtor ctor
-        let cty ← instantiateForall
-          (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
-        ds := ds ++ (← forallTelescope cty fun fields _ => do
+        ds := ds ++ (← forallTelescope (← ctorTypeAt ctor s.levels params) fun fields _ => do
           let mut inner : Array Nat := #[]
           for x in fields do
             inner := inner ++ (← posDeps members ps specs (← inferType x))
@@ -1131,10 +1125,7 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
           let mut cts : Array Expr := #[]
           let mut deps : Option (Array Nat) := some #[]
           for ctor in s.ctors do
-            let cinfo ← getConstInfoCtor ctor
-            let cty ← instantiateForall
-              (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params
-            let rw ← c.pi cty
+            let rw ← c.pi (← ctorTypeAt ctor s.levels params)
             match ← fieldsBridgeable auxFVars j (← unghost rw) with
             | none    => deps := none
             | some ds => if let some acc := deps then deps := some (acc ++ ds)

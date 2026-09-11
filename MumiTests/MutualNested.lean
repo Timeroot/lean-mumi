@@ -578,6 +578,9 @@ the `induction` tactic's default.
 -/
 
 namespace FreeProp
+-- what is under test here is the erasure, so the block is not handed back to Lean
+-- one declaration at a time
+set_option mumi.separate false
 
 mutual
 inductive A : Type where
@@ -640,6 +643,7 @@ being indexed by one.  It is still not indexed by one, so nothing changes about
 the routing. -/
 
 namespace FreePropField
+set_option mumi.separate false
 
 mutual
 inductive A : Type where
@@ -702,6 +706,7 @@ stated over the originals.
 -/
 
 namespace BigSmall
+set_option mumi.separate false
 
 mutual
 inductive A : Type 1 where
@@ -740,6 +745,45 @@ info: @A.rec : {motive_1 : A → Sort u_1} →
 #check @A.rec
 
 end BigSmall
+
+/-! ## What the same block does by default
+
+`B` does not mention `A`, so the three blocks above all separate.  Lean reads
+`B` first and `A` after it, and by then `WFTree B` is the real `WFTree` at a
+type that already exists: an ordinary nested inductive, denested by the kernel.
+No copy is made, `A.rec` is Lean's own with the one motive, and neither erasure
+nor lowering runs.
+-/
+
+namespace Separates
+
+mutual
+inductive A : Type 1 where
+  | tip
+  | mk (x : WFTree B)
+inductive B : Type where
+  | tip
+end
+
+/-- info: A.mk : WFTree B → A -/
+#guard_msgs in
+#check @A.mk
+
+-- the real `WFTree`, not a copy displayed as one
+example (x : WFTree B) : A := .mk x
+
+/--
+info: @A.rec : {motive : A → Sort u_1} → motive A.tip → ((x : WFTree B) → motive (A.mk x)) → (t : A) → motive t
+-/
+#guard_msgs in
+#check @A.rec
+
+example (a : A) : a = a := by
+  induction a with
+  | tip => rfl
+  | mk x => rfl
+
+end Separates
 
 /-! ## A denesting the lowering takes on its own
 

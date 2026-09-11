@@ -479,20 +479,20 @@ example (n : Nat) (v : IVec n) : 0 ≤ IVec.sum n v := by
   | nil_1 => intros; trivial
   | cons_1 => intros; trivial
 
-/-! ### An index of the `Prop` member's own that moves under the recursion
+/-! ### A block that separates, and so is Lean's
 
-`IFresh` above carries an index `x`, but every recursive occurrence of `IFresh`
-keeps it.  Here `Closed`'s own index is a binder depth, and the constructor for
-`lam` recurses at `k + 1`: the minor premise is handed a hypothesis at a
-*different* index from the one it must produce.  The bundle the recursion
-carries is over the data member alone, so the `Prop` motive has to stay
-quantified over its own indices -- which is what lets the same bundle answer at
-`k` and at `k + 1`.
+`Closed` is indexed by `Tm`, which is why the block reaches us at all: the
+header of the second member cannot be elaborated before the first exists.  But
+`Tm` does not name `Closed`, so the two are not simultaneous -- they are two
+ordinary declarations written in one `mutual`.  `separationOrder?` sees that and
+hands both back to Lean, one at a time, so each is a real inductive.
 
-The pair below is the point of the whole construction.  `Tm.bump` is a map, and
-`Closed.bump` says the map takes a term closed at `k` to one closed at `k + 1`;
-neither can be had without the other, because the proof is about the term the
-map produced.  Both come out of the one recursion, at the same motives.
+That is worth more than the recursion over the whole block would have been.
+`Tm.bump` is a map and `Closed.bump` says the map takes a term closed at `k` to
+one closed at `k + 1`; the proof is about the term the map produced, so it reads
+like a case for one recursion over both.  It is not: `Tm.bump` is structural on
+`Tm` alone, and `Closed.bump` then recurses on the derivation with `Tm.bump`
+already in hand.  Written that way `Tm.bump` needs no axioms at all.
 -/
 
 namespace Bump
@@ -509,62 +509,41 @@ inductive Closed : Nat → Tm → Prop where
 end
 
 /--
-info: @Tm.rec : {motive_1 : Tm → Sort u_1} →
-  {motive_2 : (a : Nat) → (a_1 : Tm) → motive_1 a_1 → Closed a a_1 → Prop} →
-    (var : (a : Nat) → motive_1 (Tm.var a)) →
-      (app : (a a_1 : Tm) → motive_1 a → motive_1 a_1 → motive_1 (a.app a_1)) →
-        (lam : (a : Tm) → motive_1 a → motive_1 a.lam) →
-          (∀ (n k : Nat) (a : n < k), motive_2 k (Tm.var n) (var n) ⋯) →
-            (∀ (k : Nat) (s t : Tm) (a : Closed k s) (a_1 : Closed k t) (s_ih : motive_1 s) (t_ih : motive_1 t),
-                motive_2 k s s_ih a → motive_2 k t t_ih a_1 → motive_2 k (s.app t) (app s t s_ih t_ih) ⋯) →
-              (∀ (k : Nat) (t : Tm) (a : Closed (k + 1) t) (t_ih : motive_1 t),
-                  motive_2 (k + 1) t t_ih a → motive_2 k t.lam (lam t t_ih) ⋯) →
-                (t : Tm) → motive_1 t
+info: @Tm.rec : {motive : Tm → Sort u_1} →
+  ((a : Nat) → motive (Tm.var a)) →
+    ((a a_1 : Tm) → motive a → motive a_1 → motive (a.app a_1)) →
+      ((a : Tm) → motive a → motive a.lam) → (t : Tm) → motive t
 -/
 #guard_msgs in
 #check @Tm.rec
 
 /--
-info: @Closed.rec : ∀ {motive_1 : Tm → Sort u_1} {motive_2 : (a : Nat) → (a_1 : Tm) → motive_1 a_1 → Closed a a_1 → Prop}
-  (var : (a : Nat) → motive_1 (Tm.var a)) (app : (a a_1 : Tm) → motive_1 a → motive_1 a_1 → motive_1 (a.app a_1))
-  (lam : (a : Tm) → motive_1 a → motive_1 a.lam) (var_1 : ∀ (n k : Nat) (a : n < k), motive_2 k (Tm.var n) (var n) ⋯)
-  (app_1 :
-    ∀ (k : Nat) (s t : Tm) (a : Closed k s) (a_1 : Closed k t) (s_ih : motive_1 s) (t_ih : motive_1 t),
-      motive_2 k s s_ih a → motive_2 k t t_ih a_1 → motive_2 k (s.app t) (app s t s_ih t_ih) ⋯)
-  (lam_1 :
-    ∀ (k : Nat) (t : Tm) (a : Closed (k + 1) t) (t_ih : motive_1 t),
-      motive_2 (k + 1) t t_ih a → motive_2 k t.lam (lam t t_ih) ⋯)
-  {a : Nat} {a_1 : Tm} (h : Closed a a_1), motive_2 a a_1 (Tm.rec var app lam var_1 app_1 lam_1 a_1) h
+info: @Closed.rec : ∀ {motive : (a : Nat) → (a_1 : Tm) → Closed a a_1 → Prop},
+  (∀ (n k : Nat) (a : n < k), motive k (Tm.var n) ⋯) →
+    (∀ (k : Nat) (s t : Tm) (a : Closed k s) (a_1 : Closed k t), motive k s a → motive k t a_1 → motive k (s.app t) ⋯) →
+      (∀ (k : Nat) (t : Tm) (a : Closed (k + 1) t), motive (k + 1) t a → motive k t.lam ⋯) →
+        ∀ {a : Nat} {a_1 : Tm} (t : Closed a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @Closed.rec
 
 /-- Add one to every variable. -/
-def Tm.bump (t : Tm) : Tm :=
-  Tm.rec (motive_1 := fun _ => Tm) (motive_2 := fun k _ t' _ => Closed (k + 1) t')
-    (fun n => .var (n + 1))
-    (fun _ _ s' t' => .app s' t')
-    (fun _ t' => .lam t')
-    (fun n k h => .var (n + 1) (k + 1) (by omega))
-    (fun k _ _ _ _ s' t' hs ht => .app (k + 1) s' t' hs ht)
-    (fun k _ _ t' ht => .lam (k + 1) t' ht)
-    t
+def Tm.bump : Tm → Tm
+  | .var n => .var (n + 1)
+  | .app s t => .app s.bump t.bump
+  | .lam t => .lam t.bump
 
--- the statement only typechecks because the value `Closed.rec` computes at the
--- data motive is the one `Tm.bump` was defined to be
-theorem Closed.bump {k : Nat} {t : Tm} (h : Closed k t) : Closed (k + 1) t.bump :=
-  Closed.rec (motive_1 := fun _ => Tm) (motive_2 := fun k _ t' _ => Closed (k + 1) t')
-    (fun n => .var (n + 1))
-    (fun _ _ s' t' => .app s' t')
-    (fun _ t' => .lam t')
-    (fun n k h => .var (n + 1) (k + 1) (by omega))
-    (fun k _ _ _ _ s' t' hs ht => .app (k + 1) s' t' hs ht)
-    (fun k _ _ t' ht => .lam (k + 1) t' ht)
-    h
+-- the statement is about the term the map produced, and `Tm.bump` reduces on a
+-- constructor, so each case closes at the value the recursion already computed
+theorem Closed.bump {k : Nat} {t : Tm} (h : Closed k t) : Closed (k + 1) t.bump := by
+  induction h with
+  | var n k hlt => exact .var (n + 1) (k + 1) (by omega)
+  | app k s t _ _ hs ht => exact .app (k + 1) _ _ hs ht
+  | lam k t _ ht => exact .lam (k + 1) _ ht
 
 example : (Tm.lam (.app (.var 0) (.var 3))).bump = Tm.lam (.app (.var 1) (.var 4)) := rfl
 
-/-- info: 'Bump.Tm.bump' depends on axioms: [propext, Quot.sound] -/
+/-- info: 'Bump.Tm.bump' does not depend on any axioms -/
 #guard_msgs in
 #print axioms Tm.bump
 
@@ -944,11 +923,11 @@ end
 Everywhere above, the arity dependency is at a `Prop` member and the universe
 difference is between two data members that never mention one another.  Here
 they are the same pair: `UDDTy` is indexed by `UDDCtx` *and* lives above it.
-Erasure takes out the index, the lowering takes out the difference, and neither
-has any of the other's work to do.
 
-Nothing may come back the other way, though.  `UDDCtx` has no `UDDTy` field, so
-there is no cycle to force the two universes together. -/
+Nothing comes back the other way, though: `UDDCtx` has no `UDDTy` field, so
+there is no cycle, neither to force the two universes together nor to make the
+two members simultaneous.  Both are ordinary declarations and both are Lean's,
+which is why `UDDCtx.rec` below has the one motive. -/
 
 section
 universe v
@@ -968,19 +947,16 @@ end
 #check @UDDTy.of
 
 /--
-info: @UDDCtx.rec : {motive_1 : UDDCtx → Sort u_1} →
-  {motive_2 : (a : UDDCtx) → UDDTy a → Sort u_1} →
-    motive_1 UDDCtx.nil →
-      ((Γ : UDDCtx) → motive_1 Γ → motive_1 Γ.more) →
-        ((Γ : UDDCtx) → motive_1 Γ → motive_2 Γ (UDDTy.base Γ)) →
-          ({Γ : UDDCtx} → (a : Type u_2) → motive_1 Γ → motive_2 Γ (UDDTy.of a)) → (t : UDDCtx) → motive_1 t
+info: @UDDCtx.rec : {motive : UDDCtx → Sort u_1} →
+  motive UDDCtx.nil → ((Γ : UDDCtx) → motive Γ → motive Γ.more) → (t : UDDCtx) → motive t
 -/
 #guard_msgs(whitespace := lax) in
 #check @UDDCtx.rec
 
-def UDDCtx.len : UDDCtx → Nat :=
-  UDDCtx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    0 (fun _ ih => ih + 1) (fun _ ih => ih) (fun _ ih => ih)
+/-- The number of `more`s in a context. -/
+def UDDCtx.len : UDDCtx → Nat
+  | .nil => 0
+  | .more Γ => Γ.len + 1
 
 example : UDDCtx.len (.more (.more .nil)) = 2 := rfl
 
@@ -1093,15 +1069,17 @@ example : (Skel.fan (fun _ => .tip)).width = 1 := rfl
 
 /-! ## A `Prop` member over two data members
 
-`propSlots?` asks each proposition for exactly one data index, because a bundle
-carries one value and a motive over two members would ask for two.  `Matches` has
-two, so no recursion over the whole block forms and the split recursors stand:
-`Val` and `Pat` recurse together, as the mutual data block they are, and
-`Matches` gets a recursor of its own that mentions neither of their motives.
+`Matches` is indexed by both `Val` and `Pat`, which is why the block reaches us:
+its header names two siblings and cannot be elaborated before them.  Nothing
+here is simultaneous, though.  `Val` and `Pat` do not name each other, and
+neither names `Matches`, so `separationOrder?` finds an order and Lean declares
+all three one at a time.
 
-That recursor already has one motive, so there is no other to discharge -- but
-its hypotheses are still there to drop, and dropping them is the whole of what
-`Matches.casesP` is, which is what lets `cases` split a proof here at all.
+That is worth more than the recursion over the whole block.  Written in one
+`mutual`, `Val` and `Pat` would have shared a recursor and Lean would refuse
+`induction` on either -- "does not support the type `Val` because it is mutually
+inductive".  Declared apart they are not mutually inductive, and `cases`,
+`induction`, `injection` and `deriving` all work with no help from us.
 -/
 
 mutual
@@ -1118,11 +1096,8 @@ inductive Matches : Pat → Val → Prop where
 end
 
 /--
-info: @Val.rec : {motive_1 : Val → Sort u_1} →
-  {motive_2 : Pat → Sort u_1} →
-    motive_1 Val.unit →
-      ((a a_1 : Val) → motive_1 a → motive_1 a_1 → motive_1 (a.pair a_1)) →
-        motive_2 Pat.any → ((a a_1 : Pat) → motive_2 a → motive_2 a_1 → motive_2 (a.both a_1)) → (t : Val) → motive_1 t
+info: @Val.rec : {motive : Val → Sort u_1} →
+  motive Val.unit → ((a a_1 : Val) → motive a → motive a_1 → motive (a.pair a_1)) → (t : Val) → motive t
 -/
 #guard_msgs in
 #check @Val.rec
@@ -1132,7 +1107,7 @@ info: @Matches.rec : ∀ {motive : (a : Pat) → (a_1 : Val) → Matches a a_1 �
   (∀ (v : Val), motive Pat.any v ⋯) →
     (∀ (p q : Pat) (u v : Val) (a : Matches p u) (a_1 : Matches q v),
         motive p u a → motive q v a_1 → motive (p.both q) (u.pair v) ⋯) →
-      ∀ {a : Pat} {a_1 : Val} (h : Matches a a_1), motive a a_1 h
+      ∀ {a : Pat} {a_1 : Val} (t : Matches a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @Matches.rec
@@ -1144,70 +1119,55 @@ example {p : Pat} {v : Val} (h : Matches p v) : True := by
 
 /-! ### What two data members costs `induction`
 
-A case split uses no induction hypothesis at any member, so discharging a second
-*data* motive to get one costs nothing there.  Both data members have a `casesD`
-saying what mainline's `casesOn` says for a `mutual`, and `cases` names the
-constructors that were written.
+`Val` and `Pat` do not mention each other, so the block separates and each is an
+ordinary `inductive`.  Both keep Lean's own `casesOn` and `rec`, with the one
+motive, and `cases` and `induction` name the constructors that were written.
 -/
 
 /--
-info: @Val.casesD : {motive : Val → Sort u_1} → motive Val.unit → ((a a_1 : Val) → motive (a.pair a_1)) → (t : Val) → motive t
+info: @Val.casesOn : {motive : Val → Sort u_1} →
+  (t : Val) → motive Val.unit → ((a a_1 : Val) → motive (a.pair a_1)) → motive t
 -/
 #guard_msgs in
-#check @Val.casesD
+#check @Val.casesOn
 
 /--
-info: @Pat.casesD : {motive : Pat → Sort u_1} → motive Pat.any → ((a a_1 : Pat) → motive (a.both a_1)) → (t : Pat) → motive t
+info: @Pat.casesOn : {motive : Pat → Sort u_1} → (t : Pat) → motive Pat.any → ((a a_1 : Pat) → motive (a.both a_1)) → motive t
 -/
 #guard_msgs in
-#check @Pat.casesD
+#check @Pat.casesOn
 
 example (v : Val) : v = v := by
   cases v with
   | unit => rfl
   | pair a b => rfl
 
-/-! `induction` is the one that pays, though here the bill comes to nothing:
-discharging `Pat`'s motive drops the hypotheses at `Pat`, and no constructor of
-`Val` has a field there, so `recD` is as strong as the recursion over the whole
-block restricted to `Val`.  Where a block does cross over the loss is real, and
-the recursion is written all the same.  Mainline can afford to refuse -- "does
-not support the type `Val` because it is mutually inductive" -- because a
-member of a `mutual` is an inductive and refusing sends the caller to the
-recursor; a member here is a `def`, and a tactic that finds no eliminator of
-its own does not stop but unfolds it, and offers a split on the subtype. -/
+/-! `Val.rec` is Lean's, with the one motive, and `induction` takes it. -/
 
 /--
-info: @Val.recD : {motive : Val → Sort u_1} →
+info: @Val.rec : {motive : Val → Sort u_1} →
   motive Val.unit → ((a a_1 : Val) → motive a → motive a_1 → motive (a.pair a_1)) → (t : Val) → motive t
 -/
 #guard_msgs in
-#check @Val.recD
+#check @Val.rec
 
 example (v : Val) : v = v := by
   induction v with
   | unit => rfl
   | pair a b ha hb => rfl
 
-/-! The recursion over the whole block is still the strong one, and naming the
-sibling motive is the whole of what it asks for. -/
+-- and the members really are separate declarations, so `deriving` reaches them
+deriving instance DecidableEq for Val
 
-example (v : Val) : v = v := by
-  induction v using Val.rec (motive_2 := fun _ => PUnit) with
-  | unit => rfl
-  | pair a b ha hb => rfl
-  | any => exact .unit
-  | both => intros; exact .unit
+example : (Val.pair .unit .unit) ≠ .unit := by decide
 
 /-! ### Two data members and a proposition over one of them
 
-`WfU` is indexed by `TmU` and by nothing else, so the block does form the
-recursion over the whole of it, and the proposition gets the one-motive
-recursion a data member cannot -- discharging a *data* motive to state a `Prop`
-costs a proof nothing.  What is new here is that there are two of them to
-discharge, and that the sort they live in is still a parameter the surviving
-motive needs, so what fills them in is the one-element type at that sort rather
-than `Unit`.
+Written as one block, but no two members depend on each other in a cycle:
+`TyU` uses nothing, `TmU` uses `TyU`, and `WfU` is indexed by `TmU`.  The block
+separates, and Lean reads the three declarations in that order.  The parameter
+and the universe parameter are shared exactly as they are written, so nothing
+about the block as stated is lost by taking it apart.
 -/
 
 mutual
@@ -1223,31 +1183,20 @@ inductive WfU (α : Type u) : TmU α → Prop where
 end
 
 /--
-info: @TmU.casesD : {α : Type u_2} →
+info: @TmU.casesOn : {α : Type u_2} →
   {motive : TmU α → Sort u_1} →
-    ((a : α) → motive (TmU.var a)) → ((a : TmU α) → (a_1 : TyU α) → motive (a.app a_1)) → (t : TmU α) → motive t
+    (t : TmU α) → ((a : α) → motive (TmU.var a)) → ((a : TmU α) → (a_1 : TyU α) → motive (a.app a_1)) → motive t
 -/
 #guard_msgs in
-#check @TmU.casesD
-
-/-! The two read side by side are the whole of the difference: `app` keeps its
-`motive t a` for the recursion and loses it for the case split. -/
+#check @TmU.casesOn
 
 /--
-info: @WfU.recP : ∀ {α : Type u_1} {motive : (a : TmU α) → WfU α a → Prop},
+info: @WfU.rec : ∀ {α : Type u_1} {motive : (a : TmU α) → WfU α a → Prop},
   (∀ (a : α), motive (TmU.var a) ⋯) →
-    (∀ (t : TmU α) (s : TyU α) (a : WfU α t), motive t a → motive (t.app s) ⋯) → ∀ {a : TmU α} (h : WfU α a), motive a h
+    (∀ (t : TmU α) (s : TyU α) (a : WfU α t), motive t a → motive (t.app s) ⋯) → ∀ {a : TmU α} (t : WfU α a), motive a t
 -/
 #guard_msgs in
-#check @WfU.recP
-
-/--
-info: @WfU.casesP : ∀ {α : Type u_1} {motive : (a : TmU α) → WfU α a → Prop},
-  (∀ (a : α), motive (TmU.var a) ⋯) →
-    (∀ (t : TmU α) (s : TyU α) (a : WfU α t), motive (t.app s) ⋯) → ∀ {a : TmU α} (h : WfU α a), motive a h
--/
-#guard_msgs in
-#check @WfU.casesP
+#check @WfU.rec
 
 example {α : Type u} (t : TmU α) : True := by
   cases t with
@@ -1262,8 +1211,20 @@ example {α : Type u} (t : TmU α) (h : WfU α t) : True := by
   | var a => trivial
   | app f s ih => trivial
 
+/-! `WfU` is a genuine `inductive`, so a `cases` that has to refine the index
+goes through. -/
+
+example {α : Type u} (a : α) (h : WfU α (.var a)) : True := by
+  cases h
+  trivial
+
+example {α : Type u} (a : α) (s : TyU α) (h : WfU α (.app (.var a) s)) :
+    WfU α (.var a) := by
+  cases h with
+  | app t s' hw => exact hw
+
 def TmU.head {α : Type u} (t : TmU α) : Option α :=
-  TmU.casesD (motive := fun _ => Option α) some (fun _ _ => none) t
+  TmU.casesOn (motive := fun _ => Option α) t some (fun _ _ => none)
 
 example : (TmU.var (α := Nat) 7).head = some 7 := rfl
 example : (TmU.app (TmU.var (α := Nat) 7) .base).head = none := rfl
@@ -2057,6 +2018,7 @@ it in the position the writer put it in rather than after the one that left.
 -/
 
 namespace DataOnDataMixed
+set_option mumi.separate false
 
 mutual
 inductive Ctx : Type where
@@ -3863,6 +3825,10 @@ closed off on its own.
 
 namespace BuiltTwo
 
+-- what is under test here is the erasure, so the blocks below that would separate stay
+-- on it
+set_option mumi.separate false
+
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3976,9 +3942,7 @@ theorem Ok.size_pos : ∀ {t : T}, Ok t → 0 < size t :=
     1 (fun _ n => n + 1) (fun _ _ _ _ => 0)
     Nat.zero_lt_one (fun _ _ _ h => Nat.lt_of_lt_of_le h (Nat.le_succ _))
 
-/--
-info: 'BuiltTwo.Ok.size_pos' does not depend on any axioms
--/
+/-- info: 'BuiltTwo.Ok.size_pos' does not depend on any axioms -/
 #guard_msgs in
 #print axioms Ok.size_pos
 
@@ -4004,6 +3968,7 @@ and the block is refused only when two of them are.
 -/
 
 namespace RepeatedIdx
+set_option mumi.separate false
 
 mutual
 inductive Ctx : Type where
@@ -4647,6 +4612,7 @@ the recursion as an ordinary hypothesis.
 -/
 
 namespace BuiltAtThePropIndex
+set_option mumi.separate false
 
 mutual
 inductive T where
@@ -4756,6 +4722,7 @@ conclusion, rather than being the ordinary induction principle on the proof.
 -/
 
 namespace BuiltIndexUnderDenesting
+set_option mumi.separate false
 
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
@@ -5454,27 +5421,33 @@ example (Γ : Ctx10) (h h' : Ok10 Γ) : Ty10.wit Γ h = Ty10.wit Γ h' := rfl
 
 end WitnessIndex
 
-/-! ## Outside the narrow class
+/-! ## An index that nests a member
 
-Every one of these is rejected with an explanation of what erasure could not do,
-rather than lowered wrongly.
--/
+An index of `List Ctx14` is outside the narrow class: erasure has no pre-type to
+state it at, and denesting would hand back a `Ty14` indexed by a name nobody
+wrote.  Neither has to happen.  `Ctx14` does not mention `Ty14`, so the block
+separates and Lean reads the two declarations in turn. -/
 
--- a nesting of one is not one either, and this is the case that needs saying
--- out loud: denesting would happily turn the index into a copy and hand back a
--- `Ty14` indexed by a name nobody wrote
-/--
-error: The index `a✝` of `Ty14` is
-  List Ctx14
-which mentions a member of the block without being one, so the erasure has no pre-type to state it at
--/
-#guard_msgs in
 mutual
 inductive Ctx14 : Type where
   | nil : Ctx14
 inductive Ty14 : List Ctx14 → Type where
   | base : (Γs : List Ctx14) → Ty14 Γs
 end
+
+/-- info: Ty14.base : (Γs : List Ctx14) → Ty14 Γs -/
+#guard_msgs in
+#check @Ty14.base
+
+example (Γs : List Ctx14) (t : Ty14 Γs) : True := by
+  cases t with
+  | base => trivial
+
+/-! ## Outside the narrow class
+
+Every one of these is rejected with an explanation of what erasure could not do,
+rather than lowered wrongly.  Each is a cycle, so separating is not open either.
+-/
 
 -- a proof index a constructor *builds* rather than takes as a field.  Taking one
 -- is the `PropIndex` case above; building one leaves the alternative with a
@@ -6111,6 +6084,7 @@ where that stops being true.
 -/
 
 namespace PropThroughCopy
+set_option mumi.separate false
 
 inductive PL (α : Sort u) (n : Nat) : Prop where
   | nil
@@ -6189,6 +6163,7 @@ applied to it, and every argument standing on the index rides across with it.
 -/
 
 namespace PropIndexFromCopy
+set_option mumi.separate false
 
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
@@ -6298,6 +6273,7 @@ closes the whole conclusion.
 -/
 
 namespace DataIndexFromCopy
+set_option mumi.separate false
 
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
@@ -7277,6 +7253,7 @@ data recursion returned, which is the shape a block with no denesting in it has
 always had. -/
 
 namespace ByMember
+set_option mumi.separate false
 
 mutual
 inductive NTm : Type where
@@ -8123,8 +8100,8 @@ data-typed field its own conclusion says nothing about.  There is no
 well-formedness in reach for such a field, so no minor premise can be stated,
 and until this section such a member came out with no recursor whatsoever.
 
-What it comes out with instead is everything: a real recursor, `casesOn`,
-`brecOn` -- and so `match` and `induction` -- `noConfusion`, and `deriving` that
+What it comes out with instead is everything: a real recursor, `casesOn` and
+`brecOn` -- and so `match` and `induction` -- `injection`, and `deriving` that
 goes through the ordinary handlers rather than through the subtype. -/
 
 namespace PeelUnpinned
@@ -9026,3 +9003,156 @@ example (n : Nat) (Γ : Ctx n) (A B : Ty n Γ)
   simp at e
 
 end DisjointIndexed
+
+/-! ## The declarations an `inductive` answers to
+
+A member that stayed is a definition, so Lean builds none of the auxiliary
+declarations it builds beside an `inductive`.  `Mumi.addViews` adds them: the two
+eliminators permute `X.casesD` and `X.rec`, and the rest restate the view's,
+which are Lean's own.  Each is stated about the member and about the constructors
+that were written. -/
+
+namespace StdNames
+
+mutual
+inductive Ctx : Type where
+  | nil  : Ctx
+  | snoc : (Γ : Ctx) → Ty Γ → Ctx
+inductive Ty : Ctx → Type where
+  | base : (Γ : Ctx) → Ty Γ
+  | pi   : (Γ : Ctx) → (A : Ty Γ) → Ty (Ctx.snoc Γ A) → Ty Γ
+end
+
+/-- info:
+@Ctx.casesOn : {motive : Ctx → Sort u_1} →
+  (t : Ctx) → motive Ctx.nil → ((Γ : Ctx) → (a : Ty Γ) → motive (Γ.snoc a)) → motive t
+-/
+#guard_msgs in
+#check @Ctx.casesOn
+
+/-- info:
+@Ty.casesOn : {motive : (a : Ctx) → Ty a → Sort u_1} →
+  {a : Ctx} →
+    (t : Ty a) →
+      ((Γ : Ctx) → motive Γ (Ty.base Γ)) →
+        ((Γ : Ctx) → (A : Ty Γ) → (a : Ty (Γ.snoc A)) → motive Γ (Ty.pi Γ A a)) → motive a t
+-/
+#guard_msgs in
+#check @Ty.casesOn
+
+-- `X.recOn` is the joint recursor with the major premise in front of the minors,
+-- so it still asks for a motive at every member
+/-- info:
+@Ty.recOn : {motive_1 : Ctx → Sort u_1} →
+  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
+    {a : Ctx} →
+      (t : Ty a) →
+        motive_1 Ctx.nil →
+          ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
+            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
+              ((Γ : Ctx) →
+                  (A : Ty Γ) →
+                    (a : Ty (Γ.snoc A)) →
+                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
+                motive_2 a t
+-/
+#guard_msgs in
+#check @Ty.recOn
+
+-- both iota rules of `casesOn` hold by `rfl`
+example : Ctx.casesOn (motive := fun _ => Nat) Ctx.nil 0 (fun _ _ => 1) = 0 := rfl
+example (Γ : Ctx) (A : Ty Γ) :
+    Ctx.casesOn (motive := fun _ => Nat) (Ctx.snoc Γ A) 0 (fun _ _ => 1) = 1 := rfl
+
+-- and they compile: `casesOn` is a reducible definition rather than a tagged
+-- auxiliary recursor, so the code generator sees through it to `Ctx.casesD`
+def depth (Γ : Ctx) : Nat :=
+  Ctx.casesOn (motive := fun _ => Nat) Γ 0 (fun _ _ => 1)
+
+/-- info: 1 -/
+#guard_msgs in
+#eval depth (Ctx.snoc Ctx.nil (Ty.base Ctx.nil))
+
+-- `induction ... using` reads the case names off the minor premises
+example (Γ : Ctx) : Nat := by
+  induction Γ using Ctx.casesOn with
+  | nil => exact 0
+  | snoc Γ A => exact 1
+
+/-! `X.ctorIdx` counts a constructor through the view. -/
+
+/-- info: @Ty.ctorIdx : {a : Ctx} → Ty a → Nat -/
+#guard_msgs in
+#check @Ty.ctorIdx
+
+/-- info: 1 -/
+#guard_msgs in
+#eval Ctx.ctorIdx (Ctx.snoc Ctx.nil (Ty.base Ctx.nil))
+
+example (Γ : Ctx) (A : Ty Γ) : Ty.ctorIdx (Ty.pi Γ A (Ty.base _)) = 1 := rfl
+
+/-! `X.noConfusionType` and `X.noConfusion` are the view's along `X.view`.  An
+indexed member is confused about the indices too, exactly as an ordinary one. -/
+
+/-- info:
+@Ty.noConfusion : {P : Sort u_1} →
+  {a : Ctx} → {t : Ty a} → {a' : Ctx} → {t' : Ty a'} → a = a' → t ≍ t' → Ty.noConfusionType P t t'
+-/
+#guard_msgs in
+#check @Ty.noConfusion
+
+-- the same constructor twice compares the fields
+example (Γ : Ctx) (P : Sort u) :
+    Ty.noConfusionType P (Ty.base Γ) (Ty.base Γ) = ((Γ = Γ → P) → P) := rfl
+
+-- two different ones prove anything
+example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) (P : Sort u) :
+    Ty.noConfusionType P (Ty.base Γ) (Ty.pi Γ A B) = P := rfl
+
+example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) (h : Ty.base Γ = Ty.pi Γ A B) : False :=
+  Ty.noConfusion rfl (heq_of_eq h)
+
+end StdNames
+
+namespace StdNamesProp
+
+mutual
+inductive Ctx : Type where
+  | nil  : Ctx
+  | snoc : (Γ : Ctx) → Ok Γ → Ctx
+inductive Ok : Ctx → Prop where
+  | nil  : Ok .nil
+  | snoc : (Γ : Ctx) → (h : Ok Γ) → Ok (.snoc Γ h)
+end
+
+-- the major premise goes in front of the minors and behind *all* the motives,
+-- the `Prop` member's included
+/-- info:
+@Ctx.recOn : {motive_1 : Ctx → Sort u_1} →
+  {motive_2 : (a : Ctx) → motive_1 a → Ok a → Prop} →
+    (t : Ctx) →
+      (nil : motive_1 Ctx.nil) →
+        (snoc : (Γ : Ctx) → (a : Ok Γ) → (Γ_ih : motive_1 Γ) → motive_2 Γ Γ_ih a → motive_1 (Γ.snoc a)) →
+          motive_2 Ctx.nil nil Ok.nil →
+            (∀ (Γ : Ctx) (h : Ok Γ) (Γ_ih : motive_1 Γ) (h_ih : motive_2 Γ Γ_ih h),
+                motive_2 (Γ.snoc h) (snoc Γ h Γ_ih h_ih) ⋯) →
+              motive_1 t
+-/
+#guard_msgs in
+#check @Ctx.recOn
+
+-- a `Prop` member has no view, and gets the two eliminators anyway.  Its
+-- `casesOn` eliminates into `Prop` alone, which is all it can do
+/-- info:
+@Ok.casesOn : ∀ {motive : (a : Ctx) → Ok a → Prop} {a : Ctx} (h : Ok a),
+  motive Ctx.nil Ok.nil → (∀ (Γ : Ctx) (h : Ok Γ), motive (Γ.snoc h) ⋯) → motive a h
+-/
+#guard_msgs in
+#check @Ok.casesOn
+
+example (Γ : Ctx) (h : Ok Γ) : True := by
+  induction h using Ok.casesOn with
+  | nil => trivial
+  | snoc Δ h => trivial
+
+end StdNamesProp

@@ -1764,8 +1764,13 @@ that mentions a field of the constructor is still fine -- the field becomes an
 index of the copy -- and it stays fine when the field's own type mentions the
 block, which only says the copy is indexed by a member.  An equation between two
 members is that case: the denested block is induction-inductive, so the erasure
-that route already runs takes the copy along with everything else. -/
+that route already runs takes the copy along with everything else.
 
+`EqZ` and `EqY` do not mention each other, so by default this block separates and
+never reaches the erasure at all.  The option holds it there, which is what the
+recursor below is pinned at. -/
+
+set_option mumi.separate false in
 mutual
 inductive EqZ : Type 1 where
   | tip : EqZ

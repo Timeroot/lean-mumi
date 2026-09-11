@@ -91,11 +91,11 @@ info: @Fresh.recP : ∀ {motive : (a : String) → (a_1 : Ctx) → Fresh a a_1 �
 
 /-! ## No confusion
 
-The members of a lowered block are `def`s, so what tells two constructors apart
-is a simproc rather than a `noConfusion`, and the `injEq` they do get is proved
-through the subtype rather than out of the block's own constants.  Both come out
-of `Ctx.rec` by hand here, which is what this file is for: its iota rule holds by
-`rfl`, and that is all either proof needs.
+The members of a lowered block are `def`s, so the `noConfusion` and the `injEq`
+they get are stated through the subtype rather than out of the block's own
+constants.  Disjointness and injectivity are proved from `Ctx.rec` by hand here,
+which is what this file is for: its iota rule holds by `rfl`, and that is all
+either proof needs.
 -/
 
 private def Ctx.head? : Ctx → Option String :=

@@ -5,6 +5,7 @@ Authors: Alex Meiburg
 -/
 module
 
+public import Mumi.Options
 public import Mumi.Lowering
 public import Mumi.Runtime
 public import Mumi.View
@@ -35,6 +36,29 @@ end
 block, whereas here the block does not elaborate at all.  Lean elaborates every
 member's arity before any member is in scope, so `Ctx` in `Fresh`'s arity is an
 unknown identifier.
+
+## Blocks that separate
+
+The erasure is for members that are *simultaneous*.  Many blocks that reach this
+module are not: `Fresh`'s arity mentions `Ctx` above, but if `Ctx` held no
+`Fresh` then nothing would mention `Fresh`, and the two could be declared one
+after the other.  `separationOrder?` builds the block's dependency graph over
+both arities and constructor types.  If it is acyclic, the block is a sequence of
+ordinary declarations, and each member is handed to Lean on its own in topological
+order.
+
+That is a strict improvement wherever it applies.  Each member is a genuine
+`inductive`, with `match`, `deriving`, `injection`, `contradiction` and an
+index-refining `cases`, all of which the erasure costs.  A nesting that mentions
+a sibling is the sibling itself by the time the nesting is read, so no copy is
+made and the kernel denests it.  What is given up is the block's *joint*
+recursor: three separate declarations have three separate recursors, and a
+statement over all of them has to be built in as many steps.  `set_option
+mumi.separate false` keeps the block here and keeps that recursor.
+
+Lean may still refuse a member on its own -- a nesting applied to a
+constructor-local is the usual reason.  The split is therefore tentative, and a
+block Lean will not read falls back to the erasure.
 
 ## The narrow class
 
@@ -143,7 +167,7 @@ where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it.  See `addPropRecs`.
   must not be induction-inductive among itself.
 
   A member that leaves gains `match`, and with it the equation compiler,
-  `noConfusion`, `injection` and `contradiction`.  The block loses nothing:
+  `injection` and `contradiction`.  The block loses nothing:
   `widenWithPeeled` puts the departed motive back into every recursor.  A *data*
   member that leaves is declared as `X._ind`, with the writer's name a definition
   unfolding to it (see `peelIndName`), the kernel writing `X.rec` for whatever it
@@ -212,16 +236,19 @@ the copy takes it as a leading field.  Both survive the erasure: by the time
 * A data constructor's field mentioning a `Prop` member must be a proof; that is
   the "narrow" in narrow class.
 * The constructors of a data member that *stayed* are `def`s, so `match` does not
-  work on them and there is no `noConfusion` under the expected name.  (A member
-  that left is a real inductive and has both.)  They do have `inj` and a
-  `@[simp] injEq`, and a simproc distinguishes two *different* constructors;
-  `contradiction` and `injection` reach for the `noConfusion` of what the member
-  unfolds to, which is the wrapper's.  Reason with
-  `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`; a bare
-  `induction` or `cases` destructs the subtype and leaks `Ctx._pre` into the goal.
-  A recursor with a *single* motive is registered as the `induction` tactic's
-  default; a block whose members recurse into each other has one motive per member
-  and stays `using`-only, as in vanilla Lean.
+  work on them.  (A member that left is a real inductive.)  `Mumi.addViews` adds
+  `casesOn`, `recOn`, `ctorIdx`, `noConfusionType` and `noConfusion` under the
+  expected names, stated about the member, and a `Prop` member gets the two
+  eliminators too; `inj` and a `@[simp] injEq` come from
+  `addInjEqs`, and a simproc distinguishes two *different* constructors.  What
+  reduces the equation before it looks does not benefit: `contradiction` and
+  `injection` reach for the `noConfusion` of what the member unfolds to, which is
+  the wrapper's.  A bare `induction` or `cases` does work and names the
+  constructors that were written.  A recursor with a *single* motive is
+  registered as the `induction` tactic's default; a block whose members recurse
+  into each other has one motive per member and stays `using`-only, as in vanilla
+  Lean, so reason with
+  `induction Γ using Ctx.rec with | nil => .. | snoc Γ x h ih => ..`.
 * A bare `cases` on a `Prop` member works only where the motive does not depend on
   the indices; otherwise it fails with "dependent elimination failed", reaching for
   `Fresh._pre`'s `casesOn`.  Use
@@ -266,7 +293,7 @@ namespace Mumi.IndInd
 open Lean Lean.Meta Lean.Elab Lean.Elab.Command
 open Lean.Elab.MultiuniverseInductive
   (addDef addInd reroot motiveNames markElabAsElim addSoloElim attempt?
-    attempted freshLevelNames shortName exposeInduct)
+    attempted freshLevelNames shortName exposeInduct proveBy ctorTypeAt)
 
 /-- Why a block fell back from the recursor it would rather have had. -/
 initialize registerTraceClass `Mumi.indind (inherited := true)
@@ -1507,13 +1534,13 @@ def markPeeled (r : Raw) : TermElabM Raw := do
       c := next
     return c
   cand := close cand
+  let kept (c : Array Nat) : Array Nat := (Array.range r.names.size).filter (!c.contains ·)
   -- a data member is peeled to gain it something, not to take the block apart:
   -- if what stays is no longer induction-inductive, the staying members lose the
   -- peeled one's motive and only a recursor of ours can be widened
   let stillIndInd (keep : Array Nat) : Bool := keep.any fun i =>
     r.arities[i]!.getUsedConstants.any fun c => keep.any fun k => k != i && r.names[k]! == c
-  if cand.any (!isProp[·]!) &&
-      !stillIndInd ((Array.range r.names.size).filter (!cand.contains ·)) then
+  if cand.any (!isProp[·]!) && !stillIndInd (kept cand) then
     cand := close (cand.filter (isProp[·]!))
   -- and now grow upwards.  A data member the block still reaches cannot leave,
   -- but the member reaching it may be leaving too: `Sub` reads a `Tm`, so `Tm`
@@ -1527,12 +1554,34 @@ def markPeeled (r : Raw) : TermElabM Raw := do
         if (Array.range r.names.size).any fun i => i != j && !cand.contains i && mentions i j then
           continue
         let c := cand.push j
-        if !stillIndInd c &&
-            stillIndInd ((Array.range r.names.size).filter (!c.contains ·)) then
+        if !stillIndInd c && stillIndInd (kept c) then
           cand := c
           grew := true
   if cand.isEmpty then return r
   return { r with peeled := cand }
+
+/--
+The block's members in the order they can be declared one at a time, if no two
+of them depend on each other.  `none` when some pair does, which is the case the
+erasure is for. -/
+def separationOrder? (r : Raw) : Option (Array Nat) := Id.run do
+  let n := r.names.size
+  if n ≤ 1 then return none
+  -- a member's own occurrences do not have to wait for anything, so `i == j` is
+  -- not a dependency
+  let uses (i j : Nat) : Bool :=
+    i != j &&
+      (r.arities[i]!.getUsedConstants.contains r.names[j]! ||
+        r.ctorTypes[i]!.any (·.getUsedConstants.contains r.names[j]!))
+  let mut order : Array Nat := #[]
+  let mut left := Array.range n
+  while !left.isEmpty do
+    -- whichever member is left that uses nothing still left can go next; if none
+    -- can, what is left is a cycle and the block is genuinely simultaneous
+    let some k := left.find? fun j => !left.any (uses j ·) | return none
+    order := order.push k
+    left := left.filter (· != k)
+  return some order
 
 /--
 The arity check that depends on which members are still in the block, and the
@@ -2563,9 +2612,7 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
       let some ci := (← getEnv).find? fi.name | return
       scanExpr names root inner (← instantiateForall (ci.instantiateTypeLevelParams lvls) params)
       for c in fi.ctors do
-        let cinfo ← getConstInfoCtor c
-        scanExpr names root inner
-          (← instantiateForall (cinfo.type.instantiateLevelParams cinfo.levelParams lvls) params)
+        scanExpr names root inner (← ctorTypeAt c lvls params)
 
 /-- Look for nested occurrences everywhere in `e`, indices included. -/
 private partial def scanExpr (names : Array Name) (root : Name) (bound : Array FVarId)
@@ -2697,9 +2744,7 @@ def denestRaw (r : Raw) : TermElabM Raw := do
           (← mkForallFVars (ps ++ ls) (← rw resType))
         let mut cts : Array Expr := #[]
         for c in s.ctors do
-          let cinfo ← getConstInfoCtor c
-          let cty ← Core.betaReduce (← instantiateForall
-            (cinfo.type.instantiateLevelParams cinfo.levelParams s.levels) params)
+          let cty ← Core.betaReduce (← ctorTypeAt c s.levels params)
           cts := cts.push (implicitPrefix r.numParams (← mkForallFVars (ps ++ ls) (← rw cty)))
         return (arity, cts)
       auxArities := auxArities.push arity
@@ -5626,24 +5671,6 @@ private def preEqCount (pre : Expr) : MetaM Nat := do
         unless ← isProp (← inferType f) do k := k + 1
       return k
 
-/--
-Elaborate `by seq` at `goal`, and raise rather than report if it does not go
-through. -/
-private def proveBy (goal : Expr) (seq : TSyntax ``Lean.Parser.Tactic.tacticSeq) :
-    TermElabM Expr := do
-  let log ← Core.getMessageLog
-  Core.setMessageLog {}
-  try
-    let e ← Term.withoutErrToSorry do
-      let e ← Term.elabTerm (← `(by $seq)) (some goal)
-      Term.synthesizeSyntheticMVarsNoPostponing
-      instantiateMVars e
-    if (← Core.getMessageLog).hasErrors || e.hasSorry || e.hasExprMVar then
-      throwError "the script left the goal unproved"
-    return e
-  finally
-    Core.setMessageLog log
-
 /-- `X.c.inj` and `X.c.injEq` for one constructor of a data member. -/
 def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
     TermElabM Unit := do
@@ -6079,6 +6106,63 @@ private partial def wfConjuncts (ty proof : Expr) : MetaM (Array (Expr × Expr))
   return (← wfConjuncts l (mkApp3 (mkConst ``And.left) l r proof))
     ++ (← wfConjuncts r (mkApp3 (mkConst ``And.right) l r proof))
 
+/-- The levels a course-of-values table over a member is stated at. -/
+private structure BRecOnLevels where
+  /-- the level parameters, the motive's ahead of the block's -/
+  lps : List Name
+  /-- the motive's own level -/
+  lvl : Level
+  /-- the table's level: room for the motive and for the member's own fields,
+  which is what Lean's own `below` asks for too -/
+  w : Level
+  /-- the levels a declaration of the family is applied at -/
+  ls : List Level
+
+/-- The levels for a table over a member whose own level is `level`. -/
+private def brecOnLevels (b : Block) (level : Level) : BRecOnLevels :=
+  let lvlName := motiveLevelName b.us
+  let lvl := Level.param lvlName
+  { lps := lvlName :: b.us, lvl, w := (mkLevelMax level lvl).normalize, ls := lvl :: b.lvls }
+
+/-! `Lean.Meta.PProdN.pack` and `.mk` fold the same way, but take each entry's
+level from `getLevel` instead of from the table's own.  The recursion then stops
+reducing, so the two below write `w` at every entry and stay. -/
+
+/-- The type of a row of the table, from the type of each entry. -/
+private def mkRowTy (w : Level) (tys : Array Expr) : Expr :=
+  if tys.isEmpty then mkConst ``PUnit [w]
+  else tys.pop.foldr (mkApp2 (mkConst ``PProd [w, w])) tys.back!
+
+/-- A row of the table, from the type and the value of each entry. -/
+private def mkRow (w : Level) (entries : Array (Expr × Expr)) : Expr := Id.run do
+  if entries.isEmpty then return mkConst ``PUnit.unit [w]
+  let mut ty := entries.back!.1
+  let mut val := entries.back!.2
+  for k in *...(entries.size - 1) do
+    let j := entries.size - 2 - k
+    val := mkApp4 (mkConst ``PProd.mk [w, w]) entries[j]!.1 ty entries[j]!.2 val
+    ty := mkApp2 (mkConst ``PProd [w, w]) entries[j]!.1 ty
+  return val
+
+/--
+One of the definitions a course-of-values recursion is made of.  The member's
+own arguments are bound implicitly; the result is reducible and protected, and
+goes to the equation compiler rather than to the code generator.  `isElim` marks
+the two that eliminate, which the tactics must not unfold. -/
+private def addBRecOnPart (name : Name) (lps : List Name) (numArgs : Nat) (isElim : Bool)
+    (type value : Expr) : MetaM Unit := do
+  addDef name lps (implicitPrefix numArgs type) (implicitPrefix numArgs value) (compile := false)
+  setReducibleAttribute name
+  if isElim then modifyEnv (markAuxRecursor · name)
+  modifyEnv (addProtected · name)
+
+/-- The theorem that the recursion is its step applied to its row. -/
+private def addBRecOnEq (name : Name) (lps : List Name) (numArgs : Nat)
+    (type value : Expr) : MetaM Unit := do
+  addDecl (.thmDecl { name, levelParams := lps, type := implicitPrefix numArgs type,
+                      value := implicitPrefix numArgs value })
+  modifyEnv (addProtected · name)
+
 /--
 The caller's data, restated wherever the pre-recursor bound something of its
 own. -/
@@ -6101,11 +6185,7 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
   let preRec := preDataRecName p.preIsHeterogeneous m.name
   unless (← getEnv).contains preRec do return
   let recInfo ← getConstInfo preRec
-  let lvlName := motiveLevelName b.us
-  let lvl := Level.param lvlName
-  let w := (mkLevelMax m.level lvl).normalize
-  let lps := lvlName :: b.us
-  let ls := lvl :: b.lvls
+  let { lps, lvl, w, ls } := brecOnLevels b m.level
   forallBoundedTelescope (← getConstInfo (wfName m.name)).type nArgs fun ps _ => do
     let params := ps.extract 0 b.numParams
     let sub := mkAppN (mkConst n b.lvls) ps
@@ -6267,21 +6347,14 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
       -- 1. the table
       let belowVal ← drive none (fun _ _ _ => pure (mkSort w))
         (fun _ ih _ _ => ih)
-        (fun _ _ _ entries => do
-          if entries.isEmpty then return mkConst ``PUnit [w]
-          let tys := entries.map (·.1)
-          return tys.pop.foldr (mkApp2 (mkConst ``PProd [w, w])) tys.back!)
+        (fun _ _ _ entries => return mkRowTy w (entries.map (·.1)))
       let belowName := n ++ `below
       let dBelow := if keptPos.isEmpty then #[] else #[motive]
-      addDef belowName lps
-        (implicitPrefix ps.size (← mkForallFVars (ps.push motive) (← mkArrow sub (mkSort w))))
-        (implicitPrefix ps.size (← mkLambdaFVars (ps.push motive)
+      addBRecOnPart belowName lps ps.size (isElim := true)
+        (← mkForallFVars (ps.push motive) (← mkArrow sub (mkSort w)))
+        (← mkLambdaFVars (ps.push motive)
           (← withLocalDeclD `t sub fun t =>
-            mkLambdaFVars #[t] (mkAppN belowVal (opened dBelow t)))))
-        (compile := false)
-      setReducibleAttribute belowName
-      modifyEnv (markAuxRecursor · belowName)
-      modifyEnv (addProtected · belowName)
+            mkLambdaFVars #[t] (mkAppN belowVal (opened dBelow t))))
       let fTy ← stepTy ps motive
       withLocalDeclD `t sub fun t => withLocalDeclD `F fTy fun F => do
         let args := ps ++ #[motive, t, F]
@@ -6295,38 +6368,22 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
           (fun r _ fv wpf => belowAt r (mkS r fv wpf))
           (fun r ctorApp wv entries => do
             let x := mkS r ctorApp wv
-            let row :=
-              if entries.isEmpty then mkConst ``PUnit.unit [w]
-              else Id.run do
-                let mut ty := entries.back!.1
-                let mut val := entries.back!.2
-                for k in *...(entries.size - 1) do
-                  let j := entries.size - 2 - k
-                  val := mkApp4 (mkConst ``PProd.mk [w, w]) entries[j]!.1 ty entries[j]!.2 val
-                  ty := mkApp2 (mkConst ``PProd [w, w]) entries[j]!.1 ty
-                return val
+            let row := mkRow w entries
             return mkApp4 (mkConst ``PProd.mk [lvl, w]) (mkApp r.motive x) (belowAt r x)
               (mkApp2 r.step?.get! x row) row)
         let goName := n ++ `brecOn ++ `go
-        addDef goName lps
-          (implicitPrefix ps.size (← mkForallFVars args (pair outerR t)))
-          (implicitPrefix ps.size (← mkLambdaFVars args (mkAppN goVal (opened dStep t))))
-          (compile := false)
-        setReducibleAttribute goName
-        modifyEnv (addProtected · goName)
+        addBRecOnPart goName lps ps.size (isElim := false)
+          (← mkForallFVars args (pair outerR t))
+          (← mkLambdaFVars args (mkAppN goVal (opened dStep t)))
         -- 3. the answer alone
         let brecName := n ++ `brecOn
         let goApp (r : Restated) (x : Expr) : Expr :=
           mkAppN (mkConst goName ls) (r.args ++ #[r.motive, x, r.step?.get!])
-        addDef brecName lps
-          (implicitPrefix ps.size (← mkForallFVars args (mkApp motive t)))
-          (implicitPrefix ps.size (← mkLambdaFVars args
+        addBRecOnPart brecName lps ps.size (isElim := true)
+          (← mkForallFVars args (mkApp motive t))
+          (← mkLambdaFVars args
             (mkApp3 (mkConst ``PProd.fst [lvl, w]) (mkApp motive t) (belowAt outerR t)
-              (goApp outerRF t))))
-          (compile := false)
-        setReducibleAttribute brecName
-        modifyEnv (markAuxRecursor · brecName)
-        modifyEnv (addProtected · brecName)
+              (goApp outerRF t)))
         -- 4. and that the answer is the step applied to the row
         let brecApp (r : Restated) (x : Expr) : Expr :=
           mkAppN (mkConst brecName ls) (r.args ++ #[r.motive, x, r.step?.get!])
@@ -6338,12 +6395,9 @@ private def emitIndexedBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Na
           (fun r ctorApp wv _ => do
             let x := mkS r ctorApp wv
             return mkApp2 (mkConst ``Eq.refl [lvl]) (mkApp r.motive x) (brecApp r x))
-        let eqName := brecName ++ `eq
-        addDecl (.thmDecl { name := eqName, levelParams := lps
-                            type := implicitPrefix ps.size (← mkForallFVars args (eqOf outerRF t))
-                            value := implicitPrefix ps.size
-                              (← mkLambdaFVars args (mkAppN eqVal (opened dStep t))) })
-        modifyEnv (addProtected · eqName)
+        addBRecOnEq (brecName ++ `eq) lps ps.size
+          (← mkForallFVars args (eqOf outerRF t))
+          (← mkLambdaFVars args (mkAppN eqVal (opened dStep t)))
 
 /--
 `below`, `brecOn.go`, `brecOn` and `brecOn.eq` for a data member's wrapper,
@@ -6360,13 +6414,7 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
   unless (← getEnv).contains recD && (← getEnv).contains casesD do return
   let recInfo ← getConstInfo recD
   let casesInfo ← getConstInfo casesD
-  let lvlName := motiveLevelName b.us
-  let lvl := Level.param lvlName
-  -- the sort the table lands in: room for the motive and for the member's own
-  -- fields, which is what Lean's own `below` asks for too
-  let w := (mkLevelMax m.level lvl).normalize
-  let lps := lvlName :: b.us
-  let ls := lvl :: b.lvls
+  let { lps, lvl, w, ls } := brecOnLevels b m.level
   -- which of an eliminator's levels is its motive's
   let motiveLvl (info : ConstantInfo) : MetaM Name :=
     forallBoundedTelescope info.type (some (b.numParams + 1)) fun xs _ => do
@@ -6411,17 +6459,11 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
         (fun dom => return .lam `t dom (mkSort w) .default)
         (fun _ => mkSort w)
         (fun f _ ys => mkAppN f ys)
-        (fun _ entries _ => do
-          if entries.isEmpty then return mkConst ``PUnit [w]
-          return entries.pop.foldr (mkApp2 (mkConst ``PProd [w, w])) entries.back!)
+        (fun _ entries _ => return mkRowTy w entries)
       let belowName := n ++ `below
-      addDef belowName lps
-        (implicitPrefix ps.size (← mkForallFVars (ps.push motive) (← mkArrow sub (mkSort w))))
-        (implicitPrefix ps.size (← mkLambdaFVars (ps.push motive) belowVal))
-        (compile := false)
-      setReducibleAttribute belowName
-      modifyEnv (markAuxRecursor · belowName)
-      modifyEnv (addProtected · belowName)
+      addBRecOnPart belowName lps ps.size (isElim := true)
+        (← mkForallFVars (ps.push motive) (← mkArrow sub (mkSort w)))
+        (← mkLambdaFVars (ps.push motive) belowVal)
       let fTy ← withLocalDeclD `t sub fun t => do
         mkForallFVars #[t] (← mkArrow (belowOf t) (mkApp motive t))
       withLocalDeclD `t sub fun t => withLocalDeclD `F fTy fun F => do
@@ -6435,36 +6477,20 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
           pair
           (fun _ arg _ => belowOf arg)
           (fun ctorApp entries ihs => do
-            let row :=
-              if ihs.isEmpty then mkConst ``PUnit.unit [w]
-              else Id.run do
-                let mut ty := entries.back!
-                let mut val := ihs.back!
-                for k in *...(ihs.size - 1) do
-                  let j := ihs.size - 2 - k
-                  val := mkApp4 (mkConst ``PProd.mk [w, w]) entries[j]! ty ihs[j]! val
-                  ty := mkApp2 (mkConst ``PProd [w, w]) entries[j]! ty
-                return val
+            let row := mkRow w (entries.zip ihs)
             return mkApp4 (mkConst ``PProd.mk [lvl, w]) (mkApp motive ctorApp) (belowOf ctorApp)
               (mkApp2 F ctorApp row) row)
         let goName := n ++ `brecOn ++ `go
-        addDef goName lps
-          (implicitPrefix ps.size (← mkForallFVars args (pair t)))
-          (implicitPrefix ps.size (← mkLambdaFVars args (mkApp goVal t)))
-          (compile := false)
-        setReducibleAttribute goName
-        modifyEnv (addProtected · goName)
+        addBRecOnPart goName lps ps.size (isElim := false)
+          (← mkForallFVars args (pair t))
+          (← mkLambdaFVars args (mkApp goVal t))
         -- 3. the answer alone, which is what the equation compiler applies
         let brecName := n ++ `brecOn
         let goApp (x : Expr) : Expr := mkAppN (mkConst goName ls) (ps ++ #[motive, x, F])
-        addDef brecName lps
-          (implicitPrefix ps.size (← mkForallFVars args (mkApp motive t)))
-          (implicitPrefix ps.size (← mkLambdaFVars args
-            (mkApp3 (mkConst ``PProd.fst [lvl, w]) (mkApp motive t) (belowOf t) (goApp t))))
-          (compile := false)
-        setReducibleAttribute brecName
-        modifyEnv (markAuxRecursor · brecName)
-        modifyEnv (addProtected · brecName)
+        addBRecOnPart brecName lps ps.size (isElim := true)
+          (← mkForallFVars args (mkApp motive t))
+          (← mkLambdaFVars args
+            (mkApp3 (mkConst ``PProd.fst [lvl, w]) (mkApp motive t) (belowOf t) (goApp t)))
         -- 4. and that the answer is the step applied to the row, which holds by
         -- `rfl` at every constructor and is what the equations are unfolded with
         let brecApp (x : Expr) : Expr := mkAppN (mkConst brecName ls) (ps ++ #[motive, x, F])
@@ -6477,11 +6503,9 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
           (fun f _ ys => mkAppN f ys)
           (fun ctorApp _ _ => do
             return mkApp2 (mkConst ``Eq.refl [lvl]) (mkApp motive ctorApp) (brecApp ctorApp))
-        let eqName := brecName ++ `eq
-        let eqTy := implicitPrefix ps.size (← mkForallFVars args (eqOf t))
-        let eqPrf := implicitPrefix ps.size (← mkLambdaFVars args (mkApp eqVal t))
-        addDecl (.thmDecl { name := eqName, levelParams := lps, type := eqTy, value := eqPrf })
-        modifyEnv (addProtected · eqName)
+        addBRecOnEq (brecName ++ `eq) lps ps.size
+          (← mkForallFVars args (eqOf t))
+          (← mkLambdaFVars args (mkApp eqVal t))
 
 /-- Emit the whole encoding for a prepared block. -/
 def emit (p : Plan) : TermElabM Unit := do
@@ -7034,10 +7058,17 @@ def emit (p : Plan) : TermElabM Unit := do
     discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
       addInjEqs b (ofInjs.map (· ++ `ofOrig_inj)) i c
 
-  -- 12. what `match` is driven through
+  -- 12. what `match` is driven through, and the eliminators under the names an
+  -- `inductive` answers to.  A `Prop` member has no view, so it gets those two
+  -- and nothing else
   addViews b.numParams <| b.dataIdxs.filterMap fun i =>
     let m := b.members[i]!
     if copyNames.contains m.name then none else some (m.name, m.ctors.map (·.name))
+  for i in b.propIdxs do
+    let m := b.members[i]!
+    unless copyNames.contains m.name || (← m.ctors[0]?.mapM fun c =>
+        return ((← getEnv).find? c.name).any (·.isCtor)).getD true do
+      addPropEliminators b.numParams m.name
 
 /-! ## The entry point -/
 
@@ -7120,12 +7151,10 @@ def inhabitedFromCtor? (declName : Name) (ctors : Array Name) : MetaM (Option De
     withLocalDecls hyps fun hs => do
       let target := mkAppN (mkConst declName lvls) ps
       for c in ctors do
-        let cinfo ← getConstInfo c
         -- the fields are filled one at a time rather than all at once: a
         -- constructor may state a later field's type in terms of an earlier
         -- field, and then the value chosen for the earlier one is part of it
-        let mut ty ← instantiateForall
-          (cinfo.type.instantiateLevelParams cinfo.levelParams lvls) ps
+        let mut ty ← ctorTypeAt c lvls ps
         let mut args : Array Expr := #[]
         let mut ok := true
         repeat
@@ -7238,12 +7267,19 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
   -- whether a run peeled anything, so that a failure knows whether there is a
   -- second reading of the block to fall back on
   let peeled ← IO.mkRef false
-  -- and, when the peel takes the whole reason for being here with it, the two
-  -- halves to hand back to Lean instead
-  let split ← IO.mkRef (none : Option (Array Nat × Array Nat))
+  -- and, when there is no reason left to be here, the groups to hand back to
+  -- Lean instead, in the order it has to read them
+  let split ← IO.mkRef (none : Option (Array (Array Nat)))
   let go (peel : Bool) : CommandElabM Unit := do
     runTermElabM fun vars => do
       emit (← withRaw views vars fun r => do
+        -- no two members depend on each other, so the block is a sequence of
+        -- ordinary declarations: each one is Lean's to read on its own, and
+        -- erasing them would only cost them `cases`, `injection` and `deriving`
+        if peel && mumi.separate.get (← getOptions) then
+          if let some order := separationOrder? r then
+            split.set (some (order.map (#[·])))
+            throwError "this block is Lean's to read"
         let r ← if peel then markPeeled r else pure r
         peeled.set (!r.peeled.isEmpty)
         -- what stays may no longer be induction-inductive at all: the arity
@@ -7251,7 +7287,7 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
         unless r.peeled.isEmpty do
           let core := (Array.range views.size).filter (!r.peeled.contains ·)
           unless viewsAreInductionInductive (core.map (views[·]!)) do
-            split.set (some (core, r.peeled))
+            split.set (some #[core, r.peeled])
             throwError "this block is Lean's to read"
         let env0 ← getEnv
         let r ← try denestRaw r catch ex => do
@@ -7272,13 +7308,12 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       go false
   catch ex =>
     match ← split.get with
-    | some (core, rest) =>
+    | some groups =>
       set s
-      -- the core first, since what left the block is stated over it.  Lean's to
-      -- accept or not, and if not there is still the erasure to fall back on
-      unless ← tentatively (do
-          elabCommand (groupCommand elems core)
-          elabCommand (groupCommand elems rest)) do
+      -- in dependency order, since a later group is stated over an earlier one.
+      -- Lean's to accept or not, and if not there is still the erasure to fall
+      -- back on
+      unless ← tentatively (groups.forM fun g => elabCommand (groupCommand elems g)) do
         set s
         go false
     | none =>

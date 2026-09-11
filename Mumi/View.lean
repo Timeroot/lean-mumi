@@ -75,16 +75,24 @@ generalised over everything that mentions it.
 
 A recursive call at a *different* index is not structural: `below` builds its
 table at fixed parameters, so there is no column for a row at another one, and
-no way to write the motive of one.  Such a recursion can still be well founded
-given a `SizeOf` instance to measure with and the specification lemmas the
-termination tactic simplifies with, so this module builds those too.  The
-measure is the pre-term's size, which is what remains after the proofs are
-erased and is exactly the size of what was written.
+no way to write the motive of one.  A call that descends through a *nesting* is
+not structural either, for the same reason it is not in plain Lean.  Both are
+still well founded given a `SizeOf` instance to measure with and the
+specification lemmas the termination tactic simplifies with, so this module
+builds those too.  The measure is the pre-term's size, which is what remains
+after the proofs are erased and is exactly the size of what was written.
+
+A field the block denested is packed as a copy of its container, so the
+specification lemma states the copy's size where the field's is wanted.  The two
+are equal, but only provably: they agree on a constructor by computation apart
+from the container's recursive positions.  `sizeOf_ofOrig` closes that gap by
+induction over the container, one lemma per copy, and the specification lemma is
+proved by rewriting with it rather than by `rfl`.
 -/
 
 namespace Mumi
 
-open Lean Meta Lean.Elab.MultiuniverseInductive
+open Lean Meta Lean.Elab Lean.Elab.MultiuniverseInductive
 
 initialize registerTraceClass `Mumi.view (inherited := true)
 
@@ -170,9 +178,148 @@ def addSizeOfInst (numParams : Nat) (mem : Name) : MetaM Unit := do
   registerInstance instName .global (eval_prio default)
 
 /--
+A proof of `target' = target`, where `target'` is `target` with the right side of
+every equation in `eqs` put back to its left side.  An equation that matches
+nothing is skipped. -/
+private def rewriteBack (target : Expr) (eqs : Array Expr) : MetaM Expr := do
+  let mut cur := target
+  let mut proof ← mkEqRefl target
+  for h in eqs do
+    let some (α, a, b) := (← instantiateMVars (← inferType h)).eq? | continue
+    let abst ← kabstract cur b
+    unless abst.hasLooseBVars do continue
+    proof ← mkEqTrans (← mkCongrArg (.lam `n α abst .default) h) proof
+    cur := abst.instantiate1 a
+  return proof
+
+/-- Every application of an `ofOrig` in `e`, each at its full spine. -/
+private partial def ofOrigApps (e : Expr) : Array Expr := visit e #[]
+where
+  /-- Collect from `e` into `acc`. -/
+  visit (e : Expr) (acc : Array Expr) : Array Expr :=
+    match e with
+    | .app .. =>
+      let acc := match e.getAppFn with
+        | .const (.str _ "ofOrig") _ => acc.push e
+        | _ => acc
+      e.getAppArgs.foldl (init := acc) fun acc a => visit a acc
+    | .lam _ t b _ | .forallE _ t b _ => visit b (visit t acc)
+    | .letE _ t v b _ => visit b (visit v (visit t acc))
+    | .mdata _ b | .proj _ _ b => visit b acc
+    | _ => acc
+
+/-- The right side of `e`, if `e` is an equation. -/
+private def rhsOf? (e : Expr) : MetaM (Option Expr) := do
+  return (← instantiateMVars e).eq?.map (·.2.2)
+
+/-- What Lean reckons the size of `cn`'s result to be, as a sum over its fields. -/
+private def ctorSizeSum (cn : Name) (fields : Array Expr) : MetaM Expr := do
+  if (← getEnv).contains (cn ++ `sizeOf_spec) then
+    try
+      if let some rhs ← rhsOf? (← inferType (← mkAppM (cn ++ `sizeOf_spec) fields)) then return rhs
+    catch _ => pure ()
+  let mut rhs ← mkNumeral (mkConst ``Nat) 1
+  for f in fields do
+    if (← isProof f) || (← whnf (← inferType f)).isForall then continue
+    rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+  return rhs
+
+mutual
+
+/--
+`sizeOf (X.nested_C_k.ofOrig a).val = sizeOf a`: a denested copy of a container
+measures the same as the container it copies.  The two agree on a constructor by
+computation apart from the recursive positions, which is what the induction
+supplies. -/
+partial def addOfOrigSizeOf (copy : Name) : MetaM Unit := do
+  let thmName := copy ++ `sizeOf_ofOrig
+  if (← getEnv).contains thmName then return
+  let ofOrig := copy ++ `ofOrig
+  let oi ← getConstInfo ofOrig
+  let us := oi.levelParams.map mkLevelParam
+  forallTelescope oi.type fun xs _ => do
+    let some a := xs.back? | throwError "`{ofOrig}` takes nothing to copy"
+    let bs := xs.pop
+    let origTy ← whnf (← inferType a)
+    let some orig := origTy.getAppFn.constName? | throwError "`{ofOrig}` copies no inductive"
+    let .inductInfo ii ← getConstInfo orig | throwError "`{orig}` is not an inductive"
+    let .recInfo rv ← getConstInfo (orig ++ `rec) | throwError "`{orig}` has no recursor"
+    let origLvls := origTy.getAppFn.constLevels!
+    let args := origTy.getAppArgs
+    let params := args.extract 0 rv.numParams
+    let idxs := args.extract rv.numParams (rv.numParams + rv.numIndices)
+    -- a copy is taken at one index at a time, so the index is a binder of
+    -- `ofOrig`, and the statement is what that binder is generalised over
+    let mut at? := #[]
+    for i in idxs do
+      let some k := bs.findIdx? (· == i) | throwError "`{ofOrig}` copies at a fixed index"
+      at? := at?.push k
+    let places := at?
+    -- the copy of `t`, taken at indices `is`
+    let copyAt (is : Array Expr) (t : Expr) : Expr := Id.run do
+      let mut bs' := bs
+      for k in *...places.size do bs' := bs'.set! places[k]! is[k]!
+      return mkAppN (mkConst ofOrig us) (bs'.push t)
+    -- what is claimed of `t`, at indices `is`
+    let goalAt (is : Array Expr) (t : Expr) : MetaM Expr := do
+      mkEq (← mkAppM ``SizeOf.sizeOf #[← preOf (copyAt is t)]) (← mkAppM ``SizeOf.sizeOf #[t])
+    let recFn := mkConst (orig ++ `rec)
+      (if rv.levelParams.length == ii.levelParams.length + 1 then Level.zero :: origLvls
+       else origLvls)
+    let motive ← mkLambdaFVars ((places.map (bs[·]!)).push a) (← goalAt idxs a)
+    let mut app := mkAppN recFn (params.push motive)
+    for cn in ii.ctors do
+      let .ctorInfo cv ← getConstInfo cn | throwError "`{cn}` is not a constructor"
+      let .forallE _ minorTy _ _ ← whnf (← inferType app)
+        | throwError "`{orig}` takes fewer cases than it has constructors"
+      app := mkApp app <| ← forallTelescope minorTy fun ys _ => do
+        let fields := ys.extract 0 cv.numFields
+        let ctorApp := mkAppN (mkConst cn origLvls) (params ++ fields)
+        let cIdxs := (← whnf (← inferType ctorApp)).getAppArgs.extract rv.numParams
+          (rv.numParams + rv.numIndices)
+        let pre ← whnf (← preOf (copyAt cIdxs ctorApp))
+        let proof ← rewriteBack (← ctorSizeSum cn fields)
+          (← transportsIn pre (ys.extract cv.numFields ys.size) copy)
+        let goal ← goalAt cIdxs ctorApp
+        unless ← isDefEq (← inferType proof) goal do
+          throwError "the copy `{copy}` does not measure `{cn}` the way `{orig}` does"
+        mkLambdaFVars ys (← mkExpectedTypeHint proof goal)
+    addDecl <| .thmDecl {
+      name        := thmName
+      levelParams := oi.levelParams
+      type        := ← mkForallFVars xs (← goalAt idxs a)
+      value       := ← mkLambdaFVars xs (mkAppN app (idxs.push a))
+    }
+
+/--
+An equation `sizeOf (ofOrig ..) = sizeOf ..` for every copy `pre` was built
+through: the induction hypothesis in `ihs` for a copy of `self`, and the copy's
+own lemma, emitted on demand, for any other. -/
+partial def transportsIn (pre : Expr) (ihs : Array Expr) (self : Name) :
+    MetaM (Array Expr) := do
+  let mut out := #[]
+  for app in ofOrigApps pre do
+    let some n := app.getAppFn.constName? | continue
+    let copy := n.getPrefix
+    if copy == self then
+      for ih in ihs do
+        let some b ← rhsOf? (← inferType ih) | continue
+        unless b.isApp do continue
+        if ← isDefEq b.appArg! app.appArg! then out := out.push ih
+    else
+      addOfOrigSizeOf copy
+      out := out.push <|
+        mkAppN (mkConst (copy ++ `sizeOf_ofOrig) app.getAppFn.constLevels!) app.getAppArgs
+  return out
+
+end
+
+/--
 `sizeOf (X.c ..) = 1 + sizeOf f₁ + ..`, in the form and by the reckoning Lean
 uses for an ordinary constructor, so the termination tactic -- which simplifies
-with these and then calls `omega` -- finds what it expects. -/
+with these and then calls `omega` -- finds what it expects.  A field the block
+denested is measured at the copy, which is the same size but only provably so,
+so the proof is a rewrite rather than `rfl`. -/
 def addSizeOfSpec (numParams : Nat) (levelParams : List Name) (mem c : Name) : MetaM Unit := do
   let ci ← getConstInfo c
   let thmName := c ++ `sizeOf_spec
@@ -188,7 +335,10 @@ def addSizeOfSpec (numParams : Nat) (levelParams : List Name) (mem c : Name) : M
       let lhs := mkApp3 (mkConst ``SizeOf.sizeOf [← getLevel concl]) concl inst ctorApp
       -- what the constructor actually packed, read off the pre-term it built
       let pre ← whnf (← preOf ctorApp)
-      let kept := if pre.getAppFn.isConst then pre.getAppArgs else fields
+      -- a field the block denested is packed as a copy of itself, so it is the
+      -- copy's argument that appears rather than the field
+      let copied := (ofOrigApps pre).filterMap fun a => if a.isApp then some a.appArg! else none
+      let kept := (if pre.getAppFn.isConst then pre.getAppArgs else fields) ++ copied
       let mut rhs ← mkNumeral (mkConst ``Nat) 1
       for f in fields do
         if (← whnf (← inferType f)).isForall then continue
@@ -196,14 +346,19 @@ def addSizeOfSpec (numParams : Nat) (levelParams : List Name) (mem c : Name) : M
         unless (← isProof f) || (← kept.anyM fun a => isDefEq a asPre <||> isDefEq a f) do
           continue
         rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+      let mut proof ← mkEqRefl rhs
       unless ← isDefEq lhs rhs do
-        throwError "`sizeOf` of `{c}` is not the sum of its fields'"
+        proof ← rewriteBack rhs (← transportsIn pre #[] .anonymous)
+        let some (_, lhs', _) := (← instantiateMVars (← inferType proof)).eq?
+          | throwError "`sizeOf` of `{c}` is not the sum of its fields'"
+        unless ← isDefEq lhs lhs' do
+          throwError "`sizeOf` of `{c}` is not the sum of its fields'"
       let thmParams := ps ++ insts ++ fields
       addDecl <| .thmDecl {
         name        := thmName
         levelParams := ci.levelParams
         type        := ← mkForallFVars thmParams (← mkEq lhs rhs)
-        value       := ← mkLambdaFVars thmParams (← mkEqRefl rhs)
+        value       := ← mkLambdaFVars thmParams proof
       }
   let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
   simpAttr.add thmName default .global
@@ -281,11 +436,196 @@ def addView (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := 
         (← mkLambdaFVars (binders.push x) value)
       modifyEnv (viewedExt.addEntry · (mem, ctors))
 
+/-! ## The declarations an `inductive` answers to
+
+A member erased to a subtype is a definition, so Lean builds none of the
+auxiliary declarations it builds beside an `inductive`.  They are added here out
+of what the block already has and out of the view's, which are Lean's own: the
+view is a genuine inductive, so Lean generated its `noConfusion`.
+
+* `X.casesOn` and `X.recOn` permute the telescope of `X.casesD` and `X.rec`, by
+  the permutation `Lean.mkRecOn` applies to a recursor;
+* `X.noConfusionType` and `X.noConfusion` restate the view's along `X.view`;
+* `X.ctorIdx` counts through the view.
+
+`injection` and `contradiction` are not among what this reaches.  Both reduce
+the type of the equation before they look for a `noConfusion`, so both arrive at
+`X._sub` and use its.  `simp` and `X.c.inj` state the same thing about the
+member.
+-/
+
+/--
+Apply `f` to `args` at its explicit positions and infer the rest, from `args`
+and from what the application is expected to conclude at. -/
+private def appExplicit (f : Expr) (args : Array Expr) (expected? : Option Expr := none) :
+    MetaM Expr := do
+  let (mvs, bis, concl) ← forallMetaTelescope (← inferType f)
+  if let some expected := expected? then
+    unless ← isDefEq concl expected do
+      throwError "`{f}` does not conclude at `{expected}`"
+  let mut k := 0
+  for i in *...mvs.size do
+    unless bis[i]!.isExplicit do continue
+    unless k < args.size do throwError "`{f}` takes more explicit arguments than {args.size}"
+    unless ← isDefEq mvs[i]! args[k]! do
+      throwError "`{f}` does not take `{args[k]!}` at argument {i}"
+    k := k + 1
+  unless k == args.size do throwError "`{f}` takes only {k} explicit arguments"
+  instantiateMVars (mkAppN f mvs)
+
+/-- Reset the name and the annotation of each `∀`-binder from `f`, outermost first. -/
+private partial def annotate (f : Nat → Name → BinderInfo → Name × BinderInfo) (e : Expr)
+    (i : Nat := 0) : Expr :=
+  match e with
+  | .forallE n d b bi =>
+    let (n, bi) := f i n bi
+    .forallE n d (annotate f b (i + 1)) bi
+  | e => e
+
+/-- The reshaping that renames nothing and infers every binder but those at `keep`. -/
+private def inferredBut (keep : Nat → Bool) (i : Nat) (nm : Name) (bi : BinderInfo) :
+    Name × BinderInfo :=
+  (nm, if keep i then .default else if bi.isExplicit then .implicit else bi)
+
+/--
+Where the minor premises of an eliminator start, which is after its parameters
+and its motives.  A motive is a binder whose type ends at a sort, and the motives
+are the run of them that follows the parameters.  The parameters are counted
+rather than matched, because a parameter can end at a sort too.
+
+Matching a single sort is not enough: the motives of one block need not all end
+at the same one.  A `Prop` member never large-eliminates, so its motive ends at
+`Prop` while a data member's ends at the sort the eliminator is generic in. -/
+private def minorsStart (numParams : Nat) (xs : Array Expr) (numIndices : Nat) : MetaM Nat := do
+  let mut start := numParams
+  for i in numParams...(xs.size - numIndices - 1) do
+    let isMotive ← forallTelescopeReducing (← inferType xs[i]!) fun _ concl => pure concl.isSort
+    unless isMotive do break
+    start := i + 1
+  if start == numParams then throwError "no motive among the binders of the eliminator"
+  return start
+
+/--
+`X.casesOn` from `X.casesD`, or `X.recOn` from `X.rec`: the same eliminator with
+the indices and the major premise moved in front of the minor premises.
+
+The result is not tagged as an auxiliary recursor, which is the one place this
+departs from `Lean.mkRecOn`.  The code generator turns an application of a tagged
+`casesOn` into a case split over the constructors of an inductive, and the member
+is not one, so a tagged `X.casesOn` is uncompilable at every use site.  Untagged
+it is a reducible definition ending at `X.casesD`, which does compile, and
+`induction ... using` reads the case names off its minor premises either way. -/
+def addMajorFirst (numParams : Nat) (mem src dst : Name) : MetaM Unit := do
+  if (← getEnv).contains dst then return
+  let mi ← getConstInfo mem
+  let numIndices ← forallTelescope mi.type fun bs _ => pure (bs.size - numParams)
+  let some info := (← getEnv).find? src | throwError "no `{src}` to reorder"
+  let us := info.levelParams.map mkLevelParam
+  let (type, value) ← forallTelescope info.type fun xs concl => do
+    let start ← minorsStart numParams xs numIndices
+    unless start + numIndices + 1 ≤ xs.size do
+      throwError "`{src}` ends before its {numIndices} indices and its major premise"
+    let numMinors := xs.size - start - numIndices - 1
+    let vs := xs[*...start] ++ xs[(start + numMinors)...xs.size] ++
+      xs[start...(start + numMinors)]
+    return (← mkForallFVars vs concl, ← mkLambdaFVars vs (mkAppN (mkConst src us) xs))
+  addDef dst info.levelParams type value (hints := .abbrev)
+  setReducibleAttribute dst
+  modifyEnv fun env => addProtected env dst
+
+/-- `X.ctorIdx`, which counts a constructor through the view. -/
+def addCtorIdx (mem : Name) : MetaM Unit := do
+  let dst := mem ++ `ctorIdx
+  if (← getEnv).contains dst then return
+  let mi ← getConstInfo mem
+  let us := mi.levelParams.map mkLevelParam
+  forallTelescope mi.type fun bs _ =>
+    withLocalDeclD `x (mkAppN (mkConst mem us) bs) fun x => do
+      let view := mkAppN (mkConst (viewFnName mem) us) (bs.push x)
+      let value ← appExplicit (← mkConstWithFreshMVarLevels (viewName mem ++ `ctorIdx)) #[view]
+      let xs := bs.push x
+      addDef dst mi.levelParams
+        (annotate (inferredBut (· == bs.size)) (← mkForallFVars xs (mkConst ``Nat)))
+        (← mkLambdaFVars xs value)
+      modifyEnv fun env => addProtected env dst
+
+/--
+`X.noConfusionType` and `X.noConfusion` from the view's.  Two elements of `X`
+are confused exactly when their views are, so the statement is the view's along
+`X.view`, and the equations it takes are read off the view's rather than
+recomputed. -/
+def addNoConfusion (mem : Name) : TermElabM Unit := do
+  let vType := viewName mem ++ `noConfusionType
+  let vConf := viewName mem ++ `noConfusion
+  let some tInfo := (← getEnv).find? vType | throwError "no `{vType}` to restate"
+  let mi ← getConstInfo mem
+  let lps := tInfo.levelParams
+  let us := mi.levelParams.map mkLevelParam
+  let [w] := lps.filter (!mi.levelParams.contains ·)
+    | throwError "`{vType}` is not generic in exactly one sort"
+  let dType := mem ++ `noConfusionType
+  let dConf := mem ++ `noConfusion
+  forallTelescope mi.type fun bs _ =>
+  forallTelescope mi.type fun bs' _ =>
+  withLocalDeclD `P (mkSort (.param w)) fun p =>
+  withLocalDeclD `t (mkAppN (mkConst mem us) bs) fun t =>
+  withLocalDeclD `t' (mkAppN (mkConst mem us) bs') fun t' => do
+    let view (b : Array Expr) (x : Expr) : Expr :=
+      mkAppN (mkConst (viewFnName mem) us) (b.push x)
+    let xs := #[p] ++ bs ++ #[t] ++ bs' ++ #[t']
+    let n := bs.size
+    -- the sort and the two elements are what the statement is about; everything
+    -- else follows from them, and the second copy of the member's binders is
+    -- named apart as Lean names it in an ordinary `noConfusionType`
+    let shape (keep : Nat → Bool) (i : Nat) (nm : Name) (bi : BinderInfo) : Name × BinderInfo :=
+      ((if n + 2 ≤ i && i ≤ 2 * n + 1 then nm.appendAfter "'" else nm),
+        (inferredBut keep i nm bi).2)
+    let major (i : Nat) : Bool := i == 0 || i == n + 1 || i == 2 * n + 2
+    unless (← getEnv).contains dType do
+      let value ← appExplicit (← mkConstWithFreshMVarLevels vType)
+        #[p, view bs t, view bs' t']
+      addDef dType lps (annotate (shape major) (← mkForallFVars xs (mkSort (.param w))))
+        (← mkLambdaFVars xs value) (hints := .abbrev) (compile := false)
+      setReducibleAttribute dType
+      modifyEnv fun env => addProtected env dType
+    if (← getEnv).contains dConf then return
+    let goal ← appExplicit (mkConst dType (lps.map mkLevelParam)) #[p, t, t']
+    -- what equations the view is confused by, and hence what this one is: the
+    -- view's last one is about the views themselves and is discharged here, the
+    -- ones before it are about the member and become the binders
+    let (tys, vGoal) ← do
+      let (mvs, bis, concl) ← forallMetaTelescope (← getConstInfo vConf).type
+      unless ← isDefEq concl goal do throwError "`{vConf}` does not conclude at `{dType}`"
+      let mut given := #[]
+      for i in *...mvs.size do
+        if bis[i]!.isExplicit then given := given.push mvs[i]!
+      let some vEq := given.back? | throwError "`{vConf}` takes no equation"
+      pure (← given.pop.mapM fun m => do instantiateMVars (← inferType m),
+        ← instantiateMVars (← inferType vEq))
+    withLocalDeclsDND (tys.mapIdx fun i ty => (Name.mkSimple s!"mumiEq{i}", ty)) fun hs => do
+      let last := mkIdent (Name.mkSimple s!"mumiEq{hs.size - 1}")
+      let proof ← proveBy vGoal <| ←
+        `(Lean.Parser.Tactic.tacticSeq|
+            try subst_vars
+            first
+              | exact rfl
+              | exact HEq.rfl
+              | (cases $last:ident; first | exact rfl | exact HEq.rfl))
+      let all := xs ++ hs
+      addDef dConf lps
+        (annotate (shape (· ≥ xs.size)) (← mkForallFVars all goal))
+        (← mkLambdaFVars all
+          (← appExplicit (← mkConstWithFreshMVarLevels vConf) (hs.push proof) goal))
+        (hints := .abbrev) (compile := false)
+      setReducibleAttribute dConf
+      modifyEnv fun env => addProtected env dConf
+
 /--
 Give every member encoded as a subtype a `SizeOf` instance, its specification
-lemmas, and a view, in three passes so a constructor whose field is a sibling
-finds the sibling's instance already there. -/
-def addViews (numParams : Nat) (members : Array (Name × Array Name)) : MetaM Unit := do
+lemmas, a view, and the declarations an `inductive` answers to, in passes so a
+constructor whose field is a sibling finds the sibling's instance already
+there. -/
+def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElabM Unit := do
   let members ← members.filterM fun (_, ctors) => do
     let some c := ctors[0]? | return false
     return !((← getEnv).find? c).any (·.isCtor)
@@ -298,5 +638,23 @@ def addViews (numParams : Nat) (members : Array (Name × Array Name)) : MetaM Un
         addSizeOfSpec numParams lps mem c
   for (mem, ctors) in members do
     discard <| attempt? `Mumi.view m!"no view for `{mem}`" <| addView numParams mem ctors
+  for (mem, _) in members do
+    discard <| attempt? `Mumi.view m!"no `casesOn` for `{mem}`" <|
+      addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `casesOn)
+    discard <| attempt? `Mumi.view m!"no `recOn` for `{mem}`" <|
+      addMajorFirst numParams mem (mem ++ `rec) (mem ++ `recOn)
+    discard <| attempt? `Mumi.view m!"no `ctorIdx` for `{mem}`" <| addCtorIdx mem
+    discard <| attempt? `Mumi.view m!"no `noConfusion` for `{mem}`" <| addNoConfusion mem
+
+/--
+`X.casesOn` and `X.recOn` for a `Prop` member, which has no view and needs none:
+both restate an eliminator the block already has.  `X.casesOn` comes from
+`X.casesP` rather than from `X.casesD`, because a `Prop` member of a block with
+more than one member never eliminates into anything but `Prop`. -/
+def addPropEliminators (numParams : Nat) (mem : Name) : MetaM Unit := do
+  discard <| attempt? `Mumi.view m!"no `casesOn` for `{mem}`" <|
+    addMajorFirst numParams mem (mem ++ `casesP) (mem ++ `casesOn)
+  discard <| attempt? `Mumi.view m!"no `recOn` for `{mem}`" <|
+    addMajorFirst numParams mem (mem ++ `rec) (mem ++ `recOn)
 
 end Mumi
