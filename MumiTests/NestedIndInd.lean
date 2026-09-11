@@ -254,6 +254,116 @@ example : depth (rebuild (wrap (wrap bottom))) = 3 := rfl
 #guard_msgs in
 #print axioms depth
 
+/-! ### One eliminator per member
+
+A mutual block gives a recursion that can be started at any of its members.
+Four of the five members here are copies, and each one's recursion is restated
+over the type the writer wrote: the majors below are `Tree RecWFTree`,
+`WFTree RecWFTree` and `Tree.WF RecWFTree a`, not the copies.  The motives and
+the minors are the same in each, so the four recursions are one recursion
+entered at four places. -/
+
+/-- `depth`, entered at the tree. -/
+def depthT : Tree RecWFTree → Nat :=
+  nested_Tree_2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat) (motive_4 := fun _ _ _ => True)
+    (motive_5 := fun _ _ _ _ => True)
+    (fun _ ih => ih + 1) (fun _ _ ih _ => ih) 0
+    (fun _ _ _ _ ihv ihl ihr => ihv + ihl + ihr)
+    (fun _ _ _ _ _ => trivial) trivial
+    (fun _ _ _ _ _ _ _ _ _ _ _ _ _ => trivial)
+
+/-- `depth`, entered at the well-formed tree. -/
+def depthW : WFTree RecWFTree → Nat :=
+  nested_WFTree_1.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+    (motive_3 := fun _ => Nat) (motive_4 := fun _ _ _ => True)
+    (motive_5 := fun _ _ _ _ => True)
+    (fun _ ih => ih + 1) (fun _ _ ih _ => ih) 0
+    (fun _ _ _ _ ihv ihl ihr => ihv + ihl + ihr)
+    (fun _ _ _ _ _ => trivial) trivial
+    (fun _ _ _ _ _ _ _ _ _ _ _ _ _ => trivial)
+
+-- iota holds at a copy's eliminator too, on a value the recursion can see into
+example : depthT (leaf bottom) = 1 := rfl
+example : depthT (leaf (wrap bottom)) = 2 := rfl
+example : depthW (.mk (leaf bottom) (leafWF bottom)) = 1 := rfl
+
+/-- info: 'RecWFTree.depthT' does not depend on any axioms -/
+#guard_msgs in
+#print axioms depthT
+
+-- the round trip out of the `WFTree` copy carries a proof, and that is proved
+-- by `propext`; the one out of the `Tree` copy carries none
+/-- info: 'RecWFTree.depthW' depends on axioms: [propext] -/
+#guard_msgs in
+#print axioms depthW
+
+/-- `rebuild`, entered at the tree. -/
+def rebuildT : Tree RecWFTree → Tree RecWFTree :=
+  nested_Tree_2.rec
+    (motive_1 := fun _ => RecWFTree) (motive_2 := fun _ => WFTree RecWFTree)
+    (motive_3 := fun _ => Tree RecWFTree)
+    (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
+    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (fun _ ih => .mk ih) (fun _ _ ih hwf => .mk ih hwf) .empty
+    (fun key _ _ _ ihv ihl ihr => .node key ihv ihl ihr)
+    (fun l _ _ ih hw => .intro l ih hw) .empty
+    (fun key _ _ _ _ _ hl' hr' ihv ihl ihr hwl hwr => .node key ihv ihl ihr hwl hwr hl' hr')
+
+example : depthT (rebuildT (leaf (wrap bottom))) = 2 := rfl
+
+/-- info: 'RecWFTree.rebuildT' does not depend on any axioms -/
+#guard_msgs in
+#print axioms rebuildT
+
+/-- The same recursion entered at the proposition, which is what it proves about. -/
+theorem rebuildT_wf {a : Tree RecWFTree} (h : Tree.WF RecWFTree a) :
+    Tree.WF RecWFTree (rebuildT a) :=
+  nested_WF_3.rec
+    (motive_1 := fun _ => RecWFTree) (motive_2 := fun _ => WFTree RecWFTree)
+    (motive_3 := fun _ => Tree RecWFTree)
+    (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
+    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (fun _ ih => .mk ih) (fun _ _ ih hwf => .mk ih hwf) .empty
+    (fun key _ _ _ ihv ihl ihr => .node key ihv ihl ihr)
+    (fun l _ _ ih hw => .intro l ih hw) .empty
+    (fun key _ _ _ _ _ hl' hr' ihv ihl ihr hwl hwr => .node key ihv ihl ihr hwl hwr hl' hr')
+    h
+
+/-- info: 'RecWFTree.rebuildT_wf' does not depend on any axioms -/
+#guard_msgs in
+#print axioms rebuildT_wf
+
+/-! ### The tactics
+
+`Tree`, `Tree.WF` and `WFTree` are the writer's own inductives, so `induction`,
+`cases` and `match` reach them by their own eliminators.  `RecWFTree` is the
+block, and a member of an erased block is a `def`, so the tactics reach it by
+the eliminators above. -/
+
+example {a : Tree RecWFTree} (h : Tree.WF RecWFTree a) : 0 ≤ depthT a := by
+  induction h <;> exact Nat.zero_le _
+
+example (t : Tree RecWFTree) : 0 ≤ depthT t := by
+  induction t <;> exact Nat.zero_le _
+
+example (t : RecWFTree) : 0 ≤ 1 := by
+  induction t <;> exact Nat.zero_le _
+
+example (t : RecWFTree) : 0 ≤ 1 := by
+  cases t <;> exact Nat.zero_le _
+
+/-- The block's own member matches like the inductive it was written as. -/
+def unwrap : RecWFTree → WFTree RecWFTree
+  | .mk x => x
+
+example : unwrap (.mk (.mk .empty (.intro [] .empty .empty))) = .mk .empty (.intro [] .empty .empty) :=
+  rfl
+
+/-- info: 'RecWFTree.unwrap' does not depend on any axioms -/
+#guard_msgs in
+#print axioms unwrap
+
 /-- The erased predicate can still be destructed. -/
 example (t : nested_Tree_2) (h : nested_WF_3 t) : True := by
   cases h with
@@ -264,12 +374,11 @@ example (t : nested_Tree_2) (h : nested_WF_3 t) : True := by
 Nothing above needs these -- the recursor is stated over the originals, so a
 recursion never meets a copy.  They are here because the bridge is what makes
 that restatement legitimate, and an equivalence that is only claimed is worth
-less than one that is checked.  `nested_WF_3` and `nested_WFWith_4` have no
-`.rec` of their own and do not need one: they are inverted through `Tree.WF.rec`
-and the round trip. -/
+less than one that is checked.  The recursion below is the raw one, whose
+motives are over the copies; `nested_Tree_2.rec` is the restatement. -/
 
 theorem ofOrig_toOrig (a : nested_Tree_2) : nested_Tree_2.ofOrig a.toOrig = a :=
-  nested_Tree_2.rec
+  nested_Tree_2._nested_rec
     (motive_1 := fun _ => True) (motive_2 := fun _ => True)
     (motive_3 := fun a => nested_Tree_2.ofOrig a.toOrig = a)
     (fun _ _ => trivial) (fun _ _ _ => trivial)
@@ -693,12 +802,43 @@ info: @LocalsII.rec : {motive_1 : LocalsII → Sort u_1} →
 #check @LocalsII.rec
 
 /--
-info: @LocalsII.Ok.rec : ∀ {motive : (n : Nat) → (a : OkFam LocalsII n) → LocalsII.Ok n a → Prop},
+info: @LocalsII.Ok.rec : ∀ {motive_1 : LocalsII → Sort u_1} {motive_2 : (n : Nat) → OkFam LocalsII n → Sort u_1}
+  {motive_3 : (n : Nat) → Fam LocalsII n → Sort u_1}
+  {motive_4 : (n : Nat) → (a : Fam LocalsII n) → motive_3 n a → FamOk LocalsII a → Prop}
+  {motive_5 : (n : Nat) → (a : OkFam LocalsII n) → motive_2 n a → LocalsII.Ok n a → Prop} (tip : motive_1 LocalsII.tip)
+  (mk :
+    (n : Nat) →
+      (x : OkFam LocalsII n) →
+        (a : LocalsII.Ok n x) → (x_ih : motive_2 n x) → motive_5 n x x_ih a → motive_1 (LocalsII.mk n x a))
+  (mk_1 :
+    (n : Nat) →
+      (v : Fam LocalsII n) →
+        (h : FamOk LocalsII v) → (v_ih : motive_3 n v) → motive_4 n v v_ih h → motive_2 n (OkFam.mk v h))
+  (mk_2 : (n : Nat) → (a : LocalsII) → motive_1 a → motive_3 n (Fam.mk a))
+  (mk_3 : ∀ (n : Nat) (a : LocalsII) (a_ih : motive_1 a), motive_4 n (Fam.mk a) (mk_2 n a a_ih) ⋯)
+  (mk_4 : ∀ (n : Nat) (x : OkFam LocalsII n) (x_ih : motive_2 n x), motive_5 n x x_ih ⋯) {n : Nat}
+  {a : OkFam LocalsII n} (t : LocalsII.Ok n a),
+  motive_5 n a (LocalsII.nested_OkFam_1.rec tip mk mk_1 mk_2 mk_3 mk_4 a) t
+-/
+#guard_msgs in
+#check @LocalsII.Ok.rec
+
+/-! `LocalsII.Ok.rec` states the motive at the value the data recursion returned,
+which the `induction` tactic cannot read off a conclusion.  The recursion over
+this member alone concludes at the motive itself, and keeps the name the tactic
+runs on.  A member of an erased block is a `def`, so this is the only eliminator
+the tactic has for it. -/
+
+/--
+info: @LocalsII.Ok.induct : ∀ {motive : (n : Nat) → (a : OkFam LocalsII n) → LocalsII.Ok n a → Prop},
   (∀ (n : Nat) (x : OkFam LocalsII n), motive n x ⋯) →
     ∀ {n : Nat} {a : OkFam LocalsII n} (h : LocalsII.Ok n a), motive n a h
 -/
 #guard_msgs in
-#check @LocalsII.Ok.rec
+#check @LocalsII.Ok.induct
+
+example {n} {x : OkFam LocalsII n} (h : LocalsII.Ok n x) : 0 ≤ n := by
+  induction h using LocalsII.Ok.induct <;> exact Nat.zero_le _
 
 namespace LocalsII
 

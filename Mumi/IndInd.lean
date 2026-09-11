@@ -2900,6 +2900,11 @@ structure BridgeCtx where
   /-- The block's parameters, as free variables. -/
   ps     : Array Expr
   copies : Array Copy
+  /--
+  The name the recursion over each copy is restated under.  A copy is named
+  after the writer's own type, so this is a name the writer can reach, and the
+  only one a statement about the copy's recursion has to name. -/
+  copyRecs : Array Name := #[]
   deriving Inhabited
 
 namespace BridgeCtx
@@ -3350,11 +3355,19 @@ def copyAt? (c : BridgeCtx) (i : Nat) : Option Nat :=
 /-- Where the data member `i` sits among the motives. -/
 def dpos (c : BridgeCtx) (i : Nat) : Nat := (c.b.dataIdxs.findIdx? (· == i)).getD 0
 
+/--
+The type of the major premise of member `i`'s recursion, as the writer wrote it.
+A copy stands for an original, so the recursion over it is over that original. -/
+def majorType (c : BridgeCtx) (i : Nat) (idxs : Array Expr) : Expr :=
+  match c.copyAt? i with
+  | some k => c.copies[k]!.origAt idxs
+  | none   => mkAppN (c.b.cst c.b.members[i]!.name) (c.ps ++ idxs)
+
 /-- The name of anything the denesting made up, if `ty` mentions one. -/
 def leaked? (c : BridgeCtx) (ty : Expr) : Option Name :=
   let b := c.b
   ty.getUsedConstants.find? fun n =>
-    c.copies.any (fun cp => cp.name.isPrefixOf n)
+    (!c.copyRecs.contains n && c.copies.any (fun cp => cp.name.isPrefixOf n))
       || b.members.any fun m =>
            (m.name != n && b.rawMember m.name == n)
              || m.ctors.any fun cc => cc.name != n && b.rawCtor cc.name == n
@@ -4032,19 +4045,25 @@ def addRestated (c : BridgeCtx) (i : Nat) (lp niceName : Name)
   let b := c.b
   let (type, value) ←
     forallTelescope (← c.niceArity i) fun idxs _ =>
-      withLocalDeclD `t (mkAppN (b.cst b.members[i]!.name) (c.ps ++ idxs)) fun t => do
+      withLocalDeclD `t (c.majorType i idxs) fun t => do
         let hide := hideRecBinders c.ps.size (nmots.size + nmins.size) idxs.size
         let all := c.ps ++ nmots ++ nmins ++ idxs ++ #[t]
         -- the raw recursor is indexed over the copies, so the major premise's
         -- indices go across; the premise itself does not, the written statement
-        -- of a member being by definition the raw one at those very images
+        -- of a member being by definition the raw one at those very images --
+        -- unless the member is itself a copy, whose premise is the original's
         let rIdxs ← c.ofImages idxs
+        let rt ← c.ofImage t (c.majorType i idxs)
+        let raw := mkAppN recCst (c.ps ++ rmots ++ rmins ++ rIdxs ++ #[rt])
+        -- and then what the raw one concludes at is the round trip of the
+        -- writer's arguments, which is those arguments up to `X.toOrig_ofOrig`
+        let body ← if (c.copyAt? i).isNone then pure raw
+                   else c.backAcross (idxs ++ #[t]) raw
         -- `goalMot` is a motive when the conclusion is just that motive at the
         -- indices, and a function of them when the conclusion is more than that
         return (hide (← mkForallFVars all
                   (← Core.betaReduce (mkAppN goalMot (idxs ++ #[t])))),
-                hide (← mkLambdaFVars all
-                  (mkAppN recCst (c.ps ++ rmots ++ rmins ++ rIdxs ++ #[t]))))
+                hide (← mkLambdaFVars all body))
   let type ← instantiateMVars type
   if let some n := c.leaked? type then
     throwError "`{niceName}` would be stated with `{n}` in it, which is not \
@@ -6639,12 +6658,16 @@ def emit (p : Plan) : TermElabM Unit := do
   let widen := !p.peeled.isEmpty && b.propIdxs.isEmpty && peeledAllData
   let recName (i : Nat) : Name :=
     if widen then Name.mkStr b.members[i]!.name "_core_rec" else pubRecName i
+  -- the recursor over the whole block states a `Prop` member's motive at the
+  -- value the data recursion returned, which the `induction` tactic cannot read.
+  -- The split recursor concludes at the motive itself, so it keeps a name of its
+  -- own for the tactic to run on
+  let inductName (i : Nat) : Name := b.members[i]!.name ++ `induct
   -- a member the writer declared, in a block with copies in it, gets its
   -- recursor twice over: the kernel-facing one, whose motives are over the
   -- copies, under a hidden name, and `X.rec` stated over the originals
   let rawRecName (i : Nat) : Name :=
-    if p.copies.isEmpty || copyNames.contains b.members[i]!.name then recName i
-    else Name.mkStr b.members[i]!.name "_nested_rec"
+    if p.copies.isEmpty then recName i else Name.mkStr b.members[i]!.name "_nested_rec"
   -- an induction-inductive block wants one recursor over all of its members at
   -- once, and falls back to the split recursors of steps 8 and 9 when there is
   -- none
@@ -6838,11 +6861,15 @@ def emit (p : Plan) : TermElabM Unit := do
         let numLocals := numHeadLams app
         let indName ← (peelLams numLocals app).getAppFn.constName?
         some { idx, name := n, indName, app, numLocals }
-      let c : BridgeCtx := { b, ps, copies }
+      let c : BridgeCtx := { b, ps, copies, copyRecs := copies.map (recName ·.idx) }
       -- the round trip is wanted exactly where a constructor of the writer's own
       -- has a copy-typed field, which is where the recursor has to transport
       let needed : Array Nat := Id.run do
         let mut out : Array Nat := #[]
+        -- a data copy needs its own: the recursion over it is restated at the
+        -- original, and reads the raw one at the round trip of the major premise
+        for k in *...copies.size do
+          unless b.members[copies[k]!.idx]!.isProp do out := out.push k
         for i in *...b.size do
           if (c.copyAt? i).isSome then continue
           -- and where a member the bridge restates is indexed by one: its
@@ -6881,7 +6908,10 @@ def emit (p : Plan) : TermElabM Unit := do
         -- does not
         let mut grandDone : Array Nat := #[]
         for i in dIdxs ++ b.propIdxs do
-          if (c.copyAt? i).isSome then continue
+          -- a copy is one of the writer's own types under a name of ours, so the
+          -- recursion over it restates like any other member's; it is the one
+          -- restatement the block can do without, so it is allowed to decline
+          let optional := (c.copyAt? i).isSome
           -- the recursor over the whole block is the better one, and it is not
           -- always restatable over the originals; the split one always is
           let covered := grand && !(b.members[i]!.isProp && grandFree.contains i)
@@ -6892,15 +6922,31 @@ def emit (p : Plan) : TermElabM Unit := do
           if big then
             grandDone := grandDone.push i
           else unless b.members[i]!.isProp do
-            c.addNiceRec i lp rawRecName (recName i) rawCtorName
+            let split := c.addNiceRec i lp rawRecName (recName i) rawCtorName
+            if optional then
+              discard <| attempted `Mumi.indind
+                s!"`{recName i}` does not restate over the originals" split
+            else
+              split
         -- and the same for the `Prop` members, whose recursors name a copy
         -- exactly when their recursion runs into one
         for s in propRecs do
           for j in s.kIdxs do
-            if (c.copyAt? j).isSome || grandDone.contains j then continue
+            if (c.copyAt? j).isSome then continue
+            let nm := if grandDone.contains j then inductName j else recName j
             discard <| attempted `Mumi.indind
-              s!"`{recName j}` does not restate over the originals" <|
-              c.addNicePropRec s j rawRecName (recName j)
+              s!"`{nm}` does not restate over the originals" <|
+              c.addNicePropRec s j rawRecName nm
+        -- a copy whose recursion declined keeps the raw one under the plain
+        -- name, which is where a reader of this block would look for it
+        for i in dIdxs do
+          if (c.copyAt? i).isNone then continue
+          if rawRecName i == recName i then continue
+          if (← getEnv).contains (recName i) then continue
+          let info ← getConstInfo (rawRecName i)
+          addDef (recName i) info.levelParams info.type
+            (mkConst (rawRecName i) (info.levelParams.map Level.param)) (compile := false)
+          markElabAsElim (recName i)
     unless built do
       -- a `Prop` recursor that never mentioned a copy is already the one that was
       -- wanted, and only owes the plain name; one that does mention a copy has no
