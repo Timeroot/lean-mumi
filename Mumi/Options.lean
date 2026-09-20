@@ -17,6 +17,13 @@ register_option mumi.enabled : Bool := {
     by lowering the block to declarations the kernel accepts"
 }
 
+register_option mumi.separate : Bool := {
+  defValue := true
+  descr := "hand a `mutual` block whose members have no cyclic dependency back to Lean, one \
+    declaration at a time, instead of reading it as an induction-induction.  Turn this off to \
+    keep the block's joint recursor"
+}
+
 register_option mumi.pp.nested : Bool := {
   defValue := true
   descr := "display a rescued nested inductive's auxiliary member as the type it is a copy \

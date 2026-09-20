@@ -12,32 +12,30 @@ module
 
 public import Mumi.Lowering
 public import Mumi.Denest
+public import Mumi.IndInd
 import all Lean.Elab.MutualInductive
 
 /-!
 # Elaborating a universe-heterogeneous block
 
 `Mumi.Lowering` turns an *elaborated* heterogeneous block into declarations the
-kernel accepts.  This module is the part in front of it: it takes the block's
-syntax through exactly the elaboration `mutual` does -- same headers, same
-constructors, same parameter and universe analysis -- and hands the result to
+kernel accepts.  This module is the front end: it takes the block's syntax
+through the same elaboration `mutual` does -- same headers, constructors,
+parameter and universe analysis -- and hands the result to
 `Lean.Elab.MultiuniverseInductive.lower`.
 
-Doing that in a downstream library means reaching into `Lean.Elab.Command`,
-whose inductive pipeline is `private`.  `import all` gives us access, but not
-the ability to *edit* those functions, and two of them enforce the very
-restriction we are lifting:
+Lean's inductive pipeline is `private`.  `import all` grants access but not the
+ability to edit, and two of its functions enforce the restriction being lifted:
 
 * `checkParamsAndResultType` rejects a member whose resulting sort differs from
   the first member's, while the headers are being elaborated; and
 * `checkResultingUniverses` checks every member's constructor fields against
   the *block's* universe, meaning the first member's.
 
-So the five functions on the path between `elabMutualInductive` and the point
-where the block is finally added are reproduced here, adapted.  They are marked
-`het` and are copies of the v4.33.1 originals; the adaptation in each case is
-small and flagged in a comment.  Everything they call is used unmodified from
-`Lean.Elab.Command`.
+So the five functions between `elabMutualInductive` and the point where the
+block is added are reproduced here.  They are marked `het`, are copies of the
+v4.33.1 originals, and each adaptation is small and flagged in a comment.
+Everything they call is used unmodified from `Lean.Elab.Command`.
 -/
 
 public section
@@ -50,11 +48,9 @@ variable {α : Type}
 
 /-! ## Header elaboration without the same-universe check -/
 
-/--
-`Lean.Elab.Command.checkParamsAndResultType`, minus the check that this member's
-resulting sort matches the preceding member's.  Parameter compatibility is still
-checked, and the resulting type must still be a sort.
--/
+/-- `Lean.Elab.Command.checkParamsAndResultType`, minus the check that this
+member's resulting sort matches the preceding member's.  Parameter compatibility
+is still checked, and the resulting type must still be a sort. -/
 private def checkParamsAndResultTypeHet (type firstType : Expr) (numParams : Nat) :
     TermElabM Unit := do
   try
@@ -107,13 +103,8 @@ private def getIndTypeUniverse (indType : InductiveType) : TermElabM Level :=
     | _ => throwError "Unexpected inductive type resulting type{indentExpr r}"
 
 /--
-`Lean.Elab.Command.checkResultingUniverses`, but checking each member's
-constructor fields against *that member's* own resulting universe rather than
-against the block's.
-
-This is what the lowering needs: its members end up in separate inductive
-declarations, so a member's fields only ever have to fit that member's universe.
--/
+`Lean.Elab.Command.checkResultingUniverses`, checking each member's constructor
+fields against *that member's* resulting universe rather than the block's. -/
 private def checkResultingUniversesPerType (views : Array InductiveView)
     (elabs' : Array InductiveElabStep2) (numParams : Nat) (indTypes : List InductiveType) :
     TermElabM Unit := do
@@ -122,7 +113,7 @@ private def checkResultingUniversesPerType (views : Array InductiveView)
     let u := (← instantiateLevelMVars (← getIndTypeUniverse indType)).normalize
     checkResultingUniversePolymorphism #[views[i]!] u numParams indTypes
     if u.isZero then continue
-    -- See if there is a custom error. If so, this should throw an error first:
+    -- See if there is a custom error.  If so, this should throw an error first:
     elabs'[i]!.checkUniverses numParams u
     indType.ctors.forM fun ctor =>
     forallTelescopeReducing ctor.type fun ctorArgs _ => do
@@ -231,11 +222,7 @@ private def withElaboratedHeadersHet (vars : Array Expr) (elabs : Array Inductiv
 
 /--
 `Lean.Elab.Command.elabInductiveViews`, but lowering the block instead of adding
-it as one mutual inductive declaration.
-
-`lower` makes the auxiliary constructions itself as it emits each declaration,
-so there is nothing left to do for them here.
--/
+it as one mutual inductive declaration. -/
 private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars : Array Expr)
     (elabs : Array InductiveElabStep1) : TermElabM FinalizeContext := do
   let view0 := elabs[0]!.view
@@ -257,7 +244,7 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
           }
           -- a block with no nested occurrence comes back from `denest` unchanged
           MultiuniverseInductive.denest inp fun inp => do
-            if requireHeterogeneous && !(← inp.isHeterogeneous) then
+            if requireHeterogeneous && !(← inp.isHeterogeneous) && !inp.localIndices then
               throwError "This block is homogeneous once denested, so it is Lean's to elaborate"
             MultiuniverseInductive.lower inp
           buildFinalizeContext context.elabs' context.levelParams context.vars context.params
@@ -270,18 +257,8 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
     return res
 
 /--
-Elaborates a universe-heterogeneous mutual inductive block, given the elements
-of the `mutual` block (`stx[1].getArgs`).
-
-The caller is responsible for having established that every element is an
-`inductive` declaration.
-
-With `requireHeterogeneous`, the block is only lowered if it really is
-heterogeneous once denested, and an error is thrown otherwise.  A caller that
-has not already checked -- the nested-inductive rescue, which cannot know
-without denesting -- uses this to be sure it is not taking over a block Lean
-handles itself.
--/
+Elaborate a universe-heterogeneous mutual inductive block, given the elements of
+the `mutual` block (`stx[1].getArgs`). -/
 def elabHeterogeneousInductive (elems : Array Syntax) (requireHeterogeneous := false) :
     CommandElabM Unit := do
   let inductives ← elems.mapM fun stx => do
@@ -304,14 +281,8 @@ def elabHeterogeneousInductive (elems : Array Syntax) (requireHeterogeneous := f
 /-! ## Deciding whether a block needs us -/
 
 /--
-Elaborates the block's headers and reports whether the stock same-universe check
-would reject them.
-
-The check that decides this is `Lean.Elab.Command.checkHeaders`, called
-unmodified, so the answer is exactly "would `mutual` reject this block for
-living in several universes?".  Header elaboration itself is done without that
-check, so a heterogeneous block gets far enough to be asked about.
--/
+Elaborate the block's headers and report whether the stock same-universe check
+would reject them. -/
 private def headersAreHeterogeneous (elabs : Array InductiveElabStep1) : TermElabM Bool :=
   Term.withoutSavingRecAppSyntax do
     let views := elabs.map (·.view)
@@ -328,19 +299,34 @@ private def headersAreHeterogeneous (elabs : Array InductiveElabStep1) : TermEla
       catch _ =>
         return true
 
-/--
-Whether this `mutual` block is one we should take over: every element a plain
-`inductive`, and the members not all in one universe.
+/-- Which of the three elaborators a `mutual` block should go to. -/
+inductive Route where
+  /-- Lean's own; we step aside. -/
+  | stock
+  /-- `elabHeterogeneousInductive`: the members are not all in one universe. -/
+  | heterogeneous
+  /-- `IndInd.elabInductionInductive`: a member's arity mentions a sibling. -/
+  | indind
+  deriving Inhabited, DecidableEq, Repr
 
-Anything that goes wrong while finding out -- an ill-formed header, a missing
-name, an unrelated elaboration failure -- answers `false`, so that the stock
-elaborator runs and reports it.  All state touched here is rolled back.
--/
-def blockNeedsLowering (elems : Array Syntax) : CommandElabM Bool := do
+/-- `classifyBlock`, once the views are in hand. -/
+private def routeFromHeaders (elabs : Array InductiveElabStep1) : TermElabM Route := do
+  if elabs.any (·.view.isCoinductive) then
+    return .stock
+  try
+    if ← headersAreHeterogeneous elabs then return .heterogeneous else return .stock
+  catch _ =>
+    if IndInd.viewsAreInductionInductive (elabs.map (·.view)) then
+      return .indind
+    else
+      return .stock
+
+/-- Which elaborator this block belongs to. -/
+def classifyBlock (elems : Array Syntax) : CommandElabM Route := do
   unless elems.all (·[1].getKind == ``Lean.Parser.Command.«inductive») do
-    return false
+    return .stock
   if elems.size ≤ 1 then
-    return false
+    return .stock
   let saved ← get
   let res ←
     try
@@ -348,12 +334,9 @@ def blockNeedsLowering (elems : Array Syntax) : CommandElabM Bool := do
         let modifiers ← elabModifiers ⟨stx[0]⟩
         pure (modifiers, stx[1])
       runTermElabM fun _ => do
-        let elabs ← inductives.mapM fun (modifiers, stx) => mkInductiveView modifiers stx
-        if elabs.any (·.view.isCoinductive) then
-          return false
-        headersAreHeterogeneous elabs
+        routeFromHeaders (← inductives.mapM fun (modifiers, stx) => mkInductiveView modifiers stx)
     catch _ =>
-      pure false
+      pure .stock
   set saved
   return res
 

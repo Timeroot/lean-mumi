@@ -221,6 +221,48 @@ in its type
 inductive Bad4 : Type where
   | mk : NoSuchType → Bad4
 
+/-! ## A `mutual` that fails for reasons of its own
+
+The same for a whole block.  Each of these is homogeneous, so no retry is
+even offered one; the point of pinning them is that the retry machinery sits
+in front of every `mutual` in the file and must not colour what comes out. -/
+
+/--
+error: Constructor field `NoSuchType` of `MBadU1.mk` contains universe level metavariables at the expression
+  Sort ?u.4
+in its type
+  Sort ?u.4
+-/
+#guard_msgs in
+mutual
+inductive MBadU1 : Type where
+  | mk (x : NoSuchType)
+inductive MBadU2 : Type where
+  | mk
+end
+
+/--
+error: (kernel) arg #1 of 'MBadP1.mk' has a non positive occurrence of the datatypes being declared
+-/
+#guard_msgs in
+mutual
+inductive MBadP1 : Type where
+  | mk (f : MBadP2 → MBadP2)
+inductive MBadP2 : Type where
+  | tip
+end
+
+-- a `mutual` of an inductive and a definition is not a block at all
+/--
+error: invalid mutual block: either all elements of the block must be inductive/structure declarations, or they must all be definitions/theorems/abbrevs
+-/
+#guard_msgs in
+mutual
+inductive MMixed : Type where
+  | mk
+def mMixed : Nat := 0
+end
+
 /-! ## Errors are still Lean's
 
 A block that is heterogeneous *and* has a field too big for its own member is
