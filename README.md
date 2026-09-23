@@ -381,6 +381,40 @@ functionality into core Lean:
 library is the downstream version of it, and needs no patched toolchain. If you
 want this in Lean proper, saying so upstream is the thing that would help.
 
+## Experimental induction–recursion (`mahlo-ir` branch)
+
+`import Mumi` now also handles a bounded fragment of mixed `mutual` blocks
+containing inductive carriers and their recursive decoders. Stock Lean gets the
+first attempt. Several carriers and several dependent recursive outputs are
+supported, with constructors, `.rec`, `.recOn`, `.cases`, `.casesOn`, simp
+equations, and induction/cases tactic integration generated automatically.
+
+- `set_option mumi.mahlo false` (the default): an axiom-free graph construction
+  puts carriers one universe above their written `Type u`; it reduces and runs
+  as ordinary Lean code.
+- `set_option mumi.mahlo true`: carriers stay in the written `Type u`, using
+  the single axiom `IR.mahlo.{u} : IR.Reflection.{u,u+1}`. General constructor
+  equations are `rfl`, but some closed reductions still need explicit rewriting.
+
+See [the frontend guide](Mumi/IR/README.md) for syntax, generated APIs, the exact
+supported fragment, and the reflection assumption. General constructor patterns
+use an indexed view; this is not yet an unrestricted Lean IR elaborator.
+
+## Earlier induction–recursion research
+
+The optional [IRResearch prototype](IRResearch/README.md) explores a small
+`Nat`/`Π` induction–recursion universe using accessibility and a proof-erased
+canonical subtype. It includes dependent elimination, views, and a presentation
+layer for compiled value programs, but assumes a stage-model axiom and still has
+kernel-normalization limitations. It is separate from Mumi's declaration
+lowering and is not imported by `Mumi`.
+
+The [general IR backend](IRResearch/General/README.md) shares a single
+universe-polymorphic reflection axiom `IR.mahlo.{u} : IR.Reflection.{u,u+1}`
+across positive indexed descriptions, including mutual carriers and multiple
+recursive outputs. Its implementation now lives under `Mumi/IR`; the
+`IRResearch.General` imports and hand-written examples remain available.
+
 ## License
 
 Apache 2.0, matching Lean. `Mumi/Elab.lean` contains code adapted from

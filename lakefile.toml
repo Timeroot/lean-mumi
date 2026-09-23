@@ -9,3 +9,7 @@ name = "Mumi"
 [[lean_lib]]
 name = "MumiTests"
 globs = ["MumiTests.+"]
+
+# Experimental staged IR API; deliberately not a default target or a Mumi import.
+[[lean_lib]]
+name = "IRResearch"
