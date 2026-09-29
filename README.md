@@ -809,6 +809,11 @@ equations, and induction/cases tactic integration generated automatically.
   the single axiom `IR.mahlo.{u} : IR.Reflection.{u,u+1}`. General constructor
   equations are `rfl`, but some closed reductions still need explicit rewriting.
 
+In the default mode the carriers may also be *indexed* -- by other carriers of
+the block, and by types the decoders compute -- so induction-induction and
+induction-recursion go in one `mutual`; `MumiTests/IRTangle.lean` is one
+strongly connected block of all of it, and everything it produces is `rfl`.
+
 See [the frontend guide](Mumi/IR/README.md) for syntax, generated APIs, the exact
 supported fragment, and the reflection assumption. General constructor patterns
 use an indexed view; this is not yet an unrestricted Lean IR elaborator.

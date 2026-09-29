@@ -9,6 +9,7 @@ public meta import Mumi.Options
 public meta import Mumi.Elab
 public meta import Mumi.Rescue
 public meta import Mumi.IR.Frontend
+public meta import Mumi.IR.Family
 public import Mumi.IR.Basic
 public meta import Lean.Elab.Declaration
 
@@ -73,7 +74,7 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
         withExporting (isExporting := (← getScope).isPublic) do
         withoutCommandIncrementality true do
         withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
-          IndRec.elaborate elems
+          IndRec.elaborateAny elems
       catch ex =>
         set saved
         logException ex

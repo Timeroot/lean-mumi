@@ -49,10 +49,10 @@ structure Block where
   level : String
   deriving Inhabited
 
-private def par (s : String) := "(" ++ s ++ ")"
-private def join (xs : Array String) := String.intercalate " " xs.toList
-private def app (f : String) (xs : Array String) := par (f ++ " " ++ join xs)
-private def pname (n : Name) := n.toString
+def par (s : String) := "(" ++ s ++ ")"
+def join (xs : Array String) := String.intercalate " " xs.toList
+def app (f : String) (xs : Array String) := par (f ++ " " ++ join xs)
+def pname (n : Name) := n.toString
 private def aux (n : Name) (suffix := "") : String :=
   (n.getPrefix ++ Name.mkSimple ("_ir_" ++ n.getString! ++ suffix)).toString
 private def sem (m : Member) := aux m.name "_Sem"
@@ -66,12 +66,12 @@ private def pArgs (b : Block) := b.params.map (pname ∘ Binder.name)
 private def atParams (b : Block) (n : String) := app n (pArgs b)
 private def typeAt (b : Block) (i : Nat) := atParams b b.members[i]!.name.toString
 
-private def parseTerm (s : String) : CommandElabM Syntax := do
+def parseTerm (s : String) : CommandElabM Syntax := do
   match Parser.runParserCategory (← getEnv) `term s with
   | .ok t => return t
   | .error e => throwError "IR frontend generated an invalid term:\n{s}\n{e}"
 
-private def text (s : Syntax) : CommandElabM String := do
+def text (s : Syntax) : CommandElabM String := do
   return (← liftCoreM <| PrettyPrinter.ppTerm ⟨s⟩).pretty
 
 private partial def exposeDefs (s attr : Syntax) : Syntax :=
@@ -84,7 +84,7 @@ private partial def exposeDefs (s attr : Syntax) : Syntax :=
     s.setArg 1 (mkNullNode (s[1].getArgs.map (exposeDefs · attr)))
   else s
 
-private def emit (s : String) : CommandElabM Unit := do
+def emit (s : String) : CommandElabM Unit := do
   trace[Mumi.ir] "{s}"
   let stx ← match Parser.runParserCategory (← getEnv) `command s with
     | .ok t => pure t
@@ -106,19 +106,19 @@ private def emit (s : String) : CommandElabM Unit := do
 
 initialize registerTraceClass `Mumi.ir
 
-private partial def unparen (s : Syntax) : Syntax :=
+partial def unparen (s : Syntax) : Syntax :=
   if s.isOfKind ``Parser.Term.paren then unparen s[1] else s
 
-private partial def unapp (s : Syntax) : Syntax × Array Syntax :=
+partial def unapp (s : Syntax) : Syntax × Array Syntax :=
   let s := unparen s
   if s.isOfKind ``Parser.Term.app then
     let (f, xs) := unapp s[0]
     (f, xs ++ s[1].getArgs)
   else (s, #[])
 
-private def same (s : Syntax) (n : Name) : Bool := s.isIdent && s.getId == n
+def same (s : Syntax) (n : Name) : Bool := s.isIdent && s.getId == n
 
-private partial def subst (s : Syntax) (pairs : Array (Name × Syntax)) : Syntax :=
+partial def subst (s : Syntax) (pairs : Array (Name × Syntax)) : Syntax :=
   if s.isIdent then
     match pairs.find? (·.1 == s.getId) with
     | some (_, t) => t
@@ -130,7 +130,7 @@ private partial def subst (s : Syntax) (pairs : Array (Name × Syntax)) : Syntax
     | .node info k args => .node info k (args.map (subst · pairs))
     | _ => s
 
-private def binders (s : Syntax) : CommandElabM (Array Binder) := do
+def binders (s : Syntax) : CommandElabM (Array Binder) := do
   unless s.isOfKind ``Parser.Term.explicitBinder && s[2].getNumArgs == 2 && s[3].getNumArgs == 0 do
     throwErrorAt s "IR prototype requires explicitly typed, explicit binders (no defaults)"
   s[1].getArgs.mapM fun n => do
@@ -138,7 +138,7 @@ private def binders (s : Syntax) : CommandElabM (Array Binder) := do
     if n.getId.toString.startsWith "_ir_" then throwErrorAt n "Names beginning with '_ir_' are reserved inside IR blocks"
     return { name := n.getId, type := s[2][1] }
 
-private def telescopeHead (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) := do
+def telescopeHead (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) := do
   let s := unparen s
   if s.isOfKind ``Parser.Term.arrow then
     return (#[{ name := Name.mkSimple ("_ir_arg" ++ toString n), type := s[0] }], s[2])
@@ -153,13 +153,13 @@ private def telescopeHead (s : Syntax) (n := 0) : CommandElabM (Array Binder × 
     return (bs, s[4])
   return (#[], s)
 
-private partial def telescope (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) := do
+partial def telescope (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) := do
   let (bs, r) ← telescopeHead s n
   if bs.isEmpty then return (bs, r)
   let (cs, result) ← telescope r (n+bs.size)
   return (bs ++ cs, result)
 
-private def signature (s : Syntax) : CommandElabM (Array Binder × Syntax) := do
+def signature (s : Syntax) : CommandElabM (Array Binder × Syntax) := do
   let bs ← s[0].getArgs.flatMapM binders
   let r ← if s[1].getNumArgs == 0 then parseTerm "Type" else pure s[1][0][1]
   return (bs, r)
@@ -171,21 +171,21 @@ private def target? (members : Array Member) (params : Array Binder) (s : Syntax
   if !(args.zip params).all (fun (a, p) => same a p.name) then return none
   return some i
 
-private partial def mentions (s : Syntax) (ns : Array Name) : Bool :=
+partial def mentions (s : Syntax) (ns : Array Name) : Bool :=
   (s.isIdent && ns.contains s.getId) || s.getArgs.any (mentions · ns)
 
-private partial def mentionsPrefix (s : Syntax) (n : Name) : Bool :=
+partial def mentionsPrefix (s : Syntax) (n : Name) : Bool :=
   (s.isIdent && n.isPrefixOf s.getId) || s.getArgs.any (mentionsPrefix · n)
 
 -- This is a syntax frontend, not an arbitrary-term binder elaborator. Refuse
 -- shadowing before doing any renaming: otherwise even an ordinary field's
 -- equation could silently acquire a different meaning after substitution.
-private partial def checkPatternNames (protectedNames : Array Name) (s : Syntax) : CommandElabM Unit := do
+partial def checkPatternNames (protectedNames : Array Name) (s : Syntax) : CommandElabM Unit := do
   if s.isIdent && protectedNames.contains s.getId then
     throwErrorAt s "IR prototype does not support shadowing a block, parameter, field, or equation-variable name"
   for a in s.getArgs do checkPatternNames protectedNames a
 
-private partial def checkTermBinders (protectedNames : Array Name) (s : Syntax) : CommandElabM Unit := do
+partial def checkTermBinders (protectedNames : Array Name) (s : Syntax) : CommandElabM Unit := do
   if s.isOfKind ``Parser.Term.byTactic || s.isOfKind ``Parser.Term.byTactic' ||
       s.isOfKind ``Parser.Term.«letrec» || s.getKind == `Lean.Parser.Term.do then
     throwErrorAt s "IR prototype requires ordinary term expressions inside the block; move tactics, do notation, and local recursion to external helpers"
@@ -217,12 +217,12 @@ private partial def checkTermBinders (protectedNames : Array Name) (s : Syntax) 
   if s.isOfKind ``termIfLet then checkPatternNames protectedNames s[2]
   for a in s.getArgs do checkTermBinders protectedNames a
 
-private partial def checkReservedNames (s : Syntax) : CommandElabM Unit := do
+partial def checkReservedNames (s : Syntax) : CommandElabM Unit := do
   if s.isIdent && s.getId.toString.startsWith "_ir_" then
     throwErrorAt s "Names beginning with '_ir_' are reserved inside IR blocks"
   for a in s.getArgs do checkReservedNames a
 
-private def checkDistinct (names : Array Name) (reserved : Array Name) : CommandElabM Unit := do
+def checkDistinct (names : Array Name) (reserved : Array Name) : CommandElabM Unit := do
   let mut seen := reserved
   for n in names do
     if seen.contains n then throwError "IR prototype requires distinct binder names; '{n}' is already in scope"
@@ -230,7 +230,7 @@ private def checkDistinct (names : Array Name) (reserved : Array Name) : Command
       throwError "IR prototype reserves 'motive' and 'motive_...' for recursor motives"
     seen := seen.push n
 
-private def plainModifiers (s : Syntax) : Bool := s.getArgs.all (·.getNumArgs == 0)
+def plainModifiers (s : Syntax) : Bool := s.getArgs.all (·.getNumArgs == 0)
 
 def isIRBlock (elems : Array Syntax) : Bool :=
   elems.all (fun e => e.isOfKind ``Parser.Command.declaration &&
@@ -440,7 +440,7 @@ private def emitUpper (b : Block) : CommandElabM Unit := do
       let attrs := if c.fields.isEmpty then "@[reducible, match_pattern] " else "@[reducible] "
       emit (attrs ++ "def " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨_, " ++ app (graph m ++ "." ++ c.name.toString) xs ++ "⟩")
 
-private def motive (i : Nat) := if i == 0 then "motive" else "motive_" ++ toString (i+1)
+def motive (i : Nat) := if i == 0 then "motive" else "motive_" ++ toString (i+1)
 private def minor (b : Block) (i ci : Nat) := Id.run do
   let c := b.members[i]!.ctors[ci]!
   let count := b.members.foldl (fun n m => n + (m.ctors.filter (·.name == c.name)).size) 0

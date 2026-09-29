@@ -104,6 +104,83 @@ general match elaborator override, automatic structural-recursion recognition
 for the public carriers, `deriving`, public injectivity API, or `noConfusion`
 wrapper yet; define recursive consumers using `.rec`.
 
+## Indexed carriers, and induction-induction in the same block
+
+In upper mode a carrier may be *indexed*, and an index domain may be another
+carrier of the block or a type a decoder computes.  A decoder may then recurse
+over an indexed carrier, and its result may read the decoders of the indices.
+So one `mutual` may hold induction-induction and induction-recursion at once:
+
+```lean
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | ext (Γ : Ctx) (A : Ty Γ) : Ctx
+inductive Ty : (Γ : Ctx) → Type where
+  | U (Γ : Ctx) : Ty Γ
+  | Pi (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.ext Γ A)) : Ty Γ
+def Env : Ctx → Type
+  | .nil => PUnit
+  | .ext Γ A => (ρ : Env Γ) × El Γ A ρ
+def El : (Γ : Ctx) → Ty Γ → Env Γ → Type
+  | _, .U Γ => fun _ => Nat
+  | _, .Pi Γ A B => fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩
+end
+
+example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.ext Γ A)) :
+    El Γ (Ty.Pi Γ A B) = fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩ := rfl
+```
+
+`MumiTests/IRTangle.lean` is the stress case: a carrier `A` holding a `B` and a
+`D`, `F : A → Type` reading `D` at the `B` inside, `B` indexed by an `A` and by
+`F` of it, `D` a type computed from a `B`, and `E` indexed by all three, in one
+strongly connected block.
+
+[Family.lean](Family.lean) does this by the same graph encoding as above, one
+universe up.  A carrier `X` with decoders `f₁ … fₖ` becomes a record
+`_ir_X_Sem` of the decoders' values and a graph `_ir_X` indexed by it; an index
+of carrier type is split into its semantic half and its graph half, and a
+decoder applied to it reads the semantic half.  What is left is a `mutual` of
+indexed graph families that is still induction-inductive wherever the written
+block was, and it goes through the ordinary `mutual` command -- to Lean when
+its arities are plain, to `Mumi.IndInd` when they name each other, with
+`mumi.separate false` so the joint recursor is kept.  The public carrier is
+`(s : _ir_X_Sem …) × _ir_X … s`, a decoder is a projection, a constructor packs
+the decoders' clauses with the graph constructor, and `X.rec` is the graph's
+recursor with its motives and minor premises repacked.  Every decoder equation
+and iota rule is `rfl`, and no axiom is added.
+
+The generated API is as above -- `X.rec` over every motive in the block,
+`X.recOn`, `X.casesOn`, `X.cases`, `@[simp]` decoder, recursor and case
+equations -- plus `X.recD`, the one-motive recursor with the other carriers'
+motives discharged at `PUnit`, which is what `induction x` uses (`X.rec` asks for
+every motive, so it is for `induction … using` and term mode).  Motives are
+`motive`, `motive_2`, … in carrier order.
+
+Its restrictions, beyond the general ones below:
+
+- Upper mode only.  Under `mumi.mahlo true` an indexed block is rejected.
+- A decoder is `def f (params) : (i₁ : I₁) → … → (iₙ : Iₙ) → X params i₁ … iₙ → R`:
+  the carrier's indices bound in order just before it, at exactly those names.
+  Its equations take one pattern per index (`_` or a name) and one flat
+  constructor pattern.
+- An index domain that mentions a carrier is that carrier applied outright to
+  its indices; `List Ctx` is not one.  Anything else about a value of carrier
+  type -- an index, a field, the value a decoder is about -- is read only
+  through decoders, so `(h : x = y)` for fields `x y : A` is rejected.
+- An index argument of carrier type is a field, a field applied to its own
+  binders, or a constructor application (written `Ctx.ext Γ A` or `.ext Γ A`).
+  A constructor application whose argument is a function field applied to a
+  binder, `Ty (.ext Γ (f n))`, is not deleted by the erasure underneath and is
+  rejected by it.
+- When Lean declares the graph block -- no carrier in any arity -- `X.rec` is
+  a kernel recursor application, which the code generator compiles for a single
+  carrier and not for a mutual family; it is then `noncomputable`, and so is
+  what is defined through it.  When `Mumi.IndInd` declares the block, it
+  compiles.
+- An indexed carrier gets no view, no `match` on its constructors, and no
+  `deriving` yet; recursive consumers go through `X.rec` and `X.recD`.
+
 ## Supported input fragment
 
 The prototype supports several carriers and several recursive functions per
@@ -115,11 +192,10 @@ may be proofs. Function-valued decoder results are supported as well.
 
 Current restrictions are explicit:
 
-- Carriers are unindexed, nonempty declarations in the same `Type u`. Their
-  recursive occurrences are direct or functions returning a carrier. Nested
-  occurrences, negative occurrences, and carriers in recursive argument domains
-  are rejected. The generic backend supports fixed indices, but the frontend
-  does not yet generate indexed blocks.
+- Carriers are nonempty declarations in the same `Type u`, unindexed except in
+  upper mode (see the section above). Their recursive occurrences are direct or
+  functions returning a carrier. Nested occurrences, negative occurrences, and
+  carriers in recursive argument domains are rejected.
 - Shared parameters must be typed, explicit, and repeated identically on all
   declarations. Use surrounding `universe` declarations. Section variables,
   implicit/default parameters, and per-declaration universe lists are not
@@ -185,7 +261,9 @@ automatically generated constructor `injEq` lemmas can use `propext`.
 ## Tests
 
 Run `lake test`, or `lake build Mumi MumiTests`.
-The `MumiTests/IR*.lean` suite covers both modes, polymorphic universes, two
+`MumiTests/IRFamily.lean` and `MumiTests/IRTangle.lean` cover the indexed and
+induction-inductive blocks of the section above, what they reject included.
+The rest of the `MumiTests/IR*.lean` suite covers both modes, polymorphic universes, two
 carriers with six recursive outputs, dependent type/value outputs, numerical
 branching, multi-argument recursive domains, proof fields, equation-variable
 renaming, dependent elimination, views, tactics, compiled upper-mode execution,
