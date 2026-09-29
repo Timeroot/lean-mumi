@@ -178,20 +178,15 @@ axiom IR.mahlo.{u} : IR.Reflection.{u,u+1}
 
 This is an operational Mahlo-style reflection assumption. Its proposed
 set-theoretic justification is not formalized, and kernel checks do not prove
-its consistency. See the [backend discussion](../../IRResearch/General/README.md).
-Adding blocks does not add axioms. Generated upper-mode definitions are
+its consistency. Adding blocks does not add axioms. Generated upper-mode definitions are
 axiom-free; lower-mode definitions use only `IR.mahlo`. As usual, Lean's own
 automatically generated constructor `injEq` lemmas can use `propext`.
 
 ## Tests
 
-Run `lake test`, or `lake build Mumi MumiTests IRResearch.General.AxiomAudit`.
+Run `lake test`, or `lake build Mumi MumiTests`.
 The `MumiTests/IR*.lean` suite covers both modes, polymorphic universes, two
 carriers with six recursive outputs, dependent type/value outputs, numerical
 branching, multi-argument recursive domains, proof fields, equation-variable
 renaming, dependent elimination, views, tactics, compiled upper-mode execution,
 module boundaries, rejection/rollback, and transitive axiom audits.
-
-The historical `IRResearch.General.*` module paths remain compatibility imports
-of the shared backend. The older example-specific `IRResearch` entry point is
-not imported by `Mumi`.

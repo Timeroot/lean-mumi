@@ -813,21 +813,6 @@ See [the frontend guide](Mumi/IR/README.md) for syntax, generated APIs, the exac
 supported fragment, and the reflection assumption. General constructor patterns
 use an indexed view; this is not yet an unrestricted Lean IR elaborator.
 
-## Earlier induction–recursion research
-
-The optional [IRResearch prototype](IRResearch/README.md) explores a small
-`Nat`/`Π` induction–recursion universe using accessibility and a proof-erased
-canonical subtype. It includes dependent elimination, views, and a presentation
-layer for compiled value programs, but assumes a stage-model axiom and still has
-kernel-normalization limitations. It is separate from Mumi's declaration
-lowering and is not imported by `Mumi`.
-
-The [general IR backend](IRResearch/General/README.md) shares a single
-universe-polymorphic reflection axiom `IR.mahlo.{u} : IR.Reflection.{u,u+1}`
-across positive indexed descriptions, including mutual carriers and multiple
-recursive outputs. Its implementation now lives under `Mumi/IR`; the
-`IRResearch.General` imports and hand-written examples remain available.
-
 ## License
 
 Apache 2.0, matching Lean. `Mumi/Elab.lean` contains code adapted from
