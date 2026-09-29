@@ -7,7 +7,7 @@ module
 
 public meta import Mumi.Options
 public meta import Mumi.Elab
-public meta import Lean.Message
+public meta import Mumi.Rescue
 public meta import Lean.Elab.Declaration
 
 /-!
@@ -21,66 +21,62 @@ inductive T : Type where
   | mkT : Nonempty T → T
 ```
 
-The kernel handles these by specialising the nesting type constructor to the
-block -- here making a copy of `Nonempty` at `T` -- and checking the enlarged
-block instead.  That is why `T.rec` for a working nested inductive has a motive
-for the nesting type as well as for `T`.
+The kernel specialises the nesting type constructor to the block -- here copying
+`Nonempty` at `T` -- and checks the enlarged block.  This is why `T.rec` has a
+motive for the nesting type as well as for `T`.
 
-The enlarged block is a mutual block, so it has to be homogeneous, and the copy
-of `Nonempty T` is a `Prop` while `T` is a `Type`.  So the declaration above is
-rejected, with the same "must belong to the same type universe" error a
-handwritten heterogeneous `mutual` block gets -- only from the kernel rather
-than from the elaborator, and about a block the user never wrote.
+The enlarged block is mutual and so must be homogeneous, but the copy of
+`Nonempty T` is in `Prop` while `T` is in `Type`.  The kernel rejects the
+declaration with the "must belong to the same type universe" error, about a
+block the user never wrote.
 
-`Mumi.Denest` can build that enlarged block at the elaborator level, and
-`Mumi.Lowering` can lower it.  This module is the trigger: it lets Lean try
-first, and steps in only if Lean fails *and* the enlarged block turns out to be
-one we have a lowering for.
+`Mumi.Denest` builds the enlarged block at the elaborator level and
+`Mumi.Lowering` lowers it.  This module is the trigger.
 
-Heterogeneity is not the only way denesting can produce a block the kernel
-refuses.  If the nesting type is a family indexed by another type being copied,
-the enlarged block is *induction-inductive*, and `Mumi.IndInd` handles the case
-where the induction-induction runs only through `Prop`:
+Denesting can also produce an *induction-inductive* block, when the nesting type
+is a family indexed by another type being copied.  `Mumi.IndInd` handles that
+when the induction-induction runs only through `Prop`:
 
 ```lean
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)   -- `WFTree α := { t : Tree α // t.WF }`, roughly
 ```
 
-Copying `WFTree` at `RecWFTree` drags in `Tree`, `Tree.WF` and `Tree.WFWith`,
-and the last two are indexed by the copy of `Tree`.  See `Mumi.IndInd` for the
-block that comes out.
+Copying `WFTree` at `RecWFTree` drags in `Tree`, `Tree.WF` and `Tree.WFWith`;
+the last two are indexed by the copy of `Tree`.
 
 ## Why catch-and-retry
 
-Nested inductives that work are the kernel's business, and should stay that way:
-the kernel's denesting is trusted code with its own `rec`, `below`, `brecOn` and
-`sizeOf` handling, and replacing it with ours would be a large, invisible change
-to declarations that were perfectly fine.  Deciding up front whether a given
-inductive is one Lean can handle means reimplementing the kernel's positivity
-and universe analysis, and being wrong in either direction is bad: too eager and
-we take over working declarations, too shy and we miss the ones we exist for.
-
-Letting Lean answer the question is exact, and costs nothing on the path that
-matters -- a declaration Lean accepts is elaborated once, by Lean, and we never
-run.  Only a declaration that was going to be an error anyway is elaborated
-twice.
+Nested inductives that already work belong to the kernel, whose denesting is
+trusted and carries its own `rec`, `below`, `brecOn` and `sizeOf` handling.  So
+Lean decides whether a declaration is one of ours, and we act only after it
+fails.  See `Mumi.Rescue`.
 
 ## The gate
 
-Failure alone is not enough of a reason to take over: an inductive can fail for
-any number of reasons that are nothing to do with us, and we must not "rescue"
-one by quietly building a different declaration.
+Each retry requires an enlarged block that Lean could not have handled.
+`IndInd.elabNestedInductive` requires denesting to add a member, and then the
+block to be induction-inductive, or a copy to have taken a field of its
+constructor as an index.  `elabHeterogeneousInductive` with
+`requireHeterogeneous` requires members in more than one universe, or such a
+field.  A denested block that is homogeneous, not induction-inductive and
+indexed only at closed parameters is one the kernel would have accepted, so its
+failure was genuine.
 
-So each retry is gated on the enlarged block being one Lean could not have
-handled.  The first runs with `requireHeterogeneous`, which lowers the block
-only if denesting it yields members in more than one universe.  The second,
-`Mumi.IndInd.elabNestedInductive`, requires denesting to produce at least one
-new member *and* the enlarged block to be induction-inductive.  Both conditions
-are ones Lean cannot be in: if the denested block were homogeneous and not
-induction-inductive, the kernel would have handled it, so the failure was a real
-one.  When both gates reject, or both retries fail for any other reason, the
-original error is reported and every trace of the retries is dropped.
+## Why there are three retries
+
+The two gates overlap on the constructor-field case.  `Mumi.IndInd` states the
+block over the original nesting types, `Pair2 R n m` rather than
+`R.nested_Pair2_1 n m`, which lowering never does; but its bridge can fail, and
+a block with the copies visible is worse than the same block lowered, which at
+least relates the two by `eq_orig`.  So `requireBridge` asks for the good case
+first, lowering takes the block if that declines, and the third retry repeats
+the first route without the bridge.
+
+The third retry also drops `requireDeriving`.  An unhonoured `deriving` clause
+is a logged error, and a logged error is how a route declines -- correct while
+another route might still honour it.  By the third retry there is none, so what
+could not be derived becomes a warning instead of losing the block.
 -/
 
 public section
@@ -89,18 +85,7 @@ open Lean Lean.Elab Lean.Elab.Command
 
 namespace Mumi
 
-/-- Has an error been logged since the log had `n` messages in it? -/
-private meta def errorLoggedSince (n : Nat) : CommandElabM Bool := do
-  let msgs := (← get).messages.reportedPlusUnreported
-  return (msgs.toList.drop n).any (·.severity matches .error)
-
-/--
-Elaborates a declaration by handing it to Lean, and, if it is an `inductive`
-that Lean rejects and denesting makes heterogeneous, lowers it instead.
-
-Every other declaration -- and every `inductive` Lean accepts -- is elaborated
-by Lean's own `elabDeclaration`, unchanged, and this adds nothing to it.
--/
+/-- Elaborate a declaration with Lean's own `elabDeclaration`. -/
 @[command_elab Lean.Parser.Command.declaration]
 meta def elabDeclarationRescuingNested : CommandElab := fun stx => do
   unless mumi.enabled.get (← getOptions) do
@@ -109,44 +94,14 @@ meta def elabDeclarationRescuingNested : CommandElab := fun stx => do
   -- that `def`s keep their incremental elaboration
   unless stx[1].getKind == ``Lean.Parser.Command.«inductive» do
     throwUnsupportedSyntax
-  let saved ← get
-  let nmsgs := saved.messages.reportedPlusUnreported.size
-  let stockEx? ←
-    try
-      elabDeclaration stx
-      pure none
-    catch ex =>
-      pure (some ex)
-  if stockEx?.isNone && !(← errorLoggedSince nmsgs) then
-    return
-  -- Lean rejected it; see whether it is one of ours
-  let stockState ← get
-  let attempt (k : CommandElabM Unit) : CommandElabM Bool := do
-    set saved
-    try
-      withExporting (isExporting := (← getScope).isPublic) do
-      withoutCommandIncrementality true do
-      -- synchronously, so that a kernel error in one of the declarations we add
-      -- is thrown where it can be caught: `addDecl` otherwise hands the checking
-      -- to a background task, and the error would surface long after the retry
-      -- had reported success
-      withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
-        k
-      if ← errorLoggedSince nmsgs then
-        throwError "the rescued declaration did not elaborate"
-      return true
-    catch _ =>
-      return false
-  -- denesting either makes the block heterogeneous, which `Mumi.Lowering`
-  -- takes, or induction-inductive, which `Mumi.IndInd` takes
-  if ← attempt (elabHeterogeneousInductive #[stx] (requireHeterogeneous := true)) then
-    return
-  if ← attempt (IndInd.elabNestedInductive #[stx]) then
-    return
-  -- not ours, or ours and broken: report exactly what Lean reported
-  set stockState
-  match stockEx? with
-  | some ex => throw ex
-  | none    => pure ()
+  -- denesting either makes the block induction-inductive, which `Mumi.IndInd`
+  -- takes, or heterogeneous, which `Mumi.Lowering` takes
+  rescuing (elabDeclaration stx) #[
+    ("the induction-inductive retry, over the originals",
+      IndInd.elabNestedInductive #[stx] (requireBridge := true)),
+    ("lowering the denested block",
+      elabHeterogeneousInductive #[stx] (requireHeterogeneous := true)),
+    ("the induction-inductive retry",
+      IndInd.elabNestedInductive #[stx] (requireDeriving := false))]
 
 end Mumi
