@@ -96,13 +96,23 @@ def emit (s : String) : CommandElabM Unit := do
   try
     if stx.isOfKind ``Parser.Command.universe then elabCommand stx
     else
-      withScope (fun sc => { sc with opts := sc.opts.setBool `linter.unusedVariables false }) do
+      withScope (fun sc => { sc with opts := (sc.opts.setBool `linter.unusedVariables false).setBool `linter.unusedSimpArgs false }) do
         elabCommand stx
   catch e => throwError "While generating IR declaration:\n{s}\n{← e.toMessageData.toString}"
   let errors := ((← get).messages.reportedPlusUnreported.toList.drop n).filter (·.severity == .error)
   unless errors.isEmpty do
     let messages ← errors.mapM (fun e => e.data.toString)
     throwError "While generating IR declaration:\n{s}\n{String.intercalate "\n" messages}"
+
+/-- A `def`, `noncomputable` only where the code generator cannot follow: at
+the universe a block is written at every primitive has a run-time
+implementation, so it ordinarily can. -/
+def emitDefinition (attrs rest : String) : CommandElabM Unit := do
+  let saved ← get
+  try emit (attrs ++ "def " ++ rest)
+  catch _ =>
+    set saved
+    emit (attrs ++ "noncomputable def " ++ rest)
 
 initialize registerTraceClass `Mumi.ir
 
@@ -600,11 +610,11 @@ private def emitLower (b : Block) : CommandElabM Unit := do
     ss := ss.push ("  | " ++ sortValue b i ++ " => .choose " ++ tagName m ++ " (fun\n" ++ String.intercalate "\n" cs.toList ++ ")")
   emit ("def " ++ sigName b ++ " " ++ ps ++ " : Mumi.IR.Signature (ULift.{" ++ b.level ++ "} " ++ sortName b ++ ") " ++ par (atParams b (dName b)) ++ "\n" ++ String.intercalate "\n" ss.toList)
   for i in [:b.members.size] do
-    emit ("noncomputable def " ++ raw b.members[i]! ++ " " ++ ps ++ " : Type " ++ b.level ++ " := Mumi.IR.Raw " ++ signatureAt b ++ " " ++ sortValue b i)
+    emitDefinition "" (raw b.members[i]! ++ " " ++ ps ++ " : Type " ++ b.level ++ " := Mumi.IR.Raw " ++ signatureAt b ++ " " ++ sortValue b i)
   for j in [:b.decoders.size] do
     let d := b.decoders[j]!
     let result ← rawSyntax b (subst d.result #[(d.major, mkIdent `_ir_self)])
-    emit ("@[reducible] noncomputable def " ++ aux d.name ++ " " ++ ps ++ " (_ir_self : " ++ atParams b (raw b.members[d.target]!) ++ ") : " ++ (← text result) ++ " := (Mumi.IR.decode " ++ signatureAt b ++ " " ++ sortValue b d.target ++ " _ir_self)." ++ outField j)
+    emitDefinition "@[reducible] " (aux d.name ++ " " ++ ps ++ " (_ir_self : " ++ atParams b (raw b.members[d.target]!) ++ ") : " ++ (← text result) ++ " := (Mumi.IR.decode " ++ signatureAt b ++ " " ++ sortValue b d.target ++ " _ir_self)." ++ outField j)
   for i in [:b.members.size] do
     let m := b.members[i]!
     for c in m.ctors do
@@ -612,7 +622,7 @@ private def emitLower (b : Block) : CommandElabM Unit := do
       let values := fs.map fun f => if f.target.isSome then
         "(fun _ir_position => " ++ app f.name.toString (unpacked f.domain "_ir_position") ++ ")"
         else "⟨⟨" ++ f.name.toString ++ ", PUnit.unit⟩⟩"
-      emit ("noncomputable def " ++ raw m ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl fs) ++ " : " ++ atParams b (raw m) ++ " := Mumi.IR.roll " ++ signatureAt b ++ " " ++ sortValue b i ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) values)
+      emitDefinition "" (raw m ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl fs) ++ " : " ++ atParams b (raw m) ++ " := Mumi.IR.roll " ++ signatureAt b ++ " " ++ sortValue b i ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) values)
   let mut gs := #[]
   for i in [:b.members.size] do
     let m := b.members[i]!
@@ -627,7 +637,7 @@ private def emitLower (b : Block) : CommandElabM Unit := do
     emit ("def " ++ m.name.toString ++ " " ++ ps ++ " : Type " ++ b.level ++ " := { a : " ++ atParams b (raw m) ++ " // " ++ app (atParams b (good m)) #["a"] ++ " }")
   for d in b.decoders do
     let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-    emit ("@[reducible] noncomputable def " ++ d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ app (aux d.name) (pArgs b ++ #["_ir_self.val"]))
+    emitDefinition "@[reducible] " (d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ app (aux d.name) (pArgs b ++ #["_ir_self.val"]))
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -639,7 +649,7 @@ private def emitLower (b : Block) : CommandElabM Unit := do
           values := values.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".val"))
           certs := certs.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".property"))
         else values := values.push f.name.toString
-      emit ("noncomputable def " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨" ++ rawCtorApp b i ci values ++ ", " ++ app (good m ++ "." ++ c.name.toString) (values ++ certs) ++ "⟩")
+      emitDefinition "" (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨" ++ rawCtorApp b i ci values ++ ", " ++ app (good m ++ "." ++ c.name.toString) (values ++ certs) ++ "⟩")
   for i in [:b.members.size] do
     let m := b.members[i]!
     let mut cs := #[]
@@ -650,7 +660,7 @@ private def emitLower (b : Block) : CommandElabM Unit := do
       cs := cs.push ("  | " ++ tuplePattern m c ++ " => " ++ (← fieldLets b fs false) ++ (← shapeProp b i ci fs "_ir_self"))
       let hs := (fs.filter (·.target.isSome)).map ihVar
       proofs := proofs.push ("  | " ++ c.name.toString ++ " " ++ join (names fs ++ hs) ++ " => exact ⟨rfl, " ++ String.intercalate ", " (hs.toList ++ ["True.intro"]) ++ "⟩")
-    emit ("noncomputable def " ++ aux m.name "_Shape" ++ " " ++ ps ++ " (_ir_self : " ++ atParams b (raw m) ++ ") : Mumi.IR.Args (Mumi.IR.Raw " ++ signatureAt b ++ ") (Mumi.IR.decode " ++ signatureAt b ++ ") (" ++ signatureAt b ++ " " ++ sortValue b i ++ ") → Prop\n" ++ String.intercalate "\n" cs.toList)
+    emitDefinition "" (aux m.name "_Shape" ++ " " ++ ps ++ " (_ir_self : " ++ atParams b (raw m) ++ ") : Mumi.IR.Args (Mumi.IR.Raw " ++ signatureAt b ++ ") (Mumi.IR.decode " ++ signatureAt b ++ ") (" ++ signatureAt b ++ " " ++ sortValue b i ++ ") → Prop\n" ++ String.intercalate "\n" cs.toList)
     emit ("theorem " ++ aux m.name "_shape" ++ " " ++ ps ++ " {_ir_self : " ++ atParams b (raw m) ++ "} (_ir_good : " ++ app (atParams b (good m)) #["_ir_self"] ++ ") : " ++ app (atParams b (aux m.name "_Shape")) #["_ir_self", "(Mumi.IR.view " ++ signatureAt b ++ " " ++ sortValue b i ++ " _ir_self)"] ++ " := by\n  cases _ir_good with\n" ++ String.intercalate "\n" proofs.toList)
 
 private def emitLowerRec (b : Block) : CommandElabM Unit := do
@@ -687,11 +697,11 @@ private def emitLowerRec (b : Block) : CommandElabM Unit := do
       cs := cs.push ("      | " ++ tuplePattern m c ++ " => fun _ir_good => " ++ body)
     ss := ss.push ("    | " ++ sortValue b i ++ " => match _ir_args with\n" ++ String.intercalate "\n" cs.toList)
   let recName := aux b.members[0]!.name "_induction"
-  emit ("noncomputable def " ++ recName ++ " " ++ common ++ " : ∀ s a, " ++ app motiveApp #["s", "a"] ++ " :=\n  Mumi.IR.induction " ++ signatureAt b ++ " (C := " ++ motiveApp ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
+  emitDefinition "" (recName ++ " " ++ common ++ " : ∀ s a, " ++ app motiveApp #["s", "a"] ++ " :=\n  Mumi.IR.induction " ++ signatureAt b ++ " (C := " ++ motiveApp ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
   for i in [:b.members.size] do
-    emit ("@[elab_as_elim, induction_eliminator] noncomputable def " ++ b.members[i]!.name.toString ++ ".rec " ++ common ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ recName) (args ++ #[sortValue b i, "_ir_self.val", "_ir_self.property"]))
+    emitDefinition "@[elab_as_elim, induction_eliminator] " (b.members[i]!.name.toString ++ ".rec " ++ common ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ recName) (args ++ #[sortValue b i, "_ir_self.val", "_ir_self.property"]))
 
-private def emitEquations (b : Block) (lower : Bool) : CommandElabM Unit := do
+private def emitEquations (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
   for d in b.decoders do
     for ci in [:b.members[d.target]!.ctors.size] do
@@ -707,16 +717,14 @@ private def emitEquations (b : Block) (lower : Bool) : CommandElabM Unit := do
         if let some j := f.target then
           ihs := ihs.push (← lambda f.domain (app ("@" ++ b.members[j]!.name.toString ++ ".rec") (args ++ #[applyDomain f.name.toString f.domain])))
       emit ("@[simp] theorem " ++ b.members[i]!.name.toString ++ ".rec_" ++ c.name.toString ++ " " ++ common ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ app ("@" ++ b.members[i]!.name.toString ++ ".rec") (args ++ #[ctorApp b i ci (names c.fields)]) ++ " = " ++ app (minor b i ci) (names c.fields ++ ihs) ++ " := rfl")
-  let kw := if lower then "noncomputable def " else "def "
   for i in [:b.members.size] do
     let m := b.members[i]!
-    emit ("@[elab_as_elim] " ++ kw ++ m.name.toString ++ ".recOn " ++ ps ++ " " ++ motiveDecls b ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ (← minorDecls b true) ++ " : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ #["_ir_self"]))
+    emitDefinition "@[elab_as_elim] " (m.name.toString ++ ".recOn " ++ ps ++ " " ++ motiveDecls b ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ (← minorDecls b true) ++ " : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ #["_ir_self"]))
 
 private def viewName (m : Member) := m.name.toString ++ "._ir_View"
 
 private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  let kw := if lower then "noncomputable def " else "def "
   let level := if lower then b.level else "(" ++ b.level ++ "+1)"
   for i in [:b.members.size] do
     let m := b.members[i]!
@@ -760,7 +768,7 @@ private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
       body := "  let _ir_expose (_ir_args : " ++ argsTy ++ ") : " ++ app (atParams b (aux m.name "_Shape")) #["_ir_self.val", "_ir_args"] ++ " → " ++ app (atParams b (viewName m)) #["_ir_self"] ++ " :=\n    match _ir_args with\n" ++ String.intercalate "\n" cases.toList ++ "\n  _ir_expose (Mumi.IR.view " ++ signatureAt b ++ " " ++ sortValue b i ++ " _ir_self.val) " ++ app (aux m.name "_shape") (pArgs b ++ #["_ir_self.property"])
     else
       body := "  match _ir_self with\n  | ⟨_, _ir_code⟩ => match _ir_code with\n" ++ String.intercalate "\n" cases.toList
-    emit (kw ++ m.name.toString ++ "._ir_view " ++ ps ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (atParams b (viewName m)) #["_ir_self"] ++ " :=\n" ++ body)
+    emitDefinition "" (m.name.toString ++ "._ir_view " ++ ps ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (atParams b (viewName m)) #["_ir_self"] ++ " :=\n" ++ body)
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       emit ("@[simp] theorem " ++ m.name.toString ++ "._ir_view_" ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ app (m.name.toString ++ "._ir_view") (pArgs b ++ #[ctorApp b i ci (names c.fields)]) ++ " = " ++ app (viewName m ++ "." ++ c.name.toString) (names c.fields) ++ " := rfl")
@@ -775,8 +783,8 @@ private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
       branches := branches.push ("  | ." ++ c.name.toString ++ " " ++ join (names c.fields) ++ " => " ++ app (minor b i ci) (names c.fields))
     let mot := "{motive : " ++ typeAt b i ++ " → Sort _ir_elim}"
     let minorNames := (Array.range m.ctors.size).map (minor b i)
-    emit ("@[elab_as_elim, cases_eliminator] " ++ kw ++ m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ join minors ++ " : motive _ir_self :=\n  match " ++ app (m.name.toString ++ "._ir_view") (pArgs b ++ #["_ir_self"]) ++ " with\n" ++ String.intercalate "\n" branches.toList)
-    emit ("@[elab_as_elim] " ++ kw ++ m.name.toString ++ ".cases " ++ ps ++ " " ++ mot ++ " " ++ join minors ++ " (_ir_self : " ++ typeAt b i ++ ") : motive _ir_self := " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive", "_ir_self"] ++ minorNames))
+    emitDefinition "@[elab_as_elim, cases_eliminator] " (m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ join minors ++ " : motive _ir_self :=\n  match " ++ app (m.name.toString ++ "._ir_view") (pArgs b ++ #["_ir_self"]) ++ " with\n" ++ String.intercalate "\n" branches.toList)
+    emitDefinition "@[elab_as_elim] " (m.name.toString ++ ".cases " ++ ps ++ " " ++ mot ++ " " ++ join minors ++ " (_ir_self : " ++ typeAt b i ++ ") : motive _ir_self := " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive", "_ir_self"] ++ minorNames))
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       emit ("@[simp] theorem " ++ m.name.toString ++ ".casesOn_" ++ c.name.toString ++ " " ++ ps ++ " " ++ mot ++ " " ++ join minors ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive", ctorApp b i ci (names c.fields)] ++ minorNames) ++ " = " ++ app (minor b i ci) (names c.fields) ++ " := rfl")
@@ -788,12 +796,12 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   if mumi.mahlo.get (← getOptions) then
     emitLower b
     emitLowerRec b
-    emitEquations b true
+    emitEquations b
     emitViews b true
   else
     emitUpper b
     emitUpperRec b
-    emitEquations b false
+    emitEquations b
     emitViews b false
 
 end Mumi.IndRec

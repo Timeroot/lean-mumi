@@ -30,6 +30,18 @@ structure Pred (i : I) (prev : ∀ j, r j i → Family S D) (s : S) : Type u whe
   lower : r stage i
   code : carrier (prev stage lower) s
 
+/-- What a value is at run time: its constructor arguments and its outputs,
+computed once when it was built.  A node's field is the same object as the
+value it came from, and stages and their proofs are never looked at, so nothing
+below the reflection axiom runs. -/
+structure Runtime (β : Type v) : Type v where
+  args : Array Unit
+  value : β
+
+unsafe def predDecodeImpl {i : I} {prev : ∀ j, r j i → Family S D} (s : S) (p : Pred r i prev s) : D s :=
+  (unsafeCast p : Runtime (D s)).value
+
+@[implemented_by predDecodeImpl]
 def predDecode {i : I} {prev : ∀ j, r j i → Family S D} (s : S) (p : Pred r i prev s) : D s :=
   decoder (prev p.stage p.lower) s p.code
 

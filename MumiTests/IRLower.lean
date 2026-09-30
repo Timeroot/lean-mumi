@@ -30,17 +30,31 @@ example : El Nat (U.pi Nat (U.base Nat) (fun _ => U.base Nat)) = (Nat → Nat) :
   fail_if_success exact rfl
   rw [El_pi, El_base]
 
-noncomputable def inhabit (A : Type u) (a₀ : A) (a : U A) : El A a :=
+def inhabit (A : Type u) (a₀ : A) (a : U A) : El A a :=
   U.rec A a₀ (fun _ _ _ ih => fun x => ih x) a
 
 example (A : Type u) (a₀ : A) : inhabit A a₀ (U.base A) = a₀ := rfl
 example (A : Type u) (a₀ : A) (a : U A) (b : El A a → U A) (x : El A a) :
     inhabit A a₀ (U.pi A a b) x = inhabit A a₀ (b x) := rfl
 
-noncomputable def top (A : Type u) (a : U A) : Bool :=
+-- what is defined through the recursor runs: a value is its arguments at run time
+/-- info: 7 -/
+#guard_msgs in
+#eval inhabit Nat 7 (U.base Nat)
+
+/-- info: 7 -/
+#guard_msgs in
+#eval (cast (by rw [El_pi, El_base] : El Nat (U.pi Nat (U.base Nat) fun _ => U.base Nat) = (Nat → Nat))
+  (inhabit Nat 7 (U.pi Nat (U.base Nat) fun _ => U.base Nat))) 42
+
+def top (A : Type u) (a : U A) : Bool :=
   match U._ir_view A a with
   | .base => true
   | .pi _ _ => false
+
+/-- info: false -/
+#guard_msgs in
+#eval top Nat (U.pi Nat (U.base Nat) fun _ => U.base Nat)
 
 example (A : Type u) : top A (U.base A) = true := rfl
 example (A : Type u) (a : U A) (b : El A a → U A) : top A (U.pi A a b) = false := rfl

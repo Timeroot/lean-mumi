@@ -98,9 +98,14 @@ example (g : Ctx) (a : Env g → Ty) :
 example (a : Ty) (b : El a → Ty) :
     measure (Ty.pi a b) = measure a + measure (b (default a)) + 1 := rfl
 
-noncomputable def exampleCtx : Ctx := Ctx.extend Ctx.empty (fun _ => Ty.base)
+def exampleCtx : Ctx := Ctx.extend Ctx.empty (fun _ => Ty.base)
 example : measureCtx exampleCtx = 2 := by
   rw [exampleCtx, measureCtx_extend, measureCtx_empty, measure_base]
+
+/-- info: 2 -/
+#guard_msgs in
+#eval measureCtx exampleCtx
+
 example (a : Ty) : True := by
   cases a <;> trivial
 example (g : Ctx) : True := by

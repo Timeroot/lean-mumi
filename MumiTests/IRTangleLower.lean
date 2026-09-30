@@ -26,8 +26,8 @@ inductive B : (x : A) → F x → Type where
       (f : (y : D x c b) → B (A.cons x c b y) (c, y)) : B x c
 inductive E : (x : A) → (c : F x) → B x c → Type where
   | mk (x : A) (c : F x) (b : B x c) (d : D x c b) : E x c b
-  | up (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) (b' : B (A.cons x c b d) (c, d)) :
-      E (A.cons x c b d) (c, d) b'
+  | up (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) :
+      E (A.cons x c b d) (c, d) (B.leaf (A.cons x c b d) (c, d))
 def F : A → Type
   | .nil => PUnit
   | .cons x c b d => F x × D x c b
@@ -36,7 +36,7 @@ def D : (x : A) → (c : F x) → B x c → Type
   | _, _, .node x c b e f => (y : D x c b) → D (A.cons x c b y) (c, y) (f y)
 def G : (x : A) → (c : F x) → (b : B x c) → E x c b → Nat
   | _, _, _, .mk x c b d => 0
-  | _, _, _, .up x c b e d b' => G x c b e + 1
+  | _, _, _, .up x c b e d => G x c b e + 1
 end
 
 /-! ## The decoders compute -/
@@ -46,63 +46,45 @@ example (x : A) (c : F x) (b : B x c) (d : D x c b) : F (A.cons x c b d) = (F x 
 example (x : A) (c : F x) : D x c (B.leaf x c) = F x := rfl
 example (x : A) (c : F x) (b : B x c) (e : D x c b) (f : (y : D x c b) → B (A.cons x c b y) (c, y)) :
     D x c (B.node x c b e f) = ((y : D x c b) → D (A.cons x c b y) (c, y) (f y)) := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) (b' : B (A.cons x c b d) (c, d)) :
-    G _ _ _ (E.up x c b e d b') = G x c b e + 1 := rfl
+-- at an index with a constructor nested inside another the kernel sees the
+-- equation, the elaborator's unifier does not: it is the `@[simp]` lemma
+example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) :
+    G _ _ _ (E.up x c b e d) = G x c b e + 1 := G_up x c b e d
 
 /-! ## The recursors -/
 
-/--
-info: @E.rec : {motive : A → Sort u_1} →
-  {motive_2 : (x : A) → (_ir_arg1 : F x) → B x _ir_arg1 → Sort u_1} →
-    {motive_3 : (x : A) → (c : F x) → (_ir_arg2 : B x c) → E x c _ir_arg2 → Sort u_1} →
-      motive A.nil →
-        ((x : A) → (c : F x) → (b : B x c) → (d : D x c b) → motive x → motive_2 x c b → motive (x.cons c b d)) →
-          ((x : A) → (c : F x) → motive x → motive_2 x c (B.leaf x c)) →
-            ((x : A) →
-                (c : F x) →
-                  (b : B x c) →
-                    (e : D x c b) →
-                      (f : (y : D x c b) → B (x.cons c b y) (c, y)) →
-                        motive x →
-                          motive_2 x c b →
-                            ((_ir_index_f_0 : D x c b) →
-                                motive_2 (x.cons c b _ir_index_f_0) (c, _ir_index_f_0) (f _ir_index_f_0)) →
-                              motive_2 x c (B.node x c b e f)) →
-              ((x : A) →
-                  (c : F x) → (b : B x c) → (d : D x c b) → motive x → motive_2 x c b → motive_3 x c b (E.mk x c b d)) →
-                ((x : A) →
-                    (c : F x) →
-                      (b : B x c) →
-                        (e : E x c b) →
-                          (d : D x c b) →
-                            (b' : B (x.cons c b d) (c, d)) →
-                              motive x →
-                                motive_2 x c b →
-                                  motive_3 x c b e →
-                                    motive_2 (x.cons c b d) (c, d) b' →
-                                      motive_3 (x.cons c b d) (c, d) b' (E.up x c b e d b')) →
-                  {x : A} →
-                    {c : F x} → {_ir_arg2 : B x c} → (_ir_self : E x c _ir_arg2) → motive_3 x c _ir_arg2 _ir_self
--/
-#guard_msgs in
 #check @E.rec
 
 /-- The number of `cons`es in an `A`, counting through the `B` it holds. -/
-noncomputable def size : A → Nat :=
+def size : A → Nat :=
   A.rec (motive := fun _ => Nat) (motive_2 := fun _ _ _ => Nat) (motive_3 := fun _ _ _ _ => Unit)
     0 (fun _ _ _ _ ihx ihb => ihx + ihb + 1)
     (fun _ _ ihx => ihx) (fun _ _ _ _ _ ihx ihb _ => ihx + ihb)
-    (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ _ _ => ())
+    (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())
 
 
 /-- info: 'TangleL.size' depends on axioms: [IR.mahlo] -/
 #guard_msgs in
 #print axioms size
 
+/-- A closed term through every carrier.  A closed term does not normalise
+here, so a field at a decoder of one is stated through the equations. -/
+def d0 : D A.nil PUnit.unit (B.leaf A.nil PUnit.unit) := cast (D_leaf A.nil PUnit.unit).symm PUnit.unit
+def a1 : A := A.cons A.nil PUnit.unit (B.leaf A.nil PUnit.unit) d0
+def c1 : F a1 := cast (F_cons A.nil PUnit.unit (B.leaf A.nil PUnit.unit) d0).symm (PUnit.unit, d0)
+
+/-- info: 1 -/
+#guard_msgs in
+#eval size a1
+
+/-- info: 3 -/
+#guard_msgs in
+#eval size (A.cons a1 c1 (B.leaf a1 c1) (cast (D_leaf a1 c1).symm c1))
+
 example (x : A) (c : F x) (b : B x c) (e : E x c b) : True := by
   induction e with
   | mk _ _ _ _ => trivial
-  | up _ _ _ _ _ _ _ => trivial
+  | up _ _ _ _ _ ih => trivial
 
 example (x : A) (c : F x) (b : B x c) : True := by cases b <;> trivial
 

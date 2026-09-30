@@ -34,25 +34,63 @@ variable {S : Type u} {D : S → Type (u+1)} (sig : Signature S D)
 
 noncomputable def model : _root_.IR.StageModel sig := _root_.IR.model sig
 noncomputable def Raw : S → Type u := _root_.IR.Raw.U sig
-noncomputable def decode : (s : S) → Raw sig s → D s := _root_.IR.Raw.decode sig
-noncomputable def roll (s : S)
-    (args : _root_.IR.Desc.Args (Raw sig) (decode sig) (sig s)) : Raw sig s :=
+
+/-! Every primitive has a run-time implementation on `IR.Stage.Runtime`, so
+that what a lower block generates compiles: a value is its arguments with its
+outputs, a field is the same object, and the reflection axiom is never run. -/
+
+unsafe def decodeImpl (s : S) (a : Raw sig s) : D s :=
+  (unsafeCast a : _root_.IR.Stage.Runtime (D s)).value
+
+@[implemented_by decodeImpl]
+def decode : (s : S) → Raw sig s → D s := _root_.IR.Raw.decode sig
+
+unsafe def rollImpl (s : S) (args : _root_.IR.Desc.Args (Raw sig) (decode sig) (sig s)) : Raw sig s :=
+  unsafeCast (_root_.IR.Stage.Runtime.mk (β := D s) (unsafeCast args)
+    (_root_.IR.Desc.eval (Raw sig) (decode sig) (sig s) args))
+
+@[implemented_by rollImpl]
+def roll (s : S) (args : _root_.IR.Desc.Args (Raw sig) (decode sig) (sig s)) : Raw sig s :=
   _root_.IR.Raw.roll sig s args
-noncomputable def view (s : S) (a : Raw sig s) :
+
+unsafe def viewImpl (s : S) (a : Raw sig s) : _root_.IR.Desc.Args (Raw sig) (decode sig) (sig s) :=
+  unsafeCast (unsafeCast a : _root_.IR.Stage.Runtime (D s)).args
+
+@[implemented_by viewImpl]
+def view (s : S) (a : Raw sig s) :
     _root_.IR.Desc.Args (Raw sig) (decode sig) (sig s) := _root_.IR.Raw.view sig s a
 
-@[elab_as_elim] noncomputable def induction {C : (s : S) → Raw sig s → Sort w}
+unsafe def inductionImpl {C : (s : S) → Raw sig s → Sort w}
+    (step : _root_.IR.Stage.Step sig (model sig).lt C) (s : S) (a : Raw sig s) : C s a :=
+  unsafeCast (step (unsafeCast ()) (unsafeCast ()) s (unsafeCast (viewImpl sig s a))
+    (fun t p => unsafeCast (inductionImpl step t (unsafeCast p))))
+
+@[elab_as_elim, implemented_by inductionImpl]
+def induction {C : (s : S) → Raw sig s → Sort w}
     (step : _root_.IR.Stage.Step sig (model sig).lt C) (s : S) (a : Raw sig s) : C s a :=
   _root_.IR.Raw.induction sig step s a
 
 variable {I : Type u} (r : I → I → Prop)
 
-noncomputable def pack (i : I) (children : ∀ j, r j i → Acc r j) (s : S)
+unsafe def packImpl (i : I) (children : ∀ j, r j i → Acc r j) (s : S)
+    (args : Args (_root_.IR.Stage.Pred r i (fun j h => _root_.IR.Stage.build sig r j (children j h)))
+      (_root_.IR.Stage.predDecode r) (sig s)) : _root_.IR.Stage.U sig r s :=
+  -- the fields are values, and read as such
+  unsafeCast (_root_.IR.Stage.Runtime.mk (β := D s) (unsafeCast args)
+    (_root_.IR.Desc.eval (Raw sig) (decode sig) (sig s) (unsafeCast args)))
+
+@[implemented_by packImpl]
+def pack (i : I) (children : ∀ j, r j i → Acc r j) (s : S)
     (args : Args (_root_.IR.Stage.Pred r i (fun j h => _root_.IR.Stage.build sig r j (children j h)))
       (_root_.IR.Stage.predDecode r) (sig s)) : _root_.IR.Stage.U sig r s :=
   _root_.IR.Stage.pack sig r i children s args
 
-noncomputable def raise {i : I} {children : ∀ j, r j i → Acc r j} (s : S)
+unsafe def raiseImpl {i : I} {children : ∀ j, r j i → Acc r j} (s : S)
+    (p : _root_.IR.Stage.Pred r i (fun j h => _root_.IR.Stage.build sig r j (children j h)) s) :
+    _root_.IR.Stage.U sig r s := unsafeCast p
+
+@[implemented_by raiseImpl]
+def raise {i : I} {children : ∀ j, r j i → Acc r j} (s : S)
     (p : _root_.IR.Stage.Pred r i (fun j h => _root_.IR.Stage.build sig r j (children j h)) s) :
     _root_.IR.Stage.U sig r s := _root_.IR.Stage.raise sig r s p
 

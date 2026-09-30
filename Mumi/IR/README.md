@@ -13,7 +13,7 @@ For a carrier written `inductive U : Type u`:
 | Option | Generated carrier | Additional axiom used | Computation |
 | --- | --- | --- | --- |
 | `mumi.mahlo false` (default) | `U : Type (u+1)` | None | Ordinary graph induction; kernel reduction and compiled execution |
-| `mumi.mahlo true` | `U : Type u` | `IR.mahlo.{u}` | Stage-based induction; general constructor equations reduce, but some closed reductions get stuck |
+| `mumi.mahlo true` | `U : Type u` | `IR.mahlo.{u}` | Stage-based induction; general constructor equations reduce, but some closed reductions get stuck; compiled execution |
 
 Upper mode deliberately changes the declared carrier universe. Decoder result
 types are not shifted. Both modes use the same source syntax and public API.
@@ -39,7 +39,6 @@ end
 example (A : Type u) (a : U A) (b : El A a → U A) :
     El A (U.pi A a b) = ((x : El A a) → El A (b x)) := rfl
 
--- Add `noncomputable` to this definition in lower mode.
 def inhabit (A : Type u) (a₀ : A) (a : U A) : El A a :=
   U.rec A a₀ (fun _ _ _ ih => fun x => ih x) a
 
@@ -97,7 +96,7 @@ def top (A : Type u) (a : U A) : Bool :=
   | .pi _ _ => false
 ```
 
-Use `noncomputable def` for this in lower mode. The view equations are `rfl`,
+This compiles and runs in both modes. The view equations are `rfl`,
 and viewing a node does not recursively traverse its children. Nullary
 upper-mode constructors additionally receive `@[match_pattern]`. There is no
 general match elaborator override, automatic structural-recursion recognition
@@ -169,7 +168,10 @@ unifier walks without sharing and the kernel does not.  One the kernel rejects
 is skipped and reported under `trace.Mumi.ir` rather than failing the block;
 `set_option mumi.ir.equations false` states none of them.  As everywhere in
 lower mode, a closed term does not normalise, so numerals a decoder computes
-want an ascription, `(0 : Nat)`, and consumers are `noncomputable`.
+want an ascription, `(0 : Nat)`.  What is defined through the recursors
+compiles and runs: at run time a value is its constructor arguments together
+with its outputs, computed once when it is built (`IR.Stage.Runtime`), a
+node's field is the same object, and the reflection axiom is never executed.
 
 The generated API is as above -- `X.rec` over every motive in the block,
 `X.recOn`, `X.casesOn`, `X.cases`, `@[simp]` decoder, recursor and case
@@ -193,10 +195,19 @@ Its restrictions, beyond the general ones below:
   One universe up, a constructor application whose argument is a function
   field applied to a binder, `Ty (.ext Γ (f n))`, is not deleted by the
   erasure underneath and is rejected by it; at the written universe nothing is
-  erased and it goes through.  At the written universe, in turn, a constructor
-  application takes fields only: the decode of one nested inside another does
-  not reduce there, so `E (A.cons x c b d) …` is fine and `E (A.cons (A.cons
-  …) …) …` is rejected, while one universe up it is not.
+  erased and it goes through.  A constructor nested inside another in an
+  index term, `E (A.cons (A.cons …) …) …`, goes through at the written
+  universe as well, although the decode of a nested node does not reduce
+  there: the lower view names each nested application by a hidden raw field
+  the public constructor supplies -- one that is an argument of another
+  application is substituted for in the certificate, one that is a conclusion
+  index is bound and pinned by an equation -- and the recursors, `casesOn` and
+  iota rules are definitional as before.  What is given up is a decoder
+  equation whose right-hand side reads a decoder at such a nested index, as
+  `El Γ (Ty.deep Γ A B C) = El (.ext (.ext Γ A) B) C` does: it transports
+  along the decode of that index, so the kernel does not accept it as
+  definitional and it is skipped; at an index one constructor deep, `E (A.cons
+  x c b d) …`, every equation is kept.
 - When Lean declares the graph block -- no carrier in any arity -- `X.rec` is
   a kernel recursor application, which the code generator compiles for a single
   carrier and not for a mutual family; it is then `noncomputable`, and so is

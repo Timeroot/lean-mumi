@@ -77,13 +77,17 @@ info: @Ty.recD : {motive : (Γ : Ctx) → Ty Γ → Sort u_1} →
 #check @Ty.recD
 
 /-- The number of `ext`s, by the recursor. -/
-noncomputable def len : Ctx → Nat :=
+def len : Ctx → Nat :=
   Ctx.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Unit)
     0 (fun _ _ ih _ => ih + 1) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
 
+/-- info: 2 -/
+#guard_msgs in
+#eval len (Ctx.ext (Ctx.ext Ctx.nil (Ty.U Ctx.nil)) (Ty.U _))
+
 
 /-- A closed environment for every context, by the joint recursion. -/
-noncomputable def env : (Γ : Ctx) → Env Γ :=
+def env : (Γ : Ctx) → Env Γ :=
   Ctx.rec (motive := fun Γ => Env Γ) (motive_2 := fun Γ A => (ρ : Env Γ) → El Γ A ρ)
     PUnit.unit
     (fun _ _ ρ a => ⟨ρ, a ρ⟩)
@@ -187,10 +191,9 @@ end DottedL
 
 /-! ## No carrier in any arity
 
-`Vec` is indexed by a `Nat` only, so the graph block is a plain mutual family
-and Lean declares it; its recursor is a kernel recursor of a mutual family,
-which the code generator does not compile, so `Vec.rec` and what is defined
-through it are `noncomputable`. -/
+`Vec` is indexed by a `Nat` only.  One universe up the graph block is a plain
+mutual family whose kernel recursor the code generator does not compile; here
+the recursor is the stage engine's, and it runs. -/
 
 namespace PlainL
 
@@ -211,9 +214,13 @@ end
 
 example (n : Nat) (a : Code) (v : Vec n) : Env (n + 1) (Vec.cons n a v) = (El a × Env n v) := rfl
 
-noncomputable def len (n : Nat) (v : Vec n) : Nat :=
+def len (n : Nat) (v : Vec n) : Nat :=
   Vec.rec (motive := fun _ _ => Nat) (motive_2 := fun _ => Unit)
     0 (fun _ _ _ _ ih => ih + 1) () (fun _ _ _ => ()) v
+
+/-- info: 2 -/
+#guard_msgs in
+#eval len 2 (Vec.cons 1 Code.one (Vec.cons 0 Code.one Vec.nil))
 
 example (n : Nat) (v : Vec n) : True := by
   induction v with
@@ -318,3 +325,86 @@ example {motive : Ctx → Sort u} {motive_2 : (Γ : Ctx) → Ty Γ → Sort u}
         (fun n => @Ty.rec motive motive_2 nil ext base many (.ext Γ (f n)) (g n)) := rfl
 
 end UnderBinderL
+
+/-! ## Constructors nested inside constructors in index terms
+
+At the written universe the decode of a nested constructor does not reduce,
+so the lower view names each nested application by a hidden raw field the
+constructor supplies and the certificate pins; nothing is asked of the user,
+and every equation is still definitional. -/
+
+namespace NestedL
+
+universe u
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | ext (Γ : Ctx) (A : Ty Γ) : Ctx
+inductive Ty : (Γ : Ctx) → Type where
+  | U (Γ : Ctx) : Ty Γ
+  -- a field at an index three deep
+  | deep (Γ : Ctx) (A : Ty Γ) (B : Ty (.ext Γ A)) (C : Ty (.ext (.ext Γ A) B)) : Ty Γ
+  -- a conclusion three deep, and a function field whose index nests under its binder
+  | shift (Γ : Ctx) (A : Ty Γ) (B : Ty (.ext Γ A)) (f : (n : Nat) → Ty (.ext (.ext Γ A) B)) :
+      Ty (.ext (.ext Γ A) B)
+def El : (Γ : Ctx) → Ty Γ → Type
+  | _, .U Γ => Nat
+  | _, .deep Γ A B C => El (.ext (.ext Γ A) B) C
+  | _, .shift Γ A B f => (n : Nat) → El (.ext (.ext Γ A) B) (f n)
+-- a decoder on the nested carrier, so that its semantics is not trivial
+def depth : Ctx → Nat
+  | .nil => 0
+  | .ext Γ A => depth Γ + 1
+end
+
+example (Γ : Ctx) (A : Ty Γ) : depth (.ext Γ A) = depth Γ + 1 := rfl
+
+-- What is given up: a decoder equation whose right-hand side reads a decoder
+-- at a nested index transports along the decode of that index, which does not
+-- reduce here, so `El_deep` and `El_shift` are not definitional and are not
+-- stated; the iota rules below are.
+/-- error: Unknown identifier `El_deep` -/
+#guard_msgs in
+#check El_deep
+
+/-- The iota rules at both, by the joint recursor. -/
+example {motive : Ctx → Sort u} {motive_2 : (Γ : Ctx) → Ty Γ → Sort u}
+    (nil : motive .nil) (ext : ∀ Γ A, motive Γ → motive_2 Γ A → motive (.ext Γ A))
+    (U : ∀ Γ, motive Γ → motive_2 Γ (.U Γ))
+    (deep : ∀ Γ A B C, motive Γ → motive_2 Γ A → motive_2 (.ext Γ A) B →
+      motive_2 (.ext (.ext Γ A) B) C → motive_2 Γ (.deep Γ A B C))
+    (shift : ∀ Γ A B f, motive Γ → motive_2 Γ A → motive_2 (.ext Γ A) B →
+      (∀ n, motive_2 (.ext (.ext Γ A) B) (f n)) → motive_2 (.ext (.ext Γ A) B) (.shift Γ A B f))
+    (Γ : Ctx) (A : Ty Γ) (B : Ty (.ext Γ A)) (C : Ty (.ext (.ext Γ A) B))
+    (f : (n : Nat) → Ty (.ext (.ext Γ A) B)) :
+    @Ty.rec motive motive_2 nil ext U deep shift Γ (.deep Γ A B C) =
+      deep Γ A B C (@Ctx.rec motive motive_2 nil ext U deep shift Γ)
+        (@Ty.rec motive motive_2 nil ext U deep shift Γ A)
+        (@Ty.rec motive motive_2 nil ext U deep shift (.ext Γ A) B)
+        (@Ty.rec motive motive_2 nil ext U deep shift (.ext (.ext Γ A) B) C) ∧
+    @Ty.rec motive motive_2 nil ext U deep shift (.ext (.ext Γ A) B) (.shift Γ A B f) =
+      shift Γ A B f (@Ctx.rec motive motive_2 nil ext U deep shift Γ)
+        (@Ty.rec motive motive_2 nil ext U deep shift Γ A)
+        (@Ty.rec motive motive_2 nil ext U deep shift (.ext Γ A) B)
+        (fun n => @Ty.rec motive motive_2 nil ext U deep shift (.ext (.ext Γ A) B) (f n)) :=
+  ⟨rfl, rfl⟩
+
+/-- How many `ext`s a context has, counting through the types it holds. -/
+def size : Ctx → Nat :=
+  Ctx.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat)
+    0 (fun _ _ ihΓ ihA => ihΓ + ihA + 1) (fun _ _ => 0)
+    (fun _ _ _ _ _ ihA ihB ihC => ihA + ihB + ihC) (fun _ _ _ _ _ ihA ihB ihf => ihA + ihB + ihf 0)
+
+/-- info: 2 -/
+#guard_msgs in
+#eval size (.ext (.ext .nil (.U .nil)) (.deep (.ext .nil (.U .nil)) (.U _) (.U _) (.U _)))
+
+/-- info: 'NestedL.size' depends on axioms: [IR.mahlo] -/
+#guard_msgs in
+#print axioms size
+
+example (Γ : Ctx) (A : Ty Γ) : True := by induction A <;> trivial
+example (Γ : Ctx) (A : Ty Γ) : True := by cases A <;> trivial
+
+end NestedL

@@ -69,6 +69,12 @@ structure Field where
   possibly under the binders `domain`. -/
   target : Option (Nat × Array Syntax) := none
   domain : Array Binder := #[]
+  /-- `some t` for a hidden field: one the lower view adds for a constructor
+  application `t` in an index term, over `domain`: an argument of another
+  constructor application (`hiddenArg`), whose semantics is its value's, or a
+  conclusion index with such an argument, whose semantics is its own decode. -/
+  value : Option Syntax := none
+  hiddenArg : Bool := false
   deriving Inhabited
 
 structure Ctor where
@@ -76,7 +82,17 @@ structure Ctor where
   fields : Array Field
   /-- The index arguments of the conclusion. -/
   result : Array Syntax
+  /-- At the written universe: the fields and conclusion with every constructor
+  application nested inside another in an index term named by a hidden field,
+  so that each index term applies a constructor to fields only. -/
+  lower : Option (Array Field × Array Syntax) := none
   deriving Inhabited
+
+/-- The constructor as the raw world sees it. -/
+def Ctor.lowerOf (c : Ctor) : Ctor :=
+  match c.lower with
+  | some (fields, result) => { c with fields, result }
+  | none => c
 
 structure Member where
   name : Name
@@ -162,7 +178,13 @@ private def castName (m : Member) := aux m.name "_cast"
 private def pieceName (m : Member) (c : Ctor) := aux m.name ("_" ++ c.name.toString ++ "_sem")
 private def contName (m : Member) (c : Ctor) (i : Nat) := aux m.name ("_" ++ c.name.toString ++ "_k" ++ toString i)
 private def stepName (m : Member) (c : Ctor) := aux m.name ("_" ++ c.name.toString ++ "_step")
+/-- The decode of a raw constructor is its piece: at variables, `rfl`. -/
+private def valLemma (m : Member) (c : Ctor) := aux m.name ("_" ++ c.name.toString ++ "_val")
+/-- A public constructor's raw half is the raw constructor: `rfl`. -/
+private def rawLemma (m : Member) (c : Ctor) := aux m.name ("_" ++ c.name.toString ++ "_raw")
 private def cohVar (n : Name) := "_ir_coh_" ++ n.toString
+/-- The equation pinning a hidden field to its value. -/
+private def eqVar (n : Name) := "_ir_eq_" ++ n.toString
 private def hVar (n : Name) := "_ir_h_" ++ n.toString
 private def pubVar (n : Name) := "_ir_pub_" ++ n.toString
 private def packedVar (n : Name) := "_ir_packed_" ++ n.toString
@@ -480,17 +502,25 @@ partial def instantiate (b : Block) (src : Array Source) (c : Ctor) (fargs : Arr
   let mut split : Array String := #[]
   let mut semArgs : Array String := #[]
   let mut rawArgs : Array String := #[]
-  for (f, a) in c.fields.zip fargs do
+  let fpairs := (c.fields.zip fargs).map fun (f, a) => (f.name, a)
+  for f in c.lowerOf.fields do
+    -- a hidden field stands for its value at the arguments
+    let a := match f.value with
+      | some v => subst v fpairs
+      | none => ((fpairs.find? (·.1 == f.name)).map (·.2)).getD Syntax.missing
     if let some (k, _) := f.target then
-      unless f.domain.isEmpty || (unapp a).2.isEmpty || (sourceApp? src a).isSome do
+      unless f.value.isSome || f.domain.isEmpty || (unapp a).2.isEmpty || (sourceApp? src a).isSome do
         throwErrorAt a "A function-valued field passed to a constructor here has to be a name"
-      if b.lower && (sourceApp? src a).isNone then
-        throwErrorAt a "At the universe the block is written at, an index term applies a constructor to fields only; \
-          the decode of a constructor nested inside another does not reduce there.  One universe up, `set_option mumi.mahlo false`, it does"
       let (sa, ga, ca) ← pair b src (some k) a
-      inner := inner.push { name := f.name, sem := sa, graph := ga, coh := ca }
-      split := split.push sa |>.push ga
-      semArgs := semArgs.push sa
+      -- a hidden field under binders is a function of them
+      let dom := if f.value.isSome then f.domain else #[]
+      let sa ← lambda dom sa
+      let ga ← lambda dom ga
+      let ca ← if ca.isEmpty then pure "" else lambda dom ca
+      if f.value.isNone then
+        inner := inner.push { name := f.name, sem := sa, graph := ga, coh := ca }
+        split := split.push sa |>.push ga
+      unless f.hiddenArg do semArgs := semArgs.push sa
       rawArgs := rawArgs.push ga
       if b.lower && !b.members[k]!.indices.isEmpty then rawArgs := rawArgs.push ca
     else
@@ -1159,13 +1189,113 @@ private def goodIdxPub (b : Block) (j : Nat) (args : Array Syntax) : CommandElab
 
 /-! ### The description -/
 
+/-! ### Constructors nested in index terms
+
+At the written universe the decode of a constructor application nested inside
+another does not reduce -- a node's field is decoded through the stage
+engine's uniform accessibility proof, which is opaque -- so every raw index
+term has to apply a constructor to fields only.  The lower view of a
+constructor names each nested application by a hidden field: a raw field the
+public constructor supplies with the application itself, and the certificate
+pins to it rather than binding.  Both sides of every coherence then carry the
+sub-node unreduced, and everything stays definitional. -/
+
+mutual
+
+/-- An index term of carrier `expect`: a constructor application has its
+arguments of carrier type flattened, and when that named any, a conclusion's
+(`conclusion`) becomes a hidden field itself; anything else stays. -/
+private partial def flattenTop (b : Block) (expect : Option Nat) (conclusion : Bool) (dom : Array Binder) (t : Syntax) :
+    StateT (Array Field) CommandElabM Syntax := do
+  let (h, args) := unapp t
+  let some (k, ci) := ctorRef? b expect h | return t
+  let c := b.members[k]!.ctors[ci]!
+  unless args.size == b.params.size + c.fields.size do return t
+  let before := (← get).size
+  let mut out := args.extract 0 b.params.size
+  for (f, a) in c.fields.zip (args.extract b.params.size args.size) do
+    out := out.push (← match f.target with
+      | some (j, _) => flattenArg b (some j) dom a
+      | none => pure a)
+  let texts ← (out.mapM text : CommandElabM (Array String))
+  let t ← parseTerm (app (← text h) texts)
+  if conclusion && (← get).size > before then hide b k c out dom t (arg := false) else return t
+
+/-- An argument of carrier `expect`: a constructor application becomes a hidden
+field. -/
+private partial def flattenArg (b : Block) (expect : Option Nat) (dom : Array Binder) (a : Syntax) :
+    StateT (Array Field) CommandElabM Syntax := do
+  if (ctorRef? b expect (unapp a).1).isNone then return a
+  let t ← flattenTop b expect false dom a
+  let (h, args) := unapp t
+  let some (k, ci) := ctorRef? b expect h | return a
+  hide b k b.members[k]!.ctors[ci]! args dom t (arg := true)
+
+/-- A hidden field for the application `t` of constructor `c` of carrier `k`
+to `args`, at the indices `c`'s conclusion has there. -/
+private partial def hide (b : Block) (k : Nat) (c : Ctor) (args : Array Syntax) (dom : Array Binder) (t : Syntax) (arg : Bool) :
+    StateT (Array Field) CommandElabM Syntax := do
+  let pairs := (c.fields.zip (args.extract b.params.size args.size)).map fun (f, x) => (f.name, x)
+  let idx ← ((b.members[k]!.indices.zip c.result).map fun (x, r) => (x.member.map (·.1), subst r pairs)).mapM
+    fun (e, r) => flattenTop b e false dom r
+  let name := Name.mkSimple ("_ir_sub_" ++ toString (← get).size)
+  let idxTexts ← (idx.mapM text : CommandElabM (Array String))
+  let type ← parseTerm (← forallS dom (typeAt b k idxTexts))
+  modify (·.push { name, type, target := some (k, idx), domain := dom, value := some t, hiddenArg := arg })
+  parseTerm (applyDomain name.toString dom)
+
+end
+
+/-- The lower view of `c`: each hidden field just before the field whose index
+term names it, and those of the conclusion last. -/
+private def flattenCtor (b : Block) (m : Member) (c : Ctor) : CommandElabM Ctor := do
+  let mut hidden : Array Field := #[]
+  let mut fields : Array Field := #[]
+  for f in c.fields do
+    if let some (j, args) := f.target then
+      let before := hidden.size
+      let expects := b.members[j]!.indices.map (·.member.map (·.1))
+      let (args, hidden') ← ((args.zip expects).mapM fun (a, e) => flattenTop b e false f.domain a).run hidden
+      hidden := hidden'
+      fields := fields ++ hidden.extract before hidden.size
+      fields := fields.push { f with target := some (j, args) }
+    else fields := fields.push f
+  let before := hidden.size
+  let expects := m.indices.map (·.member.map (·.1))
+  let (result, hidden') ← ((c.result.zip expects).mapM fun (r, e) => flattenTop b e true #[] r).run hidden
+  hidden := hidden'
+  fields := fields ++ hidden.extract before hidden.size
+  if hidden.isEmpty then return c
+  return { c with lower := some (fields, result) }
+
+private def flattenLower (b : Block) : CommandElabM Block := do
+  let members ← b.members.mapM fun m => do
+    return { m with ctors := ← m.ctors.mapM (flattenCtor b m) }
+  return { b with members }
+
+/-- A hidden field as a source: the halves of its value at the sources so far. -/
+private def hiddenSource (b : Block) (src : Array Source) (f : Field) : CommandElabM Source := do
+  let some (j, _) := f.target | throwError "a hidden field is of carrier type"
+  let some v := f.value | throwError "a hidden field has a value"
+  let dom ← domIn b src f
+  let (sem, graph, coh) ← pair b src (some j) v
+  let sem ← lambda dom sem
+  let graph ← lambda dom graph
+  let coh ← if coh.isEmpty then pure "" else lambda dom coh
+  return { name := f.name, sem, graph, coh }
+
 /-- The sources the fields before `upto` of `c` bind in the description world,
 and their binders: a recursive field is its (transported) semantics, a plain
 one its value. -/
 private def descSources (b : Block) (c : Ctor) (upto : Nat) : CommandElabM (Array Source × Array String) := do
+  let c := c.lowerOf
   let mut src : Array Source := #[]
   let mut binders := #[]
   for f in c.fields.extract 0 upto do
+    if f.hiddenArg then
+      -- an argument's semantics is its value's: what is typed at it needs that
+      src := src.push { ← hiddenSource b src f with graph := "", coh := "" }
+      continue
     if let some (j, args) := f.target then
       let dom ← domIn b src f
       let sIdx ← semIdx b src j args
@@ -1175,7 +1305,7 @@ private def descSources (b : Block) (c : Ctor) (upto : Nat) : CommandElabM (Arra
       binders := binders.push (par (f.name.toString ++ " : " ++ (← semText b src f.type)))
   return (src, binders)
 private def descNames (c : Ctor) (upto : Nat) : Array String :=
-  (c.fields.extract 0 upto).map fun f => if f.target.isSome then semVar f.name else f.name.toString
+  ((c.lowerOf.fields.extract 0 upto).filter (!·.hiddenArg)).map fun f => if f.target.isSome then semVar f.name else f.name.toString
 
 private def emitLowerSemantics (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM Unit := do
   let ps ← paramsDecl b
@@ -1195,7 +1325,7 @@ private def emitLowerSemantics (b : Block) (order : Array (Sum Nat Nat)) : Comma
   for k in [:b.members.size] do
     let m := b.members[k]!
     for ci in [:m.ctors.size] do
-      let c := m.ctors[ci]!
+      let c := m.ctors[ci]!.lowerOf
       let (src, binders) ← descSources b c c.fields.size
       let sIdx ← semIdx b src k c.result
       let vals ← ctorVals b src k ci #[]
@@ -1207,6 +1337,7 @@ private def emitContinuations (b : Block) : CommandElabM Unit := do
   for k in [:b.members.size] do
     let m := b.members[k]!
     for c in m.ctors do
+      let c := c.lowerOf
       for i in (List.range (c.fields.size + 1)).reverse do
         let (src, binders) ← descSources b c i
         let ty := "Mumi.IR.Desc " ++ atParams b (famName b) ++ " " ++ sortValue b k
@@ -1216,7 +1347,9 @@ private def emitContinuations (b : Block) : CommandElabM Unit := do
             pure (".ret " ++ withParams b (pieceName m c) earlier)
           else
             let f := c.fields[i]!
-            let next (x : String) := withParams b (contName m c (i+1)) (earlier ++ #[x])
+            let next (x : String) :=
+              if f.hiddenArg then withParams b (contName m c (i+1)) earlier
+              else withParams b (contName m c (i+1)) (earlier ++ #[x])
             if let some (j, args) := f.target then
               let dom ← domIn b src f
               let packed ← packedType b dom
@@ -1256,18 +1389,51 @@ private def emitLowerSignature (b : Block) : CommandElabM Unit := do
   emitL ("def " ++ sigName b ++ " " ++ ps ++ " : Mumi.IR.Signature (ULift.{" ++ b.level ++ "} " ++ sortName b ++ ") " ++ par (atParams b (famName b)) ++ "\n" ++ String.intercalate "\n" ss.toList)
   for k in [:b.members.size] do
     let m := b.members[k]!
-    emitL ("noncomputable def " ++ rawName m ++ " " ++ ps ++ " : Type " ++ b.level ++ " := Mumi.IR.Raw " ++ sigAt b ++ " " ++ sortValue b k)
-    emitL ("@[reducible] noncomputable def " ++ decName m ++ " " ++ ps ++ " (_ir_a : " ++ rawAt b k ++ ") : " ++ atParams b (dName m) ++ " := Mumi.IR.decode " ++ sigAt b ++ " " ++ sortValue b k ++ " _ir_a")
+    emitDefL "" (rawName m ++ " " ++ ps ++ " : Type " ++ b.level ++ " := Mumi.IR.Raw " ++ sigAt b ++ " " ++ sortValue b k)
+    emitDefL "@[reducible] " (decName m ++ " " ++ ps ++ " (_ir_a : " ++ rawAt b k ++ ") : " ++ atParams b (dName m) ++ " := Mumi.IR.decode " ++ sigAt b ++ " " ++ sortValue b k ++ " _ir_a")
 
 /-! ### Raw constructors and certificates -/
 
-/-- The fields of `c` in the raw world: raw binders with their coherences, and
-the sources they bind. -/
-private def rawFields (b : Block) (c : Ctor) : CommandElabM (Array String × Array Source) := do
+/-- The fields of `c` in the raw world: their binders with their coherences,
+the sources they bind, and the arguments the raw constructor is applied to.
+For the certificate, a hidden field is not bound but stands for its value. -/
+private def rawFields (b : Block) (c : Ctor) (forGood := false) : CommandElabM (Array String × Array Source × Array String) := do
   let mut out := #[]
   let mut src : Array Source := #[]
-  for f in c.fields do
+  let mut rawArgs := #[]
+  for f in c.lowerOf.fields do
+    if f.value.isSome then
+      let some (j, args) := f.target | continue
+      if forGood && f.hiddenArg then
+        -- an argument stands for its value, whose decode reduces where it is used
+        let h ← hiddenSource b src f
+        src := src.push h
+        rawArgs := rawArgs.push h.graph
+        if h.coh != "" then rawArgs := rawArgs.push h.coh
+        continue
+      let dom ← domIn b src f
+      let value := applyDomain f.name.toString dom
+      out := out.push (par (f.name.toString ++ " : " ++ (← forallS dom (rawAt b j))))
+      rawArgs := rawArgs.push f.name.toString
+      if indexed b j then
+        let sIdx ← semIdx b src j args
+        out := out.push (par (cohVar f.name ++ " : " ++ (← forallS dom (decAt b j value ++ "._ir_at = " ++ iMk b j sIdx))))
+        rawArgs := rawArgs.push (cohVar f.name)
+      if forGood then
+        -- a conclusion index is bound, and pinned to its value at the fields
+        let h ← hiddenSource b src f
+        out := out.push (par (eqVar f.name ++ " : " ++ (← forallS dom (value ++ " = " ++ app h.graph (dom.map (·.name.toString))))))
+      let coh := if indexed b j then cohVar f.name else ""
+      if f.hiddenArg then
+        src := src.push { ← hiddenSource b src f with graph := f.name.toString, coh }
+      else if indexed b j then
+        src := src.push { name := f.name, sem := ← lambda dom (trAt b j (applyDomain (cohVar f.name) dom) (decAt b j value ++ "._ir_val")), graph := f.name.toString, coh }
+      else
+        src := src.push { name := f.name, sem := ← lambda dom (decAt b j value ++ "._ir_val"), graph := f.name.toString }
+      continue
+    rawArgs := rawArgs.push f.name.toString
     if let some (j, args) := f.target then
+      if indexed b j then rawArgs := rawArgs.push (cohVar f.name)
       let dom ← domIn b src f
       out := out.push (par (f.name.toString ++ " : " ++ (← forallS dom (rawAt b j))))
       let value := applyDomain f.name.toString dom
@@ -1279,32 +1445,33 @@ private def rawFields (b : Block) (c : Ctor) : CommandElabM (Array String × Arr
         src := src.push { name := f.name, sem := ← lambda dom (decAt b j value ++ "._ir_val"), graph := f.name.toString }
     else
       out := out.push (par (f.name.toString ++ " : " ++ (← semText b src f.type)))
-  return (out, src)
-/-- The names `rawFields` binds, in order: the raw constructor's arguments. -/
-private def rawArgNames (b : Block) (c : Ctor) : Array String :=
-  c.fields.flatMap fun f => match f.target with
-    | some (j, _) => if indexed b j then #[f.name.toString, cohVar f.name] else #[f.name.toString]
-    | none => #[f.name.toString]
+  return (out, src, rawArgs)
 
 private def emitRawCtors (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
   for k in [:b.members.size] do
     let m := b.members[k]!
     for c in m.ctors do
-      let (binders, _) ← rawFields b c
+      let (binders, src, args) ← rawFields b c
       let mut values := #[]
-      for f in c.fields do
+      for f in c.lowerOf.fields do
         if let some (j, _) := f.target then
           values := values.push ("(fun _ir_position => " ++ app f.name.toString (unpacked f.domain "_ir_position") ++ ")")
           if indexed b j then
             values := values.push ("⟨⟨(fun _ir_position => " ++ app (cohVar f.name) (unpacked f.domain "_ir_position") ++ "), PUnit.unit⟩⟩")
         else values := values.push ("⟨⟨" ++ f.name.toString ++ ", PUnit.unit⟩⟩")
-      emitL ("noncomputable def " ++ rawName m ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ rawAt b k ++ " := Mumi.IR.roll " ++ sigAt b ++ " " ++ sortValue b k ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) values)
+      emitDefL "" (rawName m ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ rawAt b k ++ " := Mumi.IR.roll " ++ sigAt b ++ " " ++ sortValue b k ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) values)
       -- what the constructor's decode is at, stated once over its raw fields
       if indexed b k then
-        let (_, src) ← rawFields b c
-        let sIdx ← semIdx b src k c.result
-        emitL ("theorem " ++ aux m.name ("_" ++ c.name.toString ++ "_at") ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ decAt b k (withParams b (rawName m ++ "." ++ c.name.toString) (rawArgNames b c)) ++ "._ir_at = " ++ iMk b k sIdx ++ " := rfl")
+        let sIdx ← semIdx b src k c.lowerOf.result
+        emitL ("theorem " ++ aux m.name ("_" ++ c.name.toString ++ "_at") ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ decAt b k (withParams b (rawName m ++ "." ++ c.name.toString) args) ++ "._ir_at = " ++ iMk b k sIdx ++ " := rfl")
+      -- and what its decode is: its piece at the fields' semantics, which a
+      -- constructor nested inside another in an index is rewritten by
+      let sems := (c.lowerOf.fields.filter (!·.hiddenArg)).map fun f =>
+        if f.target.isSome then ((src.findRev? (·.name == f.name)).map (·.sem)).getD f.name.toString else f.name.toString
+      -- not `rfl` outright: `simp` would then rewrite by it definitionally,
+      -- which at a nested instance the kernel cannot follow
+      emitL ("theorem " ++ valLemma m c ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ decAt b k (withParams b (rawName m ++ "." ++ c.name.toString) args) ++ "._ir_val = " ++ par (withParams b (pieceName m c) sems) ++ "._ir_val := Eq.trans rfl rfl")
 
 private def emitGood (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
@@ -1314,16 +1481,23 @@ private def emitGood (b : Block) : CommandElabM Unit := do
     let (arity, _) ← rawArity b k
     let mut cs := #[]
     for c in m.ctors do
-      let (binders, src) ← rawFields b c
+      let (binders, src, args) ← rawFields b c (forGood := true)
       let mut all := #[]
-      for (f, bs) in c.fields.zip (binderGroups b c binders) do
-        all := all ++ bs
+      let mut bi := 0
+      for f in c.lowerOf.fields do
+        if f.hiddenArg then continue
+        let n := match f.target with
+          | some (j, _) => (if indexed b j then 2 else 1) + (if f.value.isSome then 1 else 0)
+          | none => 1
+        all := all ++ binders.extract bi (bi + n)
+        bi := bi + n
+        if f.value.isSome then continue
         if let some (j, args) := f.target then
           let dom ← domIn b src f
           let gargs ← goodIdx b src j args
           all := all.push (par (hVar f.name ++ " : " ++ (← forallS dom (withParams b (goodName b.members[j]!) (gargs ++ #[applyDomain f.name.toString dom])))))
-      let concl ← goodIdx b src k c.result
-      cs := cs.push ("  | " ++ c.name.toString ++ " " ++ join all ++ " : " ++ withParams b (goodName m) (concl ++ #[withParams b (rawName m ++ "." ++ c.name.toString) (rawArgNames b c)]))
+      let concl ← goodIdx b src k c.lowerOf.result
+      cs := cs.push ("  | " ++ c.name.toString ++ " " ++ join all ++ " : " ++ withParams b (goodName m) (concl ++ #[withParams b (rawName m ++ "." ++ c.name.toString) args]))
     let arity := if arity.isEmpty then "" else String.intercalate " → " arity.toList ++ " → "
     gs := gs.push ("inductive " ++ goodName m ++ " " ++ ps ++ " : " ++ arity ++ rawAt b k ++ " → Prop where\n" ++ String.intercalate "\n" cs.toList)
   emitL ("mutual\n" ++ String.intercalate "\n" gs.toList ++ "\nend")
@@ -1335,18 +1509,6 @@ private def emitGood (b : Block) : CommandElabM Unit := do
     let names := rawArityNames b k
     let arity := arity.map fun x => "{" ++ ((x.toSubstring.drop 1).dropRight 1).toString ++ "}"
     emitL ("theorem " ++ goodName m ++ ".coh " ++ ps ++ " " ++ join arity ++ " {_ir_a : " ++ rawAt b k ++ "} (_ir_h : " ++ withParams b (goodName m) (names ++ #["_ir_a"]) ++ ") {_ir_s : " ++ iAt b k ++ "} (_ir_hs : " ++ iOfArity b k src ++ " = _ir_s) : " ++ decAt b k "_ir_a" ++ "._ir_at = _ir_s := by\n  subst _ir_hs; cases _ir_h <;> rfl")
-where
-  /-- `rawFields`' binders regrouped per field. -/
-  binderGroups (b : Block) (c : Ctor) (binders : Array String) : Array (Array String) := Id.run do
-    let mut out := #[]
-    let mut i := 0
-    for f in c.fields do
-      let n := match f.target with
-        | some (j, _) => if indexed b j then 2 else 1
-        | none => 1
-      out := out.push (binders.extract i (i+n))
-      i := i + n
-    return out
 
 /-! ### The public declarations -/
 
@@ -1366,41 +1528,52 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let body := if indexed b k then
           trAt b k (par (withParams b (goodName m ++ ".coh") #["_ir_x.property", "rfl"])) (decAt b k "_ir_x.val" ++ "._ir_val")
         else decAt b k "_ir_x.val" ++ "._ir_val"
-      emitL ("@[reducible] noncomputable def " ++ pubSemName m ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " (_ir_x : " ++ typeAt b k idx ++ ") : " ++ semAt b k sIdx ++ " := " ++ body)
+      emitDefL "@[reducible] " (pubSemName m ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " (_ir_x : " ++ typeAt b k idx ++ ") : " ++ semAt b k sIdx ++ " := " ++ body)
     | .inr j =>
       let d := b.decoders[j]!
       let m := b.members[d.target]!
       let idx ← d.idx.mapM fieldDecl
       let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-      emitL ("@[reducible] noncomputable def " ++ d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
+      emitDefL "@[reducible] " (d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
+  let mut lemmas : Array String := b.members.flatMap fun m => m.ctors.map (valLemma m)
   for k in [:b.members.size] do
     let m := b.members[k]!
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       let mut raw := #[]
-      let mut hyps := #[]
-      for f in c.fields do
-        if let some (j, _) := f.target then
-          raw := raw.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".val"))
-          if indexed b j then
-            raw := raw.push (← lambda f.domain (withParams b (goodName b.members[j]! ++ ".coh") #[par (applyDomain f.name.toString f.domain) ++ ".property", "rfl"]))
-          hyps := hyps.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".property"))
-        else raw := raw.push f.name.toString
-      -- the certificate's arguments interleave each field with its coherence and hypothesis
+      -- the certificate's arguments interleave each field with its coherence
+      -- and hypothesis; a hidden field is supplied with its value, which the
+      -- certificate binds and pins for a conclusion index, and substitutes
+      -- for an argument
       let mut gargs := #[]
-      let mut ri := 0
-      let mut hi := 0
-      for f in c.fields do
-        if let some (j, _) := f.target then
-          gargs := gargs.push raw[ri]!
-          ri := ri + 1
-          if indexed b j then gargs := gargs.push raw[ri]!; ri := ri + 1
-          gargs := gargs.push hyps[hi]!
-          hi := hi + 1
-        else gargs := gargs.push raw[ri]!; ri := ri + 1
+      let mut hiddenPairs : Array (Name × Syntax) := #[]
+      for f in c.lowerOf.fields do
+        if let some (j, args) := f.target then
+          let mut v := applyDomain f.name.toString f.domain
+          if let some value := f.value then
+            v ← qualifyText b (some j) (subst value hiddenPairs)
+            hiddenPairs := hiddenPairs.push (f.name, ← parseTerm (← lambda f.domain v))
+          raw := raw.push (← lambda f.domain (par v ++ ".val"))
+          unless f.hiddenArg do gargs := gargs.push raw.back!
+          if indexed b j then
+            -- at an index with a constructor nested inside another, the
+            -- decode of the nested one is not definitional and is rewritten
+            let nested := (← args.mapM text).any fun t => (t.splitOn "_ir_sub_").length > 1
+            let hs := if nested then "(by simp only [" ++ String.intercalate ", " lemmas.toList ++ "] <;> rfl)" else "rfl"
+            raw := raw.push (← lambda f.domain (withParams b (goodName b.members[j]! ++ ".coh") #[par v ++ ".property", hs]))
+            unless f.hiddenArg do gargs := gargs.push raw.back!
+          if f.value.isNone then
+            gargs := gargs.push (← lambda f.domain (par v ++ ".property"))
+          else if !f.hiddenArg then
+            gargs := gargs.push (← lambda f.domain "rfl")
+        else
+          raw := raw.push f.name.toString
+          gargs := gargs.push f.name.toString
       let result ← c.result.mapM text
       -- the certificate's constructor takes the block's parameters implicitly, as any constructor does
-      emitL ("noncomputable def " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
+      emitDefL "" (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
+      emitL ("theorem " ++ rawLemma m c ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ par (ctorApp b k ci (fieldNames c)) ++ ".val = " ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ " := Eq.trans rfl rfl")
+      lemmas := lemmas.push (rawLemma m c)
 
 /-! ### The recursor -/
 
@@ -1422,13 +1595,17 @@ private def unpackedFields (b : Block) (c : Ctor) (value : String → Array Bind
   let mut pats := #[]
   let mut lets := ""
   let mut src : Array Source := #[]
-  for f in c.fields do
+  for f in c.lowerOf.fields do
     if let some (j, _) := f.target then
       let dom ← domIn b src f
       pats := pats.push (packedVar f.name)
+      if indexed b j then pats := pats.push (cohboxVar f.name)
+      if f.value.isSome then
+        -- the certificate pinned it to its value, and so does the shape
+        src := src.push (← hiddenSource b src f)
+        continue
       lets := lets ++ "let " ++ f.name.toString ++ " := " ++ (← lambda dom (← value (packedVar f.name) dom j)) ++ "\n  "
       if indexed b j then
-        pats := pats.push (cohboxVar f.name)
         lets := lets ++ "let " ++ cohVar f.name ++ " := " ++ (← lambda dom (cohboxVar f.name ++ ".down.1 " ++ packedValue dom)) ++ "\n  "
         src := src.push { name := f.name, sem := ← lambda dom (trAt b j (applyDomain (cohVar f.name) dom) (decAt b j (applyDomain f.name.toString dom) ++ "._ir_val")), graph := f.name.toString, coh := cohVar f.name }
       else
@@ -1438,12 +1615,24 @@ private def unpackedFields (b : Block) (c : Ctor) (value : String → Array Bind
       lets := lets ++ "let " ++ f.name.toString ++ " := " ++ boxVar f.name ++ ".down.1\n  "
   return (pats, lets, src)
 
+/-- The raw constructor's arguments at the sources `src`: a hidden field is
+what its source says. -/
+private def rawArgsAt (b : Block) (c : Ctor) (src : Array Source) : Array String :=
+  c.lowerOf.fields.flatMap fun f => match f.target with
+    | some (j, _) =>
+      if f.value.isSome then
+        match src.findRev? (·.name == f.name) with
+        | some h => if h.coh.isEmpty then #[h.graph] else #[h.graph, h.coh]
+        | none => #[]
+      else if indexed b j then #[f.name.toString, cohVar f.name] else #[f.name.toString]
+    | none => #[f.name.toString]
+
 /-- What a certificate of `X.c` at raw indices `idx` says, over the raw fields:
 the node, the indices, the sub-certificates. -/
 private def shapeStmt (b : Block) (k ci : Nat) (idxNames : Array String) (src : Array Source) (self : String) : CommandElabM String := do
   let m := b.members[k]!
-  let c := m.ctors[ci]!
-  let mut parts := #[self ++ " = " ++ withParams b (rawName m ++ "." ++ c.name.toString) (rawArgNames b c)]
+  let c := m.ctors[ci]!.lowerOf
+  let mut parts := #[self ++ " = " ++ withParams b (rawName m ++ "." ++ c.name.toString) (rawArgsAt b c src)]
   -- one equation per index that is not a coherence
   let mut ni := 0
   for (x, t) in m.indices.zip c.result do
@@ -1456,6 +1645,7 @@ private def shapeStmt (b : Block) (k ci : Nat) (idxNames : Array String) (src : 
       parts := parts.push ("HEq " ++ idxNames[ni]! ++ " " ++ (← semText b src t))
       ni := ni + 1
   for f in c.fields do
+    if f.value.isSome then continue
     if let some (j, args) := f.target then
       let dom ← domIn b src f
       parts := parts.push (← forallS dom (withParams b (goodName b.members[j]!) ((← goodIdx b src j args) ++ #[applyDomain f.name.toString dom])))
@@ -1473,19 +1663,22 @@ private def emitShapes (b : Block) : CommandElabM Unit := do
       let c := m.ctors[ci]!
       let (pats, lets, src) ← unpackedFields b c (fun p dom _ => pure (app p #[packedValue dom]))
       cs := cs.push ("  | " ++ tuple (tagName m ++ "." ++ c.name.toString) pats ++ " =>\n  " ++ lets ++ (← shapeStmt b k ci names src "_ir_self"))
-      let hs := (c.fields.filter (·.target.isSome)).map (hVar ·.name)
-      -- `cases` names the constructor's arguments in declaration order: field, coherence, hypothesis
+      let hs := (c.lowerOf.fields.filter fun f => f.target.isSome && f.value.isNone).map (hVar ·.name)
+      let eqs' := (c.lowerOf.fields.filter fun f => f.value.isSome && !f.hiddenArg).map (eqVar ·.name)
+      -- `cases` names the constructor's arguments in declaration order: field,
+      -- coherence, then the hypothesis or, for a hidden field, its equation
       let mut ordered := #[]
-      let mut ri := 0
-      for f in c.fields do
+      for f in c.lowerOf.fields do
+        if f.hiddenArg then continue
         if let some (j, _) := f.target then
-          ordered := ordered.push (rawArgNames b c)[ri]!; ri := ri + 1
-          if indexed b j then ordered := ordered.push (rawArgNames b c)[ri]!; ri := ri + 1
-          ordered := ordered.push (hVar f.name)
-        else ordered := ordered.push (rawArgNames b c)[ri]!; ri := ri + 1
+          ordered := ordered.push f.name.toString
+          if indexed b j then ordered := ordered.push (cohVar f.name)
+          ordered := ordered.push (if f.value.isSome then eqVar f.name else hVar f.name)
+        else ordered := ordered.push f.name.toString
       let eqs := m.indices.toList.map fun x => if x.member.isSome then "rfl" else "HEq.rfl"
-      proofs := proofs.push ("  | " ++ c.name.toString ++ " " ++ join ordered ++ " => exact ⟨rfl, " ++ String.intercalate ", " (eqs ++ hs.toList ++ ["trivial"]) ++ "⟩")
-    emitL ("noncomputable def " ++ shapeName m ++ " " ++ ps ++ " " ++ join arity ++ " (_ir_self : " ++ rawAt b k ++ ") : Mumi.IR.Args (Mumi.IR.Raw " ++ sigAt b ++ ") (Mumi.IR.decode " ++ sigAt b ++ ") (" ++ sigAt b ++ " " ++ sortValue b k ++ ") → Prop\n" ++ String.intercalate "\n" cs.toList)
+      let substs := if eqs'.isEmpty then "" else "subst " ++ join eqs' ++ "; "
+      proofs := proofs.push ("  | " ++ c.name.toString ++ " " ++ join ordered ++ " => " ++ substs ++ "exact ⟨rfl, " ++ String.intercalate ", " (eqs ++ hs.toList ++ ["trivial"]) ++ "⟩")
+    emitDefL "" (shapeName m ++ " " ++ ps ++ " " ++ join arity ++ " (_ir_self : " ++ rawAt b k ++ ") : Mumi.IR.Args (Mumi.IR.Raw " ++ sigAt b ++ ") (Mumi.IR.decode " ++ sigAt b ++ ") (" ++ sigAt b ++ " " ++ sortValue b k ++ ") → Prop\n" ++ String.intercalate "\n" cs.toList)
     emitL ("theorem " ++ shapeLemma m ++ " " ++ ps ++ " " ++ join arity ++ " {_ir_self : " ++ rawAt b k ++ "} (_ir_good : " ++ withParams b (goodName m) (names ++ #["_ir_self"]) ++ ") : " ++ withParams b (shapeName m) (names ++ #["_ir_self", "(Mumi.IR.view " ++ sigAt b ++ " " ++ sortValue b k ++ " _ir_self)"]) ++ " := by\n  cases _ir_good with\n" ++ String.intercalate "\n" proofs.toList)
 
 /-- Transport a value of the motive across the equations a certificate yields:
@@ -1561,9 +1754,9 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
       let mut psrc : Array Source := #[]
       -- a plain field is a box in the predecessor world; what follows reads it unboxed
       let mut boxes : Array (Name × Syntax) := #[]
-      for f in c.fields do
+      for f in c.lowerOf.fields do
         let unbox (s : Syntax) : Syntax := subst s boxes
-        let f : Field := { name := f.name, type := unbox f.type, target := f.target.map (fun p => (p.1, p.2.map unbox)), domain := f.domain.map (fun x => { name := x.name, type := unbox x.type }) }
+        let f : Field := { f with type := unbox f.type, target := f.target.map (fun p => (p.1, p.2.map unbox)), domain := f.domain.map (fun x => { name := x.name, type := unbox x.type }), value := f.value.map unbox }
         if let some (j, args) := f.target then
           let dom ← domIn b psrc f
           let packed ← packedType b dom
@@ -1578,6 +1771,8 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
             psrc := psrc.push { name := f.name, sem := ← lambda dom (trAt b j (par (cohboxVar f.name ++ ".down.1 " ++ packedValue dom)) (value (packedValue dom) ++ "._ir_val")), graph := f.name.toString, coh := "" }
           else
             psrc := psrc.push { name := f.name, sem := ← lambda dom (value (packedValue dom) ++ "._ir_val"), graph := f.name.toString }
+          if f.hiddenArg then
+            psrc := psrc.pop.push { ← hiddenSource b psrc.pop f with graph := f.name.toString, coh := "" }
         else
           comps := comps.push (par (boxVar f.name ++ " : ULift.{" ++ b.level ++ "} ((_ : " ++ (← semText b psrc f.type) ++ ") ×' PUnit.{1})"))
           names := names.push (boxVar f.name)
@@ -1619,7 +1814,7 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
           castArgs := castArgs.push ("_ir_idx_" ++ x.name.toString) |>.push pt |>.push ("_ir_shape" ++ conj ei)
         ei := ei + 1
       body := body ++ withParams b ("@" ++ castName m) (motiveArgs b ++ castArgs ++ #["_ir_node", par ctor ++ ".val", "_ir_shape.1", "_ir_good", par ctor ++ ".property", app (minor b k ci) (images ++ ihs)])
-      emitL ("noncomputable def " ++ stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
+      emitDefL "" (stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
   -- the induction itself, and the public recursors
   let mut ss := #[]
   for k in [:b.members.size] do
@@ -1630,7 +1825,7 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
       let (pats, _, _) ← unpackedFields b c (fun p _ _ => pure p)
       cs := cs.push ("      | " ++ tuple (tagName m ++ "." ++ c.name.toString) pats ++ " => " ++ withParams b ("@" ++ stepName m c) (motiveArgs b ++ minorArgs b ++ #["_ir_stage", "_ir_children"] ++ pats ++ #["_ir_recurse"]))
     ss := ss.push ("    | " ++ sortPat b k ++ " => match _ir_args with\n" ++ String.intercalate "\n" cs.toList)
-  emitL ("noncomputable def " ++ indName b ++ " " ++ common ++ " : ∀ _ir_s _ir_a, " ++ withParams b ("@" ++ motiveName b) (motiveArgs b ++ #["_ir_s", "_ir_a"]) ++ " :=\n  Mumi.IR.induction " ++ sigAt b ++ " (C := " ++ withParams b ("@" ++ motiveName b) (motiveArgs b) ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
+  emitDefL "" (indName b ++ " " ++ common ++ " : ∀ _ir_s _ir_a, " ++ withParams b ("@" ++ motiveName b) (motiveArgs b ++ #["_ir_s", "_ir_a"]) ++ " :=\n  Mumi.IR.induction " ++ sigAt b ++ " (C := " ++ withParams b ("@" ++ motiveName b) (motiveArgs b) ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
   for k in [:b.members.size] do
     let m := b.members[k]!
     let idx := pubIdxNames b k
@@ -1653,6 +1848,7 @@ where
 
 /-- Lower mode, end to end. -/
 private def elaborateLower (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM Unit := do
+  let b ← flattenLower b
   emit "universe _ir_elim"
   emitSemantics b order
   emitLowerSemantics b order

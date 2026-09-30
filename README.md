@@ -808,9 +808,12 @@ equations, and induction/cases tactic integration generated automatically.
 - `set_option mumi.mahlo true`: carriers stay in the written `Type u`, using
   the single axiom `IR.mahlo.{u} : IR.Reflection.{u,u+1}`. General constructor
   equations are `rfl`, but some closed reductions still need explicit rewriting.
+  What is defined through the recursors compiles and runs; the axiom is never
+  executed.
 
 In both modes the carriers may also be *indexed* -- by other carriers of the
-block, and by types the decoders compute -- so induction-induction and
+block, and by types the decoders compute, with constructors nested inside
+constructors in the index terms -- so induction-induction and
 induction-recursion go in one `mutual`; `MumiTests/IRTangle.lean` and
 `MumiTests/IRTangleLower.lean` are one strongly connected block of all of it,
 and everything it produces is `rfl` in either mode (at the written universe,
