@@ -68,17 +68,39 @@ theorem decode_lowerAll {i : I} :
     (fun s (a : U sig r s) (h : r a.stage i) => predDecode r s (lower sig r wf s a h)) =
       (fun s (a : U sig r s) (_ : r a.stage i) => decode sig r s a) := rfl
 
+/-- `Desc.mapAll` at `lower`, without a transport: `predDecode` of a lowered
+value is `decode` of it definitionally, so no equation has to be carried and
+nothing is cast.  Reducing through a node therefore never has to compare a
+lowered decode with a reduced one, which the transport's `Eq.rec` would. -/
+noncomputable def lowerArgs {i : I} :
+    (d : Desc D s) → (args : Desc.Args (U sig r) (decode sig r) d) →
+    Desc.All (U sig r) (decode sig r) (fun _ a => r a.stage i) d args →
+    Desc.Args (Pred r i (fun j _ => build sig r j (wf.apply j))) (predDecode r) d
+  | .ret _, _, _ => PUnit.unit
+  | .sigma _ next, ⟨a, rest⟩, h => ⟨a, lowerArgs (next a) rest h⟩
+  | .delta _ sort next, ⟨xs, rest⟩, h =>
+    ⟨fun a => lower sig r wf (sort a) (xs a) (h.1 a),
+      lowerArgs (next (fun a => decode sig r (sort a) (xs a))) rest h.2⟩
+
+theorem eval_lowerArgs {i : I} (d : Desc D s) (args : Desc.Args (U sig r) (decode sig r) d)
+    (h : Desc.All (U sig r) (decode sig r) (fun _ a => r a.stage i) d args) :
+    Desc.eval _ (predDecode r) d (lowerArgs sig r wf d args h) =
+      Desc.eval (U sig r) (decode sig r) d args := by
+  induction d with
+  | ret value => rfl
+  | sigma A next ih => exact ih args.1 args.2 h
+  | delta A sort next ih => exact ih _ args.2 h.2
+
 noncomputable def rollAt (i : I) (s : S)
     (args : Desc.Args (U sig r) (decode sig r) (sig s))
     (bound : Desc.All (U sig r) (decode sig r) (fun _ a => r a.stage i) (sig s) args) : U sig r s :=
-  pack sig r i (fun j _ => wf.apply j) s
-    (Desc.mapAll (lower sig r wf) (decode_lowerAll sig r wf) (sig s) args bound)
+  pack sig r i (fun j _ => wf.apply j) s (lowerArgs sig r wf (sig s) args bound)
 
 theorem decode_rollAt (i : I) (s : S)
     (args : Desc.Args (U sig r) (decode sig r) (sig s))
     (bound : Desc.All (U sig r) (decode sig r) (fun _ a => r a.stage i) (sig s) args) :
     decode sig r s (rollAt sig r wf i s args bound) = Desc.eval (U sig r) (decode sig r) (sig s) args :=
-  Desc.eval_mapAll (lower sig r wf) (decode_lowerAll sig r wf) (sig s) args bound
+  eval_lowerArgs sig r wf (sig s) args bound
 
 end Stage
 

@@ -245,17 +245,6 @@ elab "reject_ir " expected:str " in " c:command : command => do
 
 namespace Rejected
 
-set_option mumi.mahlo true in
-reject_ir "one universe up only" in
-mutual
-inductive A : Type where
-  | nil : A
-inductive B : A → Type where
-  | mk (a : A) : B a
-def f : A → Type
-  | .nil => Nat
-end
-
 -- an index domain has to be a carrier applied outright
 reject_ir "applied to its indices" in
 mutual

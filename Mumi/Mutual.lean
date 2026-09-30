@@ -76,7 +76,7 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
         withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
           IndRec.elaborateAny elems
       catch ex =>
-        set saved
+        unless mumi.ir.debug.get (← getOptions) do set saved
         logException ex
     return
   let route ← classifyBlock elems

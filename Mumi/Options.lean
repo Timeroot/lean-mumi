@@ -30,6 +30,19 @@ register_option mumi.pp.nested : Bool := {
     of, rather than under its internal name"
 }
 
+register_option mumi.ir.debug : Bool := {
+  defValue := false
+  descr := "keep the declarations an induction-recursion block managed to emit when a later one fails, \
+    instead of rolling the block back, so that they can be inspected"
+}
+
+register_option mumi.ir.equations : Bool := {
+  defValue := true
+  descr := "at the universe an induction-recursion block is written at, state each decoder and \
+    recursor equation and hand its `rfl` to the kernel, skipping the ones it rejects; off, state \
+    none of them"
+}
+
 register_option mumi.mahlo : Bool := {
   defValue := false
   descr := "lower experimental induction-recursion blocks using IR.mahlo; when false, use an axiom-free graph one universe up"

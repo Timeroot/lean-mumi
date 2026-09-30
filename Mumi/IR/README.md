@@ -106,8 +106,8 @@ wrapper yet; define recursive consumers using `.rec`.
 
 ## Indexed carriers, and induction-induction in the same block
 
-In upper mode a carrier may be *indexed*, and an index domain may be another
-carrier of the block or a type a decoder computes.  A decoder may then recurse
+A carrier may be *indexed*, and an index domain may be another carrier of
+the block or a type a decoder computes.  A decoder may then recurse
 over an indexed carrier, and its result may read the decoders of the indices.
 So one `mutual` may hold induction-induction and induction-recursion at once:
 
@@ -136,8 +136,8 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.ext Γ A)) :
 `F` of it, `D` a type computed from a `B`, and `E` indexed by all three, in one
 strongly connected block.
 
-[Family.lean](Family.lean) does this by the same graph encoding as above, one
-universe up.  A carrier `X` with decoders `f₁ … fₖ` becomes a record
+One universe up, [Family.lean](Family.lean) does this by the same graph
+encoding as above.  A carrier `X` with decoders `f₁ … fₖ` becomes a record
 `_ir_X_Sem` of the decoders' values and a graph `_ir_X` indexed by it; an index
 of carrier type is split into its semantic half and its graph half, and a
 decoder applied to it reads the semantic half.  What is left is a `mutual` of
@@ -150,6 +150,27 @@ the decoders' clauses with the graph constructor, and `X.rec` is the graph's
 recursor with its motives and minor premises repacked.  Every decoder equation
 and iota rule is `rfl`, and no axiom is added.
 
+At the universe the block is written at, `set_option mumi.mahlo true`, the
+same block goes through the stage engine.  The raw carriers are not indexed:
+one signature holds every carrier, its descriptions read the indices'
+semantics off the decoded fields, and a constructor's coherence -- that the
+index recorded in its decode is the one written -- is a proof field after its
+recursive fields.  On top of the raw carriers sits `_ir_X_Good`, a mutual
+`Prop` family over raw values and their coherences, and the public `X i₁ … iₙ`
+is the subtype of raw values it certifies; a decoder is the recorded semantics
+transported along the certificate's coherence, and `X.rec` is the stage
+engine's induction with the packed index and certificate as its motive's
+arguments, cast back to the written index by the equations the certificate
+yields.  The decoder equations and iota rules are still definitional, and are
+stated as `@[simp]` theorems proved by `Eq.refl` -- checked by the kernel
+directly, with only the statement elaborated: the two sides are small as
+shared graphs but astronomically large as trees, which the elaborator's
+unifier walks without sharing and the kernel does not.  One the kernel rejects
+is skipped and reported under `trace.Mumi.ir` rather than failing the block;
+`set_option mumi.ir.equations false` states none of them.  As everywhere in
+lower mode, a closed term does not normalise, so numerals a decoder computes
+want an ascription, `(0 : Nat)`, and consumers are `noncomputable`.
+
 The generated API is as above -- `X.rec` over every motive in the block,
 `X.recOn`, `X.casesOn`, `X.cases`, `@[simp]` decoder, recursor and case
 equations -- plus `X.recD`, the one-motive recursor with the other carriers'
@@ -159,7 +180,6 @@ every motive, so it is for `induction … using` and term mode).  Motives are
 
 Its restrictions, beyond the general ones below:
 
-- Upper mode only.  Under `mumi.mahlo true` an indexed block is rejected.
 - A decoder is `def f (params) : (i₁ : I₁) → … → (iₙ : Iₙ) → X params i₁ … iₙ → R`:
   the carrier's indices bound in order just before it, at exactly those names.
   Its equations take one pattern per index (`_` or a name) and one flat
@@ -170,9 +190,13 @@ Its restrictions, beyond the general ones below:
   through decoders, so `(h : x = y)` for fields `x y : A` is rejected.
 - An index argument of carrier type is a field, a field applied to its own
   binders, or a constructor application (written `Ctx.ext Γ A` or `.ext Γ A`).
-  A constructor application whose argument is a function field applied to a
-  binder, `Ty (.ext Γ (f n))`, is not deleted by the erasure underneath and is
-  rejected by it.
+  One universe up, a constructor application whose argument is a function
+  field applied to a binder, `Ty (.ext Γ (f n))`, is not deleted by the
+  erasure underneath and is rejected by it; at the written universe nothing is
+  erased and it goes through.  At the written universe, in turn, a constructor
+  application takes fields only: the decode of one nested inside another does
+  not reduce there, so `E (A.cons x c b d) …` is fine and `E (A.cons (A.cons
+  …) …) …` is rejected, while one universe up it is not.
 - When Lean declares the graph block -- no carrier in any arity -- `X.rec` is
   a kernel recursor application, which the code generator compiles for a single
   carrier and not for a mutual family; it is then `noncomputable`, and so is
@@ -220,9 +244,10 @@ Current restrictions are explicit:
   decoder outputs must fit in `Type (u+1)`.
 
 Rejected generation is rolled back, including declarations already emitted
-before a later type error. Turn on `set_option trace.Mumi.ir true` to inspect
-the generated commands. Large lower-mode blocks may need a higher
-`maxRecDepth`; tests use 4000–6000.
+before a later type error; `set_option mumi.ir.debug true` keeps what was
+emitted instead, so that it can be inspected. Turn on
+`set_option trace.Mumi.ir true` to inspect the generated commands. Large
+lower-mode blocks may need a higher `maxRecDepth`; tests use 4000–6000.
 
 ## Implementation and trust boundary
 
@@ -262,7 +287,9 @@ automatically generated constructor `injEq` lemmas can use `propext`.
 
 Run `lake test`, or `lake build Mumi MumiTests`.
 `MumiTests/IRFamily.lean` and `MumiTests/IRTangle.lean` cover the indexed and
-induction-inductive blocks of the section above, what they reject included.
+induction-inductive blocks of the section above one universe up, what they
+reject included; `MumiTests/IRFamilyLower.lean` and
+`MumiTests/IRTangleLower.lean` cover the same blocks at the written universe.
 The rest of the `MumiTests/IR*.lean` suite covers both modes, polymorphic universes, two
 carriers with six recursive outputs, dependent type/value outputs, numerical
 branching, multi-argument recursive domains, proof fields, equation-variable

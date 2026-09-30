@@ -39,8 +39,27 @@ noncomputable def _exposeArgs {i : I} (h : Acc r i) (s : S)
     (x : carrier (build sig r i (_expandAccess r h)) s) :
     Desc.Args (Pred r i (fun j p => build sig r j (Acc.inv h p))) (predDecode r) (sig s) := x
 
+/-- `Desc.map` at `raise`, without a transport: `decode` of a raised value is
+`predDecode` of it definitionally.  See `lowerArgs`. -/
+noncomputable def raiseArgs {i : I} {children : ∀ j, r j i → Acc r j} :
+    (d : Desc D s) → Desc.Args (Pred r i (fun j h => build sig r j (children j h))) (predDecode r) d →
+    Desc.Args (U sig r) (decode sig r) d
+  | .ret _, _ => PUnit.unit
+  | .sigma _ next, ⟨a, rest⟩ => ⟨a, raiseArgs (next a) rest⟩
+  | .delta _ sort next, ⟨xs, rest⟩ =>
+    ⟨fun a => raise sig r (children := children) (sort a) (xs a),
+      raiseArgs (next (fun a => predDecode r (sort a) (xs a))) rest⟩
+
+theorem eval_raiseArgs {i : I} {children : ∀ j, r j i → Acc r j} (d : Desc D s)
+    (args : Desc.Args (Pred r i (fun j h => build sig r j (children j h))) (predDecode r) d) :
+    Desc.eval (U sig r) (decode sig r) d (raiseArgs sig r d args) = Desc.eval _ (predDecode r) d args := by
+  induction d with
+  | ret value => rfl
+  | sigma A next ih => exact ih args.1 args.2
+  | delta A sort next ih => exact ih _ args.2
+
 noncomputable def view (s : S) (a : U sig r s) : Desc.Args (U sig r) (decode sig r) (sig s) :=
-  Desc.map (raise sig r) (decode_raise sig r) (sig s)
+  raiseArgs sig r (sig s)
     (_exposeArgs sig r (getAcc sig r a) s (_exposeFamily sig r (getAcc sig r a) s a.code))
 
 noncomputable def _exposedDecode {i : I} (h : Acc r i) (s : S)
@@ -53,13 +72,12 @@ private theorem exposedDecode_eq {i : I} (h : Acc r i) (s : S)
 
 theorem decode_view (s : S) (a : U sig r s) :
     Desc.eval (U sig r) (decode sig r) (sig s) (view sig r s a) = decode sig r s a :=
-  (Desc.eval_map (raise sig r) (decode_raise sig r) (sig s) _).trans
+  (eval_raiseArgs sig r (sig s) _).trans
     (exposedDecode_eq sig r (getAcc sig r a) s a.code)
 
 theorem view_pack (i : I) (children : ∀ j, r j i → Acc r j) (s : S)
     (args : Desc.Args (Pred r i (fun j h => build sig r j (children j h))) (predDecode r) (sig s)) :
-    view sig r s (pack sig r i children s args) =
-      Desc.map (raise sig r) (decode_raise sig r) (sig s) args := rfl
+    view sig r s (pack sig r i children s args) = raiseArgs sig r (sig s) args := rfl
 
 /-- A dependent induction step with access to every earlier-stage recursive result. -/
 def Step (C : (s : S) → U sig r s → Sort w) :=
