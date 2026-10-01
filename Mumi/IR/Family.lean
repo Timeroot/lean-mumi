@@ -164,6 +164,11 @@ structure Block where
   `Mumi` declared it across universes.  Empty until the graph is declared, and
   at the written universe, where the recursion is always joint. -/
   recs : Array (Array Nat) := #[]
+  /-- At the written universe, the data members by universe, in an order every
+  carrier's fields and indices of carrier type come before it: each is one
+  stage engine, and to a later engine a carrier of an earlier one is a value
+  of a type already declared. -/
+  groups : Array (Array Nat) := #[]
   deriving Inhabited
 
 /-- A variable of carrier type as the encoding sees it: its semantic half, and
@@ -222,14 +227,23 @@ private def applyDomain (f : String) (bs : Array Binder) :=
 private def untypedLambda (xs : Array String) (body : String) : String :=
   if xs.isEmpty then body else par ("fun " ++ join xs ++ " => " ++ body)
 
-private def firstName (b : Block) := b.members[0]!.name
-private def sortName (b : Block) := aux (firstName b) "_Sort"
-private def sigName (b : Block) := aux (firstName b) "_sig"
-private def famName (b : Block) := aux (firstName b) "_Fam"
-private def motiveName (b : Block) := aux (firstName b) "_Motive"
-private def indName (b : Block) := aux (firstName b) "_induction"
-private def sortPat (b : Block) (i : Nat) := "⟨" ++ sortName b ++ ".s" ++ toString i ++ "⟩"
-private def sortValue (b : Block) (i : Nat) := par (sortPat b i ++ " : ULift " ++ sortName b)
+/-- The engine data member `k` belongs to, at the written universe. -/
+private def groupOf (b : Block) (k : Nat) : Nat := (b.groups.findIdx? (·.contains k)).getD 0
+/-- The member engine `g` is named after: its first. -/
+private def gfirst (b : Block) (g : Nat) : Name := b.members[((b.groups[g]?.bind (·[0]?)).getD 0)]!.name
+/-- The universe of engine `g`. -/
+private def glevel (b : Block) (g : Nat) : String :=
+  let l := b.members[((b.groups[g]?.bind (·[0]?)).getD 0)]!.level
+  if l.isEmpty then b.level else l
+/-- Whether carrier `j` is of another engine than carrier `k`'s. -/
+private def foreign (b : Block) (k j : Nat) : Bool := groupOf b k != groupOf b j
+private def sortName (b : Block) (g : Nat) := aux (gfirst b g) "_Sort"
+private def sigName (b : Block) (g : Nat) := aux (gfirst b g) "_sig"
+private def famName (b : Block) (g : Nat) := aux (gfirst b g) "_Fam"
+private def motiveName (b : Block) (g : Nat) := aux (gfirst b g) "_Motive"
+private def indName (b : Block) (g : Nat) := aux (gfirst b g) "_induction"
+private def sortPat (b : Block) (i : Nat) := "⟨" ++ sortName b (groupOf b i) ++ ".s" ++ toString i ++ "⟩"
+private def sortValue (b : Block) (i : Nat) := par (sortPat b i ++ " : ULift " ++ sortName b (groupOf b i))
 private def tagName (m : Member) := aux m.name "_Tag"
 private def iName (m : Member) := aux m.name "_I"
 private def dName (m : Member) := aux m.name "_D"
@@ -257,8 +271,8 @@ private def packedVar (n : Name) := "_ir_packed_" ++ n.toString
 private def cohboxVar (n : Name) := "_ir_cohbox_" ++ n.toString
 private def boxVar (n : Name) := "_ir_box_" ++ n.toString
 private def valuesVar (n : Name) := "_ir_values_" ++ n.toString
-private def sigAt (b : Block) := atParams b (sigName b)
-private def relationAt (b : Block) := par ("Mumi.IR.model " ++ sigAt b) ++ ".lt"
+private def sigAt (b : Block) (g : Nat) := atParams b (sigName b g)
+private def relationAt (b : Block) (g : Nat) := par ("Mumi.IR.model " ++ sigAt b g) ++ ".lt"
 private def indexed (b : Block) (k : Nat) := !b.members[k]!.indices.isEmpty
 
 /-- `s` read as carrier `k` at the shared parameters and some index arguments. -/
@@ -333,9 +347,6 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
           throwErrorAt d "IR prototype requires identical shared parameters on all declarations"
       unless prop do
         if level.isEmpty then level := l
-        else if l != level && mumi.mahlo.get (← getOptions) then
-          throwErrorAt result "At the universe the block is written at every carrier of a component has to share \
-            the declared universe; one universe up, `set_option mumi.mahlo false`, they need not"
       unless d[6][0].getNumArgs == 0 do throwErrorAt d "IR prototype does not yet support deriving clauses"
       heads := heads.push (d[1][0].getId, idx, prop, l)
   checkDistinct (params.map (·.name)) globalNames
@@ -1457,7 +1468,19 @@ each proof where it was written, as a proof of the `Prop` member's
 certificate `_ir_P_Good` over the raw halves of its indices, which is in the
 one `mutual` with the others, and the shape of a certificate yields the proofs
 beside the fields' certificates.  `P.rec` is the certificates' joint recursor
-at `True` for the data members, closed by tactic since it is a proof. -/
+at `True` for the data members, closed by tactic since it is a proof.
+
+A sort lives in one `Type u`, so carriers in different universes are on
+different stage engines: one per universe (`Block.groups`), in an order every
+carrier's fields and indices of carrier type come before it, which their
+universes guarantee.  To a later engine a carrier of an earlier one is a value
+of a type already declared: a plain field of the description, boxed, with
+the box of its coherence beside it when that carrier is indexed, its
+semantics read off its decode; its certificate is demanded by the later
+member's as a field's of the same engine is, so the public value is rebuilt
+in the minor premises, but the recursion gives no hypothesis at it.  The
+certificates of every member are one `mutual` after every engine, which is
+what lets a `Prop` tie the universes together. -/
 
 private def semAt (b : Block) (k : Nat) (idx : Array String) := withParams b (semName b.members[k]!) idx
 private def rawAt (b : Block) (k : Nat) := atParams b (rawName b.members[k]!)
@@ -1470,10 +1493,10 @@ private def emitDefL (attrs rest : String) : CommandElabM Unit :=
   emitFirst #["set_option maxRecDepth 8000 in\n" ++ attrs ++ "def " ++ rest,
     "set_option maxRecDepth 8000 in\n" ++ attrs ++ "noncomputable def " ++ rest]
 
-private def packedType (b : Block) (dom : Array Binder) : CommandElabM String := do
+private def packedType (b : Block) (g : Nat) (dom : Array Binder) : CommandElabM String := do
   let mut t := "PUnit.{1}"
   for x in dom.reverse do t := par (par (x.name.toString ++ " : " ++ (← text x.type)) ++ " ×' " ++ t)
-  return "ULift.{" ++ b.level ++ "} " ++ par t
+  return "ULift.{" ++ glevel b g ++ "} " ++ par t
 private def packedValue (dom : Array Binder) : String := Id.run do
   let mut t := "PUnit.unit"
   for x in dom.reverse do t := "⟨" ++ x.name.toString ++ ", " ++ t ++ "⟩"
@@ -1620,7 +1643,7 @@ arguments, both over those names. -/
 private def motiveTele (b : Block) (k : Nat) : CommandElabM (String × Array (String × String) × Array String × Array String) := do
   let (comps, pub, good) ← pubTele b k
   -- the packed type, right-nested, with the components' names in scope for later ones
-  let mut packed := "PUnit.{" ++ b.level ++ "+1}"
+  let mut packed := "PUnit.{" ++ glevel b (groupOf b k) ++ "+1}"
   for (n, t) in comps.reverse do packed := par ("(" ++ n ++ " : " ++ t ++ ") ×' " ++ packed)
   let mut proj := #[]
   for i in [:comps.size] do
@@ -1776,10 +1799,10 @@ private def emitLowerSemantics (b : Block) (order : Array (Sum Nat Nat)) : Comma
     let m := b.members[k]!
     if m.prop then continue
     let (arity, _) ← semArity b k
-    emitL ("structure " ++ iName m ++ " " ++ ps ++ " : Type (" ++ b.level ++ "+1) where\n" ++
+    emitL ("structure " ++ iName m ++ " " ++ ps ++ " : Type (" ++ m.level ++ "+1) where\n" ++
       String.intercalate "\n" (arity.toList.map ("  " ++ ·)))
     let at_ := semIdxNames b k |>.map ("_ir_at." ++ ·)
-    emitL ("structure " ++ dName m ++ " " ++ ps ++ " : Type (" ++ b.level ++ "+1) where\n  _ir_at : " ++ iAt b k ++ "\n  _ir_val : " ++ semAt b k at_)
+    emitL ("structure " ++ dName m ++ " " ++ ps ++ " : Type (" ++ m.level ++ "+1) where\n  _ir_at : " ++ iAt b k ++ "\n  _ir_val : " ++ semAt b k at_)
     if indexed b k then
       let atI := semIdxNames b k |>.map ("_ir_i." ++ ·)
       let atJ := semIdxNames b k |>.map ("_ir_j." ++ ·)
@@ -1794,17 +1817,21 @@ private def emitLowerSemantics (b : Block) (order : Array (Sum Nat Nat)) : Comma
       let vals ← ctorVals b src k ci #[]
       emitL ("def " ++ pieceName m c ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ atParams b (dName m) ++ " := ⟨" ++ iMk b k sIdx ++ ", " ++ app ("@" ++ semName m ++ ".mk") (pArgs b ++ sIdx ++ vals) ++ "⟩")
 
-/-- Level `i` of the description of `X.c`: field `i` and what follows. -/
-private def emitContinuations (b : Block) : CommandElabM Unit := do
+/-- Level `i` of the description of `X.c`: field `i` and what follows.  A
+field of a carrier of another engine is a plain field -- a value of a type
+already declared -- with, when that carrier is indexed, its coherence beside
+it; what follows reads its semantics off its decode. -/
+private def emitContinuations (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  for k in dataMembers b do
+  let lvl := glevel b g
+  for k in b.groups[g]! do
     let m := b.members[k]!
     for c in m.ctors do
       let c := c.lowerOf
       let fs := lowerFields b c
       for i in (List.range (fs.size + 1)).reverse do
         let (src, binders) ← descSources b c i
-        let ty := "Mumi.IR.Desc " ++ atParams b (famName b) ++ " " ++ sortValue b k
+        let ty := "Mumi.IR.Desc " ++ atParams b (famName b g) ++ " " ++ sortValue b k
         let earlier := descNames b c i
         let body ←
           if i == fs.size then
@@ -1816,46 +1843,60 @@ private def emitContinuations (b : Block) : CommandElabM Unit := do
               else withParams b (contName m c (i+1)) (earlier ++ #[x])
             if let some (j, args) := f.target then
               let dom ← domIn b src f
-              let packed ← packedType b dom
-              let value := app (valuesVar f.name) #[packedValue dom]
-              if indexed b j then
-                let sIdx ← semIdx b src j args
-                -- the coherence, over the packed argument
-                let stmt := "∀ (_ir_p : " ++ packed ++ "), " ++ app (lambda' dom (par (app (valuesVar f.name) #["_ir_p"]) ++ "._ir_at = " ++ iMk b j sIdx)) (unpacked dom "_ir_p")
-                let sem ← lambda dom (trAt b j (par (cohVar f.name ++ ".down.1 " ++ packedValue dom)) (par value ++ "._ir_val"))
-                pure (".delta " ++ par packed ++ " (fun _ => " ++ sortValue b j ++ ") (fun " ++ valuesVar f.name ++ " => .sigma (ULift.{" ++ b.level ++ "} ((_ : " ++ stmt ++ ") ×' PUnit.{1})) (fun " ++ cohVar f.name ++ " => " ++ next sem ++ "))")
+              if foreign b k j then
+                let box := boxVar f.name
+                let value := applyDomain (box ++ ".down.1") dom
+                let rawTy ← forallS dom (rawAt b j)
+                if indexed b j then
+                  let sIdx ← semIdx b src j args
+                  let stmt ← forallS dom (decAt b j value ++ "._ir_at = " ++ iMk b j sIdx)
+                  let sem ← lambda dom (trAt b j (applyDomain (cohboxVar f.name ++ ".down.1") dom) (decAt b j value ++ "._ir_val"))
+                  pure (".sigma (ULift.{" ++ lvl ++ "} ((_ : " ++ rawTy ++ ") ×' PUnit.{1})) (fun " ++ box ++ " => .sigma (ULift.{" ++ lvl ++ "} ((_ : " ++ stmt ++ ") ×' PUnit.{1})) (fun " ++ cohboxVar f.name ++ " => " ++ next sem ++ "))")
+                else
+                  let sem ← lambda dom (decAt b j value ++ "._ir_val")
+                  pure (".sigma (ULift.{" ++ lvl ++ "} ((_ : " ++ rawTy ++ ") ×' PUnit.{1})) (fun " ++ box ++ " => " ++ next sem ++ ")")
               else
-                let sem ← lambda dom (par value ++ "._ir_val")
-                pure (".delta " ++ par packed ++ " (fun _ => " ++ sortValue b j ++ ") (fun " ++ valuesVar f.name ++ " => " ++ next sem ++ ")")
+                let packed ← packedType b g dom
+                let value := app (valuesVar f.name) #[packedValue dom]
+                if indexed b j then
+                  let sIdx ← semIdx b src j args
+                  -- the coherence, over the packed argument
+                  let stmt := "∀ (_ir_p : " ++ packed ++ "), " ++ app (lambda' dom (par (app (valuesVar f.name) #["_ir_p"]) ++ "._ir_at = " ++ iMk b j sIdx)) (unpacked dom "_ir_p")
+                  let sem ← lambda dom (trAt b j (par (cohVar f.name ++ ".down.1 " ++ packedValue dom)) (par value ++ "._ir_val"))
+                  pure (".delta " ++ par packed ++ " (fun _ => " ++ sortValue b j ++ ") (fun " ++ valuesVar f.name ++ " => .sigma (ULift.{" ++ lvl ++ "} ((_ : " ++ stmt ++ ") ×' PUnit.{1})) (fun " ++ cohVar f.name ++ " => " ++ next sem ++ "))")
+                else
+                  let sem ← lambda dom (par value ++ "._ir_val")
+                  pure (".delta " ++ par packed ++ " (fun _ => " ++ sortValue b j ++ ") (fun " ++ valuesVar f.name ++ " => " ++ next sem ++ ")")
             else
-              pure (".sigma (ULift.{" ++ b.level ++ "} ((_ : " ++ (← semText b src f.type) ++ ") ×' PUnit.{1})) (fun " ++ boxVar f.name ++ " => " ++ next (boxVar f.name ++ ".down.1") ++ ")")
+              pure (".sigma (ULift.{" ++ lvl ++ "} ((_ : " ++ (← semText b src f.type) ++ ") ×' PUnit.{1})) (fun " ++ boxVar f.name ++ " => " ++ next (boxVar f.name ++ ".down.1") ++ ")")
         emitL ("def " ++ contName m c i ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ ty ++ " :=\n  " ++ body)
 where
   /-- A lambda over the binders, or the body when there are none, applied by the caller. -/
   lambda' (bs : Array Binder) (body : String) : String :=
     if bs.isEmpty then body else par ("fun " ++ join (bs.map fun x => x.name.toString) ++ " => " ++ body)
 
-private def emitLowerSorts (b : Block) : CommandElabM Unit := do
+private def emitLowerSorts (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  emitL ("inductive " ++ sortName b ++ " where\n" ++ String.intercalate "\n" ((dataMembers b).toList.map fun i => "  | s" ++ toString i))
-  for i in dataMembers b do
+  let members := b.groups[g]!
+  emitL ("inductive " ++ sortName b g ++ " where\n" ++ String.intercalate "\n" (members.toList.map fun i => "  | s" ++ toString i))
+  for i in members do
     let m := b.members[i]!
     emitL ("inductive " ++ tagName m ++ " where\n" ++ String.intercalate "\n" (m.ctors.toList.map fun c => "  | " ++ c.name.toString))
-  emitL ("def " ++ famName b ++ " " ++ ps ++ " : ULift.{" ++ b.level ++ "} " ++ sortName b ++ " → Type (" ++ b.level ++ "+1)\n" ++
-    String.intercalate "\n" ((dataMembers b).toList.map fun i => "  | " ++ sortPat b i ++ " => " ++ atParams b (dName b.members[i]!)))
+  emitL ("def " ++ famName b g ++ " " ++ ps ++ " : ULift.{" ++ glevel b g ++ "} " ++ sortName b g ++ " → Type (" ++ glevel b g ++ "+1)\n" ++
+    String.intercalate "\n" (members.toList.map fun i => "  | " ++ sortPat b i ++ " => " ++ atParams b (dName b.members[i]!)))
 
-private def emitLowerSignature (b : Block) : CommandElabM Unit := do
+private def emitLowerSignature (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
   let mut ss := #[]
-  for k in dataMembers b do
+  for k in b.groups[g]! do
     let m := b.members[k]!
     let cs := m.ctors.toList.map fun c => "    | ." ++ c.name.toString ++ " => " ++ atParams b (contName m c 0)
     ss := ss.push ("  | " ++ sortPat b k ++ " => .choose " ++ tagName m ++ " (fun\n" ++ String.intercalate "\n" cs ++ ")")
-  emitL ("def " ++ sigName b ++ " " ++ ps ++ " : Mumi.IR.Signature (ULift.{" ++ b.level ++ "} " ++ sortName b ++ ") " ++ par (atParams b (famName b)) ++ "\n" ++ String.intercalate "\n" ss.toList)
-  for k in dataMembers b do
+  emitL ("def " ++ sigName b g ++ " " ++ ps ++ " : Mumi.IR.Signature (ULift.{" ++ glevel b g ++ "} " ++ sortName b g ++ ") " ++ par (atParams b (famName b g)) ++ "\n" ++ String.intercalate "\n" ss.toList)
+  for k in b.groups[g]! do
     let m := b.members[k]!
-    emitDefL "" (rawName m ++ " " ++ ps ++ " : Type " ++ b.level ++ " := Mumi.IR.Raw " ++ sigAt b ++ " " ++ sortValue b k)
-    emitDefL "@[reducible] " (decName m ++ " " ++ ps ++ " (_ir_a : " ++ rawAt b k ++ ") : " ++ atParams b (dName m) ++ " := Mumi.IR.decode " ++ sigAt b ++ " " ++ sortValue b k ++ " _ir_a")
+    emitDefL "" (rawName m ++ " " ++ ps ++ " : Type " ++ glevel b g ++ " := Mumi.IR.Raw " ++ sigAt b g ++ " " ++ sortValue b k)
+    emitDefL "@[reducible] " (decName m ++ " " ++ ps ++ " (_ir_a : " ++ rawAt b k ++ ") : " ++ atParams b (dName m) ++ " := Mumi.IR.decode " ++ sigAt b g ++ " " ++ sortValue b k ++ " _ir_a")
 
 /-! ### Raw constructors and certificates -/
 
@@ -1948,9 +1989,9 @@ private def rawFields (b : Block) (c : Ctor) (forGood := false) : CommandElabM R
       r := r.bind f.name.toString (← semText b r.src f.type) .plain
   return r
 
-private def emitRawCtors (b : Block) : CommandElabM Unit := do
+private def emitRawCtors (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  for k in dataMembers b do
+  for k in b.groups[g]! do
     let m := b.members[k]!
     for c in m.ctors do
       let r ← rawFields b c
@@ -1958,11 +1999,16 @@ private def emitRawCtors (b : Block) : CommandElabM Unit := do
       let mut values := #[]
       for f in lowerFields b c do
         if let some (j, _) := f.target then
+          if foreign b k j then
+            -- a value of another engine: a plain field, with its coherence
+            values := values.push ("⟨⟨" ++ f.name.toString ++ ", PUnit.unit⟩⟩")
+            if indexed b j then values := values.push ("⟨⟨" ++ cohVar f.name ++ ", PUnit.unit⟩⟩")
+            continue
           values := values.push ("(fun _ir_position => " ++ app f.name.toString (unpacked f.domain "_ir_position") ++ ")")
           if indexed b j then
             values := values.push ("⟨⟨(fun _ir_position => " ++ app (cohVar f.name) (unpacked f.domain "_ir_position") ++ "), PUnit.unit⟩⟩")
         else values := values.push ("⟨⟨" ++ f.name.toString ++ ", PUnit.unit⟩⟩")
-      emitDefL "" (rawName m ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ rawAt b k ++ " := Mumi.IR.roll " ++ sigAt b ++ " " ++ sortValue b k ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) values)
+      emitDefL "" (rawName m ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ join binders ++ " : " ++ rawAt b k ++ " := Mumi.IR.roll " ++ sigAt b g ++ " " ++ sortValue b k ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) values)
       -- what the constructor's decode is at, stated once over its raw fields
       if indexed b k then
         let sIdx ← semIdx b src k c.lowerOf.result
@@ -2019,7 +2065,7 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       if m.prop then
         emitL ("@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Prop := " ++ withParams b (goodName m) gargs)
         continue
-      emitL ("def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Type " ++ b.level ++ " := { _ir_a : " ++ rawAt b k ++ " // " ++ withParams b (goodName m) (gargs ++ #["_ir_a"]) ++ " }")
+      emitL ("def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Type " ++ m.level ++ " := { _ir_a : " ++ rawAt b k ++ " // " ++ withParams b (goodName m) (gargs ++ #["_ir_a"]) ++ " }")
       -- the semantics of a public value, at the semantics of its indices
       let idx := pubIdxNames b k
       let sIdx ← m.indices.mapM fun x => do
@@ -2085,25 +2131,39 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
 
 /-- The value the recursion computes at a raw value of carrier `k`: the motive at
 the public value, for every raw index and certificate it could be at. -/
-private def emitMotive (b : Block) : CommandElabM Unit := do
+private def emitMotive (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
   let mut cs := #[]
-  for k in dataMembers b do
+  for k in b.groups[g]! do
     let m := b.members[k]!
     let (packed, proj, pub, good) ← motiveTele b k
     -- one binder of `Type u` per arm, so that every arm lands in the same sort
     cs := cs.push ("  | " ++ sortPat b k ++ ", _ir_a => ∀ (_ir_p : " ++ packed ++ ") (_ir_h : " ++ atProj proj (withParams b (goodName m) (good ++ #["_ir_a"])) ++ "), " ++ atProj proj (app (motive k) (pub ++ #["⟨_ir_a, _ir_h⟩"])))
-  emitL ("def " ++ motiveName b ++ " " ++ ps ++ " " ++ (← motiveDecls b) ++ " : (_ir_s : ULift.{" ++ b.level ++ "} " ++ sortName b ++ ") → Mumi.IR.Raw " ++ sigAt b ++ " _ir_s → Sort (imax (" ++ b.level ++ "+1) _ir_elim)\n" ++ String.intercalate "\n" cs.toList)
+  emitL ("def " ++ motiveName b g ++ " " ++ ps ++ " " ++ (← motiveDecls b b.groups[g]!) ++ " : (_ir_s : ULift.{" ++ glevel b g ++ "} " ++ sortName b g ++ ") → Mumi.IR.Raw " ++ sigAt b g ++ " _ir_s → Sort (imax (" ++ glevel b g ++ "+1) _ir_elim)\n" ++ String.intercalate "\n" cs.toList)
 
 /-- The tuple pattern of `c`'s arguments, and the `let`s that unpack them into
 the raw fields and coherences, in the world of `X`. -/
-private def unpackedFields (b : Block) (c : Ctor) (value : String → Array Binder → Nat → CommandElabM String) : CommandElabM (Array String × String × Array Source) := do
+private def unpackedFields (b : Block) (k : Nat) (c : Ctor) (value : String → Array Binder → Nat → CommandElabM String) : CommandElabM (Array String × String × Array Source) := do
   let mut pats := #[]
   let mut lets := ""
   let mut src : Array Source := #[]
   for f in lowerFields b c do
     if let some (j, _) := f.target then
       let dom ← domIn b src f
+      if foreign b k j then
+        -- a value of another engine is a box, as a plain field is
+        pats := pats.push (boxVar f.name)
+        if indexed b j then pats := pats.push (cohboxVar f.name)
+        if f.value.isSome then
+          src := src.push (← hiddenSource b src f)
+          continue
+        lets := lets ++ "let " ++ f.name.toString ++ " := " ++ boxVar f.name ++ ".down.1\n  "
+        if indexed b j then
+          lets := lets ++ "let " ++ cohVar f.name ++ " := " ++ cohboxVar f.name ++ ".down.1\n  "
+          src := src.push { name := f.name, sem := ← lambda dom (trAt b j (applyDomain (cohVar f.name) dom) (decAt b j (applyDomain f.name.toString dom) ++ "._ir_val")), graph := f.name.toString, coh := cohVar f.name }
+        else
+          src := src.push { name := f.name, sem := ← lambda dom (decAt b j (applyDomain f.name.toString dom) ++ "._ir_val"), graph := f.name.toString }
+        continue
       pats := pats.push (packedVar f.name)
       if indexed b j then pats := pats.push (cohboxVar f.name)
       if f.value.isSome then
@@ -2159,9 +2219,9 @@ private def shapeStmt (b : Block) (k ci : Nat) (idxNames : Array String) (src : 
       parts := parts.push (← forallS dom (withParams b (goodName b.members[j]!) ((← goodIdx b src j args) ++ node)))
   return String.intercalate " ∧ " (parts.toList ++ ["True"])
 
-private def emitShapes (b : Block) : CommandElabM Unit := do
+private def emitShapes (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  for k in dataMembers b do
+  for k in b.groups[g]! do
     let m := b.members[k]!
     let (arity, _) ← rawArity b k
     let names := rawArityNames b k
@@ -2169,7 +2229,7 @@ private def emitShapes (b : Block) : CommandElabM Unit := do
     let mut proofs := #[]
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
-      let (pats, lets, src) ← unpackedFields b c (fun p dom _ => pure (app p #[packedValue dom]))
+      let (pats, lets, src) ← unpackedFields b k c (fun p dom _ => pure (app p #[packedValue dom]))
       cs := cs.push ("  | " ++ tuple (tagName m ++ "." ++ c.name.toString) pats ++ " =>\n  " ++ lets ++ (← shapeStmt b k ci names src "_ir_self"))
       -- `cases` names the constructor's arguments in declaration order
       let r ← rawFields b c (forGood := true)
@@ -2179,14 +2239,14 @@ private def emitShapes (b : Block) : CommandElabM Unit := do
       let eqs := m.indices.toList.map fun x => if x.member.isSome then "rfl" else "HEq.rfl"
       let substs := if eqs'.isEmpty then "" else "subst " ++ join eqs' ++ "; "
       proofs := proofs.push ("  | " ++ c.name.toString ++ " " ++ join ordered ++ " => " ++ substs ++ "exact ⟨rfl, " ++ String.intercalate ", " (eqs ++ hs.toList ++ ["trivial"]) ++ "⟩")
-    emitDefL "" (shapeName m ++ " " ++ ps ++ " " ++ join arity ++ " (_ir_self : " ++ rawAt b k ++ ") : Mumi.IR.Args (Mumi.IR.Raw " ++ sigAt b ++ ") (Mumi.IR.decode " ++ sigAt b ++ ") (" ++ sigAt b ++ " " ++ sortValue b k ++ ") → Prop\n" ++ String.intercalate "\n" cs.toList)
-    emitL ("theorem " ++ shapeLemma m ++ " " ++ ps ++ " " ++ join arity ++ " {_ir_self : " ++ rawAt b k ++ "} (_ir_good : " ++ withParams b (goodName m) (names ++ #["_ir_self"]) ++ ") : " ++ withParams b (shapeName m) (names ++ #["_ir_self", "(Mumi.IR.view " ++ sigAt b ++ " " ++ sortValue b k ++ " _ir_self)"]) ++ " := by\n  cases _ir_good with\n" ++ String.intercalate "\n" proofs.toList)
+    emitDefL "" (shapeName m ++ " " ++ ps ++ " " ++ join arity ++ " (_ir_self : " ++ rawAt b k ++ ") : Mumi.IR.Args (Mumi.IR.Raw " ++ sigAt b g ++ ") (Mumi.IR.decode " ++ sigAt b g ++ ") (" ++ sigAt b g ++ " " ++ sortValue b k ++ ") → Prop\n" ++ String.intercalate "\n" cs.toList)
+    emitL ("theorem " ++ shapeLemma m ++ " " ++ ps ++ " " ++ join arity ++ " {_ir_self : " ++ rawAt b k ++ "} (_ir_good : " ++ withParams b (goodName m) (names ++ #["_ir_self"]) ++ ") : " ++ withParams b (shapeName m) (names ++ #["_ir_self", "(Mumi.IR.view " ++ sigAt b g ++ " " ++ sortValue b k ++ " _ir_self)"]) ++ " := by\n  cases _ir_good with\n" ++ String.intercalate "\n" proofs.toList)
 
 /-- Transport a value of the motive across the equations a certificate yields:
 every index, and the node. -/
-private def emitCasts (b : Block) : CommandElabM Unit := do
+private def emitCasts (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  for k in dataMembers b do
+  for k in b.groups[g]! do
     let m := b.members[k]!
     let mut binders := #[]
     let mut discr := #[]
@@ -2233,18 +2293,20 @@ private def emitCasts (b : Block) : CommandElabM Unit := do
         good := good.push n
         good' := good'.push (n ++ "'")
         pairs' := pairs'.push (x.name, mkIdent (Name.mkSimple (n ++ "'")))
-    emitL ("def " ++ castName m ++ " " ++ ps ++ " " ++ (← motiveDecls b) ++ " " ++ join binders ++ " (_ir_a _ir_a' : " ++ rawAt b k ++ ") (_ir_ea : _ir_a = _ir_a') (_ir_good : " ++ withParams b (goodName m) (good ++ #["_ir_a"]) ++ ") (_ir_good' : " ++ withParams b (goodName m) (good' ++ #["_ir_a'"]) ++ ") (_ir_v : " ++ app (motive k) (pub' ++ #["⟨_ir_a', _ir_good'⟩"]) ++ ") : " ++ app (motive k) (pub ++ #["⟨_ir_a, _ir_good⟩"]) ++ " :=\n  match " ++ String.intercalate ", " (discr.toList ++ ["_ir_a'", "_ir_ea", "_ir_good'"]) ++ " with\n  | " ++ String.intercalate ", " (pats.toList ++ ["_", "rfl", "_"]) ++ " => _ir_v")
+    emitL ("def " ++ castName m ++ " " ++ ps ++ " " ++ (← motiveDecls b b.groups[g]!) ++ " " ++ join binders ++ " (_ir_a _ir_a' : " ++ rawAt b k ++ ") (_ir_ea : _ir_a = _ir_a') (_ir_good : " ++ withParams b (goodName m) (good ++ #["_ir_a"]) ++ ") (_ir_good' : " ++ withParams b (goodName m) (good' ++ #["_ir_a'"]) ++ ") (_ir_v : " ++ app (motive k) (pub' ++ #["⟨_ir_a', _ir_good'⟩"]) ++ ") : " ++ app (motive k) (pub ++ #["⟨_ir_a, _ir_good⟩"]) ++ " :=\n  match " ++ String.intercalate ", " (discr.toList ++ ["_ir_a'", "_ir_ea", "_ir_good'"]) ++ " with\n  | " ++ String.intercalate ", " (pats.toList ++ ["_", "rfl", "_"]) ++ " => _ir_v")
 
 /-- The step of the recursion at `X.c`: the constructor's arguments in the
 predecessor family, the certificate, and every motive and minor premise. -/
-private def emitSteps (b : Block) : CommandElabM Unit := do
+private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
   let ps ← paramsDecl b
-  let common := ps ++ " " ++ (← motiveDecls b) ++ " " ++ (← minorDecls b true)
-  let lt := relationAt b
-  let prev := "(fun _ir_j _ir_h => IR.Stage.build " ++ sigAt b ++ " " ++ lt ++ " _ir_j (_ir_children _ir_j _ir_h))"
+  let scope := b.groups[g]!
+  let lvl := glevel b g
+  let common := ps ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← minorDecls b true scope)
+  let lt := relationAt b g
+  let prev := "(fun _ir_j _ir_h => IR.Stage.build " ++ sigAt b g ++ " " ++ lt ++ " _ir_j (_ir_children _ir_j _ir_h))"
   let predAt (j : Nat) := "IR.Stage.Pred " ++ lt ++ " _ir_stage " ++ prev ++ " " ++ sortValue b j
   let predDecode (j : Nat) (p : String) := par ("IR.Stage.predDecode " ++ lt ++ " " ++ sortValue b j ++ " " ++ p)
-  for k in dataMembers b do
+  for k in scope do
     let m := b.members[k]!
     let (mPacked, mProj, mPub, mGood) ← motiveTele b k
     for ci in [:m.ctors.size] do
@@ -2260,14 +2322,30 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
         let f : Field := { f with type := unbox f.type, target := f.target.map (fun p => (p.1, p.2.map unbox)), domain := f.domain.map (fun x => { name := x.name, type := unbox x.type }), value := f.value.map unbox }
         if let some (j, args) := f.target then
           let dom ← domIn b psrc f
-          let packed ← packedType b dom
+          if foreign b k j then
+            -- a value of another engine: a box, and the box of its coherence
+            let value := applyDomain (boxVar f.name ++ ".down.1") dom
+            comps := comps.push (par (boxVar f.name ++ " : ULift.{" ++ lvl ++ "} ((_ : " ++ (← forallS dom (rawAt b j)) ++ ") ×' PUnit.{1})"))
+            names := names.push (boxVar f.name)
+            if indexed b j then
+              let sIdx ← semIdx b psrc j args
+              let stmt ← forallS dom (decAt b j value ++ "._ir_at = " ++ iMk b j sIdx)
+              comps := comps.push (par (cohboxVar f.name ++ " : ULift.{" ++ lvl ++ "} ((_ : " ++ stmt ++ ") ×' PUnit.{1})"))
+              names := names.push (cohboxVar f.name)
+              psrc := psrc.push { name := f.name, sem := ← lambda dom (trAt b j (applyDomain (cohboxVar f.name ++ ".down.1") dom) (decAt b j value ++ "._ir_val")), graph := f.name.toString, coh := "" }
+            else
+              psrc := psrc.push { name := f.name, sem := ← lambda dom (decAt b j value ++ "._ir_val"), graph := f.name.toString }
+            if f.hiddenArg then
+              psrc := psrc.pop.push { ← hiddenSource b psrc.pop f with graph := f.name.toString, coh := "" }
+            continue
+          let packed ← packedType b g dom
           comps := comps.push (par (packedVar f.name ++ " : " ++ packed ++ " → " ++ predAt j))
           names := names.push (packedVar f.name)
           let value (p : String) := predDecode j (app (packedVar f.name) #[p])
           if indexed b j then
             let sIdx ← semIdx b psrc j args
             let stmt := "∀ (_ir_p : " ++ packed ++ "), " ++ app (lambdaN dom (value "_ir_p" ++ "._ir_at = " ++ iMk b j sIdx)) (unpacked dom "_ir_p")
-            comps := comps.push (par (cohboxVar f.name ++ " : ULift.{" ++ b.level ++ "} ((_ : " ++ stmt ++ ") ×' PUnit.{1})"))
+            comps := comps.push (par (cohboxVar f.name ++ " : ULift.{" ++ lvl ++ "} ((_ : " ++ stmt ++ ") ×' PUnit.{1})"))
             names := names.push (cohboxVar f.name)
             psrc := psrc.push { name := f.name, sem := ← lambda dom (trAt b j (par (cohboxVar f.name ++ ".down.1 " ++ packedValue dom)) (value (packedValue dom) ++ "._ir_val")), graph := f.name.toString, coh := "" }
           else
@@ -2275,13 +2353,13 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
           if f.hiddenArg then
             psrc := psrc.pop.push { ← hiddenSource b psrc.pop f with graph := f.name.toString, coh := "" }
         else
-          comps := comps.push (par (boxVar f.name ++ " : ULift.{" ++ b.level ++ "} ((_ : " ++ (← semText b psrc f.type) ++ ") ×' PUnit.{1})"))
+          comps := comps.push (par (boxVar f.name ++ " : ULift.{" ++ lvl ++ "} ((_ : " ++ (← semText b psrc f.type) ++ ") ×' PUnit.{1})"))
           names := names.push (boxVar f.name)
           boxes := boxes.push (f.name, ← parseTerm (boxVar f.name ++ ".down.1"))
-      let node := "Mumi.IR.pack " ++ sigAt b ++ " " ++ lt ++ " _ir_stage _ir_children " ++ sortValue b k ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) names
-      let recurse := "(_ir_recurse : ∀ _ir_t (_ir_p : IR.Stage.Pred " ++ lt ++ " _ir_stage " ++ prev ++ " _ir_t), " ++ withParams b ("@" ++ motiveName b) (motiveArgs b ++ #["_ir_t", "(Mumi.IR.raise " ++ sigAt b ++ " " ++ lt ++ " _ir_t _ir_p)"]) ++ ")"
+      let node := "Mumi.IR.pack " ++ sigAt b g ++ " " ++ lt ++ " _ir_stage _ir_children " ++ sortValue b k ++ " " ++ tuple (tagName m ++ "." ++ c.name.toString) names
+      let recurse := "(_ir_recurse : ∀ _ir_t (_ir_p : IR.Stage.Pred " ++ lt ++ " _ir_stage " ++ prev ++ " _ir_t), " ++ withParams b ("@" ++ motiveName b g) (motiveArgs b scope ++ #["_ir_t", "(Mumi.IR.raise " ++ sigAt b g ++ " " ++ lt ++ " _ir_t _ir_p)"]) ++ ")"
       -- the body: raise the fields, read the shape, rebuild the public fields, recurse, transport
-      let (_, lets, src) ← unpackedFields b c (fun p dom j => pure ("Mumi.IR.raise " ++ sigAt b ++ " " ++ lt ++ " (children := _ir_children) " ++ sortValue b j ++ " " ++ par (app p #[packedValue dom])))
+      let (_, lets, src) ← unpackedFields b k c (fun p dom j => pure ("Mumi.IR.raise " ++ sigAt b g ++ " " ++ lt ++ " (children := _ir_children) " ++ sortValue b j ++ " " ++ par (app p #[packedValue dom])))
       let mut body := projLets mProj ++ lets ++ "let _ir_node := " ++ node ++ "\n  "
       body := body ++ "let _ir_shape : " ++ (← shapeStmt b k ci mGood src "_ir_node") ++ " := " ++ withParams b (shapeLemma m) (mGood ++ #["_ir_good"]) ++ "\n  "
       -- public fields and hypotheses
@@ -2303,10 +2381,12 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
           let cert := "_ir_shape" ++ conj certAt
           certAt := certAt + 1
           body := body ++ "let " ++ pubVar f.name ++ " : " ++ (← forallS pdom (typeAt b j pargs)) ++ " := " ++ (← lambda pdom ("⟨" ++ applyDomain f.name.toString f.domain ++ ", " ++ applyDomain cert f.domain ++ "⟩")) ++ "\n  "
-          let margs ← motiveArgsAt b j (args.map (subst · pubPairs))
-          body := body ++ "let " ++ ihVar f.name ++ " : " ++ (← forallS pdom (app (motive j) (pargs ++ #[applyDomain (pubVar f.name) pdom]))) ++ " := " ++ (← lambda pdom (app "_ir_recurse" (#[sortValue b j, par (app (packedVar f.name) #[packedValue f.domain]), packTuple margs] ++ #[applyDomain cert f.domain]))) ++ "\n  "
+          -- a value of another engine is no part of this recursion: no hypothesis
+          unless foreign b k j do
+            let margs ← motiveArgsAt b j (args.map (subst · pubPairs))
+            body := body ++ "let " ++ ihVar f.name ++ " : " ++ (← forallS pdom (app (motive j) (pargs ++ #[applyDomain (pubVar f.name) pdom]))) ++ " := " ++ (← lambda pdom (app "_ir_recurse" (#[sortValue b j, par (app (packedVar f.name) #[packedValue f.domain]), packTuple margs] ++ #[applyDomain cert f.domain]))) ++ "\n  "
+            ihs := ihs.push (ihVar f.name)
           images := images.push (pubVar f.name)
-          ihs := ihs.push (ihVar f.name)
           pubPairs := pubPairs.push (f.name, mkIdent (Name.mkSimple (pubVar f.name)))
         else
           images := images.push f.name.toString
@@ -2321,24 +2401,24 @@ private def emitSteps (b : Block) : CommandElabM Unit := do
         else
           castArgs := castArgs.push ("_ir_idx_" ++ x.name.toString) |>.push pt |>.push ("_ir_shape" ++ conj ei)
         ei := ei + 1
-      body := body ++ withParams b ("@" ++ castName m) (motiveArgs b ++ castArgs ++ #["_ir_node", par ctor ++ ".val", "_ir_shape.1", "_ir_good", par ctor ++ ".property", app (minor b k ci) (images ++ ihs)])
-      emitDefL "" (stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
+      body := body ++ withParams b ("@" ++ castName m) (motiveArgs b scope ++ castArgs ++ #["_ir_node", par ctor ++ ".val", "_ir_shape.1", "_ir_good", par ctor ++ ".property", app (minor b k ci) (images ++ ihs)])
+      emitDefL "" (stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b g ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
   -- the induction itself, and the public recursors
   let mut ss := #[]
-  for k in dataMembers b do
+  for k in scope do
     let m := b.members[k]!
     let mut cs := #[]
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
-      let (pats, _, _) ← unpackedFields b c (fun p _ _ => pure p)
-      cs := cs.push ("      | " ++ tuple (tagName m ++ "." ++ c.name.toString) pats ++ " => " ++ withParams b ("@" ++ stepName m c) (motiveArgs b ++ minorArgs b ++ #["_ir_stage", "_ir_children"] ++ pats ++ #["_ir_recurse"]))
+      let (pats, _, _) ← unpackedFields b k c (fun p _ _ => pure p)
+      cs := cs.push ("      | " ++ tuple (tagName m ++ "." ++ c.name.toString) pats ++ " => " ++ withParams b ("@" ++ stepName m c) (motiveArgs b scope ++ minorArgs b scope ++ #["_ir_stage", "_ir_children"] ++ pats ++ #["_ir_recurse"]))
     ss := ss.push ("    | " ++ sortPat b k ++ " => match _ir_args with\n" ++ String.intercalate "\n" cs.toList)
-  emitDefL "" (indName b ++ " " ++ common ++ " : ∀ _ir_s _ir_a, " ++ withParams b ("@" ++ motiveName b) (motiveArgs b ++ #["_ir_s", "_ir_a"]) ++ " :=\n  Mumi.IR.induction " ++ sigAt b ++ " (C := " ++ withParams b ("@" ++ motiveName b) (motiveArgs b) ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
-  for k in dataMembers b do
+  emitDefL "" (indName b g ++ " " ++ common ++ " : ∀ _ir_s _ir_a, " ++ withParams b ("@" ++ motiveName b g) (motiveArgs b scope ++ #["_ir_s", "_ir_a"]) ++ " :=\n  Mumi.IR.induction " ++ sigAt b g ++ " (C := " ++ withParams b ("@" ++ motiveName b g) (motiveArgs b scope) ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
+  for k in scope do
     let m := b.members[k]!
     let idx := pubIdxNames b k
     let margs ← motiveArgsAt b k (m.indices.map fun x => mkIdent x.name)
-    emitDefL "@[elab_as_elim] " (m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b) (motiveArgs b ++ minorArgs b ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
+    emitDefL "@[elab_as_elim] " (m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b g) (motiveArgs b scope ++ minorArgs b scope ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
 where
   /-- A lambda over the binders' names alone. -/
   lambdaN (bs : Array Binder) (body : String) : String :=
@@ -2450,22 +2530,54 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
       cgminors := cgminors.push g
     emitL ("@[elab_as_elim, cases_eliminator] theorem " ++ m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".casesOn") (pArgs b ++ #[← gmotive j "motive"] ++ gIdx ++ #["_ir_self"] ++ cgminors ++ certs))
 
-/-- Lower mode, end to end. -/
+/-- The engines: the data members by universe, each group in an order every
+carrier's fields and indices of carrier type come before it -- a carrier's
+are at its universe or below, so there is one. -/
+private def lowerGroups (b : Block) : CommandElabM (Array (Array Nat)) := do
+  let mut groups : Array (String × Array Nat) := #[]
+  for k in dataMembers b do
+    let l := b.members[k]!.level
+    if let some gi := groups.findIdx? (·.1 == l) then groups := groups.modify gi fun (l, ms) => (l, ms.push k)
+    else groups := groups.push (l, #[k])
+  let n := groups.size
+  let names (a c : Nat) : Bool := groups[a]!.2.any fun k =>
+    let m := b.members[k]!
+    (m.indices.any fun x => x.member.any fun (j, _) => groups[c]!.2.contains j) ||
+    (m.ctors.any fun ct => ct.fields.any fun f => f.target.any fun (j, _) => groups[c]!.2.contains j)
+  let mut order := #[]
+  let mut placed := Array.replicate n false
+  for _ in [:n] do
+    for a in [:n] do
+      if !placed[a]! && (Array.range n).all (fun c => c == a || placed[c]! || !names a c) then
+        placed := placed.set! a true
+        order := order.push a
+  unless order.size == n do
+    throwError "Carriers in different universes name one another in their fields or indices both ways, which no universe allows"
+  return order.map (groups[·]!.2)
+
+/-- Lower mode, end to end: one stage engine per universe, in order, the
+certificates of every member in one `mutual` after them all, and the
+recursion of each engine at its own motives. -/
 private def elaborateLower (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM Unit := do
   let b ← flattenLower b
+  let groups ← lowerGroups b
+  let b := { b with groups }
+  let b := { b with recs := b.members.mapIdx fun k m => if m.prop then #[] else groups[groupOf b k]! }
   emit "universe _ir_elim"
   emitSemantics b order
   emitLowerSemantics b order
-  emitLowerSorts b
-  emitContinuations b
-  emitLowerSignature b
-  emitRawCtors b
+  for g in [:groups.size] do
+    emitLowerSorts b g
+    emitContinuations b g
+    emitLowerSignature b g
+    emitRawCtors b g
   emitGood b
   emitLowerPublic b order
-  emitMotive b
-  emitShapes b
-  emitCasts b
-  emitSteps b
+  for g in [:groups.size] do
+    emitMotive b g
+    emitShapes b g
+    emitCasts b g
+    emitSteps b g
   if b.members.any (·.prop) then emitLowerPropRec b
   emitEquations b
   emitSolo b

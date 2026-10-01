@@ -86,15 +86,15 @@ example : P a1 := P.one A.a0 (fun _ => A.a0) P.zero B.b0 (Type 1) P.zero
 
 end UnivProp
 
-/-! At the written universe the carriers of a component share one universe. -/
+/-! At the written universe each carrier stays where it was written: one stage
+engine per universe, `A`'s first and `B`'s reading `A`'s raw terms and
+decoder as values of a type already there, and the certificates of all three
+in one `mutual` after both engines.  As above, on the one axiom. -/
 
 namespace UnivPropLower
 set_option mumi.mahlo true
+set_option maxRecDepth 6000
 
-/--
-error: At the universe the block is written at every carrier of a component has to share the declared universe; one universe up, `set_option mumi.mahlo false`, they need not
--/
-#guard_msgs in
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -112,5 +112,43 @@ def G : B → Type 3
   | .b0 => Type 2
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
+
+example : Type 1 := A
+example : Type 3 := B
+example (x : A) (f : F x → A) (h : P x) : F (A.a1 x f h) = ((y : F x) → F (f y)) := rfl
+example (x : A) (v : F x) (b : B) (g : G b → B) : G (B.b1 x v b g) = (F x × ((z : G b) → G (g z))) := rfl
+
+def depth : A → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
+def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => depth x + ih + 1)
+example (x : A) (f : F x → A) (h : P x) : depth (A.a1 x f h) = depth x + 1 := rfl
+example (x : A) (v : F x) (b : B) (g : G b → B) : sizeB (B.b1 x v b g) = depth x + sizeB b + 1 := rfl
+
+theorem P.depth_pos (a : A) (h : P a) : a = A.a0 ∨ 0 < depth a := by
+  induction h with
+  | zero => exact .inl rfl
+  | one x f h b k hx ih ihx => exact .inr (Nat.succ_pos _)
+
+theorem P.cases_test (a : A) (h : P a) : a = A.a0 ∨ ∃ x f h', a = A.a1 x f h' := by
+  cases h with
+  | zero => exact .inl rfl
+  | one x f h b k hx => exact .inr ⟨x, f, h, rfl⟩
+
+def a1 : A := A.a1 A.a0 (fun _ => A.a0) P.zero
+-- a closed `F` does not normalise here; its values go through the equations
+def v0 : F A.a0 := cast F_a0.symm Nat
+def b1 : B := B.b1 a1 (cast (F_a1 A.a0 (fun _ => A.a0) P.zero).symm fun _ => v0) B.b0 fun _ => B.b0
+example : P a1 := P.one A.a0 (fun _ => A.a0) P.zero B.b0 (cast G_b0.symm (Type 1)) P.zero
+
+/-- info: 2 -/
+#guard_msgs in
+#eval sizeB b1
+
+/-- info: 'UnivPropLower.sizeB' depends on axioms: [IR.mahlo] -/
+#guard_msgs in
+#print axioms sizeB
+
+/-- info: 'UnivPropLower.P.depth_pos' depends on axioms: [IR.mahlo] -/
+#guard_msgs in
+#print axioms P.depth_pos
 
 end UnivPropLower

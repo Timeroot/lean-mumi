@@ -232,9 +232,13 @@ where it was written (one universe up, one above).  With a `Prop` to run the
 dependency through, one component does span universes: `A : Type 1` takes a
 proof of `P x`, `P`'s constructor takes a `B : Type 3`, and `B` takes an `A`.
 One universe up that is taken, as the next section says;
-`MumiTests/IRUniversesProp.lean` is it.  At the written universe every
-carrier of a component still has to share one universe, as the raw carriers
-of a block do, and that is reported.
+`MumiTests/IRUniversesProp.lean` is it, in both modes: at the written
+universe each carrier stays where it was written, on one stage engine per
+universe, `A`'s first, `B`'s reading `A`'s raw terms and decoder as values of
+a type already there -- a plain field, with its certificate demanded by `B`'s
+-- and the certificates of all of them in one `mutual` after every engine.
+`B.rec` is then the recursion of `B`'s engine, with no hypothesis at its
+`A`, as one universe up.
 
 ## A `Prop` in the block
 

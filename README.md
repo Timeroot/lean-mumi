@@ -820,8 +820,9 @@ and everything it produces is `rfl` in either mode (at the written universe,
 checked by the kernel directly).  A `Prop` member may sit in the block too,
 mentioned by the carriers, and one universe up it may run a dependency between
 universes -- `A : Type 1` takes a proof of `P x`, `P` takes a `B : Type 3`,
-`B` takes an `A` -- with every recursor and every iota rule as before
-(`MumiTests/IRUniversesProp.lean`).
+`B` takes an `A` -- with every recursor and every iota rule as before, in
+both modes (`MumiTests/IRUniversesProp.lean`): at the written universe each
+carrier stays where it was written, on one stage engine per universe.
 
 See [the frontend guide](Mumi/IR/README.md) for syntax, generated APIs, the exact
 supported fragment, and the reflection assumption. General constructor patterns
