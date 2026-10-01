@@ -228,8 +228,13 @@ in different universes as long as no component mixes them -- and without a
 `Prop` to run a dependency through, none can, since a `Type 1` carrier cannot
 take a `Type 3` field: in `MumiTests/IRUniverses.lean` `A : Type 1` and `F`
 are one group, `B : Type 3` and `G`, which read them, another, and each lands
-where it was written (one universe up, one above).  A component that mixes a
-`Prop` inductive with carriers is taken one universe up; see the next section.
+where it was written (one universe up, one above).  With a `Prop` to run the
+dependency through, one component does span universes: `A : Type 1` takes a
+proof of `P x`, `P`'s constructor takes a `B : Type 3`, and `B` takes an `A`.
+One universe up that is taken, as the next section says;
+`MumiTests/IRUniversesProp.lean` is it.  At the written universe every
+carrier of a component still has to share one universe, as the raw carriers
+of a block do, and that is reported.
 
 ## A `Prop` in the block
 
@@ -244,16 +249,26 @@ both modes, with Lean's own recursors.
 
 When a carrier does mention it -- `U.pi (a : U) (b : El a → U) (h : Good a)`,
 with `Good : U → Prop` in the block -- the `Prop` member is in the component
-and goes through the encoding with it, one universe up: its graph is a `Prop`
-family over the carriers' graphs, in the one `mutual` with them, which `Mumi`
-declares across the two universes as an induction-inductive block.  A proof
-field is a plain field of the graph constructor, so `U.rec` is over the data
-with the proof as a field and no hypothesis of its own, and `Good.rec` and
-`Good.casesOn` are the predicate's own, into `Prop`, with hypotheses at its
-`Prop` fields; `induction` and `cases` drive them.  A decoder may not recurse
-over a `Prop` member, and a `Prop` member cannot be an index domain.  At the
-written universe this shape is not lowered yet, and says so.
-`MumiTests/IRPropSCC.lean` is this block.
+and goes through the encoding with it, one universe up, as the data's
+well-formedness: the graph constructors take no proof fields, and after the
+graph block a `mutual` of Lean's own declares, in `Prop`, a predicate over
+every carrier's graph -- a node is well formed when its fields are and the
+proofs the constructor was written with are at hand -- and the `Prop` member
+itself, over the graphs, its fields of carrier type each followed by their
+well-formedness.  The public carrier is the subtype of its graph by the
+predicate.  So `U.rec` is over the data with the proof as a field and no
+hypothesis of its own, and `Good.rec` and `Good.casesOn` are the predicate's
+own, into `Prop`, with hypotheses at its proofs of `Prop` members; `induction`
+and `cases` drive them, and iota is still `rfl`.  A `Prop` constructor may
+take a field of carrier type its conclusion does not mention -- the proof
+carries its well-formedness -- which is what lets a `Prop` tie carriers in
+different universes together (`MumiTests/IRUniversesProp.lean`).  One thing
+changes for the writer: a proof a constructor was built with is no field of
+the data, so `Good.pi _ _ h …` has to name `h` where `Good.pi _ _ _ …` used to
+infer it.  A decoder may not recurse over a `Prop` member, and a `Prop` member
+cannot be an index domain.  At the written universe this shape is not lowered
+yet, and says so.  `MumiTests/IRPropSCC.lean` is this block, and an indexed
+one with a `Prop` its carriers need.
 
 ```lean
 mutual

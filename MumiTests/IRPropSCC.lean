@@ -52,7 +52,8 @@ theorem Good.depth_pos (u : U) (g : Good u) : u = .base ∨ 0 < depth u := by
 
 def u1 : U := U.pi U.base (fun _ => U.base) Good.base
 example : depth u1 = 1 := rfl
-example : Good u1 := .pi _ _ _ trivial (fun _ => .base)
+-- the proof `U.pi` was built with is no field of the data, so it has to be named
+example : Good u1 := .pi _ _ Good.base trivial (fun _ => .base)
 
 /-- info: 1 -/
 #guard_msgs in
@@ -63,6 +64,57 @@ example : Good u1 := .pi _ _ _ trivial (fun _ => .base)
 #print axioms Good.inh
 
 end PropSCC
+
+/-! An indexed carrier with a `Prop` the block needs: a context may only be
+extended by a type that is `Ok`, and `Ok` is stated over the types of the
+block, which are induction-inductive.  The graphs go through `Mumi.IndInd` and
+the well-formedness sits on top of them. -/
+
+namespace PropIdx
+set_option mumi.mahlo false
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | snoc (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) : Ctx
+inductive Ty : Ctx → Type where
+  | base (Γ : Ctx) : Ty Γ
+  | pi (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) (B : Ty (.snoc Γ A h)) : Ty Γ
+inductive Ok : (Γ : Ctx) → Ty Γ → Prop where
+  | base (Γ : Ctx) : Ok Γ (.base Γ)
+  | pi (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) (B : Ty (.snoc Γ A h)) (hB : Ok (.snoc Γ A h) B) : Ok Γ (.pi Γ A h B)
+def El : Ctx → Type
+  | .nil => Unit
+  | .snoc Γ A h => El Γ × Val Γ A
+def Val : (Γ : Ctx) → Ty Γ → Type
+  | _, .base Γ => Nat
+  | _, .pi Γ A h B => (x : Val Γ A) → Val (.snoc Γ A h) B
+end
+
+example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) : El (Ctx.snoc Γ A h) = (El Γ × Val Γ A) := rfl
+example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) (B : Ty (.snoc Γ A h)) :
+    Val Γ (Ty.pi Γ A h B) = ((x : Val Γ A) → Val (.snoc Γ A h) B) := rfl
+
+/-- One joint recursion over `Ctx` and `Ty`, the proofs as fields. -/
+def clen : Ctx → Nat :=
+  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) : clen (Ctx.snoc Γ A h) = clen Γ + 1 := rfl
+
+theorem Ok.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) :
+    A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
+  induction h with
+  | base Γ => exact .inl rfl
+  | pi Γ A h B hB ih ihB => exact .inr ⟨A, h, B, rfl⟩
+
+/-- info: 1 -/
+#guard_msgs in
+#eval clen (Ctx.snoc .nil (.base .nil) (.base .nil))
+
+/-- info: 'PropIdx.Ok.base_or_pi' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Ok.base_or_pi
+
+end PropIdx
 
 /-! At the written universe this is not taken yet, and says so. -/
 
