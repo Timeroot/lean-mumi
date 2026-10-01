@@ -88,22 +88,33 @@ private partial def exposeDefs (s attr : Syntax) : Syntax :=
     s.setArg 1 (mkNullNode (s[1].getArgs.map (exposeDefs · attr)))
   else s
 
-/-- The names of the block being declared: its members and decoders, whose
-declarations `pinUniverses` pins the universes of. -/
-initialize blockNames : IO.Ref (Array String) ← IO.mkRef #[]
+/-- The constants the block being declared has declared so far, with the
+constructors of its inductives: what `pinUniverses` pins the universes of.
+Not what Lean or `Mumi` declared alongside, whose universes are their own. -/
+initialize blockConsts : IO.Ref NameSet ← IO.mkRef {}
 
-/-- `s` with every constant of the block it names -- a generated one at
-`_ir_…`, or a public one under a member's or decoder's name -- given its
-universes explicitly: the parameters it was declared with, which are the
-scope's universe names it uses.  Left to inference, a reference's universes are
-level metavariables, and in a block whose members sit in several polymorphic
+/-- The names a command declares, relative to the namespace. -/
+private partial def declaredNames (stx : Syntax) : Array Name :=
+  if stx.isOfKind ``Parser.Command.declaration then
+    let d := stx[1]
+    if d.isOfKind ``Parser.Command.«inductive» || d.isOfKind ``Parser.Command.structure then #[d[1][0].getId]
+    else if d.getNumArgs > 1 && d[1].isOfKind ``Parser.Command.declId then #[d[1][0].getId]
+    else #[]
+  else if stx.isOfKind ``Parser.Command.«mutual» then stx[1].getArgs.flatMap declaredNames
+  else if stx.isOfKind ``Parser.Command.in then declaredNames stx[2]
+  else #[]
+
+/-- `s` with every constant of the block it names given its universes
+explicitly: the parameters it was declared with, which are the scope's
+universe names it uses.  Left to inference, a reference's universes are level
+metavariables, and in a block whose members sit in several polymorphic
 universes the elaborator makes fresh parameters of those before the body can
 pin them, and the body then fails to typecheck. -/
 def pinUniverses (s : String) : CommandElabM String := do
   let env ← getEnv
   let ns ← getCurrNamespace
   let inScope := (← getScope).levelNames
-  let block ← blockNames.get
+  let block ← blockConsts.get
   let isId (c : Char) := c.isAlphanum || c == '_' || c == '.' || c == '\'' || c.val > 127
   let a := s.toList.toArray
   let mut out := ""
@@ -118,10 +129,9 @@ def pinUniverses (s : String) : CommandElabM String := do
       let base := if tok.endsWith "." then tok.dropRight 1 else tok
       let pinned := tok.endsWith "." && j < a.size && a[j]! == '{'
       let mut res := tok
-      let ours := base.startsWith "_ir_" || block.contains ((base.splitOn ".").headD "")
       -- an attribute names a declaration, bare
       let bare := out.endsWith "implemented_by " || s.startsWith "attribute ["
-      if !pinned && ours && !bare then
+      if !pinned && !bare && block.contains (ns ++ base.toName) then
         if let some ci := env.find? (ns ++ base.toName) then
           let lps := ci.levelParams
           if !lps.isEmpty && lps.all inScope.contains then
@@ -156,6 +166,15 @@ def emit (s : String) : CommandElabM Unit := do
   unless errors.isEmpty do
     let messages ← errors.mapM (fun e => e.data.toString)
     throwError "While generating IR declaration:\n{s}\n{String.intercalate "\n" messages}"
+  -- what this declared, with the constructors of an inductive, is the block's
+  let ns ← getCurrNamespace
+  let env ← getEnv
+  for n in declaredNames stx do
+    let n := ns ++ n
+    if env.contains n then
+      blockConsts.modify (·.insert n)
+      if let some (.inductInfo info) := env.find? n then
+        for c in info.ctors do blockConsts.modify (·.insert c)
 
 /-- A `def`, `noncomputable` only where the code generator cannot follow: at
 the universe a block is written at every primitive has a run-time
@@ -850,7 +869,7 @@ private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
 
 def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
-  blockNames.set (b.members.map (·.name.toString) ++ b.decoders.map (·.name.toString))
+  blockConsts.set {}
   emit "universe _ir_elim"
   emitSemantics b
   if mumi.mahlo.get (← getOptions) then

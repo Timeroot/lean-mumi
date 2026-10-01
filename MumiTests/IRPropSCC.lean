@@ -315,3 +315,76 @@ end
 theorem Ok.t (h : Ok) : True := by induction h with | yes t h ih => trivial | base => trivial
 
 end SeveralLower
+
+/-! Parameters, a constructor nested in an index term with a proof among its
+arguments, and the constructors written `.c` in the index terms and the
+clauses: given their full names when the block is read. -/
+
+namespace NestedProp
+set_option mumi.mahlo false
+
+mutual
+inductive Ctx (X : Type) : Type where
+  | nil : Ctx X
+  | snoc (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : Ctx X
+inductive Ty (X : Type) : Ctx X → Type where
+  | base (Γ : Ctx X) (x : X) : Ty X Γ
+  | pi (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (.snoc Γ A h)) : Ty X Γ
+inductive Ok (X : Type) : (Γ : Ctx X) → Ty X Γ → Prop where
+  | base (Γ : Ctx X) (x : X) : Ok X Γ (.base Γ x)
+  | pi (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (.snoc Γ A h)) (hB : Ok X (.snoc Γ A h) B) : Ok X Γ (.pi Γ A h B)
+def El (X : Type) : Ctx X → Type
+  | .nil => Unit
+  | .snoc Γ A h => El X Γ × Val X Γ A
+def Val (X : Type) : (Γ : Ctx X) → Ty X Γ → Type
+  | _, .base Γ x => X
+  | _, .pi Γ A h B => (x : Val X Γ A) → Val X (.snoc Γ A h) B
+end
+
+example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc X Γ A h)) :
+    Val X Γ (Ty.pi X Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc X Γ A h) B) := Val_pi X Γ A h B
+def clen (X : Type) : Ctx X → Nat :=
+  Ctx.rec X (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by
+  induction h with | base Γ x => trivial | pi Γ A h B hB ih ihB => trivial
+
+/-- info: 1 -/
+#guard_msgs in
+#eval clen Nat (Ctx.snoc Nat (Ctx.nil Nat) (Ty.base Nat (Ctx.nil Nat) 3) (Ok.base Nat (Ctx.nil Nat) 3))
+
+end NestedProp
+
+namespace NestedPropLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+
+mutual
+inductive Ctx (X : Type) : Type where
+  | nil : Ctx X
+  | snoc (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : Ctx X
+inductive Ty (X : Type) : Ctx X → Type where
+  | base (Γ : Ctx X) (x : X) : Ty X Γ
+  | pi (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (.snoc Γ A h)) : Ty X Γ
+inductive Ok (X : Type) : (Γ : Ctx X) → Ty X Γ → Prop where
+  | base (Γ : Ctx X) (x : X) : Ok X Γ (.base Γ x)
+  | pi (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (.snoc Γ A h)) (hB : Ok X (.snoc Γ A h) B) : Ok X Γ (.pi Γ A h B)
+def El (X : Type) : Ctx X → Type
+  | .nil => Unit
+  | .snoc Γ A h => El X Γ × Val X Γ A
+def Val (X : Type) : (Γ : Ctx X) → Ty X Γ → Type
+  | _, .base Γ x => X
+  | _, .pi Γ A h B => (x : Val X Γ A) → Val X (.snoc Γ A h) B
+end
+
+example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc X Γ A h)) :
+    Val X Γ (Ty.pi X Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc X Γ A h) B) := Val_pi X Γ A h B
+def clen (X : Type) : Ctx X → Nat :=
+  Ctx.rec X (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by
+  induction h with | base Γ x => trivial | pi Γ A h B hB ih ihB => trivial
+
+/-- info: 1 -/
+#guard_msgs in
+#eval clen Nat (Ctx.snoc Nat (Ctx.nil Nat) (Ty.base Nat (Ctx.nil Nat) 3) (Ok.base Nat (Ctx.nil Nat) 3))
+
+end NestedPropLower

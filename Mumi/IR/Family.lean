@@ -328,6 +328,31 @@ private partial def qualifyText (b : Block) (expect : Option Nat) (s : Syntax) :
     out := out.push (← qualifyText b (f.target.map (·.1)) a)
   return withParams b (m.name.toString ++ "." ++ c.name.toString) out
 
+/-- A decoder's clause with every constructor written `.c` in an index
+argument of a decoder application, or in a constructor application of the
+block, given its full name with the parameters, as `qualifyText` does for an
+index term; the rest of the term is left as written. -/
+private partial def qualifyClause (b : Block) (s : Syntax) : CommandElabM Syntax := do
+  let (h, args) := unapp s
+  if h.isIdent then
+    if let some d := b.decoders.find? (·.name == h.getId) then
+      let m := b.members[d.target]!
+      let nidx := m.indices.size
+      if args.size ≥ b.params.size + nidx + 1 then
+        let mut out := #[]
+        for i in [:args.size] do
+          let a := args[i]!
+          if b.params.size ≤ i && i < b.params.size + nidx then
+            let x := m.indices[i - b.params.size]!
+            out := out.push (← parseTerm (← qualifyText b (x.member.map (·.1)) a))
+          else out := out.push (← qualifyClause b a)
+        return ← parseTerm (app (← text h) (← out.mapM text))
+    if (ctorRef? b none h).isSome then
+      return ← parseTerm (← qualifyText b none s)
+  match s with
+  | .node info k xs => return .node info k (← xs.mapM (qualifyClause b))
+  | _ => return s
+
 /-- The state `emit` is retried from when a variant of a declaration fails. -/
 private def emitFirst (variants : Array String) : CommandElabM Unit := do
   let mut last : Option Exception := none
@@ -537,7 +562,9 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       let idx := args.extract 0 m.indices.size
       let name := d[1][0].getId
       decoders := decoders.push { name, target := i, idx, major := major.name, majorType := major.type, result, clauses, doc := docOf e[0] }
-  return { members, decoders, params, level }
+  let b : Block := { members, decoders, params, level }
+  let qualified ← decoders.mapM fun d => do return { d with clauses := ← d.clauses.mapM (qualifyClause b) }
+  return { b with decoders := qualified }
 
 /-! ## The semantic world
 
@@ -2644,7 +2671,7 @@ def isIndexed (elems : Array Syntax) : CommandElabM Bool := do
 
 def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
-  blockNames.set (b.members.map (·.name.toString) ++ b.decoders.map (·.name.toString))
+  blockConsts.set {}
   let order ← declarationOrder b
   if mumi.mahlo.get (← getOptions) then
     elaborateLower { b with lower := true } order

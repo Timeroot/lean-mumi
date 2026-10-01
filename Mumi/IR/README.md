@@ -332,6 +332,9 @@ Current restrictions are explicit:
   constructor pattern with named variables, one equation per constructor.
   Recursive calls must explicitly name the decoder, repeat the shared parameters,
   and target an earlier recursive field (possibly applied to its arguments).
+- A constructor in an index term or a clause may be written `.c`; it is given
+  its full name with the parameters, which the public constructors take
+  explicitly, when the block is read.
 - Use simple declaration names inside a `namespace`. A documentation comment
   on a member, a constructor or a decoder goes onto the public declaration;
   attributes, other modifiers, `deriving`, `where` declarations, and

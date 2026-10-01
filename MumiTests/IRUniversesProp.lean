@@ -348,3 +348,64 @@ theorem P.t (a : A.{u}) (h : P a) : a = A.a0 ∨ 0 < depth a := by
 #print axioms sizeB
 
 end PolyMixLower
+
+/-! Two universe parameters: `A : Type u`, `B : Type (max u v + 1)`. -/
+
+universe v
+
+namespace TwoParams
+set_option mumi.mahlo false
+set_option linter.unusedVariables false
+
+mutual
+inductive A : Type u where
+  | a0 : A
+  | a1 (x : A) (f : F x → A) (h : P x) : A
+inductive B : Type (max u v + 1) where
+  | b0 : B
+  | b1 (x : A) (b : B) (g : G b → B) : B
+inductive P : A → Prop where
+  | zero : P .a0
+  | one (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) : P (.a1 x f h)
+def F : A → Type u
+  | .a0 => PUnit
+  | .a1 x f h => (y : F x) → F (f y)
+def G : B → Type (max u v + 1)
+  | .b0 => Type (max u v)
+  | .b1 x b g => F x × ((z : G b) → G (g z))
+end
+
+def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
+def sizeB : B.{u, v} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+example (x : A.{u}) (b : B.{u, v}) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
+
+end TwoParams
+
+namespace TwoParamsLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+set_option linter.unusedVariables false
+
+mutual
+inductive A : Type u where
+  | a0 : A
+  | a1 (x : A) (f : F x → A) (h : P x) : A
+inductive B : Type (max u v + 1) where
+  | b0 : B
+  | b1 (x : A) (b : B) (g : G b → B) : B
+inductive P : A → Prop where
+  | zero : P .a0
+  | one (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) : P (.a1 x f h)
+def F : A → Type u
+  | .a0 => PUnit
+  | .a1 x f h => (y : F x) → F (f y)
+def G : B → Type (max u v + 1)
+  | .b0 => Type (max u v)
+  | .b1 x b g => F x × ((z : G b) → G (g z))
+end
+
+def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
+def sizeB : B.{u, v} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+example (x : A.{u}) (b : B.{u, v}) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
+
+end TwoParamsLower
