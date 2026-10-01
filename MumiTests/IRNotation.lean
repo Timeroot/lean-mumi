@@ -113,19 +113,19 @@ def Val {Γ : Ctx} : Ty Γ → Type
   | .pi A B => (x : Val A) → Val B
 end
 
-/-- info: @Implicit.Ty.pi : {Γ : Ctx} → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
+/-- info: @Ty.pi : {Γ : Ctx} → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
 #guard_msgs in
 #check @Ty.pi
 
-/-- info: Implicit.Val {Γ : Ctx} : Ty Γ → Type -/
+/-- info: Implicit.Val {Γ : Ctx} (_ir_self : Ty Γ) : Type -/
 #guard_msgs in
 #check Val
 
 example (Γ : Ctx) (A : Ty Γ) : Val (Ty.pi A Ty.base) = ((x : Val A) → Nat) := rfl
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : Val (Ty.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
 /-- The minor premises bind every field, as Lean's own recursors do. -/
-def tsize : (Γ : Ctx) → Ty Γ → Nat :=
-  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1)
+def tsize (Γ : Ctx) (A : Ty Γ) : Nat :=
+  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : tsize Γ (Ty.pi A B) = tsize Γ A + tsize _ B + 1 := rfl
 theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -153,13 +153,13 @@ def Val {Γ : Ctx} : Ty Γ → Type
   | .pi A B => (x : Val A) → Val B
 end
 
-/-- info: @ImplicitLower.Ty.pi : {Γ : Ctx} → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
+/-- info: @Ty.pi : {Γ : Ctx} → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
 #guard_msgs in
 #check @Ty.pi
 
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : Val (Ty.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
-def tsize : (Γ : Ctx) → Ty Γ → Nat :=
-  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1)
+def tsize (Γ : Ctx) (A : Ty Γ) : Nat :=
+  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : tsize Γ (Ty.pi A B) = tsize Γ A + tsize _ B + 1 := rfl
 theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
