@@ -229,7 +229,7 @@ in different universes as long as no component mixes them -- and without a
 take a `Type 3` field: in `MumiTests/IRUniverses.lean` `A : Type 1` and `F`
 are one group, `B : Type 3` and `G`, which read them, another, and each lands
 where it was written (one universe up, one above).  A component that mixes a
-`Prop` inductive with carriers is not taken yet.
+`Prop` inductive with carriers is taken one universe up; see the next section.
 
 ## A `Prop` in the block
 
@@ -238,10 +238,22 @@ field: `Inh : U → Prop` below is recursive with `U` and `El`, and `U.pi`
 asks for `Inh a`.  A `Prop` inductive may sit in the same `mutual` too, indexed
 by the carriers and reading the decoders -- `Good` here, with `Fine` mutual
 with it.  Such a member is no part of the induction-recursion, since nothing
-is defined by recursion on a proof, so it is a component of its own, declared
-right after what it refers to, in both modes, with Lean's own recursors; a
-`Prop` member the block's carriers or decoders mention is the one shape not
-taken yet, and is rejected as such.
+is defined by recursion on a proof, so when nothing else in the block mentions
+it, it is a component of its own, declared right after what it refers to, in
+both modes, with Lean's own recursors.
+
+When a carrier does mention it -- `U.pi (a : U) (b : El a → U) (h : Good a)`,
+with `Good : U → Prop` in the block -- the `Prop` member is in the component
+and goes through the encoding with it, one universe up: its graph is a `Prop`
+family over the carriers' graphs, in the one `mutual` with them, which `Mumi`
+declares across the two universes as an induction-inductive block.  A proof
+field is a plain field of the graph constructor, so `U.rec` is over the data
+with the proof as a field and no hypothesis of its own, and `Good.rec` and
+`Good.casesOn` are the predicate's own, into `Prop`, with hypotheses at its
+`Prop` fields; `induction` and `cases` drive them.  A decoder may not recurse
+over a `Prop` member, and a `Prop` member cannot be an index domain.  At the
+written universe this shape is not lowered yet, and says so.
+`MumiTests/IRPropSCC.lean` is this block.
 
 ```lean
 mutual
@@ -263,7 +275,9 @@ def Inh : U → Prop
 end
 ```
 
-`MumiTests/IRProp.lean` is this block in both modes.
+`MumiTests/IRProp.lean` is this block in both modes, and
+`MumiTests/IRUniverses.lean` has carriers in `Type 1` and `Type 3`, one
+component each, in both modes.
 
 ## Supported input fragment
 

@@ -9,8 +9,8 @@ field: `Inh : U → Prop` is recursive with `U` and `El`, and `U.pi` asks for
 indexed by `U` and reads `El` and `Inh`, and `Fine` is mutual with it.  Such a
 member is not part of the induction-recursion -- nothing is defined by
 recursion on a proof -- so it is declared right after the block it refers to,
-in both modes; one the block's carriers or decoders mention is the one shape
-not taken yet.
+in both modes; one the block's carriers or decoders mention is part of the
+induction-recursion, which `IRPropSCC.lean` covers.
 -/
 
 set_option autoImplicit false
@@ -111,24 +111,3 @@ def depth : U → Nat :=
 #print axioms Good.inh
 
 end PropLower
-
-/-! A `Prop` member the carriers mention is not taken yet, and says so. -/
-
-namespace Mentioned
-
-/--
-error: A `Prop` member the block's carriers or decoders mention is not supported yet: `Good` here
--/
-#guard_msgs in
-mutual
-inductive U : Type where
-  | base : U
-  | sub (a : U) (h : Good a) : U
-inductive Good : U → Prop where
-  | base : Good .base
-def El : U → Type
-  | .base => Nat
-  | .sub a h => El a
-end
-
-end Mentioned
