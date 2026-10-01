@@ -216,6 +216,40 @@ Its restrictions, beyond the general ones below:
 - An indexed carrier gets no view, no `match` on its constructors, and no
   `deriving` yet; recursive consumers go through `X.rec` and `X.recD`.
 
+## A `Prop` in the block
+
+A decoder may land in `Prop`, and a constructor may take a proof of it as a
+field: `Inh : U → Prop` below is recursive with `U` and `El`, and `U.pi`
+asks for `Inh a`.  A `Prop` inductive may sit in the same `mutual` too, indexed
+by the carriers and reading the decoders -- `Good` here, with `Fine` mutual
+with it.  Such a member is no part of the induction-recursion, since nothing
+is defined by recursion on a proof, so it is declared right after the block it
+refers to, in both modes, with Lean's own recursors; a `Prop` member the
+block's carriers or decoders mention is the one shape not taken yet, and is
+rejected as such.
+
+```lean
+mutual
+inductive U : Type where
+  | base : U
+  | pi (a : U) (b : El a → U) (h : Inh a) : U
+inductive Good : U → Prop where
+  | base : Good .base
+  | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Good (b x)) : Good (.pi a b h)
+inductive Fine : U → Prop where
+  | base : Fine .base
+  | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Fine (b x)) : Fine (.pi a b h)
+def El : U → Type
+  | .base => Nat
+  | .pi a b h => (x : El a) → El (b x)
+def Inh : U → Prop
+  | .base => True
+  | .pi a b h => ∀ x : El a, Inh (b x)
+end
+```
+
+`MumiTests/IRProp.lean` is this block in both modes.
+
 ## Supported input fragment
 
 The prototype supports several carriers and several recursive functions per

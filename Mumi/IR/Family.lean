@@ -1893,9 +1893,35 @@ end Mumi.IndRec.Family
 namespace Mumi.IndRec
 open Lean Elab Command
 
+/-- Whether `e` declares an inductive in `Prop`. -/
+private def isPropInductive (e : Syntax) : CommandElabM Bool := do
+  let d := e[1]
+  unless d.isOfKind ``Parser.Command.«inductive» do return false
+  let (_, result) ← signature d[2]
+  let (_, result) ← telescope result
+  return result.isOfKind ``Parser.Term.prop
+
 /-- The IR frontend: indexed blocks go one universe up through `Family`, the rest
-through the original path. -/
+through the original path.  A `Prop` inductive in the block is no part of the
+induction-recursion -- nothing is defined by recursion on a proof -- so it is
+declared right after the block it refers to; one the block's carriers or
+decoders mention is not taken yet. -/
 def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
-  if ← Family.isIndexed elems then Family.elaborate elems else elaborate elems
+  let mut props := #[]
+  let mut rest := #[]
+  for e in elems do
+    if ← isPropInductive e then props := props.push e else rest := rest.push e
+  let names := props.map (·[1][1][0].getId)
+  for e in rest do
+    for n in names do
+      if mentions e #[n] then
+        throwErrorAt e "A `Prop` member the block's carriers or decoders mention is not supported yet: `{n}` here"
+  if ← Family.isIndexed rest then Family.elaborate rest else elaborate rest
+  if props.isEmpty then return
+  if h : props.size = 1 then
+    elabCommand props[0]
+  else
+    -- the block's own `mutual` node, holding the `Prop` members alone
+    elabCommand (mkNode ``Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode props, mkAtom "end", mkNullNode])
 
 end Mumi.IndRec
