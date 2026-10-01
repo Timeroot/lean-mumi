@@ -1901,27 +1901,125 @@ private def isPropInductive (e : Syntax) : CommandElabM Bool := do
   let (_, result) ← telescope result
   return result.isOfKind ``Parser.Term.prop
 
-/-- The IR frontend: indexed blocks go one universe up through `Family`, the rest
-through the original path.  A `Prop` inductive in the block is no part of the
-induction-recursion -- nothing is defined by recursion on a proof -- so it is
-declared right after the block it refers to; one the block's carriers or
-decoders mention is not taken yet. -/
+/-- The carrier a definition recurses over: the last binder of its signature
+whose type is one of the block's inductives, if any. -/
+private def majorOf (inductives : Array Name) (e : Syntax) : CommandElabM (Option Name) := do
+  let d := e[1]
+  unless d.isOfKind ``Parser.Command.definition do return none
+  let (ps, ty) ← signature d[2]
+  let (tele, _) ← telescope ty
+  let mut out := none
+  for b in ps ++ tele do
+    let h := (unapp b.type).1
+    if h.isIdent && inductives.contains h.getId then out := some h.getId
+  return out
+
+/-- The components of the block's declarations, each in source order,
+dependencies first.  `e` depends on `f` when it mentions `f`'s name, and a
+definition recursing over one of the block's inductives is kept with it, since
+it matches on constructors that are the induction-recursion's to give. -/
+private def components (elems : Array Syntax) : CommandElabM (Array (Array Syntax)) := do
+  let names := elems.map (·[1][1][0].getId)
+  let n := elems.size
+  let inductives := (elems.zip names).filterMap fun (e, nm) =>
+    if e[1].isOfKind ``Parser.Command.«inductive» then some nm else none
+  -- a definition and the carrier it recurses over are one node
+  let mut group : Array Nat := Array.range n
+  for i in [:n] do
+    if let some m ← majorOf inductives elems[i]! then
+      if let some k := names.findIdx? (· == m) then
+        let (gi, gk) := (group[i]!, group[k]!)
+        group := group.map fun g => if g == gi then gk else g
+  let roots := (Array.range n).filter fun i => group[i]! == i
+  let members := roots.map fun r => (Array.range n).filter fun i => group[i]! == r
+  let m := roots.size
+  let deps : Array (Array Nat) := (Array.range m).map fun a =>
+    (Array.range m).filter fun b => a != b &&
+      members[a]!.any fun i => members[b]!.any fun j => mentions elems[i]! #[names[j]!]
+  -- Tarjan over the quotient: components come out dependencies first
+  let mut index : Array (Option Nat) := Array.replicate m none
+  let mut low : Array Nat := Array.replicate m 0
+  let mut onStack : Array Bool := Array.replicate m false
+  let mut stack : Array Nat := #[]
+  let mut counter := 0
+  let mut out : Array (Array Nat) := #[]
+  for root in [:m] do
+    if index[root]!.isSome then continue
+    let mut work : Array (Nat × Nat) := #[(root, 0)]
+    index := index.set! root (some counter); low := low.set! root counter; counter := counter + 1
+    stack := stack.push root; onStack := onStack.set! root true
+    while !work.isEmpty do
+      let (v, k) := work.back!
+      if k < deps[v]!.size then
+        work := work.pop.push (v, k + 1)
+        let w := deps[v]![k]!
+        match index[w]! with
+        | none =>
+          index := index.set! w (some counter); low := low.set! w counter; counter := counter + 1
+          stack := stack.push w; onStack := onStack.set! w true
+          work := work.push (w, 0)
+        | some iw => if onStack[w]! then low := low.set! v (min low[v]! iw)
+      else
+        work := work.pop
+        if let some (u, _) := work.back? then low := low.set! u (min low[u]! low[v]!)
+        if low[v]! == index[v]!.get! then
+          let mut comp := #[]
+          let mut go := true
+          while go do
+            let w := stack.back!
+            stack := stack.pop; onStack := onStack.set! w false
+            comp := comp.push w
+            go := w != v
+          out := out.push comp
+  return out.map fun comp => ((comp.flatMap fun a => members[a]!).qsort (· < ·)).map (elems[·]!)
+
+/-- The universe an inductive is declared in, as written: `"Prop"`, or the
+level of its `Type`. -/
+private def levelOf (e : Syntax) : CommandElabM String := do
+  let (_, result) ← signature e[1][2]
+  let (_, result) ← telescope result
+  if result.isOfKind ``Parser.Term.prop then return "Prop"
+  if result.isOfKind ``Parser.Term.type then
+    return if result[1].getNumArgs == 0 then "0" else (result[1][0].reprint.getD "0").trimAscii.toString
+  return "?"
+
+/-- The IR frontend.  The block is split only where it has to be: into its
+strongly connected components, dependencies first, which are then regrouped
+as far as a group can be one block -- carriers in one universe, with their
+decoders and any inductives alone there -- so that a block in one universe
+stays one block with one joint recursion, as a `mutual` is.  A group of
+carriers and decoders is an induction-recursion and goes one universe up
+through `Family` when indexed, otherwise through the original path; a group of
+definitions alone, or of `Prop` inductives, is Lean's.  So members may sit in
+different universes, and a `Prop` inductive the rest only refers to is
+declared right after what it refers to; a `Prop` inductive the carriers or
+decoders of its component mention is not taken yet. -/
 def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
-  let mut props := #[]
-  let mut rest := #[]
-  for e in elems do
-    if ← isPropInductive e then props := props.push e else rest := rest.push e
-  let names := props.map (·[1][1][0].getId)
-  for e in rest do
-    for n in names do
-      if mentions e #[n] then
-        throwErrorAt e "A `Prop` member the block's carriers or decoders mention is not supported yet: `{n}` here"
-  if ← Family.isIndexed rest then Family.elaborate rest else elaborate rest
-  if props.isEmpty then return
-  if h : props.size = 1 then
-    elabCommand props[0]
-  else
-    -- the block's own `mutual` node, holding the `Prop` members alone
-    elabCommand (mkNode ``Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode props, mkAtom "end", mkNullNode])
+  let isInductive (e : Syntax) := e[1].isOfKind ``Parser.Command.«inductive»
+  -- regroup: a component joins the group before it when both are carriers in
+  -- the same universe (with their decoders)
+  let mut groups : Array (Array Syntax × String) := #[]
+  for comp in ← components elems do
+    let inductives := comp.filter isInductive
+    let levels ← inductives.mapM levelOf
+    let level := levels.getD 0 ""
+    if levels.any (· == "Prop") && levels.any (· != "Prop") then
+      throwErrorAt inductives[0]! "A `Prop` member the block's carriers or decoders mention is not supported yet: `{(inductives.filter fun e => levels[inductives.findIdx? (· == e) |>.getD 0]! == "Prop")[0]![1][1][0].getId}` here"
+    let plain := level != "Prop" && !inductives.isEmpty
+    if plain then
+      if let some (g, l) := groups.back? then
+        if l == level then
+          groups := groups.pop.push (g ++ comp, l)
+          continue
+    groups := groups.push (comp, if plain then level else "")
+  for (comp, _) in groups do
+    let inductives := comp.filter isInductive
+    let props ← inductives.filterM isPropInductive
+    if inductives.isEmpty || inductives.size == comp.size || !props.isEmpty then
+      -- Lean's own: a block of definitions, or of inductives, with `mutual` taking several
+      if h : comp.size = 1 then elabCommand comp[0]
+      else elabCommand (mkNode ``Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode comp, mkAtom "end", mkNullNode])
+    else if ← Family.isIndexed comp then Family.elaborate comp
+    else elaborate comp
 
 end Mumi.IndRec

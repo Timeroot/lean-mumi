@@ -216,6 +216,21 @@ Its restrictions, beyond the general ones below:
 - An indexed carrier gets no view, no `match` on its constructors, and no
   `deriving` yet; recursive consumers go through `X.rec` and `X.recD`.
 
+## Components, and members in different universes
+
+A block is split only where it has to be.  Its strongly connected components,
+dependencies first, are regrouped as far as a group can be one block --
+carriers in one universe with their decoders -- so that a block in one
+universe stays one block with one joint recursion, as a `mutual` has.  A group
+of carriers and decoders is an induction-recursion of its own; one of
+definitions alone, or of `Prop` inductives, is Lean's.  So the members may sit
+in different universes as long as no component mixes them -- and without a
+`Prop` to run a dependency through, none can, since a `Type 1` carrier cannot
+take a `Type 3` field: in `MumiTests/IRUniverses.lean` `A : Type 1` and `F`
+are one group, `B : Type 3` and `G`, which read them, another, and each lands
+where it was written (one universe up, one above).  A component that mixes a
+`Prop` inductive with carriers is not taken yet.
+
 ## A `Prop` in the block
 
 A decoder may land in `Prop`, and a constructor may take a proof of it as a
@@ -223,10 +238,10 @@ field: `Inh : U → Prop` below is recursive with `U` and `El`, and `U.pi`
 asks for `Inh a`.  A `Prop` inductive may sit in the same `mutual` too, indexed
 by the carriers and reading the decoders -- `Good` here, with `Fine` mutual
 with it.  Such a member is no part of the induction-recursion, since nothing
-is defined by recursion on a proof, so it is declared right after the block it
-refers to, in both modes, with Lean's own recursors; a `Prop` member the
-block's carriers or decoders mention is the one shape not taken yet, and is
-rejected as such.
+is defined by recursion on a proof, so it is a component of its own, declared
+right after what it refers to, in both modes, with Lean's own recursors; a
+`Prop` member the block's carriers or decoders mention is the one shape not
+taken yet, and is rejected as such.
 
 ```lean
 mutual

@@ -24,7 +24,7 @@ inductive U : Type where
   | pi (a : U) (b : El a → U) (h : Inh a) : U
 inductive Good : U → Prop where
   | base : Good .base
-  | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Good (b x)) : Good (.pi a b h)
+  | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Fine (b x)) : Good (.pi a b h)
 inductive Fine : U → Prop where
   | base : Fine .base
   | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Fine (b x)) : Fine (.pi a b h)
@@ -42,17 +42,17 @@ example (a : U) (b : El a → U) (h : Inh a) : El (U.pi a b h) = ((x : El a) →
 /-- A certified code is inhabited, by the joint recursor of the two `Prop`s
 (`induction` does not take a mutual inductive). -/
 theorem Good.inh (u : U) (g : Good u) : Inh u :=
-  Good.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Good u)
+  Good.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Inh u)
     trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x)
-    .base (fun a b h ha _ _ ihb => .pi a b h ha ihb) g
+    trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x) g
 
-theorem Fine.good (u : U) (f : Fine u) : Good u :=
-  Fine.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Good u)
+theorem Fine.inh (u : U) (f : Fine u) : Inh u :=
+  Fine.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Inh u)
     trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x)
-    .base (fun a b h ha _ _ ihb => .pi a b h ha ihb) f
+    trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x) f
 
 example : Good (U.pi U.base (fun _ => U.base) trivial) :=
-  .pi _ _ _ .base (fun _ => .base)
+  .pi _ _ _ .base (fun _ => Fine.base)
 
 /-- info: 'PropUpper.Good.inh' does not depend on any axioms -/
 #guard_msgs in
@@ -69,7 +69,7 @@ inductive U : Type where
   | pi (a : U) (b : El a → U) (h : Inh a) : U
 inductive Good : U → Prop where
   | base : Good .base
-  | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Good (b x)) : Good (.pi a b h)
+  | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Fine (b x)) : Good (.pi a b h)
 inductive Fine : U → Prop where
   | base : Fine .base
   | pi (a : U) (b : El a → U) (h : Inh a) (ha : Good a) (hb : ∀ x, Fine (b x)) : Fine (.pi a b h)
@@ -85,18 +85,18 @@ example (a : U) (b : El a → U) (h : Inh a) : Inh (U.pi a b h) = ∀ x : El a, 
 example (a : U) (b : El a → U) (h : Inh a) : El (U.pi a b h) = ((x : El a) → El (b x)) := rfl
 
 theorem Good.inh (u : U) (g : Good u) : Inh u :=
-  Good.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Good u)
+  Good.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Inh u)
     trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x)
-    .base (fun a b h ha _ _ ihb => .pi a b h ha ihb) g
+    trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x) g
 
-theorem Fine.good (u : U) (f : Fine u) : Good u :=
-  Fine.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Good u)
+theorem Fine.inh (u : U) (f : Fine u) : Inh u :=
+  Fine.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Inh u)
     trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x)
-    .base (fun a b h ha _ _ ihb => .pi a b h ha ihb) f
+    trivial (fun _ _ _ _ _ _ ihb => fun x => ihb x) f
 
 -- a closed code: `Inh U.base` is `True` by the equation, not by normalisation
 example : Good (U.pi U.base (fun _ => U.base) (cast (Inh_base).symm trivial)) :=
-  .pi _ _ _ .base (fun _ => .base)
+  .pi _ _ _ .base (fun _ => Fine.base)
 
 /-- A proof-carrying consumer runs. -/
 def depth : U → Nat :=

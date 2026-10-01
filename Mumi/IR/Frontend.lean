@@ -94,7 +94,10 @@ def emit (s : String) : CommandElabM Unit := do
   let stx := if (← getEnv).header.isModule then exposeDefs stx template[0][1] else stx
   let n := (← get).messages.reportedPlusUnreported.size
   try
-    if stx.isOfKind ``Parser.Command.universe then elabCommand stx
+    if stx.isOfKind ``Parser.Command.universe then
+      -- declared once per scope: a block's later components reuse it
+      let names := stx[1].getArgs.map (·.getId)
+      unless names.all (← getScope).levelNames.contains do elabCommand stx
     else
       withScope (fun sc => { sc with opts := (sc.opts.setBool `linter.unusedVariables false).setBool `linter.unusedSimpArgs false }) do
         elabCommand stx
