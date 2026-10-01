@@ -113,6 +113,8 @@ structure Ctor where
   application nested inside another in an index term named by a hidden field,
   so that each index term applies a constructor to fields only. -/
   lower : Option (Array Field × Array Syntax) := none
+  /-- The documentation written on it, `/-- … -/` with a newline, or `""`. -/
+  doc : String := ""
   deriving Inhabited
 
 /-- The constructor as the raw world sees it. -/
@@ -131,6 +133,7 @@ structure Member where
   prop : Bool := false
   /-- The level of the member's `Type`, as written; `""` for a `Prop` member. -/
   level : String := ""
+  doc : String := ""
   deriving Inhabited
 
 structure Decoder where
@@ -144,6 +147,7 @@ structure Decoder where
   /-- One clause per constructor of the target, over the constructor's own field
   names, with the index patterns replaced by the conclusion's index terms. -/
   clauses : Array Syntax
+  doc : String := ""
   deriving Inhabited
 
 structure Block where
@@ -308,6 +312,22 @@ private def ctorRef? (b : Block) (expect : Option Nat) (s : Syntax) : Option (Na
         return some (k, ci)
   return none
 
+/-- A public index term of carrier `expect` as text, with a constructor written
+`.c` given its full name, recursively into its arguments, so that the term can
+be read where no expected type resolves the dot -- under `.val`, say. -/
+private partial def qualifyText (b : Block) (expect : Option Nat) (s : Syntax) : CommandElabM String := do
+  let (h, args) := unapp s
+  let some (k, ci) := ctorRef? b expect h | text s
+  let m := b.members[k]!
+  let c := m.ctors[ci]!
+  -- the dotted form carries no parameters; the qualified one carries them all
+  let fargs := if h.isOfKind ``Parser.Term.dotIdent then args else args.extract b.params.size args.size
+  unless fargs.size == c.fields.size do return ← text s
+  let mut out := #[]
+  for (f, a) in c.fields.zip fargs do
+    out := out.push (← qualifyText b (f.target.map (·.1)) a)
+  return withParams b (m.name.toString ++ "." ++ c.name.toString) out
+
 /-- The state `emit` is retried from when a variant of a declaration fails. -/
 private def emitFirst (variants : Array String) : CommandElabM Unit := do
   let mut last : Option Exception := none
@@ -335,7 +355,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
   let globalNames := elems.map (·[1][1][0].getId)
   let mut params : Array Binder := #[]
   let mut level := ""
-  let mut heads : Array (Name × Array Binder × Bool × String) := #[]
+  let mut heads : Array (Name × Array Binder × Bool × String × String) := #[]
   for e in elems do
     checkReservedNames e
     unless plainModifiers e[0] do throwErrorAt e "IR prototype does not yet support declaration modifiers or attributes inside a block"
@@ -357,13 +377,13 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       unless prop do
         if level.isEmpty then level := l
       unless d[6][0].getNumArgs == 0 do throwErrorAt d "IR prototype does not yet support deriving clauses"
-      heads := heads.push (d[1][0].getId, idx, prop, l)
+      heads := heads.push (d[1][0].getId, idx, prop, l, docOf e[0])
   checkDistinct (params.map (·.name)) globalNames
   for p in params do checkTermBinders (globalNames ++ params.map (·.name)) p.type
   let names := heads.map (·.1)
   -- the arities, now that every carrier's name and arity length are known
   let mut members : Array Member := #[]
-  for (n, idx, prop, l) in heads do
+  for (n, idx, prop, l, doc) in heads do
     checkDistinct (idx.map (·.name)) (globalNames ++ params.map (·.name))
     let mut indices := #[]
     for x in idx do
@@ -377,7 +397,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       else if mentions x.type names then
         throwErrorAt x.type "An index domain may name a carrier only as that carrier applied to its indices; anything else has to go through a decoder"
       indices := indices.push { name := x.name, type := x.type, member }
-    members := members.push { name := n, indices, ctors := #[], prop, level := l }
+    members := members.push { name := n, indices, ctors := #[], prop, level := l, doc }
   -- constructors
   let mut mi := 0
   for e in elems do
@@ -422,10 +442,25 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
           let target := target.map fun (k, args) => (k, args.map (subst · pairs))
           return { name := f.name, type := f.type, target, domain := if target.isSome then renamed else #[] : Field }
         for x in idxArgs do checkTermBinders (globalNames ++ params.map (·.name) ++ fieldNames) x
-        ctors := ctors.push { name := c[3].getId, fields := fs, result := idxArgs }
+        ctors := ctors.push { name := c[3].getId, fields := fs, result := idxArgs, doc := docOf c[0] }
       if ctors.isEmpty then throwErrorAt d "IR prototype currently requires at least one constructor per carrier"
       members := members.modify mi fun m => { m with ctors }
       mi := mi + 1
+  -- a constructor written `.c` in an index term is given its full name, with
+  -- the parameters, which the public constructors take explicitly; a field's
+  -- type is restated only where that changed it
+  let tmp : Block := { members, decoders := #[], params, level }
+  members ← members.mapM fun m => do
+    let ctors ← m.ctors.mapM fun c => do
+      let result ← (m.indices.zip c.result).mapM fun (x, r) => do parseTerm (← qualifyText tmp (x.member.map (·.1)) r)
+      let fields ← c.fields.mapM fun f => do
+        let some (k, args) := f.target | pure f
+        let qargs ← (members[k]!.indices.zip args).mapM fun (x, a) => do parseTerm (← qualifyText tmp (x.member.map (·.1)) a)
+        if (← args.mapM text) == (← qargs.mapM text) then return f
+        let type ← parseTerm (← forallS f.domain (withParams tmp members[k]!.name.toString (← qargs.mapM text)))
+        pure { f with target := some (k, qargs), type }
+      pure { c with result, fields }
+    pure { m with ctors }
   -- decoders
   let mut decoders : Array Decoder := #[]
   for e in elems do
@@ -501,7 +536,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       if clauses.any (·.isMissing) then throwErrorAt d "IR decoder must have exactly one equation for every constructor"
       let idx := args.extract 0 m.indices.size
       let name := d[1][0].getId
-      decoders := decoders.push { name, target := i, idx, major := major.name, majorType := major.type, result, clauses }
+      decoders := decoders.push { name, target := i, idx, major := major.name, majorType := major.type, result, clauses, doc := docOf e[0] }
   return { members, decoders, params, level }
 
 /-! ## The semantic world
@@ -578,11 +613,13 @@ partial def pair (b : Block) (src : Array Source) (expect : Option Nat) (s : Syn
     unless e == k do throwErrorAt s "Expected a value of `{b.members[e]!.name}`"
   let m := b.members[k]!
   let c := m.ctors[ci]!
-  unless args.size == b.params.size + c.fields.size do
-    throwErrorAt s "The constructor `{m.name}.{c.name}` takes {b.params.size + c.fields.size} explicit arguments here"
-  unless ((args.extract 0 b.params.size).zip b.params).all (fun (a,p) => same a p.name) do
+  -- the dotted form carries no parameters; the qualified one carries them all
+  let np := if h.isOfKind ``Parser.Term.dotIdent then 0 else b.params.size
+  unless args.size == np + c.fields.size do
+    throwErrorAt s "The constructor `{m.name}.{c.name}` takes {np + c.fields.size} explicit arguments here"
+  unless ((args.extract 0 np).zip b.params).all (fun (a,p) => same a p.name) do
     throwErrorAt s "IR constructor parameters must remain unchanged"
-  let fargs := args.extract b.params.size args.size
+  let fargs := args.extract np args.size
   let (inner, pairs, split, semArgs, rawArgs) ← instantiate b src c fargs
   ctorPair b src inner pairs split semArgs rawArgs k ci
 
@@ -976,17 +1013,17 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       let m := b.members[i]!
       let ppi := pubPairIdx b i (pubIdxNames b i)
       if m.prop then
-        emit ("@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Prop := " ++ withParams b (wfName m) ppi)
+        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Prop := " ++ withParams b (wfName m) ppi)
       else if b.wf then
-        emit ("@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withParams b (graphName m) ppi ++ " // " ++ withParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
+        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withParams b (graphName m) ppi ++ " // " ++ withParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
       else
-        emit ("@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withParams b (graphName m) ppi)
+        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withParams b (graphName m) ppi)
     | .inr j =>
       let d := b.decoders[j]!
       let idx ← d.idx.mapM fieldDecl
       let result := subst d.result #[(d.major, mkIdent `_ir_self)]
       let node := if b.wf then "_ir_self.1.1." else "_ir_self.1."
-      emit ("@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ node ++ outField j)
+      emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ node ++ outField j)
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -1010,11 +1047,11 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       let head := m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ join fields ++ " : " ++ typeAt b i result
       let wfApp := app (wfName m ++ "." ++ c.name.toString) (xs ++ wfs ++ props)
       if m.prop then
-        emit ("theorem " ++ head ++ " := " ++ wfApp)
+        emit (c.doc ++ "theorem " ++ head ++ " := " ++ wfApp)
       else if b.wf then
-        emit (attrs ++ "def " ++ head ++ " := ⟨⟨_, " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩, " ++ wfApp ++ "⟩")
+        emit (c.doc ++ attrs ++ "def " ++ head ++ " := ⟨⟨_, " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩, " ++ wfApp ++ "⟩")
       else
-        emit (attrs ++ "def " ++ head ++ " := ⟨_, " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩")
+        emit (c.doc ++ attrs ++ "def " ++ head ++ " := ⟨_, " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩")
 
 /-! ## Recursors -/
 
@@ -1199,12 +1236,16 @@ private def emitRec (b : Block) : CommandElabM Unit := do
 
 /-- The minor premise of a `Prop` member's recursor at constructor `ci`: the
 constructor's name, which nothing else of the member's takes. -/
-private def propMinor (b : Block) (i ci : Nat) : String := Id.run do
+private def propMinor (b : Block) (i ci : Nat) (joint := true) : String := Id.run do
   let m := b.members[i]!
-  let n := m.ctors[ci]!.name.toString
+  let c := m.ctors[ci]!
+  let props := if joint then (propMembers b).map (b.members[·]!) else #[m]
+  -- the `Prop` members share one recursor, so a name two of them use is qualified there
+  let count := props.foldl (fun n m => n + (m.ctors.filter (·.name == c.name)).size) 0
+  let n := if count == 1 then c.name.toString else m.name.toString.replace "." "_" ++ "_" ++ c.name.toString
   let used := b.params.any (fun p => p.name.toString == n) ||
-    m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n)) ||
-    m.indices.any (fun x => x.name.toString == n)
+    props.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n))) ||
+    props.any (fun m => m.indices.any (fun x => x.name.toString == n))
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
 /-- The motive of `Prop` member `j`: `motive` when it is the only one. -/
 private def propMotive (b : Block) (j : Nat) : String :=
@@ -1219,7 +1260,7 @@ private def wfMinorArity (b : Block) (c : Ctor) : Nat :=
 /-- A `Prop` member's minor premise, public and as the well-formedness
 recursor takes it: at `rec` with a hypothesis at each proof of a `Prop`
 member, with `conclName` the motive the public one concludes at. -/
-private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) : CommandElabM (String × String) := do
+private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) (joint := true) : CommandElabM (String × String) := do
   let m := b.members[j]!
   let c := m.ctors[ci]!
   let mut hyps := #[]
@@ -1231,7 +1272,7 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
   let concl := app conclName (result ++ #[ctorApp b j ci (fieldNames c)])
   let decls ← fieldsDecl c
   let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join hyps ++ ", " ++ concl
-  let pub := par (propMinor b j ci ++ " : " ++ ty)
+  let pub := par (propMinor b j ci joint ++ " : " ++ ty)
   -- the graph minor's binders: the graph fields, the well-formedness of each
   -- field of carrier type, the proof fields, a hypothesis at each of the
   -- latter two, and the well-formedness of the arity
@@ -1264,7 +1305,7 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
       images := images.push f.name.toString
   let wfIhs := if ihs then wfs.map fun _ => "_" else #[]
   let tail := (← arityWf b j).map (·.1)
-  let g := untypedLambda (binders ++ wfs ++ props ++ wfIhs ++ ihBinders ++ tail) (app (propMinor b j ci) (images ++ (if ihs then ihImages else #[])))
+  let g := untypedLambda (binders ++ wfs ++ props ++ wfIhs ++ ihBinders ++ tail) (app (propMinor b j ci joint) (images ++ (if ihs then ihImages else #[])))
   return (pub, g)
 
 /-- The `Prop` members' recursors and `casesOn`, from the well-formedness
@@ -1306,7 +1347,7 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
     let mut cminors := #[]
     let mut cgminors := #[]
     for ci in [:m.ctors.size] do
-      let (pub, g) ← propMinorPair b j ci false "motive"
+      let (pub, g) ← propMinorPair b j ci false "motive" (joint := false)
       cminors := cminors.push pub
       cgminors := cgminors.push g
     emit ("@[elab_as_elim, cases_eliminator] theorem " ++ m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[gmotive] ++ pubPairIdx b j idx ++ #["_ir_self"] ++ cgminors ++ pubIdxWf b j idx))
@@ -1561,22 +1602,6 @@ private def goodIdx (b : Block) (src : Array Source) (k : Nat) (args : Array Syn
     else out := out.push (← semText b src t)
   return out
 
-/-- A public index term of carrier `expect` as text, with a constructor written
-`.c` given its full name, recursively into its arguments, so that the term can
-be read where no expected type resolves the dot -- under `.val`, say. -/
-private partial def qualifyText (b : Block) (expect : Option Nat) (s : Syntax) : CommandElabM String := do
-  let (h, args) := unapp s
-  let some (k, ci) := ctorRef? b expect h | text s
-  let m := b.members[k]!
-  let c := m.ctors[ci]!
-  -- the dotted form carries no parameters; the qualified one carries them all
-  let fargs := if h.isOfKind ``Parser.Term.dotIdent then args else args.extract b.params.size args.size
-  unless fargs.size == c.fields.size do return ← text s
-  let mut out := #[]
-  for (f, a) in c.fields.zip fargs do
-    out := out.push (← qualifyText b (f.target.map (·.1)) a)
-  return withParams b (m.name.toString ++ "." ++ c.name.toString) out
-
 /-- The arity of carrier `k` in the raw world: the raw half of an index of
 carrier type with, when that carrier is indexed, its coherence; and the sources
 they bind, whose semantic halves are transported along those coherences. -/
@@ -1719,16 +1744,17 @@ private partial def flattenTop (b : Block) (expect : Option Nat) (conclusion : B
   let (h, args) := unapp t
   let some (k, ci) := ctorRef? b expect h | return t
   let c := b.members[k]!.ctors[ci]!
-  unless args.size == b.params.size + c.fields.size do return t
+  let np := if h.isOfKind ``Parser.Term.dotIdent then 0 else b.params.size
+  unless args.size == np + c.fields.size do return t
   let before := (← get).size
-  let mut out := args.extract 0 b.params.size
-  for (f, a) in c.fields.zip (args.extract b.params.size args.size) do
+  let mut out := args.extract 0 np
+  for (f, a) in c.fields.zip (args.extract np args.size) do
     out := out.push (← match f.target with
       | some (j, _) => flattenArg b (some j) dom a
       | none => pure a)
   let texts ← (out.mapM text : CommandElabM (Array String))
   let t ← parseTerm (app (← text h) texts)
-  if conclusion && (← get).size > before then hide b k c out dom t (arg := false) else return t
+  if conclusion && (← get).size > before then hide b k c (out.extract np out.size) dom t (arg := false) else return t
 
 /-- An argument of carrier `expect`: a constructor application becomes a hidden
 field. -/
@@ -1738,13 +1764,14 @@ private partial def flattenArg (b : Block) (expect : Option Nat) (dom : Array Bi
   let t ← flattenTop b expect false dom a
   let (h, args) := unapp t
   let some (k, ci) := ctorRef? b expect h | return a
-  hide b k b.members[k]!.ctors[ci]! args dom t (arg := true)
+  let np := if h.isOfKind ``Parser.Term.dotIdent then 0 else b.params.size
+  hide b k b.members[k]!.ctors[ci]! (args.extract np args.size) dom t (arg := true)
 
 /-- A hidden field for the application `t` of constructor `c` of carrier `k`
-to `args`, at the indices `c`'s conclusion has there. -/
-private partial def hide (b : Block) (k : Nat) (c : Ctor) (args : Array Syntax) (dom : Array Binder) (t : Syntax) (arg : Bool) :
+to the field arguments `fargs`, at the indices `c`'s conclusion has there. -/
+private partial def hide (b : Block) (k : Nat) (c : Ctor) (fargs : Array Syntax) (dom : Array Binder) (t : Syntax) (arg : Bool) :
     StateT (Array Field) CommandElabM Syntax := do
-  let pairs := (c.fields.zip (args.extract b.params.size args.size)).map fun (f, x) => (f.name, x)
+  let pairs := (c.fields.zip fargs).map fun (f, x) => (f.name, x)
   let idx ← ((b.members[k]!.indices.zip c.result).map fun (x, r) => (x.member.map (·.1), subst r pairs)).mapM
     fun (e, r) => flattenTop b e false dom r
   let name := Name.mkSimple ("_ir_sub_" ++ toString (← get).size)
@@ -2086,9 +2113,9 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let m := b.members[k]!
       let gargs ← goodIdxPub b k (m.indices.map fun x => mkIdent x.name)
       if m.prop then
-        emitL ("@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Prop := " ++ withParams b (goodName m) gargs)
+        emitL (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Prop := " ++ withParams b (goodName m) gargs)
         continue
-      emitL ("def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Type " ++ m.level ++ " := { _ir_a : " ++ rawAt b k ++ " // " ++ withParams b (goodName m) (gargs ++ #["_ir_a"]) ++ " }")
+      emitL (m.doc ++ "def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Type " ++ m.level ++ " := { _ir_a : " ++ rawAt b k ++ " // " ++ withParams b (goodName m) (gargs ++ #["_ir_a"]) ++ " }")
       -- the semantics of a public value, at the semantics of its indices
       let idx := pubIdxNames b k
       let sIdx ← m.indices.mapM fun x => do
@@ -2103,7 +2130,7 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let m := b.members[d.target]!
       let idx ← d.idx.mapM fieldDecl
       let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-      emitDefL "@[reducible] " (d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
+      emitDefL (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
   let mut lemmas : Array String := b.members.flatMap fun m => m.ctors.map (valLemma m)
   for k in [:b.members.size] do
     let m := b.members[k]!
@@ -2144,9 +2171,9 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let result ← c.result.mapM text
       -- the certificate's constructor takes the block's parameters implicitly, as any constructor does
       if m.prop then
-        emitL ("theorem " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ typeAt b k result ++ " := " ++ app (goodName m ++ "." ++ c.name.toString) gargs)
+        emitL (c.doc ++ "theorem " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ typeAt b k result ++ " := " ++ app (goodName m ++ "." ++ c.name.toString) gargs)
         continue
-      emitDefL "" (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
+      emitDefL c.doc (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
       emitL ("theorem " ++ rawLemma m c ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ par (ctorApp b k ci (fieldNames c)) ++ ".val = " ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ " := Eq.trans rfl rfl")
       lemmas := lemmas.push (rawLemma m c)
 
@@ -2462,7 +2489,7 @@ the certificates' recursor takes it.  The latter is a proof, so it is closed
 by tactic: the equations pinning hidden conclusion fields substituted, the
 written minor premise applied at the public values of the fields, and a
 hypothesis at the certificates of its field's indices. -/
-private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) : CommandElabM (String × String) := do
+private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) (joint := true) : CommandElabM (String × String) := do
   let m := b.members[j]!
   let c := m.ctors[ci]!
   let mut hyps := #[]
@@ -2474,7 +2501,7 @@ private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : St
   let concl := app conclName (result ++ #[ctorApp b j ci (fieldNames c)])
   let decls ← fieldsDecl c
   let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join hyps ++ ", " ++ concl
-  let pub := par (propMinor b j ci ++ " : " ++ ty)
+  let pub := par (propMinor b j ci joint ++ " : " ++ ty)
   -- the certificate's arguments, a hypothesis per certificate among them, the arity's certificates
   let r ← rawFields b c (forGood := true)
   let ihNames := (r.names.filter fun (_, kind) => kind == .cert || kind == .proof).map fun (n, kind) =>
@@ -2504,7 +2531,8 @@ private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : St
     else images := images.push f.name.toString
   let eqs := (r.names.filter (·.2 == .eq)).map (·.1)
   let substs := if eqs.isEmpty then "" else "subst " ++ join eqs ++ "; "
-  let g := untypedLambda binders ("by " ++ substs ++ "exact\n      " ++ lets ++ app (propMinor b j ci) (images ++ (if ihs then ihImages else #[])))
+  let body := "by " ++ substs ++ "exact\n      " ++ lets ++ app (propMinor b j ci joint) (images ++ (if ihs then ihImages else #[]))
+  let g := if binders.isEmpty then par body else untypedLambda binders body
   return (pub, g)
 
 /-- The `Prop` members' recursors and `casesOn` at the written universe, from
@@ -2548,7 +2576,7 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
     let mut cminors := #[]
     let mut cgminors := #[]
     for ci in [:m.ctors.size] do
-      let (pub, g) ← lowerPropMinor b j ci false "motive"
+      let (pub, g) ← lowerPropMinor b j ci false "motive" (joint := false)
       cminors := cminors.push pub
       cgminors := cgminors.push g
     emitL ("@[elab_as_elim, cases_eliminator] theorem " ++ m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".casesOn") (pArgs b ++ #[← gmotive j "motive"] ++ gIdx ++ #["_ir_self"] ++ cgminors ++ certs))

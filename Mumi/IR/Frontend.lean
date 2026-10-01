@@ -27,11 +27,14 @@ structure Field extends Binder where
 structure Ctor where
   name : Name
   fields : Array Field
+  /-- The documentation written on it, `/-- … -/` with a newline, or `""`. -/
+  doc : String := ""
   deriving Inhabited
 
 structure Member where
   name : Name
   ctors : Array Ctor
+  doc : String := ""
   deriving Inhabited
 
 structure Decoder where
@@ -40,6 +43,7 @@ structure Decoder where
   major : Name
   result : Syntax
   clauses : Array Syntax
+  doc : String := ""
   deriving Inhabited
 
 structure Block where
@@ -243,7 +247,13 @@ def checkDistinct (names : Array Name) (reserved : Array Name) : CommandElabM Un
       throwError "IR prototype reserves 'motive' and 'motive_...' for recursor motives"
     seen := seen.push n
 
-def plainModifiers (s : Syntax) : Bool := s.getArgs.all (·.getNumArgs == 0)
+/-- Whether declaration modifiers are empty, a documentation comment aside. -/
+def plainModifiers (s : Syntax) : Bool := (s.getArgs.extract 1 s.getNumArgs).all (·.getNumArgs == 0)
+/-- The documentation comment of declaration modifiers, or of a constructor's
+optional one, as text to put before a declaration. -/
+def docOf (s : Syntax) : String :=
+  let s := if s.isOfKind ``Parser.Command.declModifiers then s[0] else s
+  if s.getNumArgs == 0 then "" else ((s[0].reprint.getD "").trimAscii.toString) ++ "\n"
 
 def isIRBlock (elems : Array Syntax) : Bool :=
   elems.all (fun e => e.isOfKind ``Parser.Command.declaration &&
@@ -278,7 +288,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
             throwErrorAt d "IR prototype requires identical shared parameters on all declarations"
         unless l == level do throwErrorAt result "IR prototype requires all carriers to share the declared universe"
       unless d[6][0].getNumArgs == 0 do throwErrorAt d "IR prototype does not yet support deriving clauses"
-      members := members.push { name := d[1][0].getId, ctors := #[] }
+      members := members.push { name := d[1][0].getId, ctors := #[], doc := docOf e[0] }
   checkDistinct (params.map (·.name)) globalNames
   for p in params do checkTermBinders (globalNames ++ params.map (·.name)) p.type
   let mut mi := 0
@@ -310,7 +320,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
             renamed := renamed.push { name, type := subst x.type pairs : Binder }
             pairs := pairs.push (x.name, mkIdent name)
           return { f with target, domain := if target.isSome then renamed else #[] : Field }
-        ctors := ctors.push { name := c[3].getId, fields := fs }
+        ctors := ctors.push { name := c[3].getId, fields := fs, doc := docOf c[0] }
       if ctors.isEmpty then throwErrorAt d "IR prototype currently requires at least one constructor per carrier"
       members := members.modify mi fun m => { m with ctors }
       mi := mi+1
@@ -349,7 +359,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
         let pairs := xs.zip c.fields |>.map fun (x,f) => (x.getId, mkIdent f.name)
         clauses := clauses.set! ci (subst alt[3] pairs)
       if clauses.any (·.isMissing) then throwErrorAt d "IR decoder must have exactly one equation for every constructor"
-      decoders := decoders.push { name := d[1][0].getId, target := i, major := args[0]!.name, result, clauses }
+      decoders := decoders.push { name := d[1][0].getId, target := i, major := args[0]!.name, result, clauses, doc := docOf e[0] }
   return { members, decoders, params, level }
 
 private def fieldDecl (f : Binder) : CommandElabM String := do
@@ -435,11 +445,11 @@ private def emitUpper (b : Block) : CommandElabM Unit := do
     ds := ds.push ("inductive " ++ graph m ++ " " ++ ps ++ " : " ++ atParams b (sem m) ++ " → Type (" ++ b.level ++ "+1) where\n" ++ String.intercalate "\n" cs.toList)
   emit ("mutual\n" ++ String.intercalate "\n" ds.toList ++ "\nend")
   for m in b.members do
-    emit ("@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " : Type (" ++ b.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ par (atParams b (graph m)))
+    emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " : Type (" ++ b.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ par (atParams b (graph m)))
   for j in [:b.decoders.size] do
     let d := b.decoders[j]!
     let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-    emit ("@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := _ir_self.1." ++ outField j)
+    emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := _ir_self.1." ++ outField j)
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -451,7 +461,7 @@ private def emitUpper (b : Block) : CommandElabM Unit := do
           xs := xs.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".2"))
         else xs := xs.push f.name.toString
       let attrs := if c.fields.isEmpty then "@[reducible, match_pattern] " else "@[reducible] "
-      emit (attrs ++ "def " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨_, " ++ app (graph m ++ "." ++ c.name.toString) xs ++ "⟩")
+      emit (c.doc ++ attrs ++ "def " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨_, " ++ app (graph m ++ "." ++ c.name.toString) xs ++ "⟩")
 
 def motive (i : Nat) := if i == 0 then "motive" else "motive_" ++ toString (i+1)
 private def minor (b : Block) (i ci : Nat) := Id.run do
@@ -637,10 +647,10 @@ private def emitLower (b : Block) : CommandElabM Unit := do
     gs := gs.push ("inductive " ++ good m ++ " " ++ ps ++ " : " ++ atParams b (raw m) ++ " → Prop where\n" ++ String.intercalate "\n" cs.toList)
   emit ("mutual\n" ++ String.intercalate "\n" gs.toList ++ "\nend")
   for m in b.members do
-    emit ("def " ++ m.name.toString ++ " " ++ ps ++ " : Type " ++ b.level ++ " := { a : " ++ atParams b (raw m) ++ " // " ++ app (atParams b (good m)) #["a"] ++ " }")
+    emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ ps ++ " : Type " ++ b.level ++ " := { a : " ++ atParams b (raw m) ++ " // " ++ app (atParams b (good m)) #["a"] ++ " }")
   for d in b.decoders do
     let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-    emitDefinition "@[reducible] " (d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ app (aux d.name) (pArgs b ++ #["_ir_self.val"]))
+    emitDefinition (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ app (aux d.name) (pArgs b ++ #["_ir_self.val"]))
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -652,7 +662,7 @@ private def emitLower (b : Block) : CommandElabM Unit := do
           values := values.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".val"))
           certs := certs.push (← lambda f.domain (par (applyDomain f.name.toString f.domain) ++ ".property"))
         else values := values.push f.name.toString
-      emitDefinition "" (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨" ++ rawCtorApp b i ci values ++ ", " ++ app (good m ++ "." ++ c.name.toString) (values ++ certs) ++ "⟩")
+      emitDefinition c.doc (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨" ++ rawCtorApp b i ci values ++ ", " ++ app (good m ++ "." ++ c.name.toString) (values ++ certs) ++ "⟩")
   for i in [:b.members.size] do
     let m := b.members[i]!
     let mut cs := #[]

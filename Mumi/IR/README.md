@@ -331,9 +331,10 @@ Current restrictions are explicit:
   constructor pattern with named variables, one equation per constructor.
   Recursive calls must explicitly name the decoder, repeat the shared parameters,
   and target an earlier recursive field (possibly applied to its arguments).
-- Use simple declaration names inside a `namespace`. Attributes, modifiers,
-  documentation comments inside the block, `deriving`, `where` declarations,
-  and termination annotations are not yet supported.
+- Use simple declaration names inside a `namespace`. A documentation comment
+  on a member, a constructor or a decoder goes onto the public declaration;
+  attributes, other modifiers, `deriving`, `where` declarations, and
+  termination annotations are not yet supported.
 - This is syntax-directed translation, not arbitrary Lean term elaboration:
   opaque binding macros and hidden/aliased recursive occurrences are outside
   its contract. Ordinary lambdas, dependent function types, lets, and matches

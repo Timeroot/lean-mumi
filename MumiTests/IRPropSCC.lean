@@ -215,3 +215,96 @@ theorem Ok.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) :
 #print axioms Ok.base_or_pi
 
 end PropIdxLower
+
+/-! Several `Prop` members in the component, mutual with each other, over a
+parameter, with the constructors written `.c` and documentation on the members:
+one joint `Good.rec` over both, named minor premises apart, and each member's
+own `casesOn`.  A `Prop` with no index at all is taken the same way. -/
+
+namespace Several
+set_option mumi.mahlo false
+
+mutual
+/-- codes over `α` -/
+inductive U (α : Type) : Type where
+  | base : U α
+  | pi (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) : U α
+inductive Good (α : Type) : U α → Prop where
+  | base : Good α .base
+  | pi (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) (hb : ∀ x : El α a, Fine α (b x)) : Good α (.pi a b h h')
+inductive Fine (α : Type) : U α → Prop where
+  | base : Fine α .base
+  | pi (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) (hb : ∀ x : El α a, Good α (b x)) : Fine α (.pi a b h h')
+/-- decoding -/
+def El (α : Type) : U α → Type
+  | .base => α
+  | .pi a b h h' => (x : El α a) → El α (b x)
+end
+
+example (α : Type) : El α (U.base α) = α := rfl
+example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
+    El α (U.pi α a b h h') = ((x : El α a) → El α (b x)) := rfl
+theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
+  induction g using Good.rec (motive_3 := fun _ _ => True) with
+  | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
+theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
+  cases g with | base => trivial | pi a b h h' hb => trivial
+
+mutual
+inductive T : Type where
+  | base : T
+  | pi (a : T) (b : D a → T) (h : Ok) : T
+inductive Ok : Prop where
+  | yes (t : T) (h : Ok) : Ok
+  | base : Ok
+def D : T → Type
+  | .base => Nat
+  | .pi a b h => (x : D a) → D (b x)
+end
+theorem Ok.t (h : Ok) : True := by induction h with | yes t h ih => trivial | base => trivial
+
+end Several
+
+namespace SeveralLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+
+mutual
+/-- codes over `α` -/
+inductive U (α : Type) : Type where
+  | base : U α
+  | pi (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) : U α
+inductive Good (α : Type) : U α → Prop where
+  | base : Good α .base
+  | pi (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) (hb : ∀ x : El α a, Fine α (b x)) : Good α (.pi a b h h')
+inductive Fine (α : Type) : U α → Prop where
+  | base : Fine α .base
+  | pi (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) (hb : ∀ x : El α a, Good α (b x)) : Fine α (.pi a b h h')
+/-- decoding -/
+def El (α : Type) : U α → Type
+  | .base => α
+  | .pi a b h h' => (x : El α a) → El α (b x)
+end
+
+example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
+    El α (U.pi α a b h h') = ((x : El α a) → El α (b x)) := rfl
+theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
+  induction g using Good.rec (motive_3 := fun _ _ => True) with
+  | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
+theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
+  cases g with | base => trivial | pi a b h h' hb => trivial
+
+mutual
+inductive T : Type where
+  | base : T
+  | pi (a : T) (b : D a → T) (h : Ok) : T
+inductive Ok : Prop where
+  | yes (t : T) (h : Ok) : Ok
+  | base : Ok
+def D : T → Type
+  | .base => Nat
+  | .pi a b h => (x : D a) → D (b x)
+end
+theorem Ok.t (h : Ok) : True := by induction h with | yes t h ih => trivial | base => trivial
+
+end SeveralLower
