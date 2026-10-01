@@ -263,6 +263,13 @@ def D : T → Type
 end
 theorem Ok.t (h : Ok) : True := by induction h with | yes t h ih => trivial | base => trivial
 
+-- the documentation goes onto the public declarations
+open Lean Elab Command in
+/-- info: (some "codes over `α` ", some "decoding ") -/
+#guard_msgs in
+#eval show CommandElabM _ from do
+  return (← findDocString? (← getEnv) ``Several.U, ← findDocString? (← getEnv) ``Several.El)
+
 end Several
 
 namespace SeveralLower

@@ -267,3 +267,84 @@ theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ 
 #print axioms bsize
 
 end MixIdxLower
+
+/-! Polymorphic universes, `Type u` and `Type (u+1)`, tied by the `Prop`: the
+generated declarations name the block's constants at their universes
+explicitly, which is what keeps `u` and `u+1` apart under inference. -/
+
+universe u
+
+namespace PolyMix
+set_option mumi.mahlo false
+
+mutual
+inductive A : Type u where
+  | a0 : A
+  | a1 (x : A) (f : F x → A) (h : P x) : A
+inductive B : Type (u+1) where
+  | b0 : B
+  | b1 (x : A) (b : B) (g : G b → B) : B
+inductive P : A → Prop where
+  | zero : P .a0
+  | one (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) : P (.a1 x f h)
+def F : A → Type u
+  | .a0 => PUnit
+  | .a1 x f h => (y : F x) → F (f y)
+def G : B → Type (u+1)
+  | .b0 => Type u
+  | .b1 x b g => F x × ((z : G b) → G (g z))
+end
+
+example : Type (u+1) := A.{u}
+example : Type (u+2) := B.{u}
+def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
+def sizeB : B.{u} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
+theorem P.t (a : A.{u}) (h : P a) : a = A.a0 ∨ 0 < depth a := by
+  induction h with
+  | zero => exact .inl rfl
+  | one x f h b k ih => exact .inr (Nat.succ_pos _)
+
+/-- info: 'PolyMix.sizeB' does not depend on any axioms -/
+#guard_msgs in
+#print axioms sizeB
+
+end PolyMix
+
+namespace PolyMixLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+
+mutual
+inductive A : Type u where
+  | a0 : A
+  | a1 (x : A) (f : F x → A) (h : P x) : A
+inductive B : Type (u+1) where
+  | b0 : B
+  | b1 (x : A) (b : B) (g : G b → B) : B
+inductive P : A → Prop where
+  | zero : P .a0
+  | one (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) : P (.a1 x f h)
+def F : A → Type u
+  | .a0 => PUnit
+  | .a1 x f h => (y : F x) → F (f y)
+def G : B → Type (u+1)
+  | .b0 => Type u
+  | .b1 x b g => F x × ((z : G b) → G (g z))
+end
+
+example : Type u := A.{u}
+example : Type (u+1) := B.{u}
+def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
+def sizeB : B.{u} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
+theorem P.t (a : A.{u}) (h : P a) : a = A.a0 ∨ 0 < depth a := by
+  induction h with
+  | zero => exact .inl rfl
+  | one x f h b k ih => exact .inr (Nat.succ_pos _)
+
+/-- info: 'PolyMixLower.sizeB' depends on axioms: [IR.mahlo] -/
+#guard_msgs in
+#print axioms sizeB
+
+end PolyMixLower

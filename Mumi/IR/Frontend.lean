@@ -88,7 +88,53 @@ private partial def exposeDefs (s attr : Syntax) : Syntax :=
     s.setArg 1 (mkNullNode (s[1].getArgs.map (exposeDefs · attr)))
   else s
 
+/-- The names of the block being declared: its members and decoders, whose
+declarations `pinUniverses` pins the universes of. -/
+initialize blockNames : IO.Ref (Array String) ← IO.mkRef #[]
+
+/-- `s` with every constant of the block it names -- a generated one at
+`_ir_…`, or a public one under a member's or decoder's name -- given its
+universes explicitly: the parameters it was declared with, which are the
+scope's universe names it uses.  Left to inference, a reference's universes are
+level metavariables, and in a block whose members sit in several polymorphic
+universes the elaborator makes fresh parameters of those before the body can
+pin them, and the body then fails to typecheck. -/
+def pinUniverses (s : String) : CommandElabM String := do
+  let env ← getEnv
+  let ns ← getCurrNamespace
+  let inScope := (← getScope).levelNames
+  let block ← blockNames.get
+  let isId (c : Char) := c.isAlphanum || c == '_' || c == '.' || c == '\'' || c.val > 127
+  let a := s.toList.toArray
+  let mut out := ""
+  let mut i := 0
+  while i < a.size do
+    let c := a[i]!
+    if isId c && (i == 0 || !isId a[i-1]!) then
+      let mut j := i
+      while j < a.size && isId a[j]! do j := j + 1
+      let tok := String.mk (a.extract i j).toList
+      -- a trailing `.` belongs to what follows: `.{…}` already there, or a projection
+      let base := if tok.endsWith "." then tok.dropRight 1 else tok
+      let pinned := tok.endsWith "." && j < a.size && a[j]! == '{'
+      let mut res := tok
+      let ours := base.startsWith "_ir_" || block.contains ((base.splitOn ".").headD "")
+      -- an attribute names a declaration, bare
+      let bare := out.endsWith "implemented_by " || s.startsWith "attribute ["
+      if !pinned && ours && !bare then
+        if let some ci := env.find? (ns ++ base.toName) then
+          let lps := ci.levelParams
+          if !lps.isEmpty && lps.all inScope.contains then
+            res := base ++ ".{" ++ String.intercalate ", " (lps.map toString) ++ "}" ++ (if tok.endsWith "." then "." else "")
+      out := out ++ res
+      i := j
+    else
+      out := out.push c
+      i := i + 1
+  return out
+
 def emit (s : String) : CommandElabM Unit := do
+  let s ← pinUniverses s
   trace[Mumi.ir] "{s}"
   let stx ← match Parser.runParserCategory (← getEnv) `command s with
     | .ok t => pure t
@@ -804,6 +850,7 @@ private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
 
 def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
+  blockNames.set (b.members.map (·.name.toString) ++ b.decoders.map (·.name.toString))
   emit "universe _ir_elim"
   emitSemantics b
   if mumi.mahlo.get (← getOptions) then

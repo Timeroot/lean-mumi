@@ -323,7 +323,8 @@ Current restrictions are explicit:
   functions returning a carrier. Nested occurrences, negative occurrences, and
   carriers in recursive argument domains are rejected.
 - Shared parameters must be typed, explicit, and repeated identically on all
-  declarations. Use surrounding `universe` declarations. Section variables,
+  declarations. Use surrounding `universe` declarations; members may sit at
+  different levels of them, `Type u` beside `Type (u+1)`. Section variables,
   implicit/default parameters, and per-declaration universe lists are not
   supported.
 - Decoder headers have the form `def f (params) : U params → Result` or

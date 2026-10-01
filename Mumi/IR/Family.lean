@@ -1368,7 +1368,7 @@ failing the block. -/
 private def emitEquation (b : Block) (name binders stmt : String) : CommandElabM Unit := do
   unless b.lower do
     return ← emit ("@[simp] theorem " ++ name ++ " " ++ binders ++ " : " ++ stmt ++ " := rfl")
-  let text := if binders.trim.isEmpty then stmt else "∀ " ++ binders ++ ", " ++ stmt
+  let text ← pinUniverses (if binders.trim.isEmpty then stmt else "∀ " ++ binders ++ ", " ++ stmt)
   unless mumi.ir.equations.get (← getOptions) do
     trace[Mumi.ir] "not tried, `mumi.ir.equations` is off:\n{name} : {text}"
     return
@@ -2644,6 +2644,7 @@ def isIndexed (elems : Array Syntax) : CommandElabM Bool := do
 
 def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
+  blockNames.set (b.members.map (·.name.toString) ++ b.decoders.map (·.name.toString))
   let order ← declarationOrder b
   if mumi.mahlo.get (← getOptions) then
     elaborateLower { b with lower := true } order
