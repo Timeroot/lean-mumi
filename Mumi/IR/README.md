@@ -266,9 +266,18 @@ different universes together (`MumiTests/IRUniversesProp.lean`).  One thing
 changes for the writer: a proof a constructor was built with is no field of
 the data, so `Good.pi _ _ h …` has to name `h` where `Good.pi _ _ _ …` used to
 infer it.  A decoder may not recurse over a `Prop` member, and a `Prop` member
-cannot be an index domain.  At the written universe this shape is not lowered
-yet, and says so.  `MumiTests/IRPropSCC.lean` is this block, and an indexed
-one with a `Prop` its carriers need.
+cannot be an index domain.
+
+At the written universe the same idea lands on what is already there: the
+raw terms carry no proofs, the certificates `_ir_X_Good` do -- a data member's
+constructor takes each proof where it was written, as a proof of the `Prop`
+member's certificate -- and the `Prop` member is a certificate `_ir_P_Good`
+over the raw halves of its indices, in the one `mutual` with the others.  The
+recursion reads the proofs off the certificate's shape like the fields'
+certificates, `P.rec` and `P.casesOn` come from the certificates' joint
+recursor, and every equation is `rfl` as before.
+`MumiTests/IRPropSCC.lean` is this block, and an indexed one with a `Prop`
+its carriers need, in both modes.
 
 ```lean
 mutual

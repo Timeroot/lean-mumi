@@ -86,8 +86,7 @@ example : P a1 := P.one A.a0 (fun _ => A.a0) P.zero B.b0 (Type 1) P.zero
 
 end UnivProp
 
-/-! At the written universe the carriers of a component share one universe,
-and a `Prop` member is not lowered yet; the first is reported. -/
+/-! At the written universe the carriers of a component share one universe. -/
 
 namespace UnivPropLower
 set_option mumi.mahlo true
