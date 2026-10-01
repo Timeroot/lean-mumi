@@ -192,6 +192,15 @@ private def dataTarget (b : Block) (f : Field) : Option (Nat × Array Syntax) :=
 /-- The data members, in order. -/
 private def dataMembers (b : Block) : Array Nat :=
   (Array.range b.members.size).filter fun i => !b.members[i]!.prop
+/-- The data members `X.rec` takes motives for: those its graph's recursor
+does, or, where that is not known, every one. -/
+private def scope (b : Block) (i : Nat) : Array Nat :=
+  match b.recs[i]? with
+  | some s => if s.isEmpty then dataMembers b else s
+  | none => dataMembers b
+/-- The field's target when it is a data member of `scope`: a field the recursor gives a hypothesis at. -/
+private def scopedTarget (b : Block) (scope : Array Nat) (f : Field) : Option (Nat × Array Syntax) :=
+  (dataTarget b f).filter fun (k, _) => scope.contains k
 
 private def aux (n : Name) (suffix := "") : String :=
   (n.getPrefix ++ Name.mkSimple ("_ir_" ++ n.getString! ++ suffix)).toString
@@ -920,30 +929,42 @@ private def emitWf (b : Block) : CommandElabM Unit := do
     ds := ds.push ("inductive " ++ wfName m ++ " " ++ ps ++ " : " ++ arity ++ self ++ "Prop where\n" ++ String.intercalate "\n" cs.toList)
   emit ("mutual\n" ++ String.intercalate "\n" ds.toList ++ "\nend")
 
-/-- The inversion of a data member's well-formedness: `_ir_X_Inv`, by cases on
-the node, is the conjunction of what the constructor's well-formedness carries,
-and `_ir_X_invert` proves it, by cases on the well-formedness at that motive. -/
+/-- The conjunction of what constructor `ci` of `i`'s well-formedness carries, over the graph fields. -/
+private def wfConj (b : Block) (i ci : Nat) : CommandElabM (GraphFields × String) := do
+  let g ← graphFields b b.members[i]!.ctors[ci]!
+  return (g, (g.wf ++ g.props).foldr (fun (_, t) acc => par (t ++ " ∧ " ++ acc)) "True")
+
+/-- The inversion of a data member's well-formedness: `_ir_X_Inv`, by
+recursion on the node -- the graph's recursor, which every graph has whoever
+declared it, at `Prop` and with its hypotheses unused -- is the conjunction of
+what the constructor's well-formedness carries, and `_ir_X_invert` proves it,
+by cases on the well-formedness at that motive. -/
 private def emitInv (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
   for i in dataMembers b do
     let m := b.members[i]!
+    let scope := scope b i
     let (arity, _) ← graphArity b i
     let (implicitArity, _) ← graphArity b i (implicit := true)
     let gIdx := graphIdxNames b i
     let semTy := withParams b (semName m) (semIdxNames b i)
     let selfTy := withParams b (graphName m) (gIdx ++ #["_ir_s"])
-    let mut minors := #[]
+    let mut rargs := pArgs b
+    for k in scope do rargs := rargs.push (untypedLambda (graphIdxNames b k ++ #["_", "_"]) "Prop")
+    for k in scope do
+      for ck in [:b.members[k]!.ctors.size] do
+        let (g, conj) ← wfConj b k ck
+        let ihs := (b.members[k]!.ctors[ck]!.fields.filter fun f => (scopedTarget b scope f).isSome).map fun _ => "_"
+        rargs := rargs.push (untypedLambda (g.names ++ ihs) conj)
     let mut inverts := #[]
     for ci in [:m.ctors.size] do
-      let g ← graphFields b m.ctors[ci]!
+      let (g, conj) ← wfConj b i ci
       let parts := g.wf ++ g.props
-      let conj := parts.foldr (fun (_, t) acc => par (t ++ " ∧ " ++ acc)) "True"
-      minors := minors.push (untypedLambda g.names conj)
       let witness := parts.foldr (fun (n, _) acc => "⟨" ++ n ++ ", " ++ acc ++ "⟩") "trivial"
       inverts := inverts.push (untypedLambda (g.names ++ parts.map (·.1)) (par (witness ++ " : " ++ conj)))
     let arityArrows := if arity.isEmpty then "" else String.intercalate " → " arity.toList ++ " → "
     emit ("def " ++ invName m ++ " " ++ ps ++ " : " ++ arityArrows ++ "(_ir_s : " ++ semTy ++ ") → " ++ selfTy ++ " → Prop := " ++
-      untypedLambda (gIdx ++ #["_ir_s", "_ir_a"]) (app ("@" ++ graphName m ++ ".casesOn") (pArgs b ++ #[untypedLambda (gIdx ++ #["_", "_"]) "Prop"] ++ gIdx ++ #["_ir_s", "_ir_a"] ++ minors)))
+      untypedLambda (gIdx ++ #["_ir_s", "_ir_a"]) (app ("@" ++ graphName m ++ ".rec") (rargs ++ gIdx ++ #["_ir_s", "_ir_a"])))
     emit ("theorem " ++ invertName m ++ " " ++ ps ++ " " ++ join implicitArity ++ " {_ir_s : " ++ semTy ++ "} {_ir_a : " ++ selfTy ++ "} (_ir_w : " ++ wfAt b i gIdx "_ir_s" "_ir_a" ++ ") : " ++ withParams b (invName m) (gIdx ++ #["_ir_s", "_ir_a"]) ++ " := " ++
       app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[untypedLambda (gIdx ++ #["_ir_s", "_ir_a", "_"]) (withParams b (invName m) (gIdx ++ #["_ir_s", "_ir_a"]))] ++ gIdx ++ #["_ir_s", "_ir_a", "_ir_w"] ++ inverts))
 
@@ -1006,15 +1027,6 @@ private def minor (b : Block) (i ci : Nat) := Id.run do
     b.members.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n))) ||
     b.members.any (fun m => m.indices.any (fun x => x.name.toString == n))
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
-/-- The data members `X.rec` takes motives for: those its graph's recursor
-does, or, where that is not known, every one. -/
-private def scope (b : Block) (i : Nat) : Array Nat :=
-  match b.recs[i]? with
-  | some s => if s.isEmpty then dataMembers b else s
-  | none => dataMembers b
-/-- The field's target when it is a data member of `scope`: a field the recursor gives a hypothesis at. -/
-private def scopedTarget (b : Block) (scope : Array Nat) (f : Field) : Option (Nat × Array Syntax) :=
-  (dataTarget b f).filter fun (k, _) => scope.contains k
 private def motiveArgs (b : Block) (scope : Array Nat := dataMembers b) := scope.map motive
 private def minorArgs (b : Block) (scope : Array Nat := dataMembers b) :=
   scope.flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
@@ -1143,18 +1155,29 @@ private def emitRec (b : Block) : CommandElabM Unit := do
     if done.contains scope then continue
     done := done.push scope
     let common := ps ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← minorDecls b true scope)
-    -- the companions, one per member of the joint recursion
+    -- the companions, one per member of the joint recursion, out of the
+    -- graph's `casesOn` (major first) or `casesD` (major last), whichever it has
+    let ns ← getCurrNamespace
     let mut impls := #[]
+    let mut able := true
     for k in scope do
       let m := b.members[k]!
       let idx := pubIdxNames b k
-      let mut cargs := pArgs b ++ #[← graphMotive b k] ++ pubPairIdx b k idx ++ (if b.wf then #["_ir_self.1.1", "_ir_self.1.2"] else #["_ir_self.1", "_ir_self.2"])
+      let major := if b.wf then #["_ir_self.1.1", "_ir_self.1.2"] else #["_ir_self.1", "_ir_self.2"]
+      let extra := if b.wf then pubIdxWf b k idx ++ #["_ir_self.2"] else #[]
+      let mut minors := #[]
       for ck in [:m.ctors.size] do
-        cargs := cargs.push (← graphMinor b k ck (minor b k ck) true scope (impl := true))
-      if b.wf then cargs := cargs ++ pubIdxWf b k idx ++ #["_ir_self.2"]
-      impls := impls.push ("unsafe def " ++ recImplName m ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ graphName m ++ ".casesOn") cargs)
+        minors := minors.push (← graphMinor b k ck (minor b k ck) true scope (impl := true))
+      let cases ← if (← getEnv).contains (ns ++ (graphName m).toName ++ `casesOn) then
+          pure (app ("@" ++ graphName m ++ ".casesOn") (pArgs b ++ #[← graphMotive b k] ++ pubPairIdx b k idx ++ major ++ minors ++ extra))
+        else if (← getEnv).contains (ns ++ (graphName m).toName ++ `casesD) then
+          pure (app ("@" ++ graphName m ++ ".casesD") (pArgs b ++ #[← graphMotive b k] ++ minors ++ pubPairIdx b k idx ++ major ++ extra))
+        else
+          able := false
+          pure ""
+      impls := impls.push ("unsafe def " ++ recImplName m ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ cases)
     let saved ← get
-    let compiled ← try
+    let compiled ← if !able then pure false else try
         emit ("mutual\n" ++ String.intercalate "\n" impls.toList ++ "\nend")
         pure true
       catch e =>

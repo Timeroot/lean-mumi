@@ -152,3 +152,118 @@ example : P a1 := P.one A.a0 (fun _ => A.a0) P.zero B.b0 (cast G_b0.symm (Type 1
 #print axioms P.depth_pos
 
 end UnivPropLower
+
+/-! An indexed carrier of the lower universe as a field of the higher one,
+and the proof tying them back: `Big.over` takes a context and a type over it,
+`Fine` takes a `Big`.  One universe up `Ctx` and `Ty` are induction-inductive
+and `Big` leaves that block, and the recursion is still joint; at the written
+universe `Big`'s engine reads `Ty`'s raw terms with their coherence. -/
+
+namespace MixIdx
+set_option mumi.mahlo false
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | snoc (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : Ctx
+inductive Ty : Ctx → Type where
+  | base (Γ : Ctx) : Ty Γ
+  | pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) (B : Ty (.snoc Γ A h)) : Ty Γ
+inductive Big : Type 2 where
+  | top : Big
+  | over (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) : Big
+inductive Fine : (Γ : Ctx) → Ty Γ → Prop where
+  | base (Γ : Ctx) : Fine Γ (.base Γ)
+  | pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) (B : Ty (.snoc Γ A h)) (hB : Fine (.snoc Γ A h) B) (b : Big) (w : Large b) : Fine Γ (.pi Γ A h B)
+def El : Ctx → Type
+  | .nil => Unit
+  | .snoc Γ A h => El Γ × Val Γ A
+def Val : (Γ : Ctx) → Ty Γ → Type
+  | _, .base Γ => Nat
+  | _, .pi Γ A h B => (x : Val Γ A) → Val (.snoc Γ A h) B
+def Large : Big → Type 2
+  | .top => Type 1
+  | .over Γ A v b g => Val Γ A × ((z : Large b) → Large (g z))
+end
+
+example : Type 1 := Ctx
+example : Type 3 := Big
+example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
+    Large (Big.over Γ A v b g) = (Val Γ A × ((z : Large b) → Large (g z))) := rfl
+example (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : El (Ctx.snoc Γ A h) = (El Γ × Val Γ A) := rfl
+
+/-- One recursion over the three, as `Mumi.IndInd` declares the graphs. -/
+def clen : Ctx → Nat :=
+  Ctx.rec (motive_2 := fun _ _ => Nat) (motive_3 := fun _ => Nat) 0 (fun _ _ _ ih _ => ih + 1)
+    (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1) 0 (fun _ _ _ _ _ _ _ ih _ => ih + 1)
+example (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : clen (Ctx.snoc Γ A h) = clen Γ + 1 := rfl
+
+theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
+  induction h with
+  | base Γ => exact .inl rfl
+  | pi Γ A h B hB b w ih ihB => exact .inr ⟨A, h, B, rfl⟩
+
+/-- info: 1 -/
+#guard_msgs in
+#eval clen (Ctx.snoc .nil (.base .nil) (.base .nil))
+
+/-- info: 'MixIdx.clen' does not depend on any axioms -/
+#guard_msgs in
+#print axioms clen
+
+end MixIdx
+
+namespace MixIdxLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | snoc (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : Ctx
+inductive Ty : Ctx → Type where
+  | base (Γ : Ctx) : Ty Γ
+  | pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) (B : Ty (.snoc Γ A h)) : Ty Γ
+inductive Big : Type 2 where
+  | top : Big
+  | over (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) : Big
+inductive Fine : (Γ : Ctx) → Ty Γ → Prop where
+  | base (Γ : Ctx) : Fine Γ (.base Γ)
+  | pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) (B : Ty (.snoc Γ A h)) (hB : Fine (.snoc Γ A h) B) (b : Big) (w : Large b) : Fine Γ (.pi Γ A h B)
+def El : Ctx → Type
+  | .nil => Unit
+  | .snoc Γ A h => El Γ × Val Γ A
+def Val : (Γ : Ctx) → Ty Γ → Type
+  | _, .base Γ => Nat
+  | _, .pi Γ A h B => (x : Val Γ A) → Val (.snoc Γ A h) B
+def Large : Big → Type 2
+  | .top => Type 1
+  | .over Γ A v b g => Val Γ A × ((z : Large b) → Large (g z))
+end
+
+example : Type := Ctx
+example : Type 2 := Big
+example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
+    Large (Big.over Γ A v b g) = (Val Γ A × ((z : Large b) → Large (g z))) := rfl
+
+/-- `Big` is its own engine: `Big.rec` has one motive, with no hypothesis at its `Ctx` or `Ty`. -/
+def clen : Ctx → Nat :=
+  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+def bsize : Big → Nat := Big.rec 0 (fun Γ _ _ _ _ ih _ => clen Γ + ih + 1)
+example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
+    bsize (Big.over Γ A v b g) = clen Γ + bsize b + 1 := rfl
+
+theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
+  induction h with
+  | base Γ => exact .inl rfl
+  | pi Γ A h B hB b w ih ihB => exact .inr ⟨A, h, B, rfl⟩
+
+/-- info: 1 -/
+#guard_msgs in
+#eval bsize (Big.over .nil (.base .nil) (cast (Val_base .nil).symm 3) .top fun _ => .top)
+
+/-- info: 'MixIdxLower.bsize' depends on axioms: [IR.mahlo] -/
+#guard_msgs in
+#print axioms bsize
+
+end MixIdxLower
