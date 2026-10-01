@@ -301,6 +301,9 @@ Run `lake test`, or `lake build Mumi MumiTests`.
 induction-inductive blocks of the section above one universe up, what they
 reject included; `MumiTests/IRFamilyLower.lean` and
 `MumiTests/IRTangleLower.lean` cover the same blocks at the written universe.
+`MumiTests/IRTangle2.lean` and `MumiTests/IRTangle2Lower.lean` add a data
+decoder the rest of the block reads: as a field's type, as the index a
+constructor sits at, and as what two type-valued decoders compute with.
 The rest of the `MumiTests/IR*.lean` suite covers both modes, polymorphic universes, two
 carriers with six recursive outputs, dependent type/value outputs, numerical
 branching, multi-argument recursive domains, proof fields, equation-variable
