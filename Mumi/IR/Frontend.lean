@@ -17,6 +17,8 @@ open Lean Elab Command
 structure Binder where
   name : Name
   type : Syntax
+  /-- Written `{x : T}`: implicit in the public declaration it is a binder of. -/
+  implicit : Bool := false
   deriving Inhabited
 
 structure Field extends Binder where
@@ -213,12 +215,13 @@ partial def subst (s : Syntax) (pairs : Array (Name × Syntax)) : Syntax :=
     | _ => s
 
 def binders (s : Syntax) : CommandElabM (Array Binder) := do
-  unless s.isOfKind ``Parser.Term.explicitBinder && s[2].getNumArgs == 2 && s[3].getNumArgs == 0 do
-    throwErrorAt s "IR prototype requires explicitly typed, explicit binders (no defaults)"
+  let implicit := s.isOfKind ``Parser.Term.implicitBinder
+  unless (s.isOfKind ``Parser.Term.explicitBinder && s[3].getNumArgs == 0 || implicit) && s[2].getNumArgs == 2 do
+    throwErrorAt s "IR prototype requires explicitly typed binders, explicit or implicit (no defaults, no instances)"
   s[1].getArgs.mapM fun n => do
     unless n.isIdent do throwErrorAt n "IR prototype requires named binders"
     if n.getId.toString.startsWith "_ir_" then throwErrorAt n "Names beginning with '_ir_' are reserved inside IR blocks"
-    return { name := n.getId, type := s[2][1] }
+    return { name := n.getId, type := s[2][1], implicit }
 
 def telescopeHead (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) := do
   let s := unparen s
@@ -228,9 +231,11 @@ def telescopeHead (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) 
     let bs ← binders s[0]
     return (bs, s[2])
   if s.isOfKind ``Parser.Term.forall then
-    let bs ← if s[2].getNumArgs == 0 then s[1].getArgs.flatMapM binders else
-      s[1].getArgs.mapM fun x => do
-        unless x.isIdent do throwErrorAt x "IR prototype requires typed forall binders"
+    -- a binder without a type is left to inference, as a hole
+    let bs ← if s[2].getNumArgs == 0 then s[1].getArgs.flatMapM (fun x => do
+        if x.isIdent then return #[{ name := x.getId, type := ← parseTerm "_" : Binder }] else binders x)
+      else s[1].getArgs.mapM fun x => do
+        unless x.isIdent do throwErrorAt x "IR prototype requires named forall binders"
         return { name := x.getId, type := s[2][0][1] : Binder }
     return (bs, s[4])
   return (#[], s)
@@ -342,6 +347,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
     unless d[1][1].getNumArgs == 0 do throwErrorAt d "IR prototype uses surrounding universe declarations, not explicit declaration universe lists"
     if d.isOfKind ``Parser.Command.«inductive» then
       let (ps, result) ← signature d[2]
+      if ps.any (·.implicit) then throwErrorAt d "IR prototype takes shared parameters explicit; write `(x : T)`"
       unless result.isOfKind ``Parser.Term.type do
         throwErrorAt result "IR prototype supports unindexed carriers declared in Type u"
       let l ← if result[1].getNumArgs == 0 then pure "0" else pure (result[1][0].reprint.getD "0" |>.trimAscii.toString)
@@ -428,7 +434,8 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
   return { members, decoders, params, level }
 
 private def fieldDecl (f : Binder) : CommandElabM String := do
-  return par (f.name.toString ++ " : " ++ (← text f.type))
+  let d := f.name.toString ++ " : " ++ (← text f.type)
+  return if f.implicit then "{" ++ d ++ "}" else par d
 private def paramsDecl (b : Block) : CommandElabM String := return join (← b.params.mapM fieldDecl)
 private def fieldsDecl (fs : Array Field) : CommandElabM String := return join (← fs.mapM (fieldDecl ∘ Field.toBinder))
 private def names (fs : Array Field) := fs.map (pname ∘ Binder.name ∘ Field.toBinder)

@@ -327,6 +327,14 @@ Current restrictions are explicit:
   different levels of them, `Type u` beside `Type (u+1)`. Section variables,
   implicit/default parameters, and per-declaration universe lists are not
   supported.
+- A constructor field written `{x : T}` is implicit in the public constructor
+  and bound explicitly in the minor premises, as Lean's own are; inside the
+  block a constructor application in an index term lists every field, the
+  implicit ones included. An index of a decoder written `{Γ : Ctx}` before the
+  colon is implicit in the public decoder, and the clauses and the equation
+  patterns write the explicit ones only. A binder of a field written without
+  a type, `(hb : ∀ x, Good (b x))`, is left to inference; what a clause says is
+  passed through as the term it is, whatever notation it uses.
 - Decoder headers have the form `def f (params) : U params → Result` or
   `def f (params) : (a : U params) → Result a`. Equations have exactly one flat
   constructor pattern with named variables, one equation per constructor.
