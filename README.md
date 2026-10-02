@@ -801,6 +801,8 @@ containing inductive carriers and their recursive decoders. Stock Lean gets the
 first attempt. Several carriers and several dependent recursive outputs are
 supported, with constructors, `.rec`, `.recOn`, `.cases`, `.casesOn`, simp
 equations, and induction/cases tactic integration generated automatically.
+Shared parameters follow Lean's convention: explicit on the carriers,
+implicit on their constructors and eliminators, as written on a decoder.
 
 - `set_option mumi.mahlo false` (the default): an axiom-free graph construction
   puts carriers one universe above their written `Type u`; it reduces and runs

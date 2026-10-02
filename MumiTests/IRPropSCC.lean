@@ -241,9 +241,9 @@ def El (α : Type) : U α → Type
   | .pi a b h h' => (x : El α a) → El α (b x)
 end
 
-example (α : Type) : El α (U.base α) = α := rfl
+example (α : Type) : El α .base = α := rfl
 example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
-    El α (U.pi α a b h h') = ((x : El α a) → El α (b x)) := rfl
+    El α (U.pi a b h h') = ((x : El α a) → El α (b x)) := rfl
 theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
   induction g using Good.rec (motive_3 := fun _ _ => True) with
   | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
@@ -294,7 +294,7 @@ def El (α : Type) : U α → Type
 end
 
 example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
-    El α (U.pi α a b h h') = ((x : El α a) → El α (b x)) := rfl
+    El α (U.pi a b h h') = ((x : El α a) → El α (b x)) := rfl
 theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
   induction g using Good.rec (motive_3 := fun _ _ => True) with
   | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
@@ -341,16 +341,16 @@ def Val (X : Type) : (Γ : Ctx X) → Ty X Γ → Type
   | _, .pi Γ A h B => (x : Val X Γ A) → Val X (.snoc Γ A h) B
 end
 
-example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc X Γ A h)) :
-    Val X Γ (Ty.pi X Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc X Γ A h) B) := Val_pi X Γ A h B
+example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc Γ A h)) :
+    Val X Γ (Ty.pi Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc Γ A h) B) := Val_pi X Γ A h B
 def clen (X : Type) : Ctx X → Nat :=
-  Ctx.rec X (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
 theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by
   induction h with | base Γ x => trivial | pi Γ A h B hB ih ihB => trivial
 
 /-- info: 1 -/
 #guard_msgs in
-#eval clen Nat (Ctx.snoc Nat (Ctx.nil Nat) (Ty.base Nat (Ctx.nil Nat) 3) (Ok.base Nat (Ctx.nil Nat) 3))
+#eval clen Nat (Ctx.snoc (X := Nat) .nil (Ty.base .nil 3) (Ok.base .nil 3))
 
 end NestedProp
 
@@ -376,15 +376,15 @@ def Val (X : Type) : (Γ : Ctx X) → Ty X Γ → Type
   | _, .pi Γ A h B => (x : Val X Γ A) → Val X (.snoc Γ A h) B
 end
 
-example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc X Γ A h)) :
-    Val X Γ (Ty.pi X Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc X Γ A h) B) := Val_pi X Γ A h B
+example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc Γ A h)) :
+    Val X Γ (Ty.pi Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc Γ A h) B) := Val_pi X Γ A h B
 def clen (X : Type) : Ctx X → Nat :=
-  Ctx.rec X (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
 theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by
   induction h with | base Γ x => trivial | pi Γ A h B hB ih ihB => trivial
 
 /-- info: 1 -/
 #guard_msgs in
-#eval clen Nat (Ctx.snoc Nat (Ctx.nil Nat) (Ty.base Nat (Ctx.nil Nat) 3) (Ok.base Nat (Ctx.nil Nat) 3))
+#eval clen Nat (Ctx.snoc (X := Nat) .nil (Ty.base .nil 3) (Ok.base .nil 3))
 
 end NestedPropLower

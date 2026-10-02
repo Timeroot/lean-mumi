@@ -67,7 +67,9 @@ Each member gets its named constructors and:
 - `@[simp]` decoder equations such as `El_pi`, recursor equations such as
   `U.rec_pi`, and case equations such as `U.casesOn_pi`.
 
-Shared explicit parameters remain explicit. All recursor motives share one
+Shared parameters follow Lean's own convention: the carrier takes them
+explicitly (`U A`), its constructors and eliminators implicitly (`U.pi a b`,
+`U.rec`), and a decoder as its author bound them. All recursor motives share one
 elimination universe. For mutual blocks the motives are named `motive`,
 `motive_2`, etc., in carrier declaration order. Cases follow carrier order and
 then constructor order; recursive hypotheses follow the constructor's ordinary
@@ -322,11 +324,16 @@ Current restrictions are explicit:
   upper mode (see the section above). Their recursive occurrences are direct or
   functions returning a carrier. Nested occurrences, negative occurrences, and
   carriers in recursive argument domains are rejected.
-- Shared parameters must be typed, explicit, and repeated identically on all
-  declarations. Use surrounding `universe` declarations; members may sit at
-  different levels of them, `Type u` beside `Type (u+1)`. Section variables,
-  implicit/default parameters, and per-declaration universe lists are not
-  supported.
+- Shared parameters must be typed and repeated identically on all
+  declarations: explicit on the carriers, as the type's own are in Lean, and
+  explicit or implicit on a decoder, `def El {A : Type u} : U A → Type u`, as
+  its author wishes. The public constructors and eliminators take them
+  implicitly. Inside the block a constructor is written without them, `U.pi a b`
+  or `.pi a b` (or `@U.pi A a b`, all of them), and a decoder call writes the
+  ones its declaration binds explicitly. Use surrounding `universe`
+  declarations; members may sit at different levels of them, `Type u` beside
+  `Type (u+1)`. Section variables, default and instance parameters, and
+  per-declaration universe lists are not supported.
 - A constructor field written `{x : T}` is implicit in the public constructor
   and bound explicitly in the minor premises, as Lean's own are; inside the
   block a constructor application in an index term lists every field, the
@@ -338,11 +345,11 @@ Current restrictions are explicit:
 - Decoder headers have the form `def f (params) : U params → Result` or
   `def f (params) : (a : U params) → Result a`. Equations have exactly one flat
   constructor pattern with named variables, one equation per constructor.
-  Recursive calls must explicitly name the decoder, repeat the shared parameters,
-  and target an earlier recursive field (possibly applied to its arguments).
-- A constructor in an index term or a clause may be written `.c`; it is given
-  its full name with the parameters, which the public constructors take
-  explicitly, when the block is read.
+  Recursive calls must explicitly name the decoder, repeat its explicit shared
+  parameters unchanged, and target an earlier recursive field (possibly applied to its arguments).
+- A constructor in an index term or a clause may be written `.c`; when the
+  block is read it is given its full name, applied to the parameters with `@`,
+  so that it is read the same where no expected type resolves the dot.
 - Use simple declaration names inside a `namespace`. A documentation comment
   on a member, a constructor or a decoder goes onto the public declaration;
   attributes, other modifiers, `deriving`, `where` declarations, and

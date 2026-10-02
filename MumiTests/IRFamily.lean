@@ -146,14 +146,14 @@ inductive Ctx (X : Type u) : Type u where
   | ext (Γ : Ctx X) (A : Ty X Γ) : Ctx X
 inductive Ty (X : Type u) : (Γ : Ctx X) → Type u where
   | base (Γ : Ctx X) (x : X) : Ty X Γ
-  | pi (Γ : Ctx X) (A : Ty X Γ) (B : El X Γ A → Ty X (Ctx.ext X Γ A)) : Ty X Γ
+  | pi (Γ : Ctx X) (A : Ty X Γ) (B : El X Γ A → Ty X (Ctx.ext Γ A)) : Ty X Γ
 def El (X : Type u) : (Γ : Ctx X) → Ty X Γ → Type u
   | _, .base Γ x => PUnit
-  | _, .pi Γ A B => (a : El X Γ A) → El X (Ctx.ext X Γ A) (B a)
+  | _, .pi Γ A B => (a : El X Γ A) → El X (Ctx.ext Γ A) (B a)
 end
 
-example (X : Type u) (Γ : Ctx X) (A : Ty X Γ) (B : El X Γ A → Ty X (Ctx.ext X Γ A)) :
-    El X Γ (Ty.pi X Γ A B) = ((a : El X Γ A) → El X (Ctx.ext X Γ A) (B a)) := rfl
+example (X : Type u) (Γ : Ctx X) (A : Ty X Γ) (B : El X Γ A → Ty X (Ctx.ext Γ A)) :
+    El X Γ (Ty.pi Γ A B) = ((a : El X Γ A) → El X (Ctx.ext Γ A) (B a)) := rfl
 
 /-- info: 'Poly.El_pi' does not depend on any axioms -/
 #guard_msgs in

@@ -150,6 +150,8 @@ structure Decoder where
   names, with the index patterns replaced by the conclusion's index terms. -/
   clauses : Array Syntax
   doc : String := ""
+  /-- The shared parameters as the decoder binds them: explicit or implicit, as written. -/
+  params : Array Binder := #[]
   deriving Inhabited
 
 structure Block where
@@ -232,6 +234,15 @@ private def fieldDecl (f : Binder) : CommandElabM String := do
   let d := f.name.toString ++ " : " ++ (← text f.type)
   return if f.implicit then "{" ++ d ++ "}" else par d
 private def paramsDecl (b : Block) : CommandElabM String := return join (← b.params.mapM fieldDecl)
+/-- The shared parameters as a public constructor or eliminator binds them:
+implicit, as Lean's own do.  Every application the frontend writes of one is
+`@`-qualified and positional. -/
+private def pubParamsDecl (b : Block) : CommandElabM String :=
+  return join (← b.params.mapM fun p => fieldDecl { p with implicit := true })
+/-- A decoder's shared parameters as its author bound them. -/
+private def decParamsDecl (d : Decoder) : CommandElabM String := return join (← d.params.mapM fieldDecl)
+/-- The shared parameters a call of decoder `d` writes: its explicit ones. -/
+private def writtenParams (d : Decoder) : Array Binder := d.params.filter (!·.implicit)
 private def lambda (bs : Array Binder) (body : String) : CommandElabM String := do
   if bs.isEmpty then return body
   return par ("fun " ++ join (← bs.mapM fieldDecl) ++ " => " ++ body)
@@ -325,8 +336,8 @@ private partial def qualifyText (b : Block) (expect : Option Nat) (s : Syntax) :
   let some (k, ci) := ctorRef? b expect h | text s
   let m := b.members[k]!
   let c := m.ctors[ci]!
-  -- the dotted form carries no parameters; the qualified one carries them all
-  let fargs := if h.isOfKind ``Parser.Term.dotIdent then args else args.extract b.params.size args.size
+  -- `@X.c` carries the parameters; `X.c` and `.c` leave them implicit, as the public constructor does
+  let fargs := if h.isOfKind ``Parser.Term.explicit then args.extract b.params.size args.size else args
   unless fargs.size == c.fields.size do return ← text s
   let mut out := #[]
   for (f, a) in c.fields.zip fargs do
@@ -345,12 +356,13 @@ private partial def qualifyClause (b : Block) (s : Syntax) : CommandElabM Syntax
       let m := b.members[d.target]!
       let written := (Array.range d.idx.size).filter fun j => !d.idx[j]!.implicit
       let nidx := written.size
-      if args.size ≥ b.params.size + nidx + 1 then
+      let np := (writtenParams d).size
+      if args.size ≥ np + nidx + 1 then
         let mut out := #[]
         for i in [:args.size] do
           let a := args[i]!
-          if b.params.size ≤ i && i < b.params.size + nidx then
-            let x := m.indices[written[i - b.params.size]!]!
+          if np ≤ i && i < np + nidx then
+            let x := m.indices[written[i - np]!]!
             out := out.push (← parseTerm (← qualifyText b (x.member.map (·.1)) a))
           else out := out.push (← qualifyClause b a)
         return ← parseTerm (app (← text h) (← out.mapM text))
@@ -397,7 +409,8 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
     unless d[1][1].getNumArgs == 0 do throwErrorAt d "IR prototype uses surrounding universe declarations, not explicit declaration universe lists"
     if d.isOfKind ``Parser.Command.«inductive» then
       let (ps, result) ← signature d[2]
-      if ps.any (·.implicit) then throwErrorAt d "IR prototype takes shared parameters explicit; write `(x : T)`"
+      if ps.any (·.implicit) then
+        throwErrorAt d "IR carriers take their shared parameters explicitly, `(x : T)`; their constructors and eliminators take them implicitly"
       let (idx, result) ← telescope result
       let prop := result.isOfKind ``Parser.Term.prop
       unless prop || result.isOfKind ``Parser.Term.type do
@@ -479,9 +492,9 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       if ctors.isEmpty then throwErrorAt d "IR prototype currently requires at least one constructor per carrier"
       members := members.modify mi fun m => { m with ctors }
       mi := mi + 1
-  -- a constructor written `.c` in an index term is given its full name, with
-  -- the parameters, which the public constructors take explicitly; a field's
-  -- type is restated only where that changed it
+  -- a constructor written `.c` or `X.c` in an index term is given its full
+  -- name, applied to the parameters with `@`; a field's type is restated only
+  -- where that changed it
   let tmp : Block := { members, decoders := #[], params, level }
   members ← members.mapM fun m => do
     let ctors ← m.ctors.mapM fun c => do
@@ -503,6 +516,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
     let d := e[1]
     if d.isOfKind ``Parser.Command.definition then
       let (ps, ty) ← signature d[2]
+      -- explicit or implicit, as the author wishes
       unless ps.size ≥ params.size && (← (ps.zip params).allM fun (a,b) => do return a.name == b.name && (← text a.type) == (← text b.type)) do
         throwErrorAt d "IR decoder must repeat the shared parameters, followed by the carrier's indices and one carrier argument"
       -- the major is the last binder that is a carrier at exactly the binders
@@ -597,7 +611,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       if clauses.any (·.isMissing) then throwErrorAt d "IR decoder must have exactly one equation for every constructor"
       let idx := args.extract 0 m.indices.size
       let name := d[1][0].getId
-      decoders := decoders.push { name, target := i, idx, major := major.name, majorType := major.type, result, clauses, doc := docOf e[0] }
+      decoders := decoders.push { name, target := i, idx, major := major.name, majorType := major.type, result, clauses, doc := docOf e[0], params := ps.extract 0 params.size }
   let b : Block := { members, decoders, params, level }
   let qualified ← decoders.mapM fun d => do return { d with clauses := ← d.clauses.mapM (qualifyClause b) }
   return { b with decoders := qualified }
@@ -623,15 +637,17 @@ partial def semantic (b : Block) (src : Array Source) (s : Syntax) : CommandElab
     let d := b.decoders[di]!
     -- the implicit indices are not written
     let nidx := (d.idx.filter (!·.implicit)).size
-    unless args.size ≥ b.params.size + nidx + 1 do
+    -- and the implicit parameters
+    let ps := writtenParams d
+    unless args.size ≥ ps.size + nidx + 1 do
       throwErrorAt s "IR decoder calls must be fully applied to a value of the carrier"
-    unless ((args.extract 0 b.params.size).zip b.params).all (fun (a,p) => same a p.name) do
+    unless ((args.extract 0 ps.size).zip ps).all (fun (a,p) => same a p.name) do
       throwErrorAt s "IR decoder parameters must remain unchanged"
     -- the index arguments are determined by the major and are not read
-    let major := args[b.params.size + nidx]!
+    let major := args[ps.size + nidx]!
     let base ← semOfMajor b src major
     let base := if base.isEmpty then outField di else par base ++ "." ++ outField di
-    let extra ← (args.extract (b.params.size + nidx + 1) args.size).mapM (semantic b src)
+    let extra ← (args.extract (ps.size + nidx + 1) args.size).mapM (semantic b src)
     let extraText ← extra.mapM text
     return ← parseTerm (if extra.isEmpty then base else app base extraText)
   if s.isIdent && (src.any (·.name == s.getId) || b.members.any (·.name == s.getId) || b.decoders.any (·.name == s.getId)) then
@@ -677,10 +693,10 @@ partial def pair (b : Block) (src : Array Source) (expect : Option Nat) (s : Syn
     unless e == k do throwErrorAt s "Expected a value of `{b.members[e]!.name}`"
   let m := b.members[k]!
   let c := m.ctors[ci]!
-  -- the dotted form carries no parameters; the qualified one carries them all
-  let np := if h.isOfKind ``Parser.Term.dotIdent then 0 else b.params.size
+  -- `@X.c` carries the parameters; `X.c` and `.c` leave them implicit
+  let np := if h.isOfKind ``Parser.Term.explicit then b.params.size else 0
   unless args.size == np + c.fields.size do
-    throwErrorAt s "The constructor `{m.name}.{c.name}` takes {np + c.fields.size} explicit arguments here"
+    throwErrorAt s "The constructor `{m.name}.{c.name}` takes {np + c.fields.size} arguments here, every field included"
   unless ((args.extract 0 np).zip b.params).all (fun (a,p) => same a p.name) do
     throwErrorAt s "IR constructor parameters must remain unchanged"
   let fargs := args.extract np args.size
@@ -1087,7 +1103,7 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       let idx ← d.idx.mapM fieldDecl
       let result := subst d.result #[(d.major, mkIdent `_ir_self)]
       let node := if b.wf then "_ir_self.1.1." else "_ir_self.1."
-      emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ node ++ outField j)
+      emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ node ++ outField j)
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -1109,7 +1125,7 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       let fields ← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type, implicit := f.implicit }
       let _ := fields
       let result ← c.result.mapM text
-      let head := m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ join fields ++ " : " ++ typeAt b i result
+      let head := m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ join fields ++ " : " ++ typeAt b i result
       let wfApp := app (wfName m ++ "." ++ c.name.toString) (xs ++ wfs ++ props)
       if m.prop then
         emit (c.doc ++ "theorem " ++ head ++ " := " ++ wfApp)
@@ -1254,7 +1270,7 @@ companion written out of the graph's `casesOn` and recursive calls, one
 `implemented_by`; where the companion cannot be written, `X.rec` is
 `noncomputable`. -/
 private def emitRec (b : Block) : CommandElabM Unit := do
-  let ps ← paramsDecl b
+  let ps ← pubParamsDecl b
   let mut done : Array (Array Nat) := #[]
   for i in dataMembers b do
     let scope := scope b i
@@ -1381,7 +1397,7 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
 block's: `rec` joint over the `Prop` members, with a hypothesis at each proof
 of one, the data members' predicates at `True`; `casesOn` with one motive. -/
 private def emitPropRec (b : Block) : CommandElabM Unit := do
-  let ps ← paramsDecl b
+  let ps ← pubParamsDecl b
   let props := propMembers b
   let mut motives := #[]
   for j in props do
@@ -1488,7 +1504,7 @@ private def emitEquations (b : Block) : CommandElabM Unit := do
       emitEquation b (b.members[i]!.name.toString ++ ".rec_" ++ c.name.toString) (common ++ " " ++ (← fieldsDecl c)) (app ("@" ++ b.members[i]!.name.toString ++ ".rec") (args ++ result ++ #[ctorApp b i ci (fieldNames c)]) ++ " = " ++ app (minor b i ci) (fieldNames c ++ ihs))
     let m := b.members[i]!
     let idx := pubIdxNames b i
-    emitDef "@[elab_as_elim] " (m.name.toString ++ ".recOn " ++ ps ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ idx ++ #["_ir_self"]))
+    emitDef "@[elab_as_elim] " (m.name.toString ++ ".recOn " ++ (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ idx ++ #["_ir_self"]))
 
 /-- The minor premises of a one-motive eliminator for carrier `i`: with the
 hypotheses at its own fields when `ihs`, none otherwise. -/
@@ -1534,6 +1550,7 @@ what `induction` uses and `casesOn` what `cases` uses; the joint `rec` asks for
 every motive and is for `induction … using`. -/
 private def emitSolo (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
+  let pubPs ← pubParamsDecl b
   for i in dataMembers b do
     let m := b.members[i]!
     let idx := pubIdxNames b i
@@ -1542,17 +1559,17 @@ private def emitSolo (b : Block) : CommandElabM Unit := do
     let self := "(_ir_self : " ++ typeAt b i idx ++ ")"
     let concl := app "motive" (idx ++ #["_ir_self"])
     let recD ← soloMinors b i true
-    let recDRest := m.name.toString ++ ".recD " ++ ps ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join recD ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (soloArgs b i true ++ idx ++ #["_ir_self"])
+    let recDRest := m.name.toString ++ ".recD " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join recD ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (soloArgs b i true ++ idx ++ #["_ir_self"])
     emitFirst #["@[elab_as_elim, induction_eliminator] def " ++ recDRest,
       "@[elab_as_elim, induction_eliminator] noncomputable def " ++ recDRest,
       "@[elab_as_elim] def " ++ recDRest, "@[elab_as_elim] noncomputable def " ++ recDRest]
     let minors ← soloMinors b i false
     let minorNames := (Array.range m.ctors.size).map (minor b i)
-    let casesRest := m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join minors ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (soloArgs b i false ++ idx ++ #["_ir_self"])
+    let casesRest := m.name.toString ++ ".casesOn " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join minors ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (soloArgs b i false ++ idx ++ #["_ir_self"])
     emitFirst #["@[elab_as_elim, cases_eliminator] def " ++ casesRest,
       "@[elab_as_elim, cases_eliminator] noncomputable def " ++ casesRest,
       "@[elab_as_elim] def " ++ casesRest, "@[elab_as_elim] noncomputable def " ++ casesRest]
-    emitDef "@[elab_as_elim] " (m.name.toString ++ ".cases " ++ ps ++ " " ++ mot ++ " " ++ join minors ++ " " ++ arity ++ " " ++ self ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive"] ++ idx ++ #["_ir_self"] ++ minorNames))
+    emitDef "@[elab_as_elim] " (m.name.toString ++ ".cases " ++ pubPs ++ " " ++ mot ++ " " ++ join minors ++ " " ++ arity ++ " " ++ self ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive"] ++ idx ++ #["_ir_self"] ++ minorNames))
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       let result ← c.result.mapM text
@@ -2199,7 +2216,7 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let m := b.members[d.target]!
       let idx ← d.idx.mapM fieldDecl
       let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-      emitDefL (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ ps ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
+      emitDefL (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
   let mut lemmas : Array String := b.members.flatMap fun m => m.ctors.map (valLemma m)
   for k in [:b.members.size] do
     let m := b.members[k]!
@@ -2240,9 +2257,9 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let result ← c.result.mapM text
       -- the certificate's constructor takes the block's parameters implicitly, as any constructor does
       if m.prop then
-        emitL (c.doc ++ "theorem " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← ctorDecl c) ++ " : " ++ typeAt b k result ++ " := " ++ app (goodName m ++ "." ++ c.name.toString) gargs)
+        emitL (c.doc ++ "theorem " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← ctorDecl c) ++ " : " ++ typeAt b k result ++ " := " ++ app (goodName m ++ "." ++ c.name.toString) gargs)
         continue
-      emitDefL c.doc (m.name.toString ++ "." ++ c.name.toString ++ " " ++ ps ++ " " ++ (← ctorDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
+      emitDefL c.doc (m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← ctorDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
       emitL ("theorem " ++ rawLemma m c ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ par (ctorApp b k ci (fieldNames c)) ++ ".val = " ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ " := Eq.trans rfl rfl")
       lemmas := lemmas.push (rawLemma m c)
 
@@ -2537,6 +2554,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
     let m := b.members[k]!
     let idx := pubIdxNames b k
     let margs ← motiveArgsAt b k (m.indices.map fun x => mkIdent x.name)
+    let common := (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← minorDecls b true scope)
     emitDefL "@[elab_as_elim] " (m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b g) (motiveArgs b scope ++ minorArgs b scope ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
 where
   /-- A lambda over the binders' names alone. -/
@@ -2609,7 +2627,7 @@ the certificates' joint recursor: a data member's certificate at the motive
 `True`, a `Prop` member's at its public motive under the certificates of its
 indices, which make the public values of those. -/
 private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
-  let ps ← paramsDecl b
+  let ps ← pubParamsDecl b
   let props := propMembers b
   let mut motives := #[]
   for j in props do

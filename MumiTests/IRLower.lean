@@ -17,35 +17,35 @@ mutual
 end
 
 example (A : Type u) : Type u := U A
-example (A : Type u) : El A (U.base A) = A := rfl
+example (A : Type u) : El A .base = A := rfl
 example (A : Type u) (a : U A) (b : El A a → U A) :
-    El A (U.pi A a b) = ((x : El A a) → El A (b x)) := rfl
+    El A (U.pi a b) = ((x : El A a) → El A (b x)) := rfl
 
 example : Type 1 := U Type
-example : El Type (U.base Type) = Type := rfl
-example : El (Type 3) (U.base (Type 3)) = Type 3 := rfl
+example : El Type .base = Type := rfl
+example : El (Type 3) .base = Type 3 := rfl
 
 -- A variable-general kernel equation does not imply uniform closed normalization.
-example : El Nat (U.pi Nat (U.base Nat) (fun _ => U.base Nat)) = (Nat → Nat) := by
+example : El Nat (.pi .base (fun _ => .base)) = (Nat → Nat) := by
   fail_if_success exact rfl
   rw [El_pi, El_base]
 
 def inhabit (A : Type u) (a₀ : A) (a : U A) : El A a :=
-  U.rec A a₀ (fun _ _ _ ih => fun x => ih x) a
+  U.rec a₀ (fun _ _ _ ih => fun x => ih x) a
 
-example (A : Type u) (a₀ : A) : inhabit A a₀ (U.base A) = a₀ := rfl
+example (A : Type u) (a₀ : A) : inhabit A a₀ .base = a₀ := rfl
 example (A : Type u) (a₀ : A) (a : U A) (b : El A a → U A) (x : El A a) :
-    inhabit A a₀ (U.pi A a b) x = inhabit A a₀ (b x) := rfl
+    inhabit A a₀ (.pi a b) x = inhabit A a₀ (b x) := rfl
 
 -- what is defined through the recursor runs: a value is its arguments at run time
 /-- info: 7 -/
 #guard_msgs in
-#eval inhabit Nat 7 (U.base Nat)
+#eval inhabit Nat 7 .base
 
 /-- info: 7 -/
 #guard_msgs in
-#eval (cast (by rw [El_pi, El_base] : El Nat (U.pi Nat (U.base Nat) fun _ => U.base Nat) = (Nat → Nat))
-  (inhabit Nat 7 (U.pi Nat (U.base Nat) fun _ => U.base Nat))) 42
+#eval (cast (by rw [El_pi, El_base] : El Nat (.pi .base fun _ => .base) = (Nat → Nat))
+  (inhabit Nat 7 (.pi .base fun _ => .base))) 42
 
 def top (A : Type u) (a : U A) : Bool :=
   match U._ir_view A a with
@@ -54,10 +54,10 @@ def top (A : Type u) (a : U A) : Bool :=
 
 /-- info: false -/
 #guard_msgs in
-#eval top Nat (U.pi Nat (U.base Nat) fun _ => U.base Nat)
+#eval top Nat (.pi .base fun _ => .base)
 
-example (A : Type u) : top A (U.base A) = true := rfl
-example (A : Type u) (a : U A) (b : El A a → U A) : top A (U.pi A a b) = false := rfl
+example (A : Type u) : top A .base = true := rfl
+example (A : Type u) (a : U A) (b : El A a → U A) : top A (.pi a b) = false := rfl
 example (A : Type u) (a : U A) : True := by induction a <;> trivial
 example (A : Type u) (a : U A) : True := by cases a <;> trivial
 

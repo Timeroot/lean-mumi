@@ -168,9 +168,85 @@ theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
 
 end ImplicitLower
 
-/-! Shared parameters are explicit, and say so. -/
+/-! Shared parameters follow Lean's convention: the carriers take them
+explicitly, their constructors and eliminators implicitly, and a decoder as its
+author binds them.  Inside the block a constructor is written without them, and
+a decoder call writes the ones its declaration binds explicitly. -/
 
-/-- error: IR prototype takes shared parameters explicit; write `(x : T)` -/
+namespace Params
+set_option mumi.mahlo false
+
+mutual
+inductive Ctx (X : Type) : Type where
+  | nil : Ctx X
+  | snoc (Γ : Ctx X) (A : Ty X Γ) : Ctx X
+inductive Ty (X : Type) : Ctx X → Type where
+  | base {Γ : Ctx X} (x : X) : Ty X Γ
+  | pi {Γ : Ctx X} (A : Ty X Γ) (B : Ty X (Ctx.snoc Γ A)) : Ty X Γ
+def El {X : Type} : Ctx X → Type
+  | .nil => Unit
+  | .snoc Γ A => El Γ × Val X A
+def Val (X : Type) {Γ : Ctx X} : Ty X Γ → Type
+  | .base x => X
+  | .pi A B => (x : Val X A) → Val X B
+end
+
+/-- info: @Ty.pi : {X : Type} → {Γ : Ctx X} → (A : Ty X Γ) → Ty X (Γ.snoc A) → Ty X Γ -/
+#guard_msgs in
+#check @Ty.pi
+
+/-- info: Params.El {X : Type} (_ir_self : Ctx X) : Type -/
+#guard_msgs in
+#check El
+
+example (A : Ty Nat .nil) : El (.snoc .nil A) = (Unit × Val Nat A) := rfl
+example : Val Nat (Ty.pi (Γ := .nil) (.base 0) (.base 1)) = (Nat → Nat) := rfl
+def tsize {X : Type} (Γ : Ctx X) (A : Ty X Γ) : Nat :=
+  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+example : tsize .nil (Ty.pi (X := Nat) (.base 0) (.base 1)) = 1 := rfl
+theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
+  induction A with
+  | base => trivial
+  | pi A B ihA ihB => trivial
+
+end Params
+
+namespace ParamsLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+
+mutual
+inductive Ctx (X : Type) : Type where
+  | nil : Ctx X
+  | snoc (Γ : Ctx X) (A : Ty X Γ) : Ctx X
+inductive Ty (X : Type) : Ctx X → Type where
+  | base {Γ : Ctx X} (x : X) : Ty X Γ
+  | pi {Γ : Ctx X} (A : Ty X Γ) (B : Ty X (Ctx.snoc Γ A)) : Ty X Γ
+def El {X : Type} : Ctx X → Type
+  | .nil => Unit
+  | .snoc Γ A => El Γ × Val X A
+def Val (X : Type) {Γ : Ctx X} : Ty X Γ → Type
+  | .base x => X
+  | .pi A B => (x : Val X A) → Val X B
+end
+
+/-- info: @Ty.pi : {X : Type} → {Γ : Ctx X} → (A : Ty X Γ) → Ty X (Γ.snoc A) → Ty X Γ -/
+#guard_msgs in
+#check @Ty.pi
+
+example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (B : Ty X (Ctx.snoc Γ A)) : Val X (Ty.pi A B) = ((x : Val X A) → Val X B) := Val_pi X Γ A B
+def tsize {X : Type} (Γ : Ctx X) (A : Ty X Γ) : Nat :=
+  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
+  induction A with
+  | base => trivial
+  | pi A B ihA ihB => trivial
+
+end ParamsLower
+
+/-! A carrier's parameters are explicit, as the type's own are in Lean. -/
+
+/-- error: IR carriers take their shared parameters explicitly, `(x : T)`; their constructors and eliminators take them implicitly -/
 #guard_msgs in
 mutual
 inductive U {α : Type} : Type where
