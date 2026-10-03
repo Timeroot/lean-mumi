@@ -2971,6 +2971,8 @@ private def hidden (n : Name) : Name := Name.mkSimple ("_nested_" ++ n.toString)
 the block, not indexed, to arguments mentioning the carriers `members`. -/
 private def nestedApp? (members : Array Name) (s : Syntax) : CommandElabM (Option (Name × Array Syntax)) := do
   let s := unparen s
+  -- a notation for one, `U × U`, as what it stands for
+  let s ← if (s.getKind.toString.startsWith "«term") && mentions s members then liftMacroM (expandMacros s) else pure s
   let (h, args) := unapp s
   unless h.isIdent && !members.contains h.getId && mentions s members do return none
   let some ind ← (try some <$> resolveGlobalConstNoOverload h catch _ => pure none) | return none

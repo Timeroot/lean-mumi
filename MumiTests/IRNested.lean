@@ -162,3 +162,95 @@ example (fs : List U) : size (.tuple fs) = sizes fs + 1 := by
 #eval size (.tuple [.nat, .opt (some .nat)])
 
 end CodesLower
+
+/-! ## Parameters, nesting within nesting, several arguments -/
+
+namespace Shapes
+set_option mumi.mahlo false
+
+mutual
+inductive U (α : Type) : Type where
+  | atom (a : α) : U α
+  | tuple (fs : List (Option (U α))) : U α
+  | pair (p : U α × U α) : U α
+def El (α : Type) : U α → Type
+  | .atom a => α
+  | .tuple fs => Elss α fs
+  | .pair p => Elp α p
+def Elss (α : Type) : List (Option (U α)) → Type
+  | [] => Unit
+  | o :: os => Elo α o × Elss α os
+def Elo (α : Type) : Option (U α) → Type
+  | none => PUnit
+  | some u => El α u
+def Elp (α : Type) : U α × U α → Type
+  | (a, b) => El α a ⊕ El α b
+end
+
+/-- info: @U.tuple : {α : Type} → List (Option (U α)) → U α -/
+#guard_msgs in
+#check @U.tuple
+
+/-- info: @U.pair : {α : Type} → U α × U α → U α -/
+#guard_msgs in
+#check @U.pair
+
+-- one motive per nested application, in the order they are met: the inner
+-- `Option (U α)` last
+/--
+info: @U.rec : {α : Type} →
+  {motive : U α → Sort u_1} →
+    {motive_2 : List (Option (U α)) → Sort u_1} →
+      {motive_3 : U α × U α → Sort u_1} →
+        {motive_4 : Option (U α) → Sort u_1} →
+          ((a : α) → motive (U.atom a)) →
+            ((fs : List (Option (U α))) → motive_2 fs → motive (U.tuple fs)) →
+              ((p : U α × U α) → motive_3 p → motive (U.pair p)) →
+                motive_2 [] →
+                  ((head : Option (U α)) →
+                      (tail : List (Option (U α))) → motive_4 head → motive_2 tail → motive_2 (head :: tail)) →
+                    ((fst snd : U α) → motive fst → motive snd → motive_3 (fst, snd)) →
+                      motive_4 none → ((val : U α) → motive val → motive_4 (some val)) → (t : U α) → motive t
+-/
+#guard_msgs in
+#check @U.rec
+
+example (α : Type) (fs : List (Option (U α))) : El α (.tuple fs) = Elss α fs := rfl
+example (α : Type) (o : Option (U α)) (os : List (Option (U α))) : Elss α (o :: os) = (Elo α o × Elss α os) := rfl
+example (α : Type) (a b : U α) : El α (.pair (a, b)) = (El α a ⊕ El α b) := rfl
+example : El Nat (.tuple [some (.atom 1), none]) = (Nat × PUnit × Unit) := rfl
+
+def leaves {α : Type} : U α → Nat :=
+  U.rec (motive_2 := fun _ => Nat) (motive_3 := fun _ => Nat) (motive_4 := fun _ => Nat)
+    (fun _ => 1) (fun _ ih => ih) (fun _ ih => ih)
+    0 (fun _ _ ih ihs => ih + ihs) (fun _ _ iha ihb => iha + ihb) 0 (fun _ ih => ih)
+example : leaves (U.tuple [some (.atom 1), none, some (.pair (.atom 2, .atom 3))]) = 3 := rfl
+example {α : Type} (a b : U α) : leaves (.pair (a, b)) = leaves a + leaves b := by
+  simp only [leaves, U.rec_pair, U.rec_2_mk]
+
+end Shapes
+
+namespace ShapesLower
+set_option mumi.mahlo true
+set_option maxRecDepth 8000
+
+mutual
+inductive U (α : Type) : Type where
+  | atom (a : α) : U α
+  | tuple (fs : List (U α)) : U α
+def El (α : Type) : U α → Type
+  | .atom a => α
+  | .tuple fs => Els α fs
+def Els (α : Type) : List (U α) → Type
+  | [] => Unit
+  | a :: as => El α a × Els α as
+end
+
+/-- info: @U.tuple : {α : Type} → List (U α) → U α -/
+#guard_msgs in
+#check @U.tuple
+
+example (α : Type) (fs : List (U α)) : El α (.tuple fs) = Els α fs := rfl
+example (α : Type) (a : U α) (as : List (U α)) : Els α (a :: as) = (El α a × Els α as) := rfl
+
+end ShapesLower

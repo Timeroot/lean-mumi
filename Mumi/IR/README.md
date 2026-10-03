@@ -321,9 +321,25 @@ may be proofs. Function-valued decoder results are supported as well.
 Current restrictions are explicit:
 
 - Carriers are nonempty declarations in the same `Type u`, unindexed except in
-  upper mode (see the section above). Their recursive occurrences are direct or
-  functions returning a carrier. Nested occurrences, negative occurrences, and
-  carriers in recursive argument domains are rejected.
+  upper mode (see the section above). Their recursive occurrences are direct, functions
+  returning a carrier, or nested in an inductive type declared before the block
+  (`List U`, `Option (U α)`, `U × U`, one inside another). Negative
+  occurrences and carriers in recursive argument domains are rejected.
+- A nested occurrence is taken as Lean's kernel takes one, by a copy of the
+  outer type specialised to the block (`U.nested_List_1`), a carrier like any
+  other, with `ofOrig`/`toOrig` and their round trips. What is public is stated
+  over the original: the constructor takes `List U`, a decoder over `List U`
+  matches on `[]` and `a :: as`, and `U.rec` has a motive per nested
+  application with its constructors' cases, `U.rec_1`, `U.rec_2`, … entering
+  the recursion there; `U.casesOn` is over the original too. Every decoder
+  equation and every rule of `U.rec_i` is `rfl`, as is the rule of `U.rec` at a
+  constructor without a nested field; at one with, `U.rec_tuple` is a theorem,
+  since a value stores the copy and `toOrig (ofOrig fs) = fs` is not
+  definitional; at a closed `fs` it is `rfl` again. The block's own eliminators,
+  over the copies, are `X._nested_rec` and so on. Not yet: a nested occurrence
+  under binders (`(f : Nat → List U)`), in an indexed family (`Vector U n`), or
+  with arguments mentioning a field, and `induction` (as for Lean's own nested
+  inductives, `induction … using U.rec` with every motive).
 - Shared parameters must be typed and repeated identically on all
   declarations: explicit or instances (`[BEq α]`, named or not) on the
   carriers, as the type's own are in Lean, and
