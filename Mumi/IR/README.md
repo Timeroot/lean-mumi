@@ -271,8 +271,19 @@ carries its well-formedness -- which is what lets a `Prop` tie carriers in
 different universes together (`MumiTests/IRUniversesProp.lean`).  One thing
 changes for the writer: a proof a constructor was built with is no field of
 the data, so `Good.pi _ _ h …` has to name `h` where `Good.pi _ _ _ …` used to
-infer it.  A decoder may not recurse over a `Prop` member, and a `Prop` member
-cannot be an index domain.
+infer it.  A decoder may not recurse over a `Prop` member.
+
+A `Prop` member may be an index domain, `Tm : (Γ : Ctx) → Closed Γ → Ty Γ →
+Type` or `Ty : (Γ : Ctx) → Ok Γ → Type` with `Ok` and `Ctx` naming `Ty` back
+(`MumiTests/IRPropIndex.lean`).  A proof is no data here either: the index is
+erased from the graphs, the raw carriers and the certificates, and kept for
+the types to say, so `Tm Γ h A` and `Tm Γ h' A` are the same type by `rfl`, as
+of a real inductive family; the motive takes it like any other index, a
+recursion quantifies its graph or stage motive over it, and the conclusion's
+proof and the motive's agree by proof irrelevance.  An inductive of the
+block's universe that names the carriers -- `Tm` with no decoder of its own --
+joins the block, with what lies between, as in a `mutual` it would: one joint
+recursion, and one universe up the only place its indices can be.
 
 At the written universe the same idea lands on what is already there: the
 raw terms carry no proofs, the certificates `_ir_X_Good` do -- a data member's
