@@ -179,7 +179,33 @@ structure Block where
   stage engine, and to a later engine a carrier of an earlier one is a value
   of a type already declared. -/
   groups : Array (Array Nat) := #[]
+  /-- Put before the eliminators' names: `_nested_` when the block is a nested
+  one's denesting, whose eliminators over the copies are its own, the public
+  ones being stated over the originals afterwards. -/
+  elimPrefix : String := ""
   deriving Inhabited
+
+/-- The eliminator prefix the block being elaborated is given: `_nested_` while
+a denesting is. -/
+initialize nestedPrefix : IO.Ref String ← IO.mkRef ""
+
+/-- `s` with each subterm `f` maps replaced, outermost first. -/
+partial def replaceStx (f : Syntax → Option Syntax) (s : Syntax) : Syntax :=
+  match f s with
+  | some t => t
+  | none => match s with
+    | .node info k xs => .node info k (xs.map (replaceStx f))
+    | _ => s
+
+/-- The name of member `m`'s eliminator `base`: `X.rec`, or `X._nested_rec`. -/
+def elimName (b : Block) (m : Member) (base : String) : String :=
+  m.name.toString ++ "." ++ b.elimPrefix ++ base
+
+/-- `attrs` without the tactic registrations where the eliminators are not the
+public ones. -/
+def elimAttrs (b : Block) (attrs : String) : String :=
+  if b.elimPrefix.isEmpty then attrs
+  else (attrs.replace ", induction_eliminator" "").replace ", cases_eliminator" ""
 
 /-- A variable of carrier type as the encoding sees it: its semantic half, and
 its graph half one universe up, or its raw half and the coherence of that raw
@@ -519,7 +545,8 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
     checkReservedNames e
     unless plainModifiers e[0] do throwErrorAt e "IR prototype does not yet support declaration modifiers or attributes inside a block"
     let d := e[1]
-    unless d[1][0].getId.isAtomic do
+    -- a copy of a nested application is named under the first carrier
+    unless d[1][0].getId.isAtomic || (d[1][0].getId.getString!.startsWith "nested_" && (← nestedPrefix.get) != "") do
       throwErrorAt d "IR prototype requires simple declaration names; place the mutual block inside a namespace"
     unless d[1][1].getNumArgs == 0 do throwErrorAt d "IR prototype uses surrounding universe declarations, not explicit declaration universe lists"
     if d.isOfKind ``Parser.Command.«inductive» then
@@ -1452,7 +1479,7 @@ private def emitRec (b : Block) : CommandElabM Unit := do
       let m := b.members[k]!
       let idx := pubIdxNames b k
       let self := if b.wf then #["_ir_self.1.1", "_ir_self.1.2"] ++ pubIdxWf b k idx ++ #["_ir_self.2"] else #["_ir_self.1", "_ir_self.2"]
-      let rest := m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ graphName m ++ ".rec") (gargs ++ pubPairIdx b k idx ++ self)
+      let rest := elimName b m "rec" ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ graphName m ++ ".rec") (gargs ++ pubPairIdx b k idx ++ self)
       let attrs := if compiled then "@[implemented_by " ++ recImplName m ++ ", elab_as_elim] " else "@[elab_as_elim] "
       emitDef attrs rest
 
@@ -1560,7 +1587,7 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
     let m := b.members[j]!
     let idx := pubIdxNames b j
     let attrs := if props.size == 1 then "@[elab_as_elim, induction_eliminator] " else "@[elab_as_elim] "
-    emit (attrs ++ "theorem " ++ m.name.toString ++ ".rec " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app (propMotive b j) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".rec") (gargs ++ pubPairIdx b j idx ++ #["_ir_self"] ++ pubIdxWf b j idx))
+    emit (elimAttrs b attrs ++ "theorem " ++ elimName b m "rec" ++ " " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app (propMotive b j) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".rec") (gargs ++ pubPairIdx b j idx ++ #["_ir_self"] ++ pubIdxWf b j idx))
     -- `casesOn`: the member's own constructors, no hypotheses
     let mot := "{motive : ∀ " ++ (← pubArity b j) ++ " (_ir_self : " ++ typeAt b j idx ++ "), Prop}"
     let hyps := (← arityWf b j).map fun (n, t) => par (n ++ " : " ++ t)
@@ -1572,7 +1599,7 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
       let (pub, g) ← propMinorPair b j ci false "motive" (joint := false)
       cminors := cminors.push pub
       cgminors := cgminors.push g
-    emit ("@[elab_as_elim, cases_eliminator] theorem " ++ m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[gmotive] ++ pubPairIdx b j idx ++ #["_ir_self"] ++ cgminors ++ pubIdxWf b j idx))
+    emit (elimAttrs b "@[elab_as_elim, cases_eliminator] " ++ "theorem " ++ elimName b m "casesOn" ++ " " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[gmotive] ++ pubPairIdx b j idx ++ #["_ir_self"] ++ cgminors ++ pubIdxWf b j idx))
 
 /-- An equation that is `rfl` where the encoding reduces.  One universe up it
 is stated as a theorem and elaborated as any other.  At the universe the block
@@ -1636,12 +1663,12 @@ private def emitEquations (b : Block) : CommandElabM Unit := do
       for f in c.fields do
         if let some (j, idx) := scopedTarget b scope f then
           let idx ← idx.mapM text
-          ihs := ihs.push (← lambda f.domain (app ("@" ++ b.members[j]!.name.toString ++ ".rec") (args ++ idx ++ #[applyDomain f.name.toString f.domain])))
+          ihs := ihs.push (← lambda f.domain (app ("@" ++ elimName b b.members[j]! "rec") (args ++ idx ++ #[applyDomain f.name.toString f.domain])))
       let result ← c.result.mapM text
-      emitEquation b (b.members[i]!.name.toString ++ ".rec_" ++ c.name.toString) (common ++ " " ++ (← fieldsDecl c)) (app ("@" ++ b.members[i]!.name.toString ++ ".rec") (args ++ result ++ #[ctorApp b i ci (fieldNames c)]) ++ " = " ++ app (minor b i ci) (fieldNames c ++ ihs))
+      emitEquation b (elimName b b.members[i]! "rec" ++ "_" ++ c.name.toString) (common ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b b.members[i]! "rec") (args ++ result ++ #[ctorApp b i ci (fieldNames c)]) ++ " = " ++ app (minor b i ci) (fieldNames c ++ ihs))
     let m := b.members[i]!
     let idx := pubIdxNames b i
-    emitDef "@[elab_as_elim] " (m.name.toString ++ ".recOn " ++ (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ idx ++ #["_ir_self"]))
+    emitDef "@[elab_as_elim] " (elimName b m "recOn" ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ elimName b m "rec") (args ++ idx ++ #["_ir_self"]))
 
 /-- The minor premises of a one-motive eliminator for carrier `i`: with the
 hypotheses at its own fields when `ihs`, none otherwise. -/
@@ -1696,21 +1723,21 @@ private def emitSolo (b : Block) : CommandElabM Unit := do
     let self := "(_ir_self : " ++ typeAt b i idx ++ ")"
     let concl := app "motive" (idx ++ #["_ir_self"])
     let recD ← soloMinors b i true
-    let recDRest := m.name.toString ++ ".recD " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join recD ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (soloArgs b i true ++ idx ++ #["_ir_self"])
-    emitFirst #["@[elab_as_elim, induction_eliminator] def " ++ recDRest,
-      "@[elab_as_elim, induction_eliminator] noncomputable def " ++ recDRest,
+    let recDRest := elimName b m "recD" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join recD ++ " : " ++ concl ++ " := " ++ app ("@" ++ elimName b m "rec") (soloArgs b i true ++ idx ++ #["_ir_self"])
+    emitFirst #[elimAttrs b "@[elab_as_elim, induction_eliminator] " ++ "def " ++ recDRest,
+      elimAttrs b "@[elab_as_elim, induction_eliminator] " ++ "noncomputable def " ++ recDRest,
       "@[elab_as_elim] def " ++ recDRest, "@[elab_as_elim] noncomputable def " ++ recDRest]
     let minors ← soloMinors b i false
     let minorNames := (Array.range m.ctors.size).map (minor b i)
-    let casesRest := m.name.toString ++ ".casesOn " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join minors ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (soloArgs b i false ++ idx ++ #["_ir_self"])
-    emitFirst #["@[elab_as_elim, cases_eliminator] def " ++ casesRest,
-      "@[elab_as_elim, cases_eliminator] noncomputable def " ++ casesRest,
+    let casesRest := elimName b m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join minors ++ " : " ++ concl ++ " := " ++ app ("@" ++ elimName b m "rec") (soloArgs b i false ++ idx ++ #["_ir_self"])
+    emitFirst #[elimAttrs b "@[elab_as_elim, cases_eliminator] " ++ "def " ++ casesRest,
+      elimAttrs b "@[elab_as_elim, cases_eliminator] " ++ "noncomputable def " ++ casesRest,
       "@[elab_as_elim] def " ++ casesRest, "@[elab_as_elim] noncomputable def " ++ casesRest]
-    emitDef "@[elab_as_elim] " (m.name.toString ++ ".cases " ++ pubPs ++ " " ++ mot ++ " " ++ join minors ++ " " ++ arity ++ " " ++ self ++ " : " ++ concl ++ " := " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive"] ++ idx ++ #["_ir_self"] ++ minorNames))
+    emitDef "@[elab_as_elim] " (elimName b m "cases" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ join minors ++ " " ++ arity ++ " " ++ self ++ " : " ++ concl ++ " := " ++ app ("@" ++ elimName b m "casesOn") (pArgs b ++ #["motive"] ++ idx ++ #["_ir_self"] ++ minorNames))
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       let result ← c.result.mapM text
-      emitEquation b (m.name.toString ++ ".casesOn_" ++ c.name.toString) (ps ++ " " ++ mot ++ " " ++ join minors ++ " " ++ (← fieldsDecl c)) (app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive"] ++ result ++ #[ctorApp b i ci (fieldNames c)] ++ minorNames) ++ " = " ++ app (minor b i ci) (fieldNames c))
+      emitEquation b (elimName b m "casesOn" ++ "_" ++ c.name.toString) (ps ++ " " ++ mot ++ " " ++ join minors ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b m "casesOn") (pArgs b ++ #["motive"] ++ result ++ #[ctorApp b i ci (fieldNames c)] ++ minorNames) ++ " = " ++ app (minor b i ci) (fieldNames c))
 
 /-! ## Lower mode: the carrier at `Type u`
 
@@ -2691,7 +2718,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
     let idx := pubIdxNames b k
     let margs ← motiveArgsAt b k (m.indices.map fun x => mkIdent x.name)
     let common := (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← minorDecls b true scope)
-    emitDefL "@[elab_as_elim] " (m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b g) (motiveArgs b scope ++ minorArgs b scope ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
+    emitDefL "@[elab_as_elim] " (elimName b m "rec" ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b g) (motiveArgs b scope ++ minorArgs b scope ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
 where
   /-- A lambda over the binders' names alone. -/
   lambdaN (bs : Array Binder) (body : String) : String :=
@@ -2794,7 +2821,7 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
     let gIdx ← goodIdxPub b j (m.indices.map fun x => mkIdent x.name)
     let certs := m.indices.filterMap fun x => if x.member.isSome then some (x.name.toString ++ ".property") else none
     let attrs := if props.size == 1 then "@[elab_as_elim, induction_eliminator] " else "@[elab_as_elim] "
-    emitL (attrs ++ "theorem " ++ m.name.toString ++ ".rec " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app (propMotive b j) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".rec") (gargs ++ gIdx ++ #["_ir_self"] ++ certs))
+    emitL (elimAttrs b attrs ++ "theorem " ++ elimName b m "rec" ++ " " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app (propMotive b j) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".rec") (gargs ++ gIdx ++ #["_ir_self"] ++ certs))
     let mot := "{motive : ∀ " ++ (← pubArity b j) ++ " (_ir_self : " ++ typeAt b j idx ++ "), Prop}"
     let mut cminors := #[]
     let mut cgminors := #[]
@@ -2802,7 +2829,7 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
       let (pub, g) ← lowerPropMinor b j ci false "motive" (joint := false)
       cminors := cminors.push pub
       cgminors := cgminors.push g
-    emitL ("@[elab_as_elim, cases_eliminator] theorem " ++ m.name.toString ++ ".casesOn " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".casesOn") (pArgs b ++ #[← gmotive j "motive"] ++ gIdx ++ #["_ir_self"] ++ cgminors ++ certs))
+    emitL (elimAttrs b "@[elab_as_elim, cases_eliminator] " ++ "theorem " ++ elimName b m "casesOn" ++ " " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".casesOn") (pArgs b ++ #[← gmotive j "motive"] ++ gIdx ++ #["_ir_self"] ++ cgminors ++ certs))
 
 /-- The engines: the data members by universe, each group in an order every
 carrier's fields and indices of carrier type come before it -- a carrier's
@@ -2873,6 +2900,7 @@ def isIndexed (elems : Array Syntax) : CommandElabM Bool := do
 
 def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
+  let b := { b with elimPrefix := ← nestedPrefix.get }
   blockConsts.set {}
   let order ← declarationOrder b
   if mumi.mahlo.get (← getOptions) then
@@ -2891,6 +2919,536 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   if b.wf then emitPropRec b
   emitEquations b
   emitSolo b
+
+
+/-! ## Nested occurrences
+
+A carrier occurring inside another inductive type, `(fs : List U)`, is what Lean
+calls a nested occurrence, and the kernel takes one by specialising the outer
+type to the block: a copy `U.nested_List_1` with `nil` and `cons (head : U)
+(tail : U.nested_List_1)`, declared with the block.  Here the copy is a carrier
+of the block like any other, and the block is elaborated with every nested
+application replaced by its copy -- a decoder over `List U` becoming one over
+the copy, its `[]` and `a :: as` patterns the copy's constructors.  What the
+writer sees is then stated over the originals, as `Mumi.IndInd` does for a
+data copy: `ofOrig` and `toOrig` translate, the constructor `U.tuple` takes a
+`List U`, the decoder `Els` is over `List U`, and `U.rec` has a motive for
+`List U` with cases for `[]` and `::`, `U.rec_1` entering the recursion there.
+The block's own eliminators, over the copies, keep the names `X._nested_rec`
+and so on.
+
+A value stores the copy, so the recursor's rule at a constructor with a nested
+field holds as an equation, `U.rec_tuple`, proved through `toOrig (ofOrig fs)
+= fs`; at a closed list it is `rfl`.  Every other rule, and every decoder
+equation, is definitional. -/
+
+/-- A nested application `I args` of the block's carriers and its copy. -/
+structure Nesting where
+  /-- `I args` as written. -/
+  orig : String
+  ind : Name
+  args : Array String
+  copy : Name
+  deriving Inhabited
+
+/-- What denesting did to the block. -/
+structure Denested where
+  /-- The block with every nested application replaced by its copy. -/
+  elems : Array Syntax
+  /-- The block as written. -/
+  original : Array Syntax
+  nestings : Array Nesting
+  /-- `(member, constructor)` of each constructor with a nested field, declared as `_nested_c`. -/
+  ctors : Array (Name × Name)
+  /-- Each decoder over a nested application, declared as `_nested_d`, and the nesting. -/
+  decoders : Array (Name × Nat)
+  deriving Inhabited
+
+
+private def hidden (n : Name) : Name := Name.mkSimple ("_nested_" ++ n.toString)
+
+/-- `I args` where `s` is an application of an inductive type declared before
+the block, not indexed, to arguments mentioning the carriers `members`. -/
+private def nestedApp? (members : Array Name) (s : Syntax) : CommandElabM (Option (Name × Array Syntax)) := do
+  let s := unparen s
+  let (h, args) := unapp s
+  unless h.isIdent && !members.contains h.getId && mentions s members do return none
+  let some ind ← (try some <$> resolveGlobalConstNoOverload h catch _ => pure none) | return none
+  let some (.inductInfo info) := (← getEnv).find? ind | return none
+  unless args.size == info.numParams do return none
+  unless info.numIndices == 0 do
+    throwErrorAt s "IR prototype does not yet take a carrier nested in an indexed family"
+  return some (ind, args)
+
+/-- The fields of `I`'s constructor `ctor` at the parameters `args`, as binders
+written as text: Lean's own names, the parameters replaced by the arguments. -/
+private def ctorFieldsAt (ind ctor : Name) (args : Array Syntax) : CommandElabM (Array (Name × String)) := do
+  let some (.inductInfo info) := (← getEnv).find? ind | throwError "not an inductive: {ind}"
+  let some ci := (← getEnv).find? ctor | throwError "unknown constructor {ctor}"
+  let raw ← liftTermElabM do
+    Meta.forallTelescope ci.type fun xs _ => do
+      let ps := xs.extract 0 info.numParams
+      let fs := xs.extract info.numParams xs.size
+      let pnames ← ps.mapM fun p => return (← p.fvarId!.getDecl).userName
+      let out ← fs.mapM fun f => do
+        let d ← f.fvarId!.getDecl
+        let stx ← PrettyPrinter.delab d.type
+        return (d.userName.eraseMacroScopes, stx.raw)
+      return (pnames, out)
+  let (pnames, out) := raw
+  let pairs := pnames.zip args |>.map fun (n, a) => (n, a)
+  out.mapM fun (n, t) => do return (n, ← text (subst t pairs))
+
+/-- `s` with every nested application the table names replaced by its copy,
+and each new one added to the table.  `params` are the copies' arguments. -/
+private partial def replaceNested (members : Array Name) (first : Name) (params : String)
+    (table : IO.Ref (Array (String × Nesting))) (s : Syntax) : CommandElabM Syntax := do
+  if let some (ind, args) ← nestedApp? members s then
+    let key ← text (unparen s)
+    let tbl ← table.get
+    let n ← match tbl.find? (·.1 == key) with
+      | some (_, n) => pure n
+      | none =>
+        let copy := first ++ Name.mkSimple ("nested_" ++ ind.getString! ++ "_" ++ toString (tbl.size + 1))
+        let n : Nesting := { orig := key, ind, args := ← args.mapM text, copy }
+        table.modify (·.push (key, n))
+        pure n
+    return ← parseTerm (if params.isEmpty then n.copy.toString else "(" ++ n.copy.toString ++ " " ++ params ++ ")")
+  match s with
+  | .node info k xs => return .node info k (← xs.mapM (replaceNested members first params table))
+  | _ => return s
+
+/-- `s` with the qualified and dotted names of the renamed constructors, and
+the names of the renamed decoders, given their hidden names. -/
+private partial def renameHidden (ctors : Array (Name × Name)) (decoders : Array Name) (s : Syntax) : Syntax :=
+  if s.isIdent then
+    let n := s.getId
+    if decoders.contains n then mkIdentFrom s (hidden n)
+    else match ctors.find? (fun (m, c) => n == m ++ c) with
+      | some (m, c) => mkIdentFrom s (m ++ hidden c)
+      | none => s
+  else if s.isOfKind ``Parser.Term.dotIdent && ctors.any (·.2 == s[1].getId) then
+    s.setArg 1 (mkIdentFrom s[1] (hidden s[1].getId))
+  else match s with
+    | .node info k xs => .node info k (xs.map (renameHidden ctors decoders))
+    | _ => s
+
+/-- A decoder's constructor pattern over a nested application as one over its
+copy: `[]` as `.nil`, `a :: as` as `.cons a as`, whatever notation it uses. -/
+private def copyPattern (n : Nesting) (p : Syntax) : CommandElabM Syntax := do
+  let p' ← liftMacroM (expandMacros p)
+  let (h, args) := unapp p'
+  let short? : Option Name ← do
+    if h.isOfKind ``Parser.Term.dotIdent then pure (some h[1].getId)
+    else if h.isIdent then
+      match ← (try some <$> resolveGlobalConstNoOverload h catch _ => pure none) with
+      | some c => pure (if c.getPrefix == n.ind then some (Name.mkSimple c.getString!) else none)
+      | none => pure none
+    else pure none
+  let some short := short? | throwErrorAt p "Expected a constructor of `{n.ind}` here"
+  parseTerm (app ("." ++ short.toString) (← args.mapM text))
+
+/-- The block with its nested applications replaced by copies, and the copies
+declared as carriers of it, or `none` where there is no nested application. -/
+def denest (elems : Array Syntax) : CommandElabM (Option Denested) := do
+  let inductives := elems.filter (·[1].isOfKind ``Parser.Command.«inductive»)
+  if inductives.isEmpty then return none
+  let members := inductives.map (·[1][1][0].getId)
+  let first := members[0]!
+  let d0 := inductives[0]![1]
+  let (ps, _) ← signature d0[2]
+  -- the copies take the block's parameters, explicit ones as arguments
+  let paramsText := String.intercalate " " ((ps.filter (·.info == .default)).map (·.name.toString)).toList
+  let paramsDecl := String.intercalate " " (d0[2][0].getArgs.map fun x => (x.reprint.getD "").trimAscii.toString).toList
+  let table ← IO.mkRef (#[] : Array (String × Nesting))
+  -- the constructors with a nested field, and the decoders over a nested application
+  let mut ctors : Array (Name × Name) := #[]
+  for e in inductives do
+    let d := e[1]
+    for c in d[4].getArgs do
+      let (bs, result) ← signature c[4]
+      let (tail, _) ← telescope result bs.size
+      for f in bs ++ tail do
+        let (_, r) ← telescope f.type
+        if (← nestedApp? members r).isSome then
+          ctors := ctors.push (d[1][0].getId, c[3].getId)
+          break
+  let mut decoders : Array Name := #[]
+  for e in elems do
+    let d := e[1]
+    if d.isOfKind ``Parser.Command.definition then
+      let (_, ty) ← signature d[2]
+      let (bs, _) ← telescope ty
+      if let some x := bs.back? then
+        if (← nestedApp? members x.type).isSome then decoders := decoders.push d[1][0].getId
+  if ctors.isEmpty && decoders.isEmpty then return none
+  -- rewrite: names first, then the nested applications
+  let mut out := #[]
+  for e in elems do
+    let e := renameHidden ctors decoders e
+    -- the declared name itself
+    let e := if e[1].isOfKind ``Parser.Command.«inductive» then
+        let d := e[1]
+        let cs := d[4].getArgs.map fun c =>
+          if ctors.contains (d[1][0].getId, c[3].getId) then c.setArg 3 (mkIdentFrom c[3] (hidden c[3].getId)) else c
+        e.setArg 1 (d.setArg 4 (mkNullNode cs))
+      else e
+    out := out.push (← replaceNested members first paramsText table e)
+  -- the decoders' patterns over a nested application
+  let mut decoderNestings : Array (Name × Nat) := #[]
+  for i in [:out.size] do
+    let d := out[i]![1]
+    unless d.isOfKind ``Parser.Command.definition do continue
+    let name := d[1][0].getId
+    unless decoders.any (hidden · == name) do continue
+    let (_, ty) ← signature d[2]
+    let (bs, _) ← telescope ty
+    let major := (unapp bs.back!.type).1
+    let tbl ← table.get
+    let some ni := tbl.findIdx? (·.2.copy == major.getId) | throwErrorAt ty "IR decoder over a nested application not understood"
+    let n := tbl[ni]!.2
+    decoderNestings := decoderNestings.push (decoders.find? (hidden · == name) |>.get!, ni)
+    let alts := d[3][0][0][0].getArgs
+    let alts ← alts.mapM fun alt => do
+      let pats := alt[1][0].getSepArgs
+      let last := pats.back!
+      let last' ← copyPattern n last
+      return alt.setArg 1 (replaceStx (fun s => if s == last then some last' else none) alt[1])
+    out := out.set! i (out[i]!.setArg 1 (d.setArg 3 (d[3].setArg 0 (d[3][0].setArg 0 (d[3][0][0].setArg 0 (mkNullNode alts))))))
+  -- the copies, each a carrier of the block; a copy's fields may nest further
+  let level ← do
+    let (_, r) ← signature d0[2]
+    let (_, r) ← telescope r
+    text r
+  let mut done := 0
+  let mut copies := #[]
+  while done < (← table.get).size do
+    let n := (← table.get)[done]!.2
+    done := done + 1
+    let some (.inductInfo info) := (← getEnv).find? n.ind | unreachable!
+    let args ← n.args.mapM parseTerm
+    let mut cs := #[]
+    for ctor in info.ctors do
+      let fs ← ctorFieldsAt n.ind ctor args
+      let mut binders := #[]
+      for (fname, fty) in fs do
+        let fty ← replaceNested members first paramsText table (← parseTerm fty)
+        binders := binders.push ("(" ++ fname.toString ++ " : " ++ (← text fty) ++ ")")
+      let result := if paramsText.isEmpty then n.copy.toString else n.copy.toString ++ " " ++ paramsText
+      cs := cs.push ("  | " ++ ctor.getString! ++ " " ++ String.intercalate " " binders.toList ++ " : " ++ result)
+    let src := "inductive " ++ n.copy.toString ++ " " ++ paramsDecl ++ " : " ++ level ++ " where\n" ++ String.intercalate "\n" cs.toList
+    let .ok stx := Parser.runParserCategory (← getEnv) `command src
+      | throwError "IR frontend generated an invalid copy:\n{src}"
+    copies := copies.push stx
+  return some { elems := out ++ copies, original := elems, nestings := (← table.get).map (·.2),
+                ctors, decoders := decoderNestings }
+
+/-- Whether `c` may continue a name, a `.` included. -/
+private def qualChar (c : Char) : Bool := c.isAlphanum || c == '_' || c == '\'' || c == '.' || c.val > 127
+
+/-- `s` with every occurrence of `old` that is not part of a longer name
+replaced by `new`. -/
+private def replaceName (s old new : String) : String := Id.run do
+  let a := s.toList.toArray
+  let o := old.toList.toArray
+  let mut out := ""
+  let mut i := 0
+  while i < a.size do
+    if a.extract i (i + o.size) == o && (i == 0 || !qualChar a[i-1]!) &&
+        (i + o.size == a.size || !qualChar a[i + o.size]!) then
+      out := out ++ new
+      i := i + o.size
+    else
+      out := out.push a[i]!
+      i := i + 1
+  return out
+
+/-- Text the block's generators wrote over the copies, over the originals: a
+copy as the application it copies, a copy's constructor as the original's, a
+hidden constructor or decoder by its own name. -/
+private def deCopy (b : Block) (dn : Denested) (s : String) : CommandElabM String := do
+  let pa := pArgs b
+  let paS := if pa.isEmpty then "" else " " ++ join pa
+  let mut s := s
+  for n in dn.nestings do
+    let some (.inductInfo info) := (← getEnv).find? n.ind | continue
+    for ctor in info.ctors do
+      s := replaceName s ("@" ++ n.copy.toString ++ "." ++ ctor.getString! ++ paS)
+        ("@" ++ ctor.toString ++ " " ++ join (n.args.map par))
+    s := replaceName s ("@" ++ n.copy.toString ++ paS) (par n.orig)
+    s := replaceName s (n.copy.toString ++ paS) (par n.orig)
+  for (m, c) in dn.ctors do
+    s := replaceName s (m ++ hidden c).toString (m ++ c).toString
+    s := replaceName s (hidden c).toString c.toString
+  for (d, _) in dn.decoders do
+    s := replaceName s (hidden d).toString d.toString
+  return s
+
+/-- The public API of a denested block, over the originals. -/
+def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
+  let lower := mumi.mahlo.get (← getOptions)
+  let b ← readBlock dn.elems
+  let b := { b with lower, elimPrefix := "_nested_" }
+  let dc (s : String) := deCopy b dn s
+  let ps ← paramsDecl b
+  let pubPs ← pubParamsDecl b
+  let pa := pArgs b
+  let scope := dataMembers b
+  let copyOf (k : Nat) : Option Nat := dn.nestings.findIdx? (·.copy == b.members[k]!.name)
+  let memberOf (i : Nat) : Nat := (b.members.findIdx? (·.name == dn.nestings[i]!.copy)).getD 0
+  let first := b.members[0]!.name.toString
+  let recOf (k : Nat) : String := match copyOf k with
+    | some i => first ++ ".rec_" ++ toString (i + 1)
+    | none => b.members[k]!.name.toString ++ ".rec"
+  let copyName (i : Nat) := dn.nestings[i]!.copy.toString
+  let orig (i : Nat) := par dn.nestings[i]!.orig
+  let at_ (n : String) (xs : Array String) := app ("@" ++ n) (pa ++ xs)
+  -- an eliminator at a universe of its own: not the block's, which `emit` pins
+  let ns ← getCurrNamespace
+  let free (n : String) := "_root_." ++ (ns ++ n.toName).toString
+  let motiveArgs := motiveArgs b scope
+  let minorArgs ← (minorArgs b scope).mapM dc
+  let motives ← dc (← motiveDecls b scope)
+  let minors ← dc (← minorDecls b true scope)
+  -- the copies, the inner ones (found later) first
+  let order := (Array.range dn.nestings.size).reverse
+  -- a copy-typed field of a constructor: its copy
+  let copyField (f : Field) : Option Nat := f.target.bind fun (j, _) => if f.domain.isEmpty then copyOf j else none
+  for i in order do
+    let k := memberOf i
+    let m := b.members[k]!
+    let C := copyName i
+    -- `ofOrig`, by structural recursion on the original
+    let mut cs := #[]
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let conv := c.fields.map fun f => match copyField f with
+        | some i' => at_ (copyName i' ++ ".ofOrig") #[f.name.toString]
+        | none => f.name.toString
+      cs := cs.push ("  | ." ++ c.name.toString ++ " " ++ join (fieldNames c) ++ " => " ++ ctorApp b k ci conv)
+    emitDef "" (C ++ ".ofOrig " ++ pubPs ++ " : " ++ orig i ++ " → " ++ typeAt b k #[] ++ "\n" ++ String.intercalate "\n" cs.toList)
+    -- `toOrig`, by the copy's own recursion
+    let mut ms := #[]
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let own := c.fields.filter fun f => (dataTarget b f).any (·.1 == k)
+      let conv := c.fields.map fun f =>
+        if (dataTarget b f).any (·.1 == k) then ihVar f.name
+        else match copyField f with
+          | some i' => at_ (copyName i' ++ ".toOrig") #[f.name.toString]
+          | none => f.name.toString
+      ms := ms.push (untypedLambda (fieldNames c ++ own.map (ihVar ·.name)) (← dc (ctorApp b k ci conv)))
+    emitDef "" (C ++ ".toOrig " ++ pubPs ++ " (_ir_c : " ++ typeAt b k #[] ++ ") : " ++ orig i ++ " := " ++
+      app ("@" ++ free (elimName b m "recD")) (pa ++ #["(fun _ => " ++ orig i ++ ")", "_ir_c"] ++ ms))
+    let mut eqs := #[]
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let conv := c.fields.map fun f => match copyField f with
+        | some i' => at_ (copyName i' ++ ".toOrig") #[f.name.toString]
+        | none => f.name.toString
+      let name := C ++ ".toOrig_" ++ c.name.toString
+      eqs := eqs.push name
+      emitEquation b name (ps ++ " " ++ (← fieldsDecl c)) (at_ (C ++ ".toOrig") #[ctorApp b k ci (fieldNames c)] ++ " = " ++ (← dc (ctorApp b k ci conv)))
+    -- the round trips; an inner copy's are already there
+    let inner := (List.range dn.nestings.size).filter (· > i)
+    let there := inner.map fun i' => copyName i' ++ ".toOrig_ofOrig"
+    let back := inner.map fun i' => copyName i' ++ ".ofOrig_toOrig"
+    emit ("theorem " ++ C ++ ".toOrig_ofOrig " ++ pubPs ++ " (_ir_x : " ++ orig i ++ ") : " ++
+      at_ (C ++ ".toOrig") #[at_ (C ++ ".ofOrig") #["_ir_x"]] ++ " = _ir_x := by\n  induction _ir_x <;> simp only [" ++
+      String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ there ++ ["*"]) ++ "]")
+    let mut bs := #[]
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let own := c.fields.filter fun f => (dataTarget b f).any (·.1 == k)
+      bs := bs.push (untypedLambda (fieldNames c ++ own.map (ihVar ·.name))
+        ("(by simp only [" ++ String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ back ++ ["*"]) ++ "])"))
+    emit ("theorem " ++ C ++ ".ofOrig_toOrig " ++ pubPs ++ " (_ir_c : " ++ typeAt b k #[] ++ ") : " ++
+      at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c := " ++
+      app ("@" ++ free (elimName b m "recD")) (pa ++ #["(fun _ir_c => " ++ at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c)", "_ir_c"] ++ bs))
+  -- the public constructors
+  for (mn, cn) in dn.ctors do
+    let some k := b.members.findIdx? (·.name == mn) | continue
+    let some ci := b.members[k]!.ctors.findIdx? (·.name == hidden cn) | continue
+    let c := b.members[k]!.ctors[ci]!
+    for f in c.fields do
+      if let some (j, _) := f.target then
+        if (copyOf j).isSome && !f.domain.isEmpty then
+          throwError "IR prototype does not yet take a nested occurrence under binders, as in `{f.name}`"
+    let conv := c.fields.map fun f => match copyField f with
+      | some i' => at_ (copyName i' ++ ".ofOrig") #[f.name.toString]
+      | none => f.name.toString
+    let result ← c.result.mapM text
+    emitDef (c.doc ++ "@[reducible] ") ((mn ++ cn).toString ++ " " ++ pubPs ++ " " ++ (← dc (← ctorDecl c)) ++ " : " ++
+      typeAt b k result ++ " := " ++ ctorApp b k ci conv)
+  -- the public decoders over a nested application
+  for (dname, i) in dn.decoders do
+    let some d := b.decoders.find? (·.name == hidden dname) | continue
+    let dargs := d.params.map fun p => if p.anon then p.argText else p.name.toString
+    emitDef (d.doc ++ "@[reducible] ") (dname.toString ++ " " ++ (← decParamsDecl d) ++ " : " ++ (← dc (← decoderTail d)) ++
+      " := fun _ir_x => " ++ app ("@" ++ (hidden dname).toString) (dargs ++ #[at_ (copyName i ++ ".ofOrig") #["_ir_x"]]))
+  -- the decoders' equations at what changed: a hidden constructor, a copy's
+  for j in [:b.decoders.size] do
+    let d := b.decoders[j]!
+    let k := d.target
+    let m := b.members[k]!
+    let isCopy := (copyOf k).isSome
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      unless isCopy || dn.ctors.any (fun (mn, cn) => mn == m.name && hidden cn == c.name) do continue
+      let result ← c.result.mapM text
+      let dargs := d.params.map fun p => if p.anon then p.argText else p.name.toString
+      let name := (← dc d.name.toString) ++ "_" ++ (← dc c.name.toString)
+      emitEquation b name (← dc (ps ++ " " ++ (← fieldsDecl c)))
+        (← dc (app ("@" ++ d.name.toString) (dargs ++ result ++ #[ctorApp b k ci (fieldNames c)]) ++ " = " ++ par (← text d.clauses[ci]!)))
+  -- the eliminators
+  let common := pubPs ++ " " ++ motives ++ " " ++ minors
+  let mut motivesC := #[]
+  for j in scope do
+    motivesC := motivesC.push (match copyOf j with
+      | some i => "(fun (_ir_c : " ++ typeAt b j #[] ++ ") => " ++ app (motive j) #[at_ (copyName i ++ ".toOrig") #["_ir_c"]] ++ ")"
+      | none => motive j)
+  let pubMinor (j ci : Nat) : CommandElabM String := dc (minor b j ci)
+  -- a minor premise of the recursion over the copies, from the public one
+  let copyMinor (j ci : Nat) (ihs : Bool) (motiveName : String) : CommandElabM String := do
+    let m := b.members[j]!
+    let c := m.ctors[ci]!
+    let recs := if ihs then c.fields.filter fun f => (scopedTarget b scope f).isSome else #[]
+    let binders := fieldNames c ++ recs.map (ihVar ·.name)
+    let conv := c.fields.map fun f => match copyField f with
+      | some i' => at_ (copyName i' ++ ".toOrig") #[f.name.toString]
+      | none => f.name.toString
+    let base := app (← pubMinor j ci) (conv ++ recs.map (ihVar ·.name))
+    if (copyOf j).isSome then return untypedLambda binders base
+    let copies := (Array.range c.fields.size).filter fun x => (copyField c.fields[x]!).isSome
+    if copies.isEmpty then return untypedLambda binders base
+    -- transported along `ofOrig (toOrig x) = x`, one copy-typed field at a time
+    let result ← c.result.mapM text
+    let mut v := base
+    for x in copies do
+      let f := c.fields[x]!
+      let i' := (copyField f).get!
+      let args := (Array.range c.fields.size).map fun y =>
+        let g := c.fields[y]!
+        if y == x then "_ir_y"
+        else if copies.contains y && y > x then
+          let iy := (copyField g).get!
+          at_ (copyName iy ++ ".ofOrig") #[at_ (copyName iy ++ ".toOrig") #[g.name.toString]]
+        else g.name.toString
+      let fam := "(fun _ir_y => " ++ app motiveName (result ++ #[ctorApp b j ci args]) ++ ")"
+      v := "(cast (congrArg " ++ fam ++ " " ++ at_ (copyName i' ++ ".ofOrig_toOrig") #[f.name.toString] ++ ") " ++ v ++ ")"
+    return untypedLambda binders v
+  let mut minorsC := #[]
+  for j in scope do
+    for ci in [:b.members[j]!.ctors.size] do
+      minorsC := minorsC.push (← copyMinor j ci true (motive j))
+  -- `X.rec`, for each member written
+  for k in scope do
+    if (copyOf k).isSome then continue
+    let m := b.members[k]!
+    let idx := pubIdxNames b k
+    emitDef "@[elab_as_elim] " (m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++
+      " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++
+      app ("@" ++ elimName b m "rec") (pa ++ motivesC ++ minorsC ++ idx ++ #["_ir_self"]))
+  -- `F.rec_i`, for each copy, by structural recursion on the original
+  for i in order do
+    let k := memberOf i
+    let m := b.members[k]!
+    let mut cs := #[]
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let mut ihs := #[]
+      for f in c.fields do
+        if let some (j, args) := scopedTarget b scope f then
+          let args ← args.mapM text
+          ihs := ihs.push (app ("@" ++ recOf j) (pa ++ motiveArgs ++ minorArgs ++ (if (copyOf j).isSome then #[] else args) ++ #[f.name.toString]))
+      cs := cs.push ("  | ." ++ c.name.toString ++ " " ++ join (fieldNames c) ++ " => " ++ app (← pubMinor k ci) (fieldNames c ++ ihs))
+    emitDef "@[elab_as_elim] " (recOf k ++ " " ++ common ++ " : (_ir_self : " ++ orig i ++ ") → " ++ app (motive k) #["_ir_self"] ++ "\n" ++
+      String.intercalate "\n" cs.toList)
+  -- `X.casesOn`, for each member written
+  for k in scope do
+    if (copyOf k).isSome then continue
+    let m := b.members[k]!
+    let idx := pubIdxNames b k
+    let mot := "{motive : " ++ (← motiveType b k) ++ "}"
+    let cminors ← (← soloMinors b k false).mapM dc
+    let mut cargs := #[]
+    for ci in [:m.ctors.size] do
+      cargs := cargs.push (← copyMinor k ci false "motive")
+    emitDef "@[elab_as_elim, cases_eliminator] " (m.name.toString ++ ".casesOn " ++ pubPs ++ " " ++ mot ++ " " ++
+      (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") " ++ join cminors ++ " : " ++
+      app "motive" (idx ++ #["_ir_self"]) ++ " := " ++
+      app ("@" ++ elimName b m "casesOn") (pa ++ #["motive"] ++ idx ++ #["_ir_self"] ++ cargs))
+  -- the rules: at a copy's constructor and at a constructor without nested fields, `rfl`
+  let eqBinders := ps ++ " " ++ motives ++ " " ++ minors
+  let ihsAt (c : Ctor) : CommandElabM (Array String) := do
+    let mut ihs := #[]
+    for f in c.fields do
+      if let some (j, args) := scopedTarget b scope f then
+        let args ← args.mapM text
+        ihs := ihs.push (← lambda f.domain (app ("@" ++ recOf j) (pa ++ motiveArgs ++ minorArgs ++
+          (if (copyOf j).isSome then #[] else args) ++ #[applyDomain f.name.toString f.domain])))
+    return ihs
+  for k in scope do
+    let m := b.members[k]!
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let result ← c.result.mapM text
+      let major ← dc (ctorApp b k ci (fieldNames c))
+      let lhs := app ("@" ++ recOf k) (pa ++ motiveArgs ++ minorArgs ++ (if (copyOf k).isSome then #[] else result) ++ #[major])
+      let rhs := app (← pubMinor k ci) (fieldNames c ++ (← ihsAt c))
+      let name := recOf k ++ "_" ++ (← dc c.name.toString)
+      let copies := c.fields.filter fun f => (copyField f).isSome
+      if (copyOf k).isSome || copies.isEmpty then
+        emitEquation b name (eqBinders ++ " " ++ (← dc (← fieldsDecl c))) (lhs ++ " = " ++ rhs)
+  -- the copies' recursions agree with the public ones at `ofOrig`, by induction on the original
+  for i in order do
+    let k := memberOf i
+    let m := b.members[k]!
+    let C := copyName i
+    let copyRec (x : String) := app ("@" ++ elimName b m "rec") (pa ++ motivesC ++ minorsC ++ #[at_ (C ++ ".ofOrig") #[x]])
+    let mut alts := #[]
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let own := c.fields.filter fun f => (dataTarget b f).any (·.1 == k)
+      -- the copy's rule needs `toOrig` unfolded to match: `erw`
+      let mut steps := #["simp only [" ++ C ++ ".ofOrig]", "erw [" ++ elimName b m "rec" ++ "_" ++ c.name.toString ++ "]",
+        "simp only [" ++ recOf k ++ "_" ++ (← dc c.name.toString) ++ "]"]
+      for f in c.fields do
+        let some i' := copyField f | continue
+        let h := if i' == i then "_ir_ihI_" ++ f.name.toString
+          else app ("@" ++ copyName i' ++ ".rec_ofOrig") (pa ++ motiveArgs ++ minorArgs ++ #[f.name.toString])
+        steps := steps ++ #["have _ir_E_" ++ f.name.toString ++ " := " ++ at_ (copyName i' ++ ".toOrig_ofOrig") #[f.name.toString],
+          "have _ir_H_" ++ f.name.toString ++ " := " ++ h]
+      -- argument by argument: a copy-typed field by its round trip, its hypothesis by the agreement
+      steps := steps.push "congr 1 <;> first | rfl | assumption | exact HEq.rfl"
+      alts := alts.push ("  | " ++ c.name.toString ++ " " ++ join (fieldNames c) ++ " " ++ join (own.map fun f => "_ir_ihI_" ++ f.name.toString) ++
+        " =>\n    " ++ String.intercalate "\n    " steps.toList)
+    emit ("theorem " ++ C ++ ".rec_ofOrig " ++ common ++ " (_ir_x : " ++ orig i ++ ") : HEq " ++ copyRec "_ir_x" ++ " " ++
+      app ("@" ++ recOf k) (pa ++ motiveArgs ++ minorArgs ++ #["_ir_x"]) ++ " := by\n  induction _ir_x with\n" ++ String.intercalate "\n" alts.toList)
+  -- the rule at a constructor with a nested field, by those
+  for k in scope do
+    if (copyOf k).isSome then continue
+    let m := b.members[k]!
+    for ci in [:m.ctors.size] do
+      let c := m.ctors[ci]!
+      let copies := c.fields.filter fun f => (copyField f).isSome
+      if copies.isEmpty then continue
+      let result ← c.result.mapM text
+      let major ← dc (ctorApp b k ci (fieldNames c))
+      let lhs := app ("@" ++ recOf k) (pa ++ motiveArgs ++ minorArgs ++ result ++ #[major])
+      let rhs := app (← pubMinor k ci) (fieldNames c ++ (← ihsAt c))
+      let pubCtor ← dc (m.name.toString ++ "." ++ c.name.toString)
+      let mut steps := #["simp only [" ++ recOf k ++ ".eq_1, " ++ pubCtor ++ "]", "erw [" ++ elimName b m "rec" ++ "_" ++ c.name.toString ++ "]",
+        "try dsimp only", "apply eq_of_heq"]
+      for _ in copies do steps := steps.push "refine (cast_heq _ _).trans ?_"
+      for f in copies do
+        let i' := (copyField f).get!
+        steps := steps ++ #["have _ir_E_" ++ f.name.toString ++ " := " ++ at_ (copyName i' ++ ".toOrig_ofOrig") #[f.name.toString],
+          "have _ir_H_" ++ f.name.toString ++ " := " ++ app ("@" ++ copyName i' ++ ".rec_ofOrig") (pa ++ motiveArgs ++ minorArgs ++ #[f.name.toString])]
+      steps := steps.push "congr 1 <;> first | rfl | assumption | exact HEq.rfl"
+      let name := recOf k ++ "_" ++ (← dc c.name.toString)
+      emit ("theorem " ++ name ++ " " ++ eqBinders ++ " " ++ (← dc (← fieldsDecl c)) ++ " : " ++ lhs ++ " = " ++ rhs ++
+        " := by\n  " ++ String.intercalate "\n  " steps.toList)
 
 end Mumi.IndRec.Family
 
@@ -2998,7 +3556,16 @@ definitions alone, or of `Prop` inductives, is Lean's.  So members may sit in
 different universes, and a `Prop` inductive the rest only refers to is
 declared right after what it refers to; a `Prop` inductive the carriers or
 decoders of its component mention is not taken yet. -/
-def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
+partial def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
+  -- a nested occurrence: the block with copies, then its API over the originals
+  if (← Family.nestedPrefix.get).isEmpty then
+    if let some dn ← Family.denest elems then
+      Family.nestedPrefix.set "_nested_"
+      try
+        elaborateAny dn.elems
+        Family.emitNestedPublic dn
+      finally Family.nestedPrefix.set ""
+      return
   let isInductive (e : Syntax) := e[1].isOfKind ``Parser.Command.«inductive»
   -- regroup: a component joins the group before it when both are carriers in
   -- the same universe (with their decoders)
@@ -3022,7 +3589,7 @@ def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
       -- Lean's own: a block of definitions, or of inductives, with `mutual` taking several
       if h : comp.size = 1 then elabCommand comp[0]
       else elabCommand (mkNode ``Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode comp, mkAtom "end", mkNullNode])
-    else if ← Family.isIndexed comp then Family.elaborate comp
+    else if (← Family.isIndexed comp) || !(← Family.nestedPrefix.get).isEmpty then Family.elaborate comp
     else elaborate comp
 
 end Mumi.IndRec

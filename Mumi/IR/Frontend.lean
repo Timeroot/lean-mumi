@@ -199,7 +199,9 @@ private def nameMajor (s : String) : String := Id.run do
 /-- Whether a declared name is a public eliminator's, whose major is displayed. -/
 private def isEliminator (n : Name) : Bool :=
   match n with
-  | .str _ s => s == "rec" || s == "recOn" || s == "casesOn" || s == "cases" || s == "recD" || s == "_ir_recImpl"
+  | .str _ s => s == "rec" || s == "recOn" || s == "casesOn" || s == "cases" || s == "recD" || s == "_ir_recImpl" ||
+      -- a nested occurrence's, `X.rec_1`
+      (s.startsWith "rec_" && (s.drop 4).all Char.isDigit && s.length > 4)
   | _ => false
 
 /-- The names of the binders of a recursive field's domain: each its own, or `a`
