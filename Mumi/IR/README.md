@@ -325,19 +325,24 @@ Current restrictions are explicit:
   functions returning a carrier. Nested occurrences, negative occurrences, and
   carriers in recursive argument domains are rejected.
 - Shared parameters must be typed and repeated identically on all
-  declarations: explicit on the carriers, as the type's own are in Lean, and
+  declarations: explicit or instances (`[BEq α]`, named or not) on the
+  carriers, as the type's own are in Lean, and
   explicit or implicit on a decoder, `def El {A : Type u} : U A → Type u`, as
   its author wishes. The public constructors and eliminators take them
   implicitly. Inside the block a constructor is written without them, `U.pi a b`
   or `.pi a b` (or `@U.pi A a b`, all of them), and a decoder call writes the
   ones its declaration binds explicitly. Use surrounding `universe`
   declarations; members may sit at different levels of them, `Type u` beside
-  `Type (u+1)`. Section variables, default and instance parameters, and
-  per-declaration universe lists are not supported.
-- A constructor field written `{x : T}` is implicit in the public constructor
-  and bound explicitly in the minor premises, as Lean's own are; inside the
-  block a constructor application in an index term lists every field, the
-  implicit ones included. An index of a decoder written `{Γ : Ctx}` before the
+  `Type (u+1)`. Section variables, default parameters, and per-declaration
+  universe lists are not supported.
+- A constructor field written `{x : T}`, `⦃x : T⦄` or `[x : T]` is bound so
+  in the public constructor and explicitly in the minor premises, as Lean's
+  own are. Inside the block a constructor application in an index term writes
+  every field or only the explicit ones, `Tm Γ (.pi A .base)` for
+  `Ty.pi {Γ} (A) (B)`; the implicit ones are found as Lean's elaborator would
+  find them here, by matching the constructor's conclusion against the index
+  the application stands at and the types of its explicit fields against those
+  of the arguments, and one that cannot be found so is an error. An index of a decoder written `{Γ : Ctx}` before the
   colon is implicit in the public decoder, and the clauses and the equation
   patterns write the explicit ones only. A binder of a field written without
   a type, `(hb : ∀ x, Good (b x))`, is left to inference; what a clause says is

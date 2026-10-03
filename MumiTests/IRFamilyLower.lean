@@ -53,7 +53,7 @@ info: @Ty.rec : {motive : Ctx → Sort u_1} →
           ((Γ : Ctx) →
               (A : Ty Γ) →
                 (B : Ty (Γ.ext A)) → motive Γ → motive_2 Γ A → motive_2 (Γ.ext A) B → motive_2 Γ (Ty.Pi Γ A B)) →
-            {Γ : Ctx} → (_ir_self : Ty Γ) → motive_2 Γ _ir_self
+            {Γ : Ctx} → (t : Ty Γ) → motive_2 Γ t
 -/
 #guard_msgs in
 #check @Ty.rec
@@ -68,10 +68,10 @@ example (Γ : Ctx) (A : Ty Γ) : True := by
 /--
 info: @Ty.recD : {motive : (Γ : Ctx) → Ty Γ → Sort u_1} →
   {Γ : Ctx} →
-    (_ir_self : Ty Γ) →
+    (t : Ty Γ) →
       ((Γ : Ctx) → motive Γ (Ty.U Γ)) →
         ((Γ : Ctx) → (A : Ty Γ) → (B : Ty (Γ.ext A)) → motive Γ A → motive (Γ.ext A) B → motive Γ (Ty.Pi Γ A B)) →
-          motive Γ _ir_self
+          motive Γ t
 -/
 #guard_msgs in
 #check @Ty.recD

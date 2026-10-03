@@ -58,8 +58,8 @@ example : G _ _ _ (E.up A.nil PUnit.unit (B.leaf _ _) (E.mk _ _ _ PUnit.unit) PU
 
 /--
 info: @E.rec : {motive : A → Sort u_1} →
-  {motive_2 : (x : A) → (_ir_arg1 : F x) → B x _ir_arg1 → Sort u_1} →
-    {motive_3 : (x : A) → (c : F x) → (_ir_arg2 : B x c) → E x c _ir_arg2 → Sort u_1} →
+  {motive_2 : (x : A) → (a : F x) → B x a → Sort u_1} →
+    {motive_3 : (x : A) → (c : F x) → (a : B x c) → E x c a → Sort u_1} →
       motive A.nil →
         ((x : A) → (c : F x) → (b : B x c) → (d : D x c b) → motive x → motive_2 x c b → motive (x.cons c b d)) →
           ((x : A) → (c : F x) → motive x → motive_2 x c (B.leaf x c)) →
@@ -70,9 +70,7 @@ info: @E.rec : {motive : A → Sort u_1} →
                       (f : (y : D x c b) → B (x.cons c b y) (c, y)) →
                         motive x →
                           motive_2 x c b →
-                            ((_ir_index_f_0 : D x c b) →
-                                motive_2 (x.cons c b _ir_index_f_0) (c, _ir_index_f_0) (f _ir_index_f_0)) →
-                              motive_2 x c (B.node x c b e f)) →
+                            ((y : D x c b) → motive_2 (x.cons c b y) (c, y) (f y)) → motive_2 x c (B.node x c b e f)) →
               ((x : A) →
                   (c : F x) → (b : B x c) → (d : D x c b) → motive x → motive_2 x c b → motive_3 x c b (E.mk x c b d)) →
                 ((x : A) →
@@ -84,8 +82,7 @@ info: @E.rec : {motive : A → Sort u_1} →
                               motive_2 x c b →
                                 motive_3 x c b e →
                                   motive_3 (x.cons c b d) (c, d) (B.leaf (x.cons c b d) (c, d)) (E.up x c b e d)) →
-                  {x : A} →
-                    {c : F x} → {_ir_arg2 : B x c} → (_ir_self : E x c _ir_arg2) → motive_3 x c _ir_arg2 _ir_self
+                  {x : A} → {c : F x} → {a : B x c} → (t : E x c a) → motive_3 x c a t
 -/
 #guard_msgs in
 #check @E.rec

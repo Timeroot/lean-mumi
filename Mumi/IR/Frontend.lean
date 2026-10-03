@@ -17,9 +17,26 @@ open Lean Elab Command
 structure Binder where
   name : Name
   type : Syntax
-  /-- Written `{x : T}`: implicit in the public declaration it is a binder of. -/
-  implicit : Bool := false
+  /-- As written: `(x : T)`, `{x : T}`, `⦃x : T⦄` or `[x : T]`, which is what the
+  public declaration it is a binder of binds it as. -/
+  info : BinderInfo := .default
+  /-- An instance binder written without a name, `[T]`: named `inst` (`inst_1`,
+  …) as Lean displays it, and bound as `[T]` again by the carrier and decoder
+  declarations, whose bodies pass it as `argText`, `‹T›`. -/
+  anon : Bool := false
+  argText : String := ""
   deriving Inhabited
+
+/-- Whether the binder is anything but explicit. -/
+def Binder.implicit (b : Binder) : Bool := b.info != .default
+
+/-- `d` bracketed as a binder with `info` is. -/
+def bracket (info : BinderInfo) (d : String) : String :=
+  match info with
+  | .implicit => "{" ++ d ++ "}"
+  | .strictImplicit => "⦃" ++ d ++ "⦄"
+  | .instImplicit => "[" ++ d ++ "]"
+  | _ => "(" ++ d ++ ")"
 
 structure Field extends Binder where
   target : Option Nat := none
@@ -145,8 +162,70 @@ def pinUniverses (s : String) : CommandElabM String := do
       i := i + 1
   return out
 
+/-- Whether `c` may be part of an identifier. -/
+private def identChar (c : Char) : Bool := c.isAlphanum || c == '_' || c == '\'' || c.val > 127
+
+/-- `s` with every occurrence of the identifier `old` -- not part of a longer
+one; a projection after it is kept -- replaced by `new`. -/
+def renameToken (s old new : String) : String := Id.run do
+  let a := s.toList.toArray
+  let o := old.toList.toArray
+  let mut out := ""
+  let mut i := 0
+  while i < a.size do
+    if a.extract i (i + o.size) == o && (i == 0 || !(identChar a[i-1]! || a[i-1]! == '.')) &&
+        (i + o.size == a.size || !identChar a[i + o.size]!) then
+      out := out ++ new
+      i := i + o.size
+    else
+      out := out.push a[i]!
+      i := i + 1
+  return out
+
+/-- Whether the identifier `x` occurs in `s`. -/
+def mentionsToken (s x : String) : Bool := renameToken s x "\u0000" != s
+
+/-- The major premise of an eliminator is `t`, as Lean names it, made fresh
+against everything the declaration says. -/
+private def nameMajor (s : String) : String := Id.run do
+  unless mentionsToken s "_ir_self" do return s
+  let mut n := "t"
+  let mut i := 1
+  while mentionsToken s n do
+    n := "t_" ++ toString i
+    i := i + 1
+  return renameToken s "_ir_self" n
+
+/-- Whether a declared name is a public eliminator's, whose major is displayed. -/
+private def isEliminator (n : Name) : Bool :=
+  match n with
+  | .str _ s => s == "rec" || s == "recOn" || s == "casesOn" || s == "cases" || s == "recD" || s == "_ir_recImpl"
+  | _ => false
+
+/-- The names of the binders of a recursive field's domain: each its own, or `a`
+for one written as an arrow, as Lean names it, fresh against `avoid`. -/
+def domainNames (xs : Array Name) (avoid : Array Name) : Array Name := Id.run do
+  let mut out := #[]
+  for x in xs do
+    let base := if x.toString.startsWith "_ir_arg" then "a" else x.toString
+    let mut n := Name.mkSimple base
+    let mut i := 1
+    while avoid.contains n || out.contains n do
+      n := Name.mkSimple (base ++ "_" ++ toString i)
+      i := i + 1
+    out := out.push n
+  return out
+
+/-- The identifiers `s` mentions. -/
+partial def identsOf (s : Syntax) : Array Name :=
+  if s.isIdent then #[s.getId] else s.getArgs.flatMap identsOf
+
 def emit (s : String) : CommandElabM Unit := do
   let s ← pinUniverses s
+  -- a public eliminator's major is displayed: it gets the name Lean gives one
+  let s ← match Parser.runParserCategory (← getEnv) `command s with
+    | .ok t => pure (if (declaredNames t).any isEliminator then nameMajor s else s)
+    | .error _ => pure s
   trace[Mumi.ir] "{s}"
   let stx ← match Parser.runParserCategory (← getEnv) `command s with
     | .ok t => pure t
@@ -215,13 +294,24 @@ partial def subst (s : Syntax) (pairs : Array (Name × Syntax)) : Syntax :=
     | _ => s
 
 def binders (s : Syntax) : CommandElabM (Array Binder) := do
-  let implicit := s.isOfKind ``Parser.Term.implicitBinder
-  unless (s.isOfKind ``Parser.Term.explicitBinder && s[3].getNumArgs == 0 || implicit) && s[2].getNumArgs == 2 do
-    throwErrorAt s "IR prototype requires explicitly typed binders, explicit or implicit (no defaults, no instances)"
+  if s.isOfKind ``Parser.Term.instBinder then
+    -- `[x : T]` or `[T]`
+    if s[1].getNumArgs == 0 then
+      return #[{ name := `_ir_inst, type := s[2], info := .instImplicit, anon := true,
+                 argText := "‹" ++ (← text s[2]) ++ "›" }]
+    let n := s[1][0]
+    if n.getId.toString.startsWith "_ir_" then throwErrorAt n "Names beginning with '_ir_' are reserved inside IR blocks"
+    return #[{ name := n.getId, type := s[2], info := .instImplicit }]
+  let info : BinderInfo :=
+    if s.isOfKind ``Parser.Term.implicitBinder then .implicit
+    else if s.isOfKind ``Parser.Term.strictImplicitBinder then .strictImplicit
+    else .default
+  unless (s.isOfKind ``Parser.Term.explicitBinder && s[3].getNumArgs == 0 || info != .default) && s[2].getNumArgs == 2 do
+    throwErrorAt s "IR prototype requires explicitly typed binders (no default values)"
   s[1].getArgs.mapM fun n => do
     unless n.isIdent do throwErrorAt n "IR prototype requires named binders"
     if n.getId.toString.startsWith "_ir_" then throwErrorAt n "Names beginning with '_ir_' are reserved inside IR blocks"
-    return { name := n.getId, type := s[2][1], implicit }
+    return { name := n.getId, type := s[2][1], info }
 
 def telescopeHead (s : Syntax) (n := 0) : CommandElabM (Array Binder × Syntax) := do
   let s := unparen s
@@ -248,6 +338,15 @@ partial def telescope (s : Syntax) (n := 0) : CommandElabM (Array Binder × Synt
 
 def signature (s : Syntax) : CommandElabM (Array Binder × Syntax) := do
   let bs ← s[0].getArgs.flatMapM binders
+  -- an anonymous instance is named as Lean displays it, the same on every declaration
+  let mut out := #[]
+  let mut k := 0
+  for b in bs do
+    if b.anon then
+      out := out.push { b with name := Name.mkSimple (if k == 0 then "inst" else "inst_" ++ toString k) }
+      k := k + 1
+    else out := out.push b
+  let bs := out
   let r ← if s[1].getNumArgs == 0 then parseTerm "Type" else pure s[1][0][1]
   return (bs, r)
 
@@ -385,9 +484,12 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
             throwErrorAt f.type "IR recursive argument domains cannot contain the carriers themselves"
           let mut renamed := #[]
           let mut pairs := #[]
+          let fresh := domainNames (domain.map (·.name))
+            (globalNames ++ params.map (·.name) ++ (bs ++ tail).map (·.name) ++
+              (identsOf f.type).filter fun n => !(domain.map (·.name)).contains n)
           for k in [:domain.size] do
             let x := domain[k]!
-            let name := Name.mkSimple ("_ir_index_" ++ f.name.toString ++ "_" ++ toString k)
+            let name := fresh[k]!
             renamed := renamed.push { name, type := subst x.type pairs : Binder }
             pairs := pairs.push (x.name, mkIdent name)
           return { f with target, domain := if target.isSome then renamed else #[] : Field }
@@ -435,13 +537,13 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
 
 private def fieldDecl (f : Binder) : CommandElabM String := do
   let d := f.name.toString ++ " : " ++ (← text f.type)
-  return if f.implicit then "{" ++ d ++ "}" else par d
+  return bracket f.info d
 private def paramsDecl (b : Block) : CommandElabM String := return join (← b.params.mapM fieldDecl)
 /-- The shared parameters as a public constructor or eliminator binds them:
 implicit, as Lean's own do.  Every application the frontend writes of one is
 `@`-qualified and positional. -/
 private def pubParamsDecl (b : Block) : CommandElabM String :=
-  return join (← b.params.mapM fun p => fieldDecl { p with implicit := true })
+  return join (← b.params.mapM fun p => fieldDecl { p with info := .implicit })
 private def fieldsDecl (fs : Array Field) : CommandElabM String := return join (← fs.mapM (fieldDecl ∘ Field.toBinder))
 private def names (fs : Array Field) := fs.map (pname ∘ Binder.name ∘ Field.toBinder)
 private def lambda (bs : Array Binder) (body : String) : CommandElabM String := do

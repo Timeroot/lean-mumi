@@ -102,9 +102,11 @@ structure Field where
   conclusion index with such an argument, whose semantics is its own decode. -/
   value : Option Syntax := none
   hiddenArg : Bool := false
-  /-- Written `{x : T}`: implicit in the public constructor. -/
-  implicit : Bool := false
+  /-- As written: what the public constructor binds it as. -/
+  info : BinderInfo := .default
   deriving Inhabited
+
+def Field.implicit (f : Field) : Bool := f.info != .default
 
 structure Ctor where
   name : Name
@@ -228,17 +230,35 @@ private def semVar (n : Name) := "_ir_sem_" ++ n.toString
 private def ihVar (n : Name) := "_ir_ih_" ++ n.toString
 private def outField (i : Nat) := "_ir_out" ++ toString i
 private def pArgs (b : Block) := b.params.map (pname ∘ Binder.name)
+/-- The parameters as arguments where an anonymous instance is bound anonymously:
+by `‹T›`. -/
+private def anonArgs (b : Block) := b.params.map fun p => if p.anon then p.argText else pname p.name
+private def withAnonParams (b : Block) (n : String) (xs : Array String) := app n (anonArgs b ++ xs)
 private def atParams (b : Block) (n : String) := if b.params.isEmpty then n else app n (pArgs b)
 private def withParams (b : Block) (n : String) (xs : Array String) := app n (pArgs b ++ xs)
 private def fieldDecl (f : Binder) : CommandElabM String := do
   let d := f.name.toString ++ " : " ++ (← text f.type)
-  return if f.implicit then "{" ++ d ++ "}" else par d
-private def paramsDecl (b : Block) : CommandElabM String := return join (← b.params.mapM fieldDecl)
-/-- The shared parameters as a public constructor or eliminator binds them:
-implicit, as Lean's own do.  Every application the frontend writes of one is
-`@`-qualified and positional. -/
+  -- an anonymous instance is bound as written where it is bound as written
+  if f.anon && f.info == .instImplicit then return "[" ++ (← text f.type) ++ "]"
+  return bracket f.info d
+/-- The shared parameters as a generated declaration binds them: explicit, an
+instance among them too, which is a local instance all the same.  Every
+application of one is positional. -/
+private def paramsDecl (b : Block) : CommandElabM String :=
+  return join (← b.params.mapM fun p => fieldDecl { p with info := .default, anon := false })
+/-- The shared parameters as the carriers bind them: as written. -/
+private def carrierParamsDecl (b : Block) : CommandElabM String := return join (← b.params.mapM fieldDecl)
+/-- The shared parameters as a public constructor or eliminator binds them: an
+explicit one implicit, as Lean's own do, an instance an instance.  Every
+application the frontend writes of one is `@`-qualified and positional. -/
 private def pubParamsDecl (b : Block) : CommandElabM String :=
-  return join (← b.params.mapM fun p => fieldDecl { p with implicit := true })
+  return join (← b.params.mapM fun p => fieldDecl { p with info := if p.info == .default then .implicit else p.info, anon := false })
+/-- A decoder's type after its indices: `X idx → R`, or `(a : X idx) → R` where
+the result mentions the major, as Lean displays one declared either way. -/
+private def decoderTail (d : Decoder) : CommandElabM String := do
+  if mentions d.result #[d.major] then
+    return "(" ++ d.major.toString ++ " : " ++ (← text d.majorType) ++ ") → " ++ (← text d.result)
+  return (← text d.majorType) ++ " → " ++ (← text d.result)
 /-- A decoder's shared parameters as its author bound them. -/
 private def decParamsDecl (d : Decoder) : CommandElabM String := return join (← d.params.mapM fieldDecl)
 /-- The shared parameters a call of decoder `d` writes: its explicit ones. -/
@@ -305,6 +325,8 @@ private def indexed (b : Block) (k : Nat) := !b.members[k]!.indices.isEmpty
 /-- `s` read as carrier `k` at the shared parameters and some index arguments. -/
 private def memberApp? (names : Array Name) (params : Array Binder) (s : Syntax) :
     Option (Nat × Array Syntax) := Id.run do
+  -- a carrier is written at its explicit parameters, as Lean's own is
+  let params := params.filter (·.info == .default)
   let (head, args) := unapp s
   let some i := names.findIdx? (same head ·) | return none
   if args.size < params.size then return none
@@ -328,20 +350,113 @@ private def ctorRef? (b : Block) (expect : Option Nat) (s : Syntax) : Option (Na
         return some (k, ci)
   return none
 
-/-- A public index term of carrier `expect` as text, with a constructor written
-`.c` given its full name, recursively into its arguments, so that the term can
-be read where no expected type resolves the dot -- under `.val`, say. -/
-private partial def qualifyText (b : Block) (expect : Option Nat) (s : Syntax) : CommandElabM String := do
+/-- The fields of constructor `ci` of carrier `k` an application of it with head
+`h` writes, one per field, `none` for an implicit one left out: `@X.c` writes the
+parameters and every field, `X.c` and `.c` every field or the explicit ones. -/
+private def fieldArgs (b : Block) (k ci : Nat) (h : Syntax) (args : Array Syntax) : Option (Array (Option Syntax)) :=
+  let c := b.members[k]!.ctors[ci]!
+  if h.isOfKind ``Parser.Term.explicit then
+    let fargs := args.extract b.params.size args.size
+    if fargs.size == c.fields.size then some (fargs.map some) else none
+  else if args.size == c.fields.size then some (args.map some)
+  else if args.size == (c.fields.filter (!·.implicit)).size then Id.run do
+    let mut out := #[]
+    let mut j := 0
+    for f in c.fields do
+      if f.implicit then out := out.push none
+      else
+        out := out.push (some args[j]!)
+        j := j + 1
+    return some out
+  else none
+
+/-- `sol` extended by matching `p`, a term over the names `unknowns`, against `t`,
+both of carrier `expect` if known: a sought name matches anything, and two
+applications of one constructor of the block match field by field where both
+write the field.  Anything else says nothing. -/
+private partial def matchInto (b : Block) (unknowns : Array Name) (expect : Option Nat)
+    (sol : Array (Name × Syntax)) (p t : Syntax) : Array (Name × Syntax) := Id.run do
+  let p := unparen p
+  let t := unparen t
+  if p.isIdent && unknowns.contains p.getId then
+    return if sol.any (·.1 == p.getId) then sol else sol.push (p.getId, t)
+  let (hp, ap) := unapp p
+  let (ht, at_) := unapp t
+  -- a dotted head is resolved against the other side's, or the expected carrier
+  let expect := expect <|> (ctorRef? b none hp).map (·.1) <|> (ctorRef? b none ht).map (·.1)
+  let some (k, ci) := ctorRef? b expect hp | return sol
+  unless ctorRef? b expect ht == some (k, ci) do return sol
+  let some fp := fieldArgs b k ci hp ap | return sol
+  let some ft := fieldArgs b k ci ht at_ | return sol
+  let mut sol := sol
+  for ((f, x), y) in (b.members[k]!.ctors[ci]!.fields.zip fp).zip ft do
+    if let (some x, some y) := (x, y) then
+      sol := matchInto b unknowns (f.target.map (·.1)) sol x y
+  return sol
+
+/-- The index arguments of a term of carrier `k`: of a variable, as `ctx`
+declares it; of a constructor application of the block, its conclusion at the
+fields it writes (`qualified`, the application with every field). -/
+private def indicesOf (b : Block) (ctx : Array Binder) (k : Nat) (t : Syntax) (qualified : Option Syntax) :
+    Option (Array Syntax) := Id.run do
+  let t := unparen t
+  if t.isIdent then
+    let some x := ctx.findRev? (·.name == t.getId) | return none
+    let some (k', idx) := memberApp? (b.members.map (·.name)) b.params x.type | return none
+    return if k' == k then some idx else none
+  let some q := qualified | return none
+  let (h, args) := unapp q
+  let some (k', ci) := ctorRef? b (some k) h | return none
+  unless k' == k do return none
+  let some fs := fieldArgs b k ci h args | return none
+  let c := b.members[k]!.ctors[ci]!
+  let pairs := (c.fields.zip fs).filterMap fun (f, a) => a.map (f.name, ·)
+  return some (c.result.map (subst · pairs))
+
+/-- A public index term of carrier `expect` as text, every constructor
+application of the block in it given its full name with the parameters and
+every field, so that the term can be read where no expected type resolves the
+dot -- under `.val`, say -- and the encoding can see every field.  An implicit
+field written nowhere is found as Lean's elaborator would find it, by matching
+the constructor's conclusion against `expectIdx`, the index arguments the term
+stands at, and the types of its explicit fields against those of the arguments,
+which `ctx` declares where they are variables. -/
+private partial def qualifyText (b : Block) (expect : Option Nat) (s : Syntax)
+    (ctx : Array Binder := #[]) (expectIdx : Option (Array Syntax) := none) : CommandElabM String := do
   let (h, args) := unapp s
   let some (k, ci) := ctorRef? b expect h | text s
   let m := b.members[k]!
   let c := m.ctors[ci]!
-  -- `@X.c` carries the parameters; `X.c` and `.c` leave them implicit, as the public constructor does
-  let fargs := if h.isOfKind ``Parser.Term.explicit then args.extract b.params.size args.size else args
-  unless fargs.size == c.fields.size do return ← text s
+  let some written := fieldArgs b k ci h args | text s
+  -- the fields left out, solved for
+  let unknowns := (c.fields.zip written).filterMap fun (f, a) => if a.isNone then some f.name else none
+  let known := (c.fields.zip written).filterMap fun (f, a) => a.map (f.name, ·)
+  let mut sol : Array (Name × Syntax) := #[]
+  if !unknowns.isEmpty then
+    if let some es := expectIdx then
+      for ((x, r), e) in (m.indices.zip c.result).zip es do
+        sol := matchInto b unknowns (x.member.map (·.1)) sol (subst r known) e
+    for (f, a) in c.fields.zip written do
+      let (some (j, pats), some a) := (f.target, a) | continue
+      unless f.domain.isEmpty do continue
+      let pats := pats.map (subst · known)
+      let qa ← if (unapp a).1.isIdent && ctx.any (·.name == (unapp a).1.getId) then pure none
+        else
+          let solved := unknowns.all fun n => sol.any (·.1 == n)
+          let ex := if solved then some (pats.map (subst · sol)) else none
+          try pure (some (← parseTerm (← qualifyText b (some j) a ctx ex))) catch _ => pure none
+      if let some idx := indicesOf b ctx j a qa then
+        for ((x, pt), it) in (b.members[j]!.indices.zip pats).zip idx do
+          sol := matchInto b unknowns (x.member.map (·.1)) sol pt it
+    for n in unknowns do
+      unless sol.any (·.1 == n) do
+        throwErrorAt s "Cannot find the implicit field `{n}` of `{m.name}.{c.name}` here; write every field, `{m.name}.{c.name} {c.fields.map (·.name)}`"
+  let full := (c.fields.zip written).map fun (f, a) => a.getD ((sol.find? (·.1 == f.name)).map (·.2) |>.getD Syntax.missing)
+  let pairs := c.fields.zip full |>.map fun (f, a) => (f.name, a)
   let mut out := #[]
-  for (f, a) in c.fields.zip fargs do
-    out := out.push (← qualifyText b (f.target.map (·.1)) a)
+  for (f, a) in c.fields.zip full do
+    let ex := f.target.bind fun (_, pats) => if f.domain.isEmpty then some (pats.map (subst · pairs)) else none
+    out := out.push (← qualifyText b (f.target.map (·.1)) a ctx ex)
   -- every field, the implicit ones included, so `@`
   return withParams b ("@" ++ m.name.toString ++ "." ++ c.name.toString) out
 
@@ -409,9 +524,15 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
     unless d[1][1].getNumArgs == 0 do throwErrorAt d "IR prototype uses surrounding universe declarations, not explicit declaration universe lists"
     if d.isOfKind ``Parser.Command.«inductive» then
       let (ps, result) ← signature d[2]
-      if ps.any (·.implicit) then
-        throwErrorAt d "IR carriers take their shared parameters explicitly, `(x : T)`; their constructors and eliminators take them implicitly"
+      if ps.any fun p => p.info == .implicit || p.info == .strictImplicit then
+        throwErrorAt d "IR carriers take their shared parameters explicitly, `(x : T)`, or as instances, `[C x]`; their constructors and eliminators take them implicitly"
       let (idx, result) ← telescope result
+      -- an index written as an arrow is named as Lean names it, `a`
+      let fresh := domainNames (idx.map (·.name))
+        -- fresh against every name the block uses: the encoding derives names from both
+        (globalNames ++ ps.map (·.name) ++ elems.flatMap identsOf)
+      let idx := (idx.zip fresh).map fun (x, n) =>
+        if x.name.toString.startsWith "_ir_arg" then { x with name := n } else x
       let prop := result.isOfKind ``Parser.Term.prop
       unless prop || result.isOfKind ``Parser.Term.type do
         throwErrorAt result "IR prototype supports carriers declared in Type u, possibly indexed, and members in Prop"
@@ -458,7 +579,7 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
         let (tail, result) ← telescope result bs.size
         checkDistinct ((bs ++ tail).map (·.name)) (globalNames ++ params.map (·.name))
         let result ← if c[4][1].getNumArgs == 0 then
-            if m.indices.isEmpty then parseTerm (atParams { members, decoders := #[], params, level } m.name.toString)
+            if m.indices.isEmpty then parseTerm (app m.name.toString ((params.filter (·.info == .default)).map (pname ∘ Binder.name)))
             else throwErrorAt c "A constructor of the indexed carrier `{m.name}` has to state its conclusion"
           else pure result
         let some (k, idxArgs) := memberApp? names params result
@@ -480,13 +601,16 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
             throwErrorAt f.type "IR recursive argument domains cannot contain the carriers themselves"
           let mut renamed := #[]
           let mut pairs := #[]
+          let fresh := domainNames (domain.map (·.name))
+            (globalNames ++ params.map (·.name) ++ fieldNames ++ m.indices.map (·.name) ++
+              (identsOf f.type).filter fun n => !(domain.map (·.name)).contains n)
           for k in [:domain.size] do
             let x := domain[k]!
-            let name := Name.mkSimple ("_ir_index_" ++ f.name.toString ++ "_" ++ toString k)
+            let name := fresh[k]!
             renamed := renamed.push { name, type := subst x.type pairs : Binder }
             pairs := pairs.push (x.name, mkIdent name)
           let target := target.map fun (k, args) => (k, args.map (subst · pairs))
-          return { name := f.name, type := f.type, target, domain := if target.isSome then renamed else #[], implicit := f.implicit : Field }
+          return { name := f.name, type := f.type, target, domain := if target.isSome then renamed else #[], info := f.info : Field }
         for x in idxArgs do checkTermBinders (globalNames ++ params.map (·.name) ++ fieldNames) x
         ctors := ctors.push { name := c[3].getId, fields := fs, result := idxArgs, doc := docOf c[0] }
       if ctors.isEmpty then throwErrorAt d "IR prototype currently requires at least one constructor per carrier"
@@ -496,17 +620,31 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
   -- name, applied to the parameters with `@`; a field's type is restated only
   -- where that changed it
   let tmp : Block := { members, decoders := #[], params, level }
-  members ← members.mapM fun m => do
+  members ← members.mapIdxM fun mi' m => do
     let ctors ← m.ctors.mapM fun c => do
-      let result ← (m.indices.zip c.result).mapM fun (x, r) => do parseTerm (← qualifyText tmp (x.member.map (·.1)) r)
+      let ctx := c.fields.map fun f => ({ name := f.name, type := f.type } : Binder)
+      -- an index's own type at the arguments before it
+      let at_ (k : Nat) (args : Array Syntax) (j : Nat) : Option (Array Syntax) := do
+        let x := members[k]!.indices[j]!
+        let some (_, idx) := x.member | none
+        let pairs := (members[k]!.indices.zip args).extract 0 j |>.map fun (y, a) => (y.name, a)
+        some (idx.map (subst · pairs))
+      let mut qresult := #[]
+      for j in [:m.indices.size] do
+        let x := m.indices[j]!
+        qresult := qresult.push (← parseTerm (← qualifyText tmp (x.member.map (·.1)) c.result[j]! ctx (at_ mi' c.result j)))
+      let result := qresult
       let fields ← c.fields.mapM fun f => do
         let some (k, args) := f.target | pure f
-        let qargs ← (members[k]!.indices.zip args).mapM fun (x, a) => do parseTerm (← qualifyText tmp (x.member.map (·.1)) a)
+        let mut qargs := #[]
+        for j in [:members[k]!.indices.size] do
+          let x := members[k]!.indices[j]!
+          qargs := qargs.push (← parseTerm (← qualifyText tmp (x.member.map (·.1)) args[j]! (ctx ++ f.domain) (at_ k args j)))
         -- restated only where a dotted constructor was resolved: the `@` a
         -- qualified one gains is no change
         let plain (q : Syntax) : CommandElabM String := do return (← text q).replace "@" ""
         if (← args.mapM plain) == (← qargs.mapM plain) then return f
-        let type ← parseTerm (← forallS f.domain (withParams tmp members[k]!.name.toString (← qargs.mapM text)))
+        let type ← parseTerm (← forallS f.domain (withParams tmp ("@" ++ members[k]!.name.toString) (← qargs.mapM text)))
         pure { f with target := some (k, qargs), type }
       pure { c with result, fields }
     pure { m with ctors }
@@ -890,7 +1028,7 @@ private def pubArity (b : Block) (i : Nat) (implicit := false) : CommandElabM St
 /-- `X params idx`. -/
 private def typeAt (b : Block) (i : Nat) (idx : Array String) : String :=
   let m := b.members[i]!
-  if b.params.isEmpty && idx.isEmpty then m.name.toString else withParams b m.name.toString idx
+  if b.params.isEmpty && idx.isEmpty then m.name.toString else withParams b ("@" ++ m.name.toString) idx
 
 /-- Members and decoders in an order every arity and signature can be declared in. -/
 private def declarationOrder (b : Block) : CommandElabM (Array (Sum Nat Nat)) := do
@@ -1093,17 +1231,16 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       let m := b.members[i]!
       let ppi := pubPairIdx b i (pubIdxNames b i)
       if m.prop then
-        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Prop := " ++ withParams b (wfName m) ppi)
+        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Prop := " ++ withAnonParams b (wfName m) ppi)
       else if b.wf then
-        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withParams b (graphName m) ppi ++ " // " ++ withParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
+        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi ++ " // " ++ withAnonParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
       else
-        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withParams b (graphName m) ppi)
+        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi)
     | .inr j =>
       let d := b.decoders[j]!
       let idx ← d.idx.mapM fieldDecl
-      let result := subst d.result #[(d.major, mkIdent `_ir_self)]
       let node := if b.wf then "_ir_self.1.1." else "_ir_self.1."
-      emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ node ++ outField j)
+      emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " : " ++ (← decoderTail d) ++ " := fun _ir_self => " ++ node ++ outField j)
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -1122,7 +1259,7 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
         else if isProofTarget b f.target then props := props.push f.name.toString
         else xs := xs.push f.name.toString
       let attrs := if c.fields.isEmpty then "@[reducible, match_pattern] " else "@[reducible] "
-      let fields ← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type, implicit := f.implicit }
+      let fields ← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type, info := f.info }
       let _ := fields
       let result ← c.result.mapM text
       let head := m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ join fields ++ " : " ++ typeAt b i result
@@ -1162,7 +1299,7 @@ private def fieldsDecl (c : Ctor) : CommandElabM String := do
   return join (← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type })
 /-- The fields of `c` as the public constructor binds them: an implicit one implicit. -/
 private def ctorDecl (c : Ctor) : CommandElabM String := do
-  return join (← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type, implicit := f.implicit })
+  return join (← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type, info := f.info })
 private def applyTo (f : String) (xs : Array String) := if xs.isEmpty then f else app f xs
 
 /-- `motive_j idx (f dom)` for the recursive field `f`. -/
@@ -2199,9 +2336,9 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let m := b.members[k]!
       let gargs ← goodIdxPub b k (m.indices.map fun x => mkIdent x.name)
       if m.prop then
-        emitL (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Prop := " ++ withParams b (goodName m) gargs)
+        emitL (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b k) ++ " : Prop := " ++ withAnonParams b (goodName m) gargs)
         continue
-      emitL (m.doc ++ "def " ++ m.name.toString ++ " " ++ ps ++ " " ++ (← pubArity b k) ++ " : Type " ++ m.level ++ " := { _ir_a : " ++ rawAt b k ++ " // " ++ withParams b (goodName m) (gargs ++ #["_ir_a"]) ++ " }")
+      emitL (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b k) ++ " : Type " ++ m.level ++ " := { _ir_a : " ++ app (rawName m) (anonArgs b) ++ " // " ++ withAnonParams b (goodName m) (gargs ++ #["_ir_a"]) ++ " }")
       -- the semantics of a public value, at the semantics of its indices
       let idx := pubIdxNames b k
       let sIdx ← m.indices.mapM fun x => do
@@ -2215,8 +2352,7 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let d := b.decoders[j]!
       let m := b.members[d.target]!
       let idx ← d.idx.mapM fieldDecl
-      let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-      emitDefL (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " (_ir_self : " ++ (← text d.majorType) ++ ") : " ++ (← text result) ++ " := " ++ par (app (pubSemName m) (pArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
+      emitDefL (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " : " ++ (← decoderTail d) ++ " := fun _ir_self => " ++ par (app (pubSemName m) (anonArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
   let mut lemmas : Array String := b.members.flatMap fun m => m.ctors.map (valLemma m)
   for k in [:b.members.size] do
     let m := b.members[k]!
@@ -2722,7 +2858,8 @@ private def elaborateLower (b : Block) (order : Array (Sum Nat Nat)) : CommandEl
 
 /-- Whether `s` has an implicit binder anywhere. -/
 private partial def hasImplicit (s : Syntax) : Bool :=
-  s.isOfKind ``Parser.Term.implicitBinder || s.getArgs.any hasImplicit
+  s.isOfKind ``Parser.Term.implicitBinder || s.isOfKind ``Parser.Term.strictImplicitBinder ||
+    s.isOfKind ``Parser.Term.instBinder || s.getArgs.any hasImplicit
 
 /-- Whether a block needs this path: some carrier is indexed, or a binder is implicit. -/
 def isIndexed (elems : Array Syntax) : CommandElabM Bool := do

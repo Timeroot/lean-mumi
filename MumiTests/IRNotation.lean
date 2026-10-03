@@ -117,7 +117,7 @@ end
 #guard_msgs in
 #check @Ty.pi
 
-/-- info: Implicit.Val {Γ : Ctx} (_ir_self : Ty Γ) : Type -/
+/-- info: Implicit.Val {Γ : Ctx} : Ty Γ → Type -/
 #guard_msgs in
 #check Val
 
@@ -195,7 +195,7 @@ end
 #guard_msgs in
 #check @Ty.pi
 
-/-- info: Params.El {X : Type} (_ir_self : Ctx X) : Type -/
+/-- info: Params.El {X : Type} : Ctx X → Type -/
 #guard_msgs in
 #check El
 
@@ -246,7 +246,7 @@ end ParamsLower
 
 /-! A carrier's parameters are explicit, as the type's own are in Lean. -/
 
-/-- error: IR carriers take their shared parameters explicitly, `(x : T)`; their constructors and eliminators take them implicitly -/
+/-- error: IR carriers take their shared parameters explicitly, `(x : T)`, or as instances, `[C x]`; their constructors and eliminators take them implicitly -/
 #guard_msgs in
 mutual
 inductive U {α : Type} : Type where
