@@ -137,7 +137,7 @@ end
 
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) : Val (.pi A B) = ((x : Val A) → Val B) := rfl
 def size {Γ : Ctx} {A : Ty Γ} (t : Tm Γ A) : Nat :=
-  Tm.rec (motive := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => Nat)
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
     (fun _ _ _ _ _ _ _ ih => ih + 1) (fun _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) (t : Tm (.snoc Γ A) B) : size (Tm.lam t) = size t + 1 := rfl
@@ -180,7 +180,7 @@ end
 
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) : Val (.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
 def size {Γ : Ctx} {A : Ty Γ} (t : Tm Γ A) : Nat :=
-  Tm.rec (motive := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => Nat)
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
     (fun _ _ _ _ _ _ _ ih => ih + 1) (fun _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) (t : Tm (.snoc Γ A) B) : size (Tm.lam t) = size t + 1 := rfl

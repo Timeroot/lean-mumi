@@ -45,14 +45,14 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.ext Γ A)) :
     El Γ (Ty.Pi Γ A B) = fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩ := rfl
 
 /--
-info: @Ty.rec : {motive : Ctx → Sort u_1} →
+info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
   {motive_2 : (Γ : Ctx) → Ty Γ → Sort u_1} →
-    motive Ctx.nil →
-      ((Γ : Ctx) → (A : Ty Γ) → motive Γ → motive_2 Γ A → motive (Γ.ext A)) →
-        ((Γ : Ctx) → motive Γ → motive_2 Γ (Ty.U Γ)) →
+    motive_1 Ctx.nil →
+      ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_1 (Γ.ext A)) →
+        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.U Γ)) →
           ((Γ : Ctx) →
               (A : Ty Γ) →
-                (B : Ty (Γ.ext A)) → motive Γ → motive_2 Γ A → motive_2 (Γ.ext A) B → motive_2 Γ (Ty.Pi Γ A B)) →
+                (B : Ty (Γ.ext A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.ext A) B → motive_2 Γ (Ty.Pi Γ A B)) →
             {Γ : Ctx} → (t : Ty Γ) → motive_2 Γ t
 -/
 #guard_msgs in
@@ -78,7 +78,7 @@ info: @Ty.recD : {motive : (Γ : Ctx) → Ty Γ → Sort u_1} →
 
 /-- The number of `ext`s, by the recursor. -/
 def len : Ctx → Nat :=
-  Ctx.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Unit)
+  Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Unit)
     0 (fun _ _ ih _ => ih + 1) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
 
 /-- info: 2 -/
@@ -88,7 +88,7 @@ def len : Ctx → Nat :=
 
 /-- A closed environment for every context, by the joint recursion. -/
 def env : (Γ : Ctx) → Env Γ :=
-  Ctx.rec (motive := fun Γ => Env Γ) (motive_2 := fun Γ A => (ρ : Env Γ) → El Γ A ρ)
+  Ctx.rec (motive_1 := fun Γ => Env Γ) (motive_2 := fun Γ A => (ρ : Env Γ) → El Γ A ρ)
     PUnit.unit
     (fun _ _ ρ a => ⟨ρ, a ρ⟩)
     (fun _ _ _ => (0 : Nat))
@@ -215,7 +215,7 @@ end
 example (n : Nat) (a : Code) (v : Vec n) : Env (n + 1) (Vec.cons n a v) = (El a × Env n v) := rfl
 
 def len (n : Nat) (v : Vec n) : Nat :=
-  Vec.rec (motive := fun _ _ => Nat) (motive_2 := fun _ => Unit)
+  Vec.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ => Unit)
     0 (fun _ _ _ _ ih => ih + 1) () (fun _ _ _ => ()) v
 
 /-- info: 2 -/
@@ -392,7 +392,7 @@ example {motive : Ctx → Sort u} {motive_2 : (Γ : Ctx) → Ty Γ → Sort u}
 
 /-- How many `ext`s a context has, counting through the types it holds. -/
 def size : Ctx → Nat :=
-  Ctx.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat)
+  Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
     0 (fun _ _ ihΓ ihA => ihΓ + ihA + 1) (fun _ _ => 0)
     (fun _ _ _ _ _ ihA ihB ihC => ihA + ihB + ihC) (fun _ _ _ _ _ ihA ihB ihf => ihA + ihB + ihf 0)
 

@@ -48,20 +48,20 @@ end
 example (Γ : Ctx) (h h' : Closed Γ) (A : Ty Γ) : Tm Γ h A = Tm Γ h' A := rfl
 
 /--
-info: @Tm.rec : {motive : Ctx → Sort u_1} →
+info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
   {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
     {motive_4 : (Γ : Ctx) → (a : Closed Γ) → (a_1 : Ty Γ) → Tm Γ a a_1 → Sort u_1} →
-      motive Ctx.nil →
-        ((Γ : Ctx) → (A : Ty Γ) → motive Γ → motive_2 Γ A → motive (Γ.snoc A)) →
-          ((Γ : Ctx) → motive Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → (A B : Ty Γ) → motive Γ → motive_2 Γ A → motive_2 Γ B → motive_2 Γ (Ty.arr Γ A B)) →
-              ((Γ : Ctx) → (h : Closed Γ) → motive Γ → motive_4 Γ h (Ty.base Γ) (Tm.lit Γ h)) →
+      motive_1 Ctx.nil →
+        ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_1 (Γ.snoc A)) →
+          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
+            ((Γ : Ctx) → (A B : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_2 Γ B → motive_2 Γ (Ty.arr Γ A B)) →
+              ((Γ : Ctx) → (h : Closed Γ) → motive_1 Γ → motive_4 Γ h (Ty.base Γ) (Tm.lit Γ h)) →
                 ((Γ : Ctx) →
                     (h : Closed Γ) →
                       (A B : Ty Γ) →
                         (f : Tm Γ h (Ty.arr Γ A B)) →
                           (x : Tm Γ h A) →
-                            motive Γ →
+                            motive_1 Γ →
                               motive_2 Γ A →
                                 motive_2 Γ B →
                                   motive_4 Γ h (Ty.arr Γ A B) f →
@@ -72,7 +72,7 @@ info: @Tm.rec : {motive : Ctx → Sort u_1} →
 #check @Tm.rec
 
 def size {Γ : Ctx} {h : Closed Γ} {A : Ty Γ} (t : Tm Γ h A) : Nat :=
-  Tm.rec (motive := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_4 := fun _ _ _ _ => Nat)
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_4 := fun _ _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
     (fun _ _ _ => 1) (fun _ _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (h : Closed Γ) : size (Tm.lit Γ h) = 1 := rfl
@@ -117,7 +117,7 @@ end
 example (Γ : Ctx) (h h' : Closed Γ) (A : Ty Γ) : Tm Γ h A = Tm Γ h' A := rfl
 
 def size {Γ : Ctx} {h : Closed Γ} {A : Ty Γ} (t : Tm Γ h A) : Nat :=
-  Tm.rec (motive := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_4 := fun _ _ _ _ => Nat)
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_4 := fun _ _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
     (fun _ _ _ => 1) (fun _ _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (h : Closed Γ) (A B : Ty Γ) (f : Tm Γ h (.arr Γ A B)) (x : Tm Γ h A) :
@@ -159,7 +159,7 @@ end
 example (Γ : Ctx) (h : Ok Γ) (A : Ty Γ h) (B : Ty (.snoc Γ h A) (.snoc Γ h A)) :
     Val Γ h (.pi Γ h A B) = ((x : Val Γ h A) → Val (.snoc Γ h A) (.snoc Γ h A) B) := rfl
 def depth {Γ : Ctx} {h : Ok Γ} (A : Ty Γ h) : Nat :=
-  Ty.rec (motive := fun _ => Unit) (motive_3 := fun _ _ _ => Nat)
+  Ty.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => Nat)
     () (fun _ _ _ _ _ => ()) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => max ihA ihB + 1) A
 example (Γ : Ctx) (h : Ok Γ) (A : Ty Γ h) (B : Ty (.snoc Γ h A) (.snoc Γ h A)) :
     depth (.pi Γ h A B) = max (depth A) (depth B) + 1 := rfl
@@ -191,7 +191,7 @@ end
 example (Γ : Ctx) (h : Ok Γ) (A : Ty Γ h) (B : Ty (.snoc Γ h A) (.snoc Γ h A)) :
     Val Γ h (.pi Γ h A B) = ((x : Val Γ h A) → Val (.snoc Γ h A) (.snoc Γ h A) B) := Val_pi Γ h A B
 def depth {Γ : Ctx} {h : Ok Γ} (A : Ty Γ h) : Nat :=
-  Ty.rec (motive := fun _ => Unit) (motive_3 := fun _ _ _ => Nat)
+  Ty.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => Nat)
     () (fun _ _ _ _ _ => ()) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => max ihA ihB + 1) A
 example (Γ : Ctx) (h : Ok Γ) (A : Ty Γ h) (B : Ty (.snoc Γ h A) (.snoc Γ h A)) :
     depth (.pi Γ h A B) = max (depth A) (depth B) + 1 := rfl

@@ -57,7 +57,7 @@ example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) :
 
 /-- The number of `cons`es in an `A`, counting through the `B` it holds. -/
 def size : A → Nat :=
-  A.rec (motive := fun _ => Nat) (motive_2 := fun _ _ _ => Nat) (motive_3 := fun _ _ _ _ => Unit)
+  A.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => Nat) (motive_3 := fun _ _ _ _ => Unit)
     0 (fun _ _ _ _ ihx ihb => ihx + ihb + 1)
     (fun _ _ ihx => ihx) (fun _ _ _ _ _ ihx ihb _ => ihx + ihb)
     (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())

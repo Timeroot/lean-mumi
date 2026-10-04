@@ -125,7 +125,7 @@ example (Γ : Ctx) (A : Ty Γ) : Val (Ty.pi A Ty.base) = ((x : Val A) → Nat) :
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : Val (Ty.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
 /-- The minor premises bind every field, as Lean's own recursors do. -/
 def tsize (Γ : Ctx) (A : Ty Γ) : Nat :=
-  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : tsize Γ (Ty.pi A B) = tsize Γ A + tsize _ B + 1 := rfl
 theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -159,7 +159,7 @@ end
 
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : Val (Ty.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
 def tsize (Γ : Ctx) (A : Ty Γ) : Nat :=
-  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : tsize Γ (Ty.pi A B) = tsize Γ A + tsize _ B + 1 := rfl
 theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -202,7 +202,7 @@ end
 example (A : Ty Nat .nil) : El (.snoc .nil A) = (Unit × Val Nat A) := rfl
 example : Val Nat (Ty.pi (Γ := .nil) (.base 0) (.base 1)) = (Nat → Nat) := rfl
 def tsize {X : Type} (Γ : Ctx X) (A : Ty X Γ) : Nat :=
-  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
 example : tsize .nil (Ty.pi (X := Nat) (.base 0) (.base 1)) = 1 := rfl
 theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
   induction A with
@@ -236,7 +236,7 @@ end
 
 example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (B : Ty X (Ctx.snoc Γ A)) : Val X (Ty.pi A B) = ((x : Val X A) → Val X B) := Val_pi X Γ A B
 def tsize {X : Type} (Γ : Ctx X) (A : Ty X Γ) : Nat :=
-  Ty.rec (motive := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
 theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
   induction A with
   | base => trivial

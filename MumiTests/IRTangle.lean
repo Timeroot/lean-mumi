@@ -57,28 +57,29 @@ example : G _ _ _ (E.up A.nil PUnit.unit (B.leaf _ _) (E.mk _ _ _ PUnit.unit) PU
 /-! ## The recursors -/
 
 /--
-info: @E.rec : {motive : A → Sort u_1} →
+info: @E.rec : {motive_1 : A → Sort u_1} →
   {motive_2 : (x : A) → (a : F x) → B x a → Sort u_1} →
     {motive_3 : (x : A) → (c : F x) → (a : B x c) → E x c a → Sort u_1} →
-      motive A.nil →
-        ((x : A) → (c : F x) → (b : B x c) → (d : D x c b) → motive x → motive_2 x c b → motive (x.cons c b d)) →
-          ((x : A) → (c : F x) → motive x → motive_2 x c (B.leaf x c)) →
+      motive_1 A.nil →
+        ((x : A) → (c : F x) → (b : B x c) → (d : D x c b) → motive_1 x → motive_2 x c b → motive_1 (x.cons c b d)) →
+          ((x : A) → (c : F x) → motive_1 x → motive_2 x c (B.leaf x c)) →
             ((x : A) →
                 (c : F x) →
                   (b : B x c) →
                     (e : D x c b) →
                       (f : (y : D x c b) → B (x.cons c b y) (c, y)) →
-                        motive x →
+                        motive_1 x →
                           motive_2 x c b →
                             ((y : D x c b) → motive_2 (x.cons c b y) (c, y) (f y)) → motive_2 x c (B.node x c b e f)) →
               ((x : A) →
-                  (c : F x) → (b : B x c) → (d : D x c b) → motive x → motive_2 x c b → motive_3 x c b (E.mk x c b d)) →
+                  (c : F x) →
+                    (b : B x c) → (d : D x c b) → motive_1 x → motive_2 x c b → motive_3 x c b (E.mk x c b d)) →
                 ((x : A) →
                     (c : F x) →
                       (b : B x c) →
                         (e : E x c b) →
                           (d : D x c b) →
-                            motive x →
+                            motive_1 x →
                               motive_2 x c b →
                                 motive_3 x c b e →
                                   motive_3 (x.cons c b d) (c, d) (B.leaf (x.cons c b d) (c, d)) (E.up x c b e d)) →
@@ -89,7 +90,7 @@ info: @E.rec : {motive : A → Sort u_1} →
 
 /-- The number of `cons`es in an `A`, counting through the `B` it holds. -/
 def size : A → Nat :=
-  A.rec (motive := fun _ => Nat) (motive_2 := fun _ _ _ => Nat) (motive_3 := fun _ _ _ _ => Unit)
+  A.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => Nat) (motive_3 := fun _ _ _ _ => Unit)
     0 (fun _ _ _ _ ihx ihb => ihx + ihb + 1)
     (fun _ _ ihx => ihx) (fun _ _ _ _ _ ihx ihb _ => ihx + ihb)
     (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())

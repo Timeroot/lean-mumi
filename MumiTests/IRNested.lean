@@ -49,31 +49,31 @@ end
 #check Els
 
 /--
-info: @U.rec : {motive : U → Sort u_1} →
+info: @U.rec : {motive_1 : U → Sort u_1} →
   {motive_2 : List U → Sort u_1} →
     {motive_3 : Option U → Sort u_1} →
-      motive U.nat →
-        ((fs : List U) → motive_2 fs → motive (U.tuple fs)) →
-          ((o : Option U) → motive_3 o → motive (U.opt o)) →
-            ((a : U) → (b : El a → U) → motive a → ((a_1 : El a) → motive (b a_1)) → motive (a.pi b)) →
+      motive_1 U.nat →
+        ((fs : List U) → motive_2 fs → motive_1 (U.tuple fs)) →
+          ((o : Option U) → motive_3 o → motive_1 (U.opt o)) →
+            ((a : U) → (b : El a → U) → motive_1 a → ((a_1 : El a) → motive_1 (b a_1)) → motive_1 (a.pi b)) →
               motive_2 [] →
-                ((head : U) → (tail : List U) → motive head → motive_2 tail → motive_2 (head :: tail)) →
-                  motive_3 none → ((val : U) → motive val → motive_3 (some val)) → (t : U) → motive t
+                ((head : U) → (tail : List U) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
+                  motive_3 none → ((val : U) → motive_1 val → motive_3 (some val)) → (t : U) → motive_1 t
 -/
 #guard_msgs in
 #check @U.rec
 
 /--
-info: @U.rec_1 : {motive : U → Sort u_1} →
+info: @U.rec_1 : {motive_1 : U → Sort u_1} →
   {motive_2 : List U → Sort u_1} →
     {motive_3 : Option U → Sort u_1} →
-      motive U.nat →
-        ((fs : List U) → motive_2 fs → motive (U.tuple fs)) →
-          ((o : Option U) → motive_3 o → motive (U.opt o)) →
-            ((a : U) → (b : El a → U) → motive a → ((a_1 : El a) → motive (b a_1)) → motive (a.pi b)) →
+      motive_1 U.nat →
+        ((fs : List U) → motive_2 fs → motive_1 (U.tuple fs)) →
+          ((o : Option U) → motive_3 o → motive_1 (U.opt o)) →
+            ((a : U) → (b : El a → U) → motive_1 a → ((a_1 : El a) → motive_1 (b a_1)) → motive_1 (a.pi b)) →
               motive_2 [] →
-                ((head : U) → (tail : List U) → motive head → motive_2 tail → motive_2 (head :: tail)) →
-                  motive_3 none → ((val : U) → motive val → motive_3 (some val)) → (t : List U) → motive_2 t
+                ((head : U) → (tail : List U) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
+                  motive_3 none → ((val : U) → motive_1 val → motive_3 (some val)) → (t : List U) → motive_2 t
 -/
 #guard_msgs in
 #check @U.rec_1
@@ -91,7 +91,7 @@ def size : U → Nat :=
     1 (fun _ ih => ih + 1) (fun _ ih => ih + 1) (fun _ _ ih _ => ih + 1)
     0 (fun _ _ ih ihs => ih + ihs) 0 (fun _ ih => ih)
 def sizes : List U → Nat :=
-  U.rec_1 (motive := fun _ => Nat) (motive_3 := fun _ => Nat)
+  U.rec_1 (motive_1 := fun _ => Nat) (motive_3 := fun _ => Nat)
     1 (fun _ ih => ih + 1) (fun _ ih => ih + 1) (fun _ _ ih _ => ih + 1)
     0 (fun _ _ ih ihs => ih + ihs) 0 (fun _ ih => ih)
 
@@ -148,7 +148,7 @@ def size : U → Nat :=
     1 (fun _ ih => ih + 1) (fun _ ih => ih + 1) (fun _ _ ih _ => ih + 1)
     0 (fun _ _ ih ihs => ih + ihs) 0 (fun _ ih => ih)
 def sizes : List U → Nat :=
-  U.rec_1 (motive := fun _ => Nat) (motive_3 := fun _ => Nat)
+  U.rec_1 (motive_1 := fun _ => Nat) (motive_3 := fun _ => Nat)
     1 (fun _ ih => ih + 1) (fun _ ih => ih + 1) (fun _ _ ih _ => ih + 1)
     0 (fun _ _ ih ihs => ih + ihs) 0 (fun _ ih => ih)
 
@@ -199,18 +199,18 @@ end
 -- `Option (U α)` last
 /--
 info: @U.rec : {α : Type} →
-  {motive : U α → Sort u_1} →
+  {motive_1 : U α → Sort u_1} →
     {motive_2 : List (Option (U α)) → Sort u_1} →
       {motive_3 : U α × U α → Sort u_1} →
         {motive_4 : Option (U α) → Sort u_1} →
-          ((a : α) → motive (U.atom a)) →
-            ((fs : List (Option (U α))) → motive_2 fs → motive (U.tuple fs)) →
-              ((p : U α × U α) → motive_3 p → motive (U.pair p)) →
+          ((a : α) → motive_1 (U.atom a)) →
+            ((fs : List (Option (U α))) → motive_2 fs → motive_1 (U.tuple fs)) →
+              ((p : U α × U α) → motive_3 p → motive_1 (U.pair p)) →
                 motive_2 [] →
                   ((head : Option (U α)) →
                       (tail : List (Option (U α))) → motive_4 head → motive_2 tail → motive_2 (head :: tail)) →
-                    ((fst snd : U α) → motive fst → motive snd → motive_3 (fst, snd)) →
-                      motive_4 none → ((val : U α) → motive val → motive_4 (some val)) → (t : U α) → motive t
+                    ((fst snd : U α) → motive_1 fst → motive_1 snd → motive_3 (fst, snd)) →
+                      motive_4 none → ((val : U α) → motive_1 val → motive_4 (some val)) → (t : U α) → motive_1 t
 -/
 #guard_msgs in
 #check @U.rec

@@ -1360,7 +1360,9 @@ private def minor (b : Block) (i ci : Nat) := Id.run do
     b.members.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n))) ||
     b.members.any (fun m => m.indices.any (fun x => x.name.toString == n))
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
-private def motiveArgs (b : Block) (scope : Array Nat := dataMembers b) := scope.map motive
+/-- The motive of member `i`: `motive_1`, … in a joint recursion, `motive` alone. -/
+private def motive (b : Block) (i : Nat) := motiveFor ((dataMembers b).size == 1) i
+private def motiveArgs (b : Block) (scope : Array Nat := dataMembers b) := scope.map (motive b)
 private def minorArgs (b : Block) (scope : Array Nat := dataMembers b) :=
   scope.flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
 private def motiveType (b : Block) (i : Nat) : CommandElabM String := do
@@ -1368,7 +1370,7 @@ private def motiveType (b : Block) (i : Nat) : CommandElabM String := do
   let self := "(_ir_self : " ++ typeAt b i (pubIdxNames b i) ++ ")"
   return "∀ " ++ arity ++ " " ++ self ++ ", Sort _ir_elim"
 private def motiveDecls (b : Block) (scope : Array Nat := dataMembers b) : CommandElabM String := do
-  return join (← scope.mapM fun i => do return "{" ++ motive i ++ " : " ++ (← motiveType b i) ++ "}")
+  return join (← scope.mapM fun i => do return "{" ++ motive b i ++ " : " ++ (← motiveType b i) ++ "}")
 /-- `@X.c params xs`: every field, the implicit ones included. -/
 private def ctorApp (b : Block) (i ci : Nat) (xs : Array String) :=
   withParams b ("@" ++ b.members[i]!.name.toString ++ "." ++ b.members[i]!.ctors[ci]!.name.toString) xs
@@ -1381,11 +1383,11 @@ private def ctorDecl (c : Ctor) : CommandElabM String := do
 private def applyTo (f : String) (xs : Array String) := if xs.isEmpty then f else app f xs
 
 /-- `motive_j idx (f dom)` for the recursive field `f`. -/
-private def ihType (f : Field) (name : Option String := none) : CommandElabM String := do
+private def ihType (b : Block) (f : Field) (name : Option String := none) : CommandElabM String := do
   let some (j, args) := f.target | unreachable!
   let args := if f.pubArgs.size ≥ args.size then f.pubArgs else args
   let args ← args.mapM text
-  forallS f.domain (app (name.getD (motive j)) (args ++ #[applyDomain f.name.toString f.domain]))
+  forallS f.domain (app (name.getD (motive b j)) (args ++ #[applyDomain f.name.toString f.domain]))
 
 private def minorDecls (b : Block) (induction : Bool) (scope : Array Nat := dataMembers b) : CommandElabM String := do
   let mut out := #[]
@@ -1396,9 +1398,9 @@ private def minorDecls (b : Block) (induction : Bool) (scope : Array Nat := data
       if induction then
         for f in c.fields do
           if (scopedTarget b scope f).isSome then
-            ihs := ihs.push (par (ihVar f.name ++ " : " ++ (← ihType f)))
+            ihs := ihs.push (par (ihVar f.name ++ " : " ++ (← ihType b f)))
       let result ← c.pubResult.mapM text
-      let concl := app (motive i) (result ++ #[ctorApp b i ci (fieldNames c)])
+      let concl := app (motive b i) (result ++ #[ctorApp b i ci (fieldNames c)])
       let decls ← fieldsDecl c
       let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join ihs ++ ", " ++ concl
       out := out.push (par (minor b i ci ++ " : " ++ ty))
@@ -1407,7 +1409,7 @@ private def minorDecls (b : Block) (induction : Bool) (scope : Array Nat := data
 /-- The graph motive standing for the public `motive_i`: in a well-formed
 block, under the well-formedness of the indices and of the node. -/
 private def graphMotive (b : Block) (i : Nat) : CommandElabM String := do
-  let value := app (motive i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
+  let value := app (motive b i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
   let body ← if b.wf then do
       let hyps := ((← arityWf b i) ++ (← arityProofs b i)).map (fun (n, t) => par (n ++ " : " ++ t)) |>.push
         (par ("_ir_w : " ++ wfAt b i (graphIdxNames b i) "_ir_s" "_ir_g"))
@@ -1519,7 +1521,7 @@ private def emitRec (b : Block) : CommandElabM Unit := do
         else
           able := false
           pure ""
-      impls := impls.push ("unsafe def " ++ recImplName m ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ cases)
+      impls := impls.push ("unsafe def " ++ recImplName m ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive b k) (idx ++ #["_ir_self"]) ++ " := " ++ cases)
     let saved ← get
     let compiled ← if !able then pure false else try
         emit ("mutual\n" ++ String.intercalate "\n" impls.toList ++ "\nend")
@@ -1537,7 +1539,7 @@ private def emitRec (b : Block) : CommandElabM Unit := do
       let m := b.members[k]!
       let idx := pubIdxNames b k
       let self := if b.wf then #["_ir_self.1.1", "_ir_self.1.2"] ++ pubIdxWf b k idx ++ #["_ir_self.2"] else #["_ir_self.1", "_ir_self.2"]
-      let rest := elimName b m "rec" ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ graphName m ++ ".rec") (gargs ++ pubPairIdx b k idx ++ self)
+      let rest := elimName b m "rec" ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive b k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ graphName m ++ ".rec") (gargs ++ pubPairIdx b k idx ++ self)
       let attrs := if compiled then "@[implemented_by " ++ recImplName m ++ ", elab_as_elim] " else "@[elab_as_elim] "
       emitDef attrs rest
 
@@ -1556,7 +1558,7 @@ private def propMinor (b : Block) (i ci : Nat) (joint := true) : String := Id.ru
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
 /-- The motive of `Prop` member `j`: `motive` when it is the only one. -/
 private def propMotive (b : Block) (j : Nat) : String :=
-  if (propMembers b).size == 1 then "motive" else motive j
+  motiveFor ((propMembers b).size == 1) j
 
 /-- The number of binders the well-formedness recursor's minor premise at a
 data member's constructor takes: the graph fields, the well-formedness and
@@ -1574,7 +1576,7 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
   if ihs then
     for f in c.fields do
       if let some (k, _) := f.target then
-        if b.members[k]!.prop then hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType f (some (propMotive b k)))))
+        if b.members[k]!.prop then hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType b f (some (propMotive b k)))))
   let result ← c.pubResult.mapM text
   let concl := app conclName (result ++ #[ctorApp b j ci (fieldNames c)])
   let decls ← fieldsDecl c
@@ -1726,7 +1728,7 @@ private def emitEquations (b : Block) : CommandElabM Unit := do
       emitEquation b (elimName b b.members[i]! "rec" ++ "_" ++ c.name.toString) (common ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b b.members[i]! "rec") (args ++ result ++ #[ctorApp b i ci (fieldNames c)]) ++ " = " ++ app (minor b i ci) (fieldNames c ++ ihs))
     let m := b.members[i]!
     let idx := pubIdxNames b i
-    emitDef "@[elab_as_elim] " (elimName b m "recOn" ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ elimName b m "rec") (args ++ idx ++ #["_ir_self"]))
+    emitDef "@[elab_as_elim] " (elimName b m "recOn" ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive b i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ elimName b m "rec") (args ++ idx ++ #["_ir_self"]))
 
 /-- The minor premises of a one-motive eliminator for carrier `i`: with the
 hypotheses at its own fields when `ihs`, none otherwise. -/
@@ -1739,7 +1741,7 @@ private def soloMinors (b : Block) (i : Nat) (ihs : Bool) : CommandElabM (Array 
     if ihs then
       for f in c.fields do
         if (dataTarget b f).any (·.1 == i) then
-          hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType f (some "motive"))))
+          hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType b f (some "motive"))))
     let result ← c.pubResult.mapM text
     let concl := app "motive" (result ++ #[ctorApp b i ci (fieldNames c)])
     let decls ← fieldsDecl c
@@ -2527,7 +2529,7 @@ private def emitMotive (b : Block) (g : Nat) : CommandElabM Unit := do
     let m := b.members[k]!
     let (packed, proj, pub, good) ← motiveTele b k
     -- one binder of `Type u` per arm, so that every arm lands in the same sort
-    cs := cs.push ("  | " ++ sortPat b k ++ ", _ir_a => ∀ (_ir_p : " ++ packed ++ ") (_ir_h : " ++ atProj proj (withParams b (goodName m) (good ++ #["_ir_a"])) ++ "), " ++ atProj proj (app (motive k) (pub ++ #["⟨_ir_a, _ir_h⟩"])))
+    cs := cs.push ("  | " ++ sortPat b k ++ ", _ir_a => ∀ (_ir_p : " ++ packed ++ ") (_ir_h : " ++ atProj proj (withParams b (goodName m) (good ++ #["_ir_a"])) ++ "), " ++ atProj proj (app (motive b k) (pub ++ #["⟨_ir_a, _ir_h⟩"])))
   emitL ("def " ++ motiveName b g ++ " " ++ ps ++ " " ++ (← motiveDecls b b.groups[g]!) ++ " : (_ir_s : ULift.{" ++ glevel b g ++ "} " ++ sortName b g ++ ") → Mumi.IR.Raw " ++ sigAt b g ++ " _ir_s → Sort (imax (" ++ glevel b g ++ "+1) _ir_elim)\n" ++ String.intercalate "\n" cs.toList)
 
 /-- The tuple pattern of `c`'s arguments, and the `let`s that unpack them into
@@ -2692,7 +2694,7 @@ private def emitCasts (b : Block) (g : Nat) : CommandElabM Unit := do
         good := good.push n
         good' := good'.push (n ++ "'")
         pairs' := pairs'.push (x.name, mkIdent (Name.mkSimple (n ++ "'")))
-    emitL ("def " ++ castName m ++ " " ++ ps ++ " " ++ (← motiveDecls b b.groups[g]!) ++ " " ++ join binders ++ " (_ir_a _ir_a' : " ++ rawAt b k ++ ") (_ir_ea : _ir_a = _ir_a') (_ir_good : " ++ withParams b (goodName m) (good ++ #["_ir_a"]) ++ ") (_ir_good' : " ++ withParams b (goodName m) (good' ++ #["_ir_a'"]) ++ ") (_ir_v : " ++ app (motive k) (pub' ++ #["⟨_ir_a', _ir_good'⟩"]) ++ ") : " ++ app (motive k) (pub ++ #["⟨_ir_a, _ir_good⟩"]) ++ " :=\n  match " ++ String.intercalate ", " (discr.toList ++ ["_ir_a'", "_ir_ea", "_ir_good'"]) ++ " with\n  | " ++ String.intercalate ", " (pats.toList ++ ["_", "rfl", "_"]) ++ " => _ir_v")
+    emitL ("def " ++ castName m ++ " " ++ ps ++ " " ++ (← motiveDecls b b.groups[g]!) ++ " " ++ join binders ++ " (_ir_a _ir_a' : " ++ rawAt b k ++ ") (_ir_ea : _ir_a = _ir_a') (_ir_good : " ++ withParams b (goodName m) (good ++ #["_ir_a"]) ++ ") (_ir_good' : " ++ withParams b (goodName m) (good' ++ #["_ir_a'"]) ++ ") (_ir_v : " ++ app (motive b k) (pub' ++ #["⟨_ir_a', _ir_good'⟩"]) ++ ") : " ++ app (motive b k) (pub ++ #["⟨_ir_a, _ir_good⟩"]) ++ " :=\n  match " ++ String.intercalate ", " (discr.toList ++ ["_ir_a'", "_ir_ea", "_ir_good'"]) ++ " with\n  | " ++ String.intercalate ", " (pats.toList ++ ["_", "rfl", "_"]) ++ " => _ir_v")
 
 /-- The step of the recursion at `X.c`: the constructor's arguments in the
 predecessor family, the certificate, and every motive and minor premise. -/
@@ -2784,7 +2786,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
           -- a value of another engine is no part of this recursion: no hypothesis
           unless foreign b k j do
             let margs ← motiveArgsAt b j (args.map (subst · pubPairs))
-            body := body ++ "let " ++ ihVar f.name ++ " : " ++ (← forallS pdom (app (motive j) (pargs ++ #[applyDomain (pubVar f.name) pdom]))) ++ " := " ++ (← lambda pdom (app "_ir_recurse" (#[sortValue b j, par (app (packedVar f.name) #[packedValue f.domain]), packTuple margs] ++ #[applyDomain cert f.domain]))) ++ "\n  "
+            body := body ++ "let " ++ ihVar f.name ++ " : " ++ (← forallS pdom (app (motive b j) (pargs ++ #[applyDomain (pubVar f.name) pdom]))) ++ " := " ++ (← lambda pdom (app "_ir_recurse" (#[sortValue b j, par (app (packedVar f.name) #[packedValue f.domain]), packTuple margs] ++ #[applyDomain cert f.domain]))) ++ "\n  "
             ihs := ihs.push (ihVar f.name)
           images := images.push (pubVar f.name)
           pubPairs := pubPairs.push (f.name, mkIdent (Name.mkSimple (pubVar f.name)))
@@ -2806,7 +2808,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
           castArgs := castArgs.push ("_ir_idx_" ++ x.name.toString) |>.push pt |>.push ("_ir_shape" ++ conj ei)
         ei := ei + 1
       body := body ++ withParams b ("@" ++ castName m) (motiveArgs b scope ++ castArgs ++ #["_ir_node", par ctor ++ ".val", "_ir_shape.1", "_ir_good", par ctor ++ ".property", app (minor b k ci) (images ++ ihs)])
-      emitDefL "" (stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b g ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
+      emitDefL "" (stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b g ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive b k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
   -- the induction itself, and the public recursors
   let mut ss := #[]
   for k in scope do
@@ -2823,7 +2825,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
     let idx := pubIdxNames b k
     let margs ← motiveArgsAt b k ((pubIndicesOf b k).map fun x => mkIdent x.name)
     let common := (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← minorDecls b true scope)
-    emitDefL "@[elab_as_elim] " (elimName b m "rec" ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b g) (motiveArgs b scope ++ minorArgs b scope ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
+    emitDefL "@[elab_as_elim] " (elimName b m "rec" ++ " " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive b k) (idx ++ #["_ir_self"]) ++ " := " ++ withParams b ("@" ++ indName b g) (motiveArgs b scope ++ minorArgs b scope ++ #[sortValue b k, "_ir_self.val", packTuple margs, "_ir_self.property"]))
 where
   /-- A lambda over the binders' names alone. -/
   lambdaN (bs : Array Binder) (body : String) : String :=
@@ -2852,7 +2854,7 @@ private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : St
   if ihs then
     for f in c.fields do
       if let some (k, _) := f.target then
-        if b.members[k]!.prop then hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType f (some (propMotive b k)))))
+        if b.members[k]!.prop then hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType b f (some (propMotive b k)))))
   let result ← c.pubResult.mapM text
   let concl := app conclName (result ++ #[ctorApp b j ci (fieldNames c)])
   let decls ← fieldsDecl c
@@ -3413,8 +3415,8 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
   let mut motivesC := #[]
   for j in scope do
     motivesC := motivesC.push (match copyOf j with
-      | some i => "(fun (_ir_c : " ++ typeAt b j #[] ++ ") => " ++ app (motive j) #[at_ (copyName i ++ ".toOrig") #["_ir_c"]] ++ ")"
-      | none => motive j)
+      | some i => "(fun (_ir_c : " ++ typeAt b j #[] ++ ") => " ++ app (motive b j) #[at_ (copyName i ++ ".toOrig") #["_ir_c"]] ++ ")"
+      | none => motive b j)
   let pubMinor (j ci : Nat) : CommandElabM String := dc (minor b j ci)
   -- a minor premise of the recursion over the copies, from the public one
   let copyMinor (j ci : Nat) (ihs : Bool) (motiveName : String) : CommandElabM String := do
@@ -3448,14 +3450,14 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
   let mut minorsC := #[]
   for j in scope do
     for ci in [:b.members[j]!.ctors.size] do
-      minorsC := minorsC.push (← copyMinor j ci true (motive j))
+      minorsC := minorsC.push (← copyMinor j ci true (motive b j))
   -- `X.rec`, for each member written
   for k in scope do
     if (copyOf k).isSome then continue
     let m := b.members[k]!
     let idx := pubIdxNames b k
     emitDef "@[elab_as_elim] " (m.name.toString ++ ".rec " ++ common ++ " " ++ (← pubArity b k (implicit := true)) ++
-      " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive k) (idx ++ #["_ir_self"]) ++ " := " ++
+      " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (motive b k) (idx ++ #["_ir_self"]) ++ " := " ++
       app ("@" ++ elimName b m "rec") (pa ++ motivesC ++ minorsC ++ idx ++ #["_ir_self"]))
   -- `F.rec_i`, for each copy, by structural recursion on the original
   for i in order do
@@ -3470,7 +3472,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
           let args ← args.mapM text
           ihs := ihs.push (app ("@" ++ recOf j) (pa ++ motiveArgs ++ minorArgs ++ (if (copyOf j).isSome then #[] else args) ++ #[f.name.toString]))
       cs := cs.push ("  | ." ++ c.name.toString ++ " " ++ join (fieldNames c) ++ " => " ++ app (← pubMinor k ci) (fieldNames c ++ ihs))
-    emitDef "@[elab_as_elim] " (recOf k ++ " " ++ common ++ " : (_ir_self : " ++ orig i ++ ") → " ++ app (motive k) #["_ir_self"] ++ "\n" ++
+    emitDef "@[elab_as_elim] " (recOf k ++ " " ++ common ++ " : (_ir_self : " ++ orig i ++ ") → " ++ app (motive b k) #["_ir_self"] ++ "\n" ++
       String.intercalate "\n" cs.toList)
   -- `X.casesOn`, for each member written
   for k in scope do

@@ -644,7 +644,11 @@ private def emitUpper (b : Block) : CommandElabM Unit := do
       let attrs := if c.fields.isEmpty then "@[reducible, match_pattern] " else "@[reducible] "
       emit (c.doc ++ attrs ++ "def " ++ m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ typeAt b i ++ " := ⟨_, " ++ app (graph m ++ "." ++ c.name.toString) xs ++ "⟩")
 
-def motive (i : Nat) := if i == 0 then "motive" else "motive_" ++ toString (i+1)
+/-- The motive of member `i` of a joint recursion, `motive_1`, `motive_2`, …,
+as Lean names a mutual block's; `single` when there is one motive, then
+`motive`, as Lean names an inductive's. -/
+def motiveFor (single : Bool) (i : Nat) := if single then "motive" else "motive_" ++ toString (i+1)
+private def motive (b : Block) (i : Nat) := motiveFor (b.members.size == 1) i
 private def minor (b : Block) (i ci : Nat) := Id.run do
   let c := b.members[i]!.ctors[ci]!
   let count := b.members.foldl (fun n m => n + (m.ctors.filter (·.name == c.name)).size) 0
@@ -653,9 +657,9 @@ private def minor (b : Block) (i ci : Nat) := Id.run do
   let used := b.params.any (fun p => p.name.toString == n) ||
     b.members.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n)))
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
-private def motiveArgs (b : Block) := (Array.range b.members.size).map motive
+private def motiveArgs (b : Block) := (Array.range b.members.size).map (motive b)
 private def minorArgs (b : Block) := (Array.range b.members.size).flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
-private def motiveDecls (b : Block) := join ((Array.range b.members.size).map fun i => "{" ++ motive i ++ " : " ++ typeAt b i ++ " → Sort _ir_elim}")
+private def motiveDecls (b : Block) := join ((Array.range b.members.size).map fun i => "{" ++ motive b i ++ " : " ++ typeAt b i ++ " → Sort _ir_elim}")
 /-- `@X.c params xs`. -/
 private def ctorApp (b : Block) (i ci : Nat) (xs : Array String) :=
   app ("@" ++ b.members[i]!.name.toString ++ "." ++ b.members[i]!.ctors[ci]!.name.toString) (pArgs b ++ xs)
@@ -669,9 +673,9 @@ private def minorDecls (b : Block) (induction : Bool) : CommandElabM String := d
       if induction then
         for f in c.fields do
           if let some j := f.target then
-            ihs := ihs.push (par (ihVar f ++ " : " ++ (← forallS f.domain (app (motive j) #[applyDomain f.name.toString f.domain]))))
-      let ty := "∀ " ++ (← fieldsDecl c.fields) ++ " " ++ join ihs ++ ", " ++ app (motive i) #[ctorApp b i ci (names c.fields)]
-      let ty := if c.fields.isEmpty then app (motive i) #[ctorApp b i ci #[]] else ty
+            ihs := ihs.push (par (ihVar f ++ " : " ++ (← forallS f.domain (app (motive b j) #[applyDomain f.name.toString f.domain]))))
+      let ty := "∀ " ++ (← fieldsDecl c.fields) ++ " " ++ join ihs ++ ", " ++ app (motive b i) #[ctorApp b i ci (names c.fields)]
+      let ty := if c.fields.isEmpty then app (motive b i) #[ctorApp b i ci #[]] else ty
       out := out.push (par (minor b i ci ++ " : " ++ ty))
   return join out
 
@@ -701,11 +705,11 @@ private def emitUpperRec (b : Block) : CommandElabM Unit := do
           images := images.push f.name.toString
       cs := cs.push ("  | ." ++ c.name.toString ++ " " ++ join pats ++ " => " ++ app (minor b i ci) (images ++ ihs))
     let termination := if m.ctors.any (fun c => c.fields.any (·.target.isSome)) then "\ntermination_by structural _ir_code" else ""
-    ds := ds.push ("def " ++ m.name.toString ++ "._ir_rec " ++ common ++ " {_ir_sem : " ++ atParams b (sem m) ++ "} (_ir_code : " ++ app (atParams b (graph m)) #["_ir_sem"] ++ ") : " ++ app (motive i) #["⟨_ir_sem, _ir_code⟩"] ++ " :=\n  match _ir_code with\n" ++ String.intercalate "\n" cs.toList ++ termination)
+    ds := ds.push ("def " ++ m.name.toString ++ "._ir_rec " ++ common ++ " {_ir_sem : " ++ atParams b (sem m) ++ "} (_ir_code : " ++ app (atParams b (graph m)) #["_ir_sem"] ++ ") : " ++ app (motive b i) #["⟨_ir_sem, _ir_code⟩"] ++ " :=\n  match _ir_code with\n" ++ String.intercalate "\n" cs.toList ++ termination)
   emit ("mutual\n" ++ String.intercalate "\n" ds.toList ++ "\nend")
   for i in [:b.members.size] do
     let m := b.members[i]!
-    emit ("@[elab_as_elim, induction_eliminator] def " ++ m.name.toString ++ ".rec " ++ pubCommon ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ m.name.toString ++ "._ir_rec") (args ++ #["_ir_self.1", "_ir_self.2"]))
+    emit ("@[elab_as_elim, induction_eliminator] def " ++ m.name.toString ++ ".rec " ++ pubCommon ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (motive b i) #["_ir_self"] ++ " := " ++ app ("@" ++ m.name.toString ++ "._ir_rec") (args ++ #["_ir_self.1", "_ir_self.2"]))
 
 private def sortName (b : Block) := aux b.members[0]!.name "_Sort"
 private def sigName (b : Block) := aux b.members[0]!.name "_sig"
@@ -866,7 +870,7 @@ private def emitLowerRec (b : Block) : CommandElabM Unit := do
   let args := pArgs b ++ motiveArgs b ++ minorArgs b
   let cm := aux b.members[0]!.name "_Motive"
   emit ("def " ++ cm ++ " " ++ ps ++ " " ++ motiveDecls b ++ " : (s : ULift.{" ++ b.level ++ "} " ++ sortName b ++ ") → Mumi.IR.Raw " ++ signatureAt b ++ " s → Sort _ir_elim\n" ++
-    String.intercalate "\n" ((Array.range b.members.size).toList.map fun i => "  | " ++ sortValue b i ++ ", a => ∀ h : " ++ app (atParams b (good b.members[i]!)) #["a"] ++ ", " ++ app (motive i) #["⟨a, h⟩"]))
+    String.intercalate "\n" ((Array.range b.members.size).toList.map fun i => "  | " ++ sortValue b i ++ ", a => ∀ h : " ++ app (atParams b (good b.members[i]!)) #["a"] ++ ", " ++ app (motive b i) #["⟨a, h⟩"]))
   let motiveApp := app ("@" ++ cm) (pArgs b ++ motiveArgs b)
   let mut ss := #[]
   for i in [:b.members.size] do
@@ -896,7 +900,7 @@ private def emitLowerRec (b : Block) : CommandElabM Unit := do
   let recName := aux b.members[0]!.name "_induction"
   emitDefinition "" (recName ++ " " ++ common ++ " : ∀ s a, " ++ app motiveApp #["s", "a"] ++ " :=\n  Mumi.IR.induction " ++ signatureAt b ++ " (C := " ++ motiveApp ++ ") (fun _ir_stage _ir_children _ir_sort _ir_args _ir_recurse =>\n    match _ir_sort with\n" ++ String.intercalate "\n" ss.toList ++ ")")
   for i in [:b.members.size] do
-    emitDefinition "@[elab_as_elim, induction_eliminator] " (b.members[i]!.name.toString ++ ".rec " ++ pubCommon ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ recName) (args ++ #[sortValue b i, "_ir_self.val", "_ir_self.property"]))
+    emitDefinition "@[elab_as_elim, induction_eliminator] " (b.members[i]!.name.toString ++ ".rec " ++ pubCommon ++ " (_ir_self : " ++ typeAt b i ++ ") : " ++ app (motive b i) #["_ir_self"] ++ " := " ++ app ("@" ++ recName) (args ++ #[sortValue b i, "_ir_self.val", "_ir_self.property"]))
 
 private def emitEquations (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
@@ -916,7 +920,7 @@ private def emitEquations (b : Block) : CommandElabM Unit := do
       emit ("@[simp] theorem " ++ b.members[i]!.name.toString ++ ".rec_" ++ c.name.toString ++ " " ++ common ++ " " ++ (← fieldsDecl c.fields) ++ " : " ++ app ("@" ++ b.members[i]!.name.toString ++ ".rec") (args ++ #[ctorApp b i ci (names c.fields)]) ++ " = " ++ app (minor b i ci) (names c.fields ++ ihs) ++ " := rfl")
   for i in [:b.members.size] do
     let m := b.members[i]!
-    emitDefinition "@[elab_as_elim] " (m.name.toString ++ ".recOn " ++ (← pubParamsDecl b) ++ " " ++ motiveDecls b ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ (← minorDecls b true) ++ " : " ++ app (motive i) #["_ir_self"] ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ #["_ir_self"]))
+    emitDefinition "@[elab_as_elim] " (m.name.toString ++ ".recOn " ++ (← pubParamsDecl b) ++ " " ++ motiveDecls b ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ (← minorDecls b true) ++ " : " ++ app (motive b i) #["_ir_self"] ++ " := " ++ app ("@" ++ m.name.toString ++ ".rec") (args ++ #["_ir_self"]))
 
 private def viewName (m : Member) := m.name.toString ++ "._ir_View"
 

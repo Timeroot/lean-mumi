@@ -70,8 +70,9 @@ Each member gets its named constructors and:
 Shared parameters follow Lean's own convention: the carrier takes them
 explicitly (`U A`), its constructors and eliminators implicitly (`U.pi a b`,
 `U.rec`), and a decoder as its author bound them. All recursor motives share one
-elimination universe. For mutual blocks the motives are named `motive`,
-`motive_2`, etc., in carrier declaration order. Cases follow carrier order and
+elimination universe. For mutual blocks the motives are named `motive_1`,
+`motive_2`, etc., in carrier declaration order, as Lean names a mutual
+block's (just `motive` when a recursor has one). Cases follow carrier order and
 then constructor order; recursive hypotheses follow the constructor's ordinary
 arguments. Repeated constructor names are disambiguated in the case binders.
 
@@ -180,7 +181,7 @@ The generated API is as above -- `X.rec` over every motive in the block,
 equations -- plus `X.recD`, the one-motive recursor with the other carriers'
 motives discharged at `PUnit`, which is what `induction x` uses (`X.rec` asks for
 every motive, so it is for `induction … using` and term mode).  Motives are
-`motive`, `motive_2`, … in carrier order.
+`motive_1`, `motive_2`, … in carrier order (`motive` for a single carrier).
 
 Its restrictions, beyond the general ones below:
 

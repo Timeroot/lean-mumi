@@ -117,4 +117,4 @@ example (a : IRMutualLower.Ty) : True := by
   induction a using IRMutualLower.Ty.rec (motive_2 := fun _ => True) <;> trivial
 
 example (g : IRMutualUpper.Ctx) : True := by
-  induction g using IRMutualUpper.Ctx.rec (motive := fun _ => True) <;> trivial
+  induction g using IRMutualUpper.Ctx.rec (motive_1 := fun _ => True) <;> trivial
