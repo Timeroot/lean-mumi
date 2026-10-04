@@ -204,7 +204,11 @@ Its restrictions, beyond the general ones below:
   the public constructor supplies -- one that is an argument of another
   application is substituted for in the certificate, one that is a conclusion
   index is bound and pinned by an equation -- and the recursors, `casesOn` and
-  iota rules are definitional as before.  What is given up is a decoder
+  iota rules are definitional as before.  At an indexed carrier the coherence
+  of such an index -- `Tm Γ (.pi A .base)`, a constructor of `Ty` nested in
+  another's -- is proved by rewriting its semantics a layer at a time with the
+  constructors' semantic rules `_ir_X_c_pubsem`, each checked by the kernel at
+  variables, where it is definitional (`ir_kernel_rfl`).  What is given up is a decoder
   equation whose right-hand side reads a decoder at such a nested index, as
   `El Γ (Ty.deep Γ A B C) = El (.ext (.ext Γ A) B) C` does: it transports
   along the decode of that index, so the kernel does not accept it as
