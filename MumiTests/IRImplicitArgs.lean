@@ -149,8 +149,9 @@ theorem Tm.t {Γ : Ctx} {A : Ty Γ} (t : Tm Γ A) : True := by
 
 end Fields
 
--- a constructor of one carrier nested in another's in an index,
--- `Tm Γ (.pi A .base)`, is not yet lowered: its coherence proof fails
+-- at the written universe a constructor nested in another's in an index,
+-- `Tm Γ (.pi A .base)`, has a decode that does not reduce; its coherence is
+-- rewritten by the constructors' semantic rules instead
 namespace FieldsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
@@ -164,7 +165,7 @@ inductive Ty : Ctx → Type where
   | pi {Γ : Ctx} (A : Ty Γ) (B : Ty (.snoc Γ A)) : Ty Γ
 inductive Tm : (Γ : Ctx) → Ty Γ → Type where
   | lam {Γ : Ctx} {A : Ty Γ} {B : Ty (.snoc Γ A)} (t : Tm (.snoc Γ A) B) : Tm Γ (.pi A B)
-  | app ⦃Γ : Ctx⦄ {A : Ty Γ} {B : Ty (.snoc Γ A)} (f : Tm Γ (.pi A B)) (x : Tm Γ A) : Tm Γ .base
+  | app ⦃Γ : Ctx⦄ {A : Ty Γ} (f : Tm Γ (.pi A .base)) (x : Tm Γ A) : Tm Γ .base
 def El : Ctx → Type
   | .nil => Unit
   | .snoc Γ A => El Γ × Val A
@@ -173,7 +174,7 @@ def Val {Γ : Ctx} : Ty Γ → Type
   | .pi A B => (x : Val A) → Val B
 end
 
-/-- info: Tm.app : ⦃Γ : Ctx⦄ → {A : Ty Γ} → {B : Ty (Γ.snoc A)} → Tm Γ (A.pi B) → Tm Γ A → Tm Γ Ty.base -/
+/-- info: Tm.app : ⦃Γ : Ctx⦄ → {A : Ty Γ} → Tm Γ (A.pi Ty.base) → Tm Γ A → Tm Γ Ty.base -/
 #guard_msgs in
 #check @Tm.app
 
@@ -181,7 +182,12 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) : Val (.pi A B) = ((x : Val
 def size {Γ : Ctx} {A : Ty Γ} (t : Tm Γ A) : Nat :=
   Tm.rec (motive := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
-    (fun _ _ _ _ _ _ _ ih => ih + 1) (fun _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
+    (fun _ _ _ _ _ _ _ ih => ih + 1) (fun _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) (t : Tm (.snoc Γ A) B) : size (Tm.lam t) = size t + 1 := rfl
+example (Γ : Ctx) (A : Ty Γ) (f : Tm Γ (.pi A .base)) (x : Tm Γ A) : size (Tm.app f x) = size f + size x + 1 := rfl
+theorem Tm.t {Γ : Ctx} {A : Ty Γ} (t : Tm Γ A) : True := by
+  induction t with
+  | lam t ih => trivial
+  | app f x ihf ihx => trivial
 
 end FieldsLower

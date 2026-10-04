@@ -12,6 +12,8 @@ public meta import Mumi.IR.Frontend
 public meta import Mumi.IR.Family
 public import Mumi.IR.Basic
 public meta import Lean.Elab.Declaration
+public meta import Lean.Elab.Tactic.Basic
+public meta import Lean.Meta.Closure
 
 /-!
 # Taking over `mutual`
@@ -111,5 +113,23 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
     | _ =>
       rescuing (elabHeterogeneousInductive elems)
         #[("the induction-inductive retry", IndInd.elabInductionInductive elems)]
+
+/-- `lhs = rhs` by `rfl`, checked by the kernel alone: the goal becomes an
+auxiliary theorem whose proof is `Eq.refl lhs`, which nothing but the kernel
+looks at.  What the IR frontend states at variables of the written universe
+is definitional there, and stays so at any terms put for them, but Meta's
+unifier can wander off into the stage engine where the kernel decides it at
+once; the frontend closes such goals, a constructor nested in an index among
+them, this way. -/
+syntax (name := irKernelRfl) "ir_kernel_rfl" : tactic
+
+open Lean Elab Tactic in
+@[tactic irKernelRfl] meta def evalIrKernelRfl : Tactic := fun _ => withMainContext do
+  let g ← getMainGoal
+  let ty ← instantiateMVars (← g.getType)
+  let some (_, lhs, _) := ty.eq? | throwError "ir_kernel_rfl: the goal is not an equation{indentExpr ty}"
+  if ty.hasExprMVar then throwError "ir_kernel_rfl: the goal has metavariables{indentExpr ty}"
+  g.assign (← Meta.mkAuxTheorem ty (← Meta.mkEqRefl lhs))
+  replaceMainGoal []
 
 end Mumi

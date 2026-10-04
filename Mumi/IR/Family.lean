@@ -2443,7 +2443,8 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
       let m := b.members[d.target]!
       let idx ← d.idx.mapM fieldDecl
       emitDefL (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join idx ++ " : " ++ (← decoderTail d) ++ " := fun _ir_self => " ++ par (app (pubSemName m) (anonArgs b ++ d.idx.map (·.name.toString) ++ #["_ir_self"])) ++ "." ++ outField j)
-  let mut lemmas : Array String := b.members.flatMap fun m => m.ctors.map (valLemma m)
+  -- the semantics of each public constructor application, at variables
+  let mut pubsems : Array String := #[]
   for k in [:b.members.size] do
     let m := b.members[k]!
     for ci in [:m.ctors.size] do
@@ -2470,7 +2471,10 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
             -- at an index with a constructor nested inside another, the
             -- decode of the nested one is not definitional and is rewritten
             let nested := (← args.mapM text).any fun t => (t.splitOn "_ir_sub_").length > 1
-            let hs := if nested then "(by simp only [" ++ String.intercalate ", " lemmas.toList ++ "] <;> rfl)" else "rfl"
+            -- the sub-node's decode does not reduce there: its semantics is
+            -- rewritten by the constructors' semantic rules, a layer at a time
+            let hs := if nested then "(by repeat' (first | with_reducible rfl | with_reducible exact HEq.rfl | simp only [" ++
+                String.intercalate ", " pubsems.toList ++ "] | congr 1))" else "rfl"
             raw := raw.push (← lambda f.domain (withParams b (goodName b.members[j]! ++ ".coh") #[par v ++ ".property", hs]))
             unless f.hiddenArg do gargs := gargs.push raw.back!
           if f.value.isNone then
@@ -2487,7 +2491,30 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
         continue
       emitDefL c.doc (m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← ctorDecl c) ++ " : " ++ typeAt b k result ++ " := ⟨" ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ ", " ++ app (goodName m ++ "." ++ c.name.toString) gargs ++ "⟩")
       emitL ("theorem " ++ rawLemma m c ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++ par (ctorApp b k ci (fieldNames c)) ++ ".val = " ++ withParams b (rawName m ++ "." ++ c.name.toString) raw ++ " := Eq.trans rfl rfl")
-      lemmas := lemmas.push (rawLemma m c)
+      -- its semantics is its piece at its fields' semantics: definitional at
+      -- variables, which is where the kernel checks it, and an instance of
+      -- that is what a constructor nested in an index needs
+      if c.lowerOf.fields.all (·.value.isNone) then
+        let mut sems := #[]
+        let mut able := true
+        for f in lowerFields b c do
+          if let some (j, args) := dataTarget b f then
+            if foreign b k j then able := false
+            let args := if f.pubArgs.size ≥ args.size then f.pubArgs else args
+            sems := sems.push (← lambda f.domain (app (pubSemName b.members[j]!) (pArgs b ++ (← args.mapM text) ++ #[applyDomain f.name.toString f.domain])))
+          else sems := sems.push f.name.toString
+        if able then
+          let name := aux m.name ("_" ++ c.name.toString ++ "_pubsem")
+          let saved ← get
+          try
+            emitL ("theorem " ++ name ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++
+              app (pubSemName m) (pArgs b ++ result ++ #[ctorApp b k ci (fieldNames c)]) ++ " = " ++
+              par (withParams b (pieceName m c) sems) ++ "._ir_val := by ir_kernel_rfl")
+            pubsems := pubsems.push name
+          catch e =>
+            set saved
+            trace[Mumi.ir] "no semantic rule for {m.name}.{c.name}:
+{e.toMessageData}"
 
 /-! ### The recursor -/
 
