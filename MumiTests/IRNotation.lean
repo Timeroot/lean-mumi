@@ -244,10 +244,10 @@ theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
 
 end ParamsLower
 
-/-! A carrier's parameters are explicit, as the type's own are in Lean. -/
+/-! A carrier's parameter may be implicit too, as Lean allows of any
+inductive (`MumiTests/IRParams.lean` has more). -/
 
-/-- error: IR carriers take their shared parameters explicitly, `(x : T)`, or as instances, `[C x]`; their constructors and eliminators take them implicitly -/
-#guard_msgs in
+namespace ImplicitCarrier
 mutual
 inductive U {α : Type} : Type where
   | base : U
@@ -256,3 +256,6 @@ def El {α : Type} : U (α := α) → Type
   | .base => α
   | .pi a b => (x : El a) → El (b x)
 end
+
+example : El (α := Nat) .base = Nat := rfl
+end ImplicitCarrier

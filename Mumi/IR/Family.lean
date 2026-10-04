@@ -259,6 +259,9 @@ private def wfName (m : Member) := aux m.name "_W"
 private def invName (m : Member) := aux m.name "_Inv"
 private def invertName (m : Member) := aux m.name "_invert"
 private def wfVar (n : Name) := "_ir_wf_" ++ n.toString
+/-- The well-formedness of an index: named apart from a field's, which a
+constructor's minor premise binds beside it under the same name. -/
+private def idxWfVar (n : Name) := "_ir_xwf_" ++ n.toString
 /-- The `Prop` members, in order. -/
 private def propMembers (b : Block) : Array Nat :=
   (Array.range b.members.size).filter fun i => b.members[i]!.prop
@@ -361,9 +364,18 @@ private def indexed (b : Block) (k : Nat) := !b.members[k]!.indices.isEmpty
 /-- `s` read as carrier `k` at the shared parameters and some index arguments. -/
 private def memberApp? (names : Array Name) (params : Array Binder) (s : Syntax) :
     Option (Nat × Array Syntax) := Id.run do
-  -- a carrier is written at its explicit parameters, as Lean's own is
+  -- a carrier is written at its explicit parameters, as Lean's own is, an
+  -- implicit one at most named, `U (α := α)`
+  let implicits := params.filter (·.info != .default)
   let params := params.filter (·.info == .default)
   let (head, args) := unapp s
+  -- `@U α idx`, as the reader writes a carrier with an implicit parameter
+  if head.isOfKind ``Parser.Term.explicit then
+    let some i := names.findIdx? (same head[1] ·) | return none
+    if args.size < implicits.size + params.size then return none
+    return some (i, args.extract (implicits.size + params.size) args.size)
+  let args := args.filter fun a => !(a.isOfKind ``Parser.Term.namedArgument &&
+    implicits.any fun p => a[1].getId == p.name && same a[3] p.name)
   let some i := names.findIdx? (same head ·) | return none
   if args.size < params.size then return none
   if !((args.extract 0 params.size).zip params).all (fun (a, p) => same a p.name) then return none
@@ -565,10 +577,51 @@ private def emitDef (attrs : String) (rest : String) : CommandElabM Unit :=
 
 /-! ## Reading the block -/
 
+/-- `s` with every application of a carrier written in full, `@U α idx`: one
+with an implicit parameter is written without it, which a generated
+declaration, unlike the block, cannot infer. -/
+private partial def pinCarriers (names : Array Name) (params : Array Binder) (s : Syntax) : CommandElabM Syntax := do
+  if let some (_, idx) := memberApp? names params s then
+    let head := (unapp s).1
+    -- a bare carrier name inside a longer application is reached from the application
+    let full := "@" ++ head.getId.toString ++ " " ++ String.intercalate " " (params.map (·.name.toString)).toList
+    let idx ← idx.mapM fun a => do return par (← text (← pinCarriers names params a))
+    return ← parseTerm (par (full ++ (if idx.isEmpty then "" else " " ++ String.intercalate " " idx.toList)))
+  match s with
+  | .node info k xs => return .node info k (← xs.mapM (pinCarriers names params))
+  | _ => return s
+
+/-- A signature with every carrier application in its binders' types and its
+type written in full, the binders themselves kept. -/
+private partial def pinSig (names : Array Name) (params : Array Binder) (s : Syntax) : CommandElabM Syntax := do
+  -- the binders: only their types
+  let bs ← s[0].getArgs.mapM fun x => do
+    let typed := x.isOfKind ``Parser.Term.explicitBinder || x.isOfKind ``Parser.Term.implicitBinder ||
+      x.isOfKind ``Parser.Term.strictImplicitBinder
+    if typed && x[2].getNumArgs == 2 then return x.setArg 2 (x[2].setArg 1 (← pinCarriers names params x[2][1]))
+    return x
+  let s := s.setArg 0 (mkNullNode bs)
+  if s[1].getNumArgs == 0 then return s
+  return s.setArg 1 (s[1].setArg 0 (s[1][0].setArg 1 (← pinCarriers names params s[1][0][1])))
+
 private def readBlock (elems : Array Syntax) : CommandElabM Block := do
   unless (← getScope).varDecls.isEmpty do
     throwError "IR prototype does not yet support section variables; write shared parameters on each declaration"
   let globalNames := elems.map (·[1][1][0].getId)
+  -- a carrier with an implicit parameter is written in full from here on
+  let elems ← do
+    let carriers := elems.filter (·[1].isOfKind ``Parser.Command.«inductive»)
+    let some first := carriers[0]? | pure elems
+    let (ps, _) ← signature first[1][2]
+    if ps.all (fun p => p.info == .default || p.info == .instImplicit) then pure elems
+    else
+      let names := carriers.map (·[1][1][0].getId)
+      -- the bodies only: a declaration's own name and binders stay as written
+      elems.mapM fun e => do
+        let d := e[1]
+        if d.isOfKind ``Parser.Command.«inductive» then
+          return e.setArg 1 ((d.setArg 2 (← pinSig names ps d[2])).setArg 4 (← pinCarriers names ps d[4]))
+        return e.setArg 1 ((d.setArg 2 (← pinSig names ps d[2])).setArg 3 (← pinCarriers names ps d[3]))
   let mut params : Array Binder := #[]
   let mut level := ""
   let mut heads : Array (Name × Array Binder × Bool × String × String) := #[]
@@ -582,8 +635,6 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
     unless d[1][1].getNumArgs == 0 do throwErrorAt d "IR prototype uses surrounding universe declarations, not explicit declaration universe lists"
     if d.isOfKind ``Parser.Command.«inductive» then
       let (ps, result) ← signature d[2]
-      if ps.any fun p => p.info == .implicit || p.info == .strictImplicit then
-        throwErrorAt d "IR carriers take their shared parameters explicitly, `(x : T)`, or as instances, `[C x]`; their constructors and eliminators take them implicitly"
       let (idx, result) ← telescope result
       -- an index written as an arrow is named as Lean names it, `a`
       let fresh := domainNames (idx.map (·.name))
@@ -620,7 +671,6 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       else if mentions x.type names then
         throwErrorAt x.type "An index domain may name a carrier only as that carrier applied to its indices; anything else has to go through a decoder"
       let proof := member.any fun (k, _) => heads[k]!.2.2.1
-      if proof && prop then throwErrorAt x.type "A `Prop` member indexed by a proof is not supported yet"
       indices := indices.push { name := x.name, type := x.type, member, proof }
     members := members.push { name := n, indices, ctors := #[], prop, level := l, doc }
   -- constructors
@@ -752,13 +802,24 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
       for alt in alts do
         unless alt[1].getNumArgs == 1 do throwErrorAt alt "IR equations need one pattern list"
         let pats := alt[1][0].getSepArgs
-        -- an implicit index may be left out of the patterns, as Lean's own are
-        let explicitIdx := (args.pop.filter (!·.implicit)).size
-        let pats ← if pats.size == explicitIdx + 1 && explicitIdx < m.indices.size then do
+        -- as Lean's own equations, they match only the indices bound after the
+        -- colon, explicitly: one before it is read as the pattern of its name
+        -- (`_` where a field of the constructor has the name), an implicit one as `_`
+        let before := ps.size - params.size
+        let written := (Array.range args.pop.size).filter fun i => i ≥ before && !args.pop[i]!.implicit
+        let pats ← if pats.size == written.size + 1 && written.size < m.indices.size then do
             let mut full := #[]
             let mut k := 0
-            for x in args.pop do
-              if x.implicit then full := full.push (← parseTerm "_")
+            for j in [:args.pop.size] do
+              let x := args.pop[j]!
+              if j < before then
+                let (h, xs) := unapp pats.back!
+                let fields := match ctorRef? { members, decoders := #[], params, level } (some i) h with
+                  | some (k, ci) => members[k]!.ctors[ci]!.fields.map fun (f : Field) => f.name
+                  | none => #[]
+                let taken := xs.any (same · x.name) || fields.contains x.name
+                full := full.push (← parseTerm (if taken || x.implicit then "_" else x.name.toString))
+              else if x.implicit then full := full.push (← parseTerm "_")
               else
                 full := full.push pats[k]!
                 k := k + 1
@@ -1015,7 +1076,7 @@ private def graphArity (b : Block) (i : Nat) (implicit := false) : CommandElabM 
       let gIdx ← graphIdx b src k args
       out := out.push (bind (semVar x.name ++ " : " ++ withParams b (semName b.members[k]!) sIdx))
       out := out.push (bind (x.name.toString ++ " : " ++ withParams b (graphName b.members[k]!) (gIdx ++ #[semVar x.name])))
-      src := src.push { name := x.name, sem := semVar x.name, graph := x.name.toString, coh := wfVar x.name }
+      src := src.push { name := x.name, sem := semVar x.name, graph := x.name.toString, coh := idxWfVar x.name }
     else
       out := out.push (bind (x.name.toString ++ " : " ++ (← semText b src x.type)))
   return (out, src)
@@ -1033,8 +1094,8 @@ private def arityWf (b : Block) (i : Nat) : CommandElabM (Array (String × Strin
   for x in b.members[i]!.indices do
     if let some (k, args) := x.member then
       let gIdx ← graphIdx b src k args
-      out := out.push (wfVar x.name, wfAt b k gIdx (semVar x.name) x.name.toString)
-      src := src.push { name := x.name, sem := semVar x.name, graph := x.name.toString, coh := wfVar x.name }
+      out := out.push (idxWfVar x.name, wfAt b k gIdx (semVar x.name) x.name.toString)
+      src := src.push { name := x.name, sem := semVar x.name, graph := x.name.toString, coh := idxWfVar x.name }
   return out
 
 /-- The semantic halves of the arity of carrier `i`: what its `Sem` record is parameterised by. -/
@@ -1083,7 +1144,7 @@ private def repackIdx (b : Block) (i : Nat) : Array String :=
   (pubIndicesOf b i).map fun x =>
     if x.proof then "_ir_pf_" ++ x.name.toString
     else if x.member.isSome then
-      if b.wf then "⟨⟨" ++ semVar x.name ++ ", " ++ x.name.toString ++ "⟩, " ++ wfVar x.name ++ "⟩"
+      if b.wf then "⟨⟨" ++ semVar x.name ++ ", " ++ x.name.toString ++ "⟩, " ++ idxWfVar x.name ++ "⟩"
       else "⟨" ++ semVar x.name ++ ", " ++ x.name.toString ++ "⟩"
     else x.name.toString
 /-- The proofs among carrier `i`'s indices, bound at the graph's names: each
@@ -1097,6 +1158,10 @@ private def arityProofs (b : Block) (i : Nat) : CommandElabM (Array (String × S
     if x.proof then out := out.push ("_ir_pf_" ++ x.name.toString, ← text (subst x.type pairs))
     pairs := pairs.push (x.name, ← parseTerm v)
   return out
+/-- What a motive of carrier `i` is under besides its graph indices: the
+indices' well-formedness, then the proofs among them. -/
+private def arityHyps (b : Block) (i : Nat) : CommandElabM (Array (String × String)) :=
+  return (← arityWf b i) ++ (← arityProofs b i)
 /-- The arity of carrier `i` as written, as binders. -/
 private def pubArity (b : Block) (i : Nat) (implicit := false) : CommandElabM String := do
   let bs ← (pubIndicesOf b i).mapM fun x => do
@@ -1414,7 +1479,7 @@ block, under the well-formedness of the indices and of the node. -/
 private def graphMotive (b : Block) (i : Nat) : CommandElabM String := do
   let value := app (motive b i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
   let body ← if b.wf then do
-      let hyps := ((← arityWf b i) ++ (← arityProofs b i)).map (fun (n, t) => par (n ++ " : " ++ t)) |>.push
+      let hyps := (← arityHyps b i).map (fun (n, t) => par (n ++ " : " ++ t)) |>.push
         (par ("_ir_w : " ++ wfAt b i (graphIdxNames b i) "_ir_s" "_ir_g"))
       pure ("∀ " ++ join hyps ++ ", " ++ value)
     else pure value
@@ -1485,7 +1550,7 @@ private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool
     else
       binders := binders.push f.name.toString
       images := images.push f.name.toString
-  let idxWf := (← arityWf b i) ++ (← arityProofs b i)
+  let idxWf ← arityHyps b i
   let tail := if b.wf then (idxWf.map (·.1)).push "_ir_w" else #[]
   return untypedLambda (binders ++ ihNames ++ tail) (app minorName (images ++ (if ihs then ihImages else #[])))
 
@@ -1596,11 +1661,14 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
   let mut ihBinders := #[]
   let mut ihImages := #[]
   let mut src : Array Source := #[]
+  -- each earlier data field's public value, for a proof index term to be read at
+  let mut pubPairs : Array (Name × Syntax) := #[]
   for f in c.fields do
     if (dataTarget b f).isSome then
       binders := binders.push (semVar f.name) |>.push f.name.toString
       let dom ← f.domain.mapM fun x => do return { x with type := ← semantic b src x.type }
       images := images.push (← lambda dom ("⟨⟨" ++ applyDomain (semVar f.name) dom ++ ", " ++ applyDomain f.name.toString dom ++ "⟩, " ++ applyDomain (wfVar f.name) dom ++ "⟩"))
+      if dom.isEmpty then pubPairs := pubPairs.push (f.name, ← parseTerm images.back!)
       wfs := wfs.push (wfVar f.name)
       src := src.push { name := f.name, sem := semVar f.name, graph := f.name.toString, coh := wfVar f.name }
     else if let some (k, args) := f.target then
@@ -1612,12 +1680,15 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
         let mut ws := #[]
         for (x, t) in b.members[k]!.indices.zip args do
           if let some (jj, _) := x.member then ws := ws.push (← pair b src (some jj) t).2.2
+        -- then the proofs among its indices, as written there
+        for (x, t) in (pubIndicesOf b k).zip f.pubArgs do
+          if x.proof then ws := ws.push (← qualifyText b (x.member.map (·.1)) (subst t pubPairs))
         ihImages := ihImages.push (← lambda dom (applyTo (applyDomain (ihVar f.name) dom) ws))
     else
       binders := binders.push f.name.toString
       images := images.push f.name.toString
   let wfIhs := if ihs then wfs.map fun _ => "_" else #[]
-  let tail := (← arityWf b j).map (·.1)
+  let tail := (← arityHyps b j).map (·.1)
   let g := untypedLambda (binders ++ wfs ++ props ++ wfIhs ++ ihBinders ++ tail) (app (propMinor b j ci joint) (images ++ (if ihs then ihImages else #[])))
   return (pub, g)
 
@@ -1633,7 +1704,7 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
   let mut gargs := pArgs b
   for k in dataMembers b ++ props do
     if b.members[k]!.prop then
-      let hyps := (← arityWf b k).map fun (n, t) => par (n ++ " : " ++ t)
+      let hyps := (← arityHyps b k).map fun (n, t) => par (n ++ " : " ++ t)
       let value := app (propMotive b k) (repackIdx b k ++ #["_ir_h"])
       gargs := gargs.push (untypedLambda (graphIdxNames b k ++ #["_ir_h"]) (if hyps.isEmpty then value else "∀ " ++ join hyps ++ ", " ++ value))
     else
@@ -1654,7 +1725,7 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
     emit (elimAttrs b attrs ++ "theorem " ++ elimName b m "rec" ++ " " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app (propMotive b j) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".rec") (gargs ++ pubPairIdx b j idx ++ #["_ir_self"] ++ pubIdxWf b j idx))
     -- `casesOn`: the member's own constructors, no hypotheses
     let mot := "{motive : ∀ " ++ (← pubArity b j) ++ " (_ir_self : " ++ typeAt b j idx ++ "), Prop}"
-    let hyps := (← arityWf b j).map fun (n, t) => par (n ++ " : " ++ t)
+    let hyps := (← arityHyps b j).map fun (n, t) => par (n ++ " : " ++ t)
     let value := app "motive" (repackIdx b j ++ #["_ir_h"])
     let gmotive := untypedLambda (graphIdxNames b j ++ #["_ir_h"]) (if hyps.isEmpty then value else "∀ " ++ join hyps ++ ", " ++ value)
     let mut cminors := #[]
@@ -1969,6 +2040,7 @@ private def pubTele (b : Block) (k : Nat) : CommandElabM (Array (String × Strin
     let n := "_ir_idx_" ++ x.name.toString
     if x.proof then
       -- a proof: a component of its own, which the certificate does not take
+      let n := "_ir_pf_" ++ x.name.toString
       comps := comps.push (n, ← text (subst x.type pairs))
       pub := pub.push n
       pairs := pairs.push (x.name, mkIdent (Name.mkSimple n))
@@ -2804,7 +2876,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
         let pt ← qualifyText b (x.member.map (·.1)) (subst t pubPairs)
         if x.proof then
           -- a proof: the motive's and the conclusion's, which is no conjunct of the shape
-          castArgs := castArgs.push ("_ir_idx_" ++ x.name.toString) |>.push pt
+          castArgs := castArgs.push ("_ir_pf_" ++ x.name.toString) |>.push pt
           continue
         if x.member.isSome then
           castArgs := castArgs.push ("_ir_idx_" ++ x.name.toString) |>.push (par pt ++ ".val") |>.push ("_ir_shape" ++ conj ei) |>.push ("_ir_hx_" ++ x.name.toString) |>.push (par pt ++ ".property")
@@ -2869,7 +2941,7 @@ private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : St
   let ihNames := (r.names.filter fun (_, kind) => kind == .cert || kind == .proof).map fun (n, kind) =>
     if kind == .proof then "_ir_ih_" ++ n else "_"
   let (comps, _, _) ← pubTele b j
-  let hxs := (comps.filter fun (n, _) => n.startsWith "_ir_hx_").map (·.1)
+  let hxs := (comps.filter fun (n, _) => n.startsWith "_ir_hx_" || n.startsWith "_ir_pf_").map (·.1)
   let binders := r.names.map (·.1) ++ (if ihs then ihNames else #[]) ++ hxs
   let mut pubPairs : Array (Name × Syntax) := #[]
   let mut lets := ""
@@ -2881,9 +2953,12 @@ private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : St
       if b.members[k]!.prop then
         images := images.push f.name.toString
         if ihs then
+          -- the certificates of its indices and the proofs among them, in order
           let mut certs := #[]
-          for (y, t) in b.members[k]!.indices.zip (args.map (subst · pubPairs)) do
-            if let some (i, _) := y.member then certs := certs.push (par (← qualifyText b (some i) t) ++ ".property")
+          let pargs := if f.pubArgs.size ≥ args.size then f.pubArgs else args
+          for (y, t) in (pubIndicesOf b k).zip (pargs.map (subst · pubPairs)) do
+            if y.proof then certs := certs.push (← qualifyText b (y.member.map (·.1)) t)
+            else if let some (i, _) := y.member then certs := certs.push (par (← qualifyText b (some i) t) ++ ".property")
           ihImages := ihImages.push (← lambda pdom (applyTo (applyDomain (ihVar f.name) f.domain) certs))
       else
         let pargs ← ((if f.pubArgs.size ≥ args.size then f.pubArgs else args).map (subst · pubPairs)).mapM text
@@ -2909,7 +2984,7 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
     motives := motives.push ("{" ++ propMotive b j ++ " : ∀ " ++ (← pubArity b j) ++ " (_ir_self : " ++ typeAt b j (pubIdxNames b j) ++ "), Prop}")
   let gmotive (k : Nat) (name : String) : CommandElabM String := do
     let (comps, pub, _) ← pubTele b k
-    let hyps := (comps.filter fun (n, _) => n.startsWith "_ir_hx_").map fun (n, t) => par (n ++ " : " ++ t)
+    let hyps := (comps.filter fun (n, _) => n.startsWith "_ir_hx_" || n.startsWith "_ir_pf_").map fun (n, t) => par (n ++ " : " ++ t)
     let value := app name (pub ++ #["_ir_h"])
     return untypedLambda (rawArityNames b k ++ #["_ir_h"]) (if hyps.isEmpty then value else "∀ " ++ join hyps ++ ", " ++ value)
   let mut gargs := pArgs b
@@ -2931,7 +3006,10 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
     let m := b.members[j]!
     let idx := pubIdxNames b j
     let gIdx ← goodIdxPub b j (m.indices.map fun x => mkIdent x.name)
-    let certs := m.indices.filterMap fun x => if x.member.isSome then some (x.name.toString ++ ".property") else none
+    -- the certificates of the major's indices and the proofs among them, in order
+    let certs := (pubIndicesOf b j).filterMap fun x =>
+      if x.proof then some x.name.toString
+      else if x.member.isSome then some (x.name.toString ++ ".property") else none
     let attrs := if props.size == 1 then "@[elab_as_elim, induction_eliminator] " else "@[elab_as_elim] "
     emitL (elimAttrs b attrs ++ "theorem " ++ elimName b m "rec" ++ " " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app (propMotive b j) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".rec") (gargs ++ gIdx ++ #["_ir_self"] ++ certs))
     let mot := "{motive : ∀ " ++ (← pubArity b j) ++ " (_ir_self : " ++ typeAt b j idx ++ "), Prop}"
@@ -3032,6 +3110,125 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   emitEquations b
   emitSolo b
 
+
+/-! ## Universes written as `Sort` -/
+
+/-- `s` with each `Sort` spelled as the universe it is: `Sort (l+1)` and
+`Sort n` for a numeral `n ≥ 1` as `Type`, `Sort 0` as `Prop`.  A `Sort l` that
+may be `Prop` is refused, as Lean refuses it of an inductive: at `l = 0` the
+carrier would be a proposition, and a decoder into a type would tell equal
+proofs apart. -/
+private partial def spellSorts (s : Syntax) : CommandElabM Syntax := do
+  if s.isOfKind ``Parser.Term.sort then
+    if s[1].getNumArgs == 0 then return ← parseTerm "Prop"
+    let l := ((s[1][0].reprint.getD "").trimAscii.toString)
+    let l := if l.startsWith "(" && l.endsWith ")" then ((l.drop 1).dropEnd 1).trimAscii.toString else l
+    if let some n := l.toNat? then
+      return ← parseTerm (if n == 0 then "Prop" else "Type " ++ toString (n - 1))
+    let parts := l.splitOn "+"
+    if parts.length == 2 && (parts[1]!.trimAscii.toString) == "1" then
+      return ← parseTerm ("Type (" ++ parts[0]!.trimAscii.toString ++ ")")
+    throwErrorAt s "An IR carrier in `Sort {l}` would be a proposition at `{l} = 0`, where a decoder into a type would tell equal proofs apart; declare it in `Type u` (or `Sort (u+1)`), or in `Prop` without a decoder"
+  match s with
+  | .node info k xs => return .node info k (← xs.mapM spellSorts)
+  | _ => return s
+
+/-- The block with its carriers' signatures' `Sort`s spelled as universes. -/
+def normalizeSorts (elems : Array Syntax) : CommandElabM (Array Syntax) :=
+  elems.mapM fun e => do
+    unless e[1].isOfKind ``Parser.Command.«inductive» do return e
+    -- the signature only: a constructor's types are terms like any other
+    return e.setArg 1 (e[1].setArg 2 (← spellSorts e[1][2]))
+
+/-! ## Parameters that vary
+
+`inductive U (α : Type) | wrap (u : U (List α)) : U α` is refused by Lean 4,
+and sound: as in Coq, a parameter some occurrence varies is an index.  From the
+first one that varies on, the carriers' parameters become indices, each
+constructor binds them as implicit fields, as Lean binds a parameter, and a
+conclusion left out is written out.  A decoder binds the shared parameters and
+then the carrier's indices, so it reads the same either way. -/
+
+/-- A syntax node of kind `kind` parsed out of `src`, a command, at `path`. -/
+private def templateNode (src : String) (path : List Nat) : CommandElabM Syntax := do
+  let .ok stx := Parser.runParserCategory (← getEnv) `command src
+    | throwError "IR frontend could not parse its template:
+{src}"
+  return path.foldl (fun s i => s[i]) stx
+
+/-- The first explicit parameter an application of a carrier in `s` varies,
+with the argument there. -/
+private partial def varyingArg (names : Array Name) (explicit : Array Binder) (s : Syntax) : Option (Nat × Syntax) := Id.run do
+  let (h, args) := unapp s
+  if h.isIdent && names.contains h.getId then
+    for j in [:min args.size explicit.size] do
+      unless same args[j]! explicit[j]!.name do return some (j, args[j]!)
+  for a in s.getArgs do
+    if let some r := varyingArg names explicit a then return some r
+  return none
+
+/-- The block with every parameter from the first one an occurrence varies
+made an index.  At the written universe a carrier records its indices, so one
+of type `Type l` needs the carrier in a universe above it. -/
+def promoteParams (elems : Array Syntax) : CommandElabM (Array Syntax) := do
+  let carriers := elems.filter (·[1].isOfKind ``Parser.Command.«inductive»)
+  let some first := carriers[0]? | return elems
+  let names := carriers.map (·[1][1][0].getId)
+  let (ps, _) ← signature first[1][2]
+  let explicit := ps.filter (·.info == .default)
+  -- the first explicit parameter an application of a carrier varies, where
+  let mut varies : Option (Nat × String × String) := none
+  for e in elems do
+    let owner := e[1][1][0].getId
+    let parts : Array (Name × Syntax) :=
+      if e[1].isOfKind ``Parser.Command.«inductive» then
+        e[1][4].getArgs.map fun c => (owner ++ c[3].getId, c[4])
+      else #[(owner, e[1][2]), (owner, e[1][3])]
+    for (ctx, part) in parts do
+      if let some (j, a) := varyingArg names explicit part then
+        if varies.all (j < ·.1) then varies := some (j, ← text (unparen a), ctx.toString)
+  let some (j, arg, ctx) := varies | return elems
+  -- every binder from it on
+  let at_ := (ps.findIdx? (·.name == explicit[j]!.name)).getD 0
+  let promoted := ps.extract at_ ps.size
+  let lower := mumi.mahlo.get (← getOptions)
+  let mut out := #[]
+  for e in elems do
+    let d := e[1]
+    unless d.isOfKind ``Parser.Command.«inductive» do
+      out := out.push e
+      continue
+    let (_, result) ← signature d[2]
+    let level ← text result
+    -- at the written universe a promoted `Type l` has to fit the carrier
+    if lower then
+      for x in promoted do
+        let t ← text x.type
+        if t.startsWith "Type" || t.startsWith "Sort" then
+          let l := ((t.drop 4).trimAscii.toString)
+          let need := if l.isEmpty || l == "0" then "Type 1" else "Type (" ++ l ++ " + 1)"
+          let have_ := ((level.drop 4).trimAscii.toString)
+          if level.startsWith "Type" && (have_ == l || (have_.isEmpty && (l.isEmpty || l == "0"))) then
+            throwErrorAt d "The parameter `{x.name}` of `{d[1][0].getId}` varies (it is `{arg}` in `{ctx}`), so it is an index, which a value of `{d[1][0].getId}` at the written universe records: `{d[1][0].getId}` has to be declared in `{need}` to hold a `{t}`"
+    -- the signature: the promoted binders after the colon
+    let pis ← promoted.mapM fun x => do
+      return bracket (if x.info == .default then .default else x.info) (x.name.toString ++ " : " ++ (← text x.type)) ++ " → "
+    let kept := d[2][0].getArgs.extract 0 (d[2][0].getArgs.size - (promoted.size))
+    let ty ← parseTerm (String.join pis.toList ++ level)
+    let sigTpl ← templateNode ("inductive _T : " ++ (← text ty) ++ " where | c : _T") [1, 2]
+    let sig := sigTpl.setArg 0 (mkNullNode kept)
+    -- each constructor binds them implicitly; a conclusion left out is written
+    let full := "@" ++ d[1][0].getId.toString ++ " " ++ String.intercalate " " (ps.map (·.name.toString)).toList
+    let implicitBs ← templateNode ("inductive _T where | c " ++ String.intercalate " "
+      (← promoted.mapM fun x => do return "{" ++ x.name.toString ++ " : " ++ (← text x.type) ++ "}").toList ++ " : _T") [1, 4, 0, 4, 0]
+    let resultTpl ← templateNode ("inductive _T where | c : " ++ par full) [1, 4, 0, 4, 1]
+    let ctors := d[4].getArgs.map fun c =>
+      let sig := c[4]
+      let sig := sig.setArg 0 (mkNullNode (implicitBs.getArgs ++ sig[0].getArgs))
+      let sig := if sig[1].getNumArgs == 0 then sig.setArg 1 resultTpl else sig
+      c.setArg 4 sig
+    out := out.push (e.setArg 1 ((d.setArg 2 sig).setArg 4 (mkNullNode ctors)))
+  return out
 
 /-! ## Nested occurrences
 
@@ -3671,6 +3868,8 @@ different universes, and a `Prop` inductive the rest only refers to is
 declared right after what it refers to.  An inductive of a group's universe
 that names its carriers joins it, with the groups between. -/
 partial def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
+  let elems ← Family.normalizeSorts elems
+  let elems ← Family.promoteParams elems
   -- a nested occurrence: the block with copies, then its API over the originals
   if (← Family.nestedPrefix.get).isEmpty then
     if let some dn ← Family.denest elems then
