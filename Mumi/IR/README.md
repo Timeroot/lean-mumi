@@ -276,7 +276,21 @@ carries its well-formedness -- which is what lets a `Prop` tie carriers in
 different universes together (`MumiTests/IRUniversesProp.lean`).  One thing
 changes for the writer: a proof a constructor was built with is no field of
 the data, so `Good.pi _ _ h …` has to name `h` where `Good.pi _ _ _ …` used to
-infer it.  A decoder may not recurse over a `Prop` member.
+infer it.
+
+A `Prop` member may relate several values (`Conv : (A : Ty) → Tm A → Tm A →
+Prop`), and may be indexed by a proof of another (`Sound : (Γ : Ctx) → Ok Γ →
+Prop`), which is erased as for a data member (below).  A `Prop` member that
+Lean would let eliminate into any sort -- a syntactic subsingleton, one
+constructor whose fields are proofs or appear in its indices, as `Acc` -- does
+so here too, when it is the block's only proposition: the member is declared
+again on its own after the block (`_ir_P_Large`), Lean's kernel decides, and
+where it allows it `P.rec` and `P.casesOn` are the copy's, through
+`P.toLarge`/`P.ofLarge`, at the motive read back by proof irrelevance, with
+the rule `P.rec_c` an equation (`MumiTests/IRPropMore.lean`).  A decoder may
+recurse over such a member, and over no other one, where equal proofs could
+decode differently; it is defined after the block by that recursor, with its
+equations, and nothing in the block may use it.
 
 A `Prop` member may be an index domain, `Tm : (Γ : Ctx) → Closed Γ → Ty Γ →
 Type` or `Ty : (Γ : Ctx) → Ok Γ → Type` with `Ok` and `Ctx` naming `Ty` back
@@ -353,20 +367,32 @@ Current restrictions are explicit:
   since a value stores the copy and `toOrig (ofOrig fs) = fs` is not
   definitional; at a closed `fs` it is `rfl` again. The block's own eliminators,
   over the copies, are `X._nested_rec` and so on. Not yet: a nested occurrence
-  under binders (`(f : Nat → List U)`), in an indexed family (`Vector U n`), or
-  with arguments mentioning a field, and `induction` (as for Lean's own nested
-  inductives, `induction … using U.rec` with every motive).
+  under binders (`(f : Nat → List U)`), in an indexed family (`Vector U n`),
+  with arguments naming a field or an index (`List (U n)` where `n` varies), a
+  carrier indexed by a nested application (`Good : List U → Prop`), and
+  `induction` (as for Lean's own nested inductives, `induction … using U.rec`
+  with every motive); each of these is refused with a message saying so.
 - Shared parameters must be typed and repeated identically on all
-  declarations: explicit or instances (`[BEq α]`, named or not) on the
-  carriers, as the type's own are in Lean, and
-  explicit or implicit on a decoder, `def El {A : Type u} : U A → Type u`, as
-  its author wishes. The public constructors and eliminators take them
+  declarations, bound as the author wishes: explicit, implicit
+  (`inductive U {α : Type}`, which a carrier is then written without inside
+  the block, or as `U (α := α)`), or instances (`[BEq α]`, named or not), on
+  the carriers as on a decoder. The public constructors and eliminators take them
   implicitly. Inside the block a constructor is written without them, `U.pi a b`
   or `.pi a b` (or `@U.pi A a b`, all of them), and a decoder call writes the
   ones its declaration binds explicitly. Use surrounding `universe`
   declarations; members may sit at different levels of them, `Type u` beside
-  `Type (u+1)`. Section variables, default parameters, and per-declaration
-  universe lists are not supported.
+  `Type (u+1)`; `Sort (u+1)` is `Type u`, and `Sort u` is refused, as Lean
+  refuses it of an inductive: at `u = 0` the carrier would be a proposition,
+  and a decoder into a type would tell equal proofs apart. Section variables,
+  default parameters, and per-declaration universe lists are not supported.
+- A parameter may vary, `wrap (u : U (List α)) : U α`, which Lean 4 refuses
+  and which is sound, as in Coq: from the first parameter an occurrence
+  varies on, the parameters are indices, each constructor binds them
+  implicitly (`U.wrap : {α : Type} → U (List α) → U α`), the motive takes them,
+  and a decoder binding them before its colon reads as before. One universe up
+  this costs nothing; at the written universe a carrier records its indices,
+  so one of type `Type` needs the carrier in `Type 1`, and a small one, `(n :
+  Nat)`, varies in `Type` as well.
 - A constructor field written `{x : T}`, `⦃x : T⦄` or `[x : T]` is bound so
   in the public constructor and explicitly in the minor premises, as Lean's
   own are. Inside the block a constructor application in an index term writes

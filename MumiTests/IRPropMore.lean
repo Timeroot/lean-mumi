@@ -125,7 +125,7 @@ end
 #guard_msgs in
 #check Conv
 
-/-- info: @Conv.lam : ∀ (A B : Ty) (t t' : Tm B), Conv B t t' → Conv (A.arr B) (Tm.lam A B t) (Tm.lam A B t') -/
+/-- info: Conv.lam : ∀ (A B : Ty) (t t' : Tm B), Conv B t t' → Conv (A.arr B) (Tm.lam A B t) (Tm.lam A B t') -/
 #guard_msgs in
 #check @Conv.lam
 
@@ -199,7 +199,7 @@ info: @Pos.rec : {motive : (a : U) → Pos a → Sort u_1} →
 #guard_msgs in
 #check @Pos.rec
 
-def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
+noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
 example (a : U) (h : Nonempty (El a)) : tag a (.mk a h) = 7 := by
   simp only [tag, Pos.rec_mk]
 
@@ -229,7 +229,7 @@ def El : U → Type
   | .some a p => El a
 end
 
-def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
+noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
 example (a : U) (h : Nonempty (El a)) : tag a (.mk a h) = 7 := by
   simp only [tag, Pos.rec_mk]
 
@@ -258,12 +258,13 @@ end
 
 /--
 info: @Fin'.rec : {motive : (a : U) → Fin' a → Sort u_1} →
-  ((a : U) → (below : El a → Fin' a) → ((x : El a) → motive a ⋯) → motive a ⋯) → {a : U} → (t : Fin' a) → motive a t
+  ((a : U) → (below : ∀ (x : El a), Fin' a) → ((x : El a) → motive a ⋯) → motive a ⋯) →
+    {a : U} → (t : Fin' a) → motive a t
 -/
 #guard_msgs in
 #check @Fin'.rec
 
-def count (a : U) (h : Fin' a) : Nat := Fin'.rec (motive := fun _ _ => Nat) (fun _ _ _ => 0) h
+noncomputable def count (a : U) (h : Fin' a) : Nat := Fin'.rec (motive := fun _ _ => Nat) (fun _ _ _ => 0) h
 
 end LargeAcc
 
@@ -284,12 +285,12 @@ def El : U → Type
   | .some a p => El a
 end
 
+-- (a definition by a large recursor is `noncomputable`, as one by `Acc.rec` is)
 -- `Inh .nat` has a proof for each `n`: eliminating into `Nat` would tell them apart
 /--
 info: @Inh.rec : ∀ {motive : (a : U) → Inh a → Prop},
   (∀ (n : Nat), motive U.nat ⋯) →
-    (∀ (a : U) (p : Inh a) (h : Inh a), motive a p → motive a h → motive (U.some a p) ⋯) →
-      ∀ {a : U} (t : Inh a), motive a t
+    (∀ (a : U) (p h : Inh a), motive a p → motive a h → motive (a.some p) ⋯) → ∀ {a : U} (t : Inh a), motive a t
 -/
 #guard_msgs in
 #check @Inh.rec
@@ -325,17 +326,18 @@ mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n
   | succ (c : Code (n + 1)) : Code n
-  | list (cs : List (Code n)) (h : Good n cs) : Code n
-inductive Good {σ : Type} : (n : Nat) → List (Code (σ := σ) n) → Prop where
-  | nil (n : Nat) : Good n []
-  | cons (n : Nat) (c : Code n) (cs : List (Code n)) (h : Good n cs) : Good n (c :: cs)
+  | list (cs : List (Code 0)) : Code n
+  | checked (c : Code 0) (h : Good c) : Code n
+inductive Good {σ : Type} : Code (σ := σ) 0 → Prop where
+  | base (s : σ) : Good (.base s)
 def Den {σ : Type} (n : Nat) : Code (σ := σ) n → Type
   | .base s => Fin (n + 1)
   | .succ c => Den (n + 1) c
-  | .list cs h => Dens n cs
-def Dens {σ : Type} (n : Nat) : List (Code (σ := σ) n) → Type
+  | .list cs => Dens cs
+  | .checked c h => Den 0 c
+def Dens {σ : Type} : List (Code (σ := σ) 0) → Type
   | [] => Unit
-  | c :: cs => Den n c × Dens n cs
+  | c :: cs => Den 0 c × Dens cs
 end
 
 /-- info: @Code.succ : {σ : Type} → {n : Nat} → Code (n + 1) → Code n -/
@@ -343,6 +345,22 @@ end
 #check @Code.succ
 
 example (c : Code (σ := Bool) 1) : Den 0 (.succ c) = Den 1 c := rfl
-example (c : Code (σ := Bool) 0) : Dens 0 [c] = (Den 0 c × Unit) := rfl
+example (c : Code (σ := Bool) 0) : Dens [c] = (Den 0 c × Unit) := rfl
+example (s : Bool) : Den 2 (Code.checked (.base s) (.base s)) = Den 0 (Code.base (σ := Bool) s) := rfl
 
 end Mixed
+
+-- a carrier indexed by a nested application would need its own API over the original
+/--
+error: IR prototype does not yet take a carrier indexed by a nested application, as `Good` by `List Code`
+-/
+#guard_msgs in
+set_option mumi.mahlo false in
+mutual
+inductive Code : Type where
+  | list (cs : List Code) (h : Good cs) : Code
+inductive Good : List Code → Prop where
+  | nil : Good []
+def Den : Code → Type
+  | .list cs h => Unit
+end

@@ -249,8 +249,9 @@ elab "reject_ir " expected:str " in " c:command : command => do
 
 namespace RejectedL
 
--- an index domain has to be a carrier applied outright
-reject_ir "applied to its indices" in
+-- an index domain mentioning a carrier is that carrier applied outright, or,
+-- not yet, a nested application of it
+reject_ir "indexed by a nested application" in
 mutual
 inductive A : Type where
   | nil : A

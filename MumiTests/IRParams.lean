@@ -43,7 +43,8 @@ end
 /--
 info: @U.rec : {α : Type} →
   {motive : U → Sort u_1} →
-    motive U.base → ((a : U) → (b : El a → U) → motive a → ((a_1 : El a) → motive (b a_1)) → motive (a.pi b)) → (t : U) → motive t
+    motive U.base →
+      ((a : U) → (b : El a → U) → motive a → ((a_1 : El a) → motive (b a_1)) → motive (a.pi b)) → (t : U) → motive t
 -/
 #guard_msgs in
 #check @U.rec
@@ -183,7 +184,8 @@ def El (α : Type) : U α → Type
   | .wrap u => El (List α) u
 end
 
--- varying beside a uniform one, with an instance and a nested occurrence
+-- varying beside a uniform one, with an instance and a nested occurrence at a
+-- closed index
 namespace NonUniformMixed
 set_option mumi.mahlo false
 
@@ -191,14 +193,14 @@ mutual
 inductive U (β : Type) [Inhabited β] (n : Nat) : Type where
   | here (b : β) : U β n
   | deeper (u : U β (n + 1)) : U β n
-  | many (us : List (U β n)) : U β n
+  | many (us : List (U β 0)) : U β n
 def El (β : Type) [Inhabited β] (n : Nat) : U β n → Type
   | .here b => Fin (n + 1)
   | .deeper u => El β (n + 1) u
-  | .many us => Els β n us
-def Els (β : Type) [Inhabited β] (n : Nat) : List (U β n) → Type
+  | .many us => Els β us
+def Els (β : Type) [Inhabited β] : List (U β 0) → Type
   | [] => Unit
-  | u :: us => El β n u × Els β n us
+  | u :: us => El β 0 u × Els β us
 end
 
 /-- info: @U.deeper : {β : Type} → [inst : Inhabited β] → {n : Nat} → U β (n + 1) → U β n -/
@@ -206,9 +208,24 @@ end
 #check @U.deeper
 
 example (u : U Nat 1) : El Nat 0 (.deeper u) = El Nat 1 u := rfl
-example (u : U Nat 0) : El Nat 0 (.many [u]) = (El Nat 0 u × Unit) := rfl
+example (u : U Nat 0) : El Nat 3 (.many [u]) = (El Nat 0 u × Unit) := rfl
 
 end NonUniformMixed
+
+-- nesting at an index that varies would need a copy indexed by it
+/--
+error: IR prototype does not yet take a nested occurrence whose arguments name a field or an index, as `n` here (a parameter that varies is an index)
+-/
+#guard_msgs in
+set_option mumi.mahlo false in
+mutual
+inductive V (n : Nat) : Type where
+  | deeper (v : V (n + 1)) : V n
+  | many (vs : List (V n)) : V n
+def VEl (n : Nat) : V n → Type
+  | .deeper v => VEl (n + 1) v
+  | .many vs => Unit
+end
 
 /-! ## `Sort` -/
 
