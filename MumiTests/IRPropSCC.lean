@@ -245,7 +245,7 @@ example (α : Type) : El α .base = α := rfl
 example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
     El α (U.pi a b h h') = ((x : El α a) → El α (b x)) := rfl
 theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
-  induction g using Good.rec (motive_3 := fun _ _ => True) with
+  induction g using Good.rec (motive_2 := fun _ _ => True) with
   | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
@@ -296,7 +296,7 @@ end
 example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
     El α (U.pi a b h h') = ((x : El α a) → El α (b x)) := rfl
 theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
-  induction g using Good.rec (motive_3 := fun _ _ => True) with
+  induction g using Good.rec (motive_2 := fun _ _ => True) with
   | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial

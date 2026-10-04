@@ -1360,8 +1360,11 @@ private def minor (b : Block) (i ci : Nat) := Id.run do
     b.members.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n))) ||
     b.members.any (fun m => m.indices.any (fun x => x.name.toString == n))
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
-/-- The motive of member `i`: `motive_1`, … in a joint recursion, `motive` alone. -/
-private def motive (b : Block) (i : Nat) := motiveFor ((dataMembers b).size == 1) i
+/-- The motive of data member `i`: `motive_k` for the `k`th data member, as the
+recursion lists them, or `motive` alone. -/
+private def motive (b : Block) (i : Nat) :=
+  let ds := dataMembers b
+  motiveFor (ds.size == 1) ((ds.findIdx? (· == i)).getD i)
 private def motiveArgs (b : Block) (scope : Array Nat := dataMembers b) := scope.map (motive b)
 private def minorArgs (b : Block) (scope : Array Nat := dataMembers b) :=
   scope.flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
@@ -1558,7 +1561,8 @@ private def propMinor (b : Block) (i ci : Nat) (joint := true) : String := Id.ru
   return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
 /-- The motive of `Prop` member `j`: `motive` when it is the only one. -/
 private def propMotive (b : Block) (j : Nat) : String :=
-  motiveFor ((propMembers b).size == 1) j
+  let ps := propMembers b
+  motiveFor (ps.size == 1) ((ps.findIdx? (· == j)).getD j)
 
 /-- The number of binders the well-formedness recursor's minor premise at a
 data member's constructor takes: the graph fields, the well-formedness and
