@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # Induction-induction and induction-recursion in one block, at the universe written
@@ -6,8 +6,10 @@ import Mumi
 The `Family` path of the IR frontend: carriers indexed by other carriers and by
 decoder values, decoders over indexed carriers, and the equations each of them
 comes with.  Everything here stays at the universe it was written at, on the reflection
-axiom, and every equation is still `rfl`; what is given up is closed
-normalisation, so the closed checks of the upper file are not repeated.
+axiom, and every equation is still `rfl` but two at nested indices; what is
+given up is closed normalisation, so the closed checks of the upper file are
+not repeated.  `ir_spec` checks each block's declarations and rules; what
+follows a block is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -21,6 +23,7 @@ field out of a constructor. -/
 
 namespace CtxTyL
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -35,28 +38,6 @@ def El : (Γ : Ctx) → Ty Γ → Env Γ → Type
   | _, .U Γ => fun _ => Nat
   | _, .Pi Γ A B => fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩
 end
-
-example : Type := Ctx
-example (Γ : Ctx) : Type := Ty Γ
-example : Env Ctx.nil = PUnit := rfl
-example (Γ : Ctx) (A : Ty Γ) : Env (Ctx.ext Γ A) = ((ρ : Env Γ) × El Γ A ρ) := rfl
-example (Γ : Ctx) : El Γ (Ty.U Γ) = fun _ => Nat := rfl
-example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.ext Γ A)) :
-    El Γ (Ty.Pi Γ A B) = fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩ := rfl
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (Γ : Ctx) → Ty Γ → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_1 (Γ.ext A)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.U Γ)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (B : Ty (Γ.ext A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.ext A) B → motive_2 Γ (Ty.Pi Γ A B)) →
-            {Γ : Ctx} → (t : Ty Γ) → motive_2 Γ t
--/
-#guard_msgs in
-#check @Ty.rec
 
 /-- The one-motive recursor `induction` drives: the other motive is discharged at
 `PUnit`, and the hypothesis at a field of the other carrier goes with it. -/
@@ -112,6 +93,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValueL
 
+ir_spec
 mutual
 inductive Code : Type where
   | one : Code
@@ -127,10 +109,6 @@ def depth : (c : Code) → (n : Nat) → Path c n → Nat
   | _, _, .left a b p => depth a (size a) p + 1
 end
 
-example (a b : Code) : size (Code.pair a b) = size a + size b := rfl
-example (a b : Code) (p : Path a (size a)) :
-    depth (Code.pair a b) (size a + size b) (Path.left a b p) = depth a (size a) p + 1 := rfl
-
 /-- info: 'ByValueL.depth_left' depends on axioms: [IR.mahlo] -/
 #guard_msgs in
 #print axioms depth_left
@@ -142,6 +120,7 @@ end ByValueL
 namespace PolyL
 universe u
 
+ir_spec
 mutual
 inductive Ctx (X : Type u) : Type u where
   | nil : Ctx X
@@ -154,9 +133,6 @@ def El (X : Type u) : (Γ : Ctx X) → Ty X Γ → Type u
   | _, .pi Γ A B => (a : El X Γ A) → El X (Ctx.ext Γ A) (B a)
 end
 
-example (X : Type u) (Γ : Ctx X) (A : Ty X Γ) (B : El X Γ A → Ty X (Ctx.ext Γ A)) :
-    El X Γ (Ty.pi Γ A B) = ((a : El X Γ A) → El X (Ctx.ext Γ A) (B a)) := rfl
-
 /-- info: 'PolyL.El_pi' depends on axioms: [IR.mahlo] -/
 #guard_msgs in
 #print axioms El_pi
@@ -167,6 +143,7 @@ end PolyL
 
 namespace DottedL
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -178,9 +155,6 @@ def El : (Γ : Ctx) → Ty Γ → Type
   | _, .base Γ => Nat
   | _, .many Γ A g => (n : Nat) → El (.ext Γ A) (g n)
 end
-
-example (Γ : Ctx) (A : Ty Γ) (g : Nat → Ty (Ctx.ext Γ A)) :
-    El Γ (Ty.many Γ A g) = ((n : Nat) → El (Ctx.ext Γ A) (g n)) := rfl
 
 example (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -197,6 +171,7 @@ the recursor is the stage engine's, and it runs. -/
 
 namespace PlainL
 
+ir_spec
 mutual
 inductive Vec : Nat → Type where
   | nil : Vec 0
@@ -211,8 +186,6 @@ def Env : (n : Nat) → Vec n → Type
   | _, .nil => PUnit
   | _, .cons n a v => El a × Env n v
 end
-
-example (n : Nat) (a : Code) (v : Vec n) : Env (n + 1) (Vec.cons n a v) = (El a × Env n v) := rfl
 
 def len (n : Nat) (v : Vec n) : Nat :=
   Vec.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ => Unit)
@@ -295,8 +268,7 @@ nothing is erased, so it goes through, equations included. -/
 
 namespace UnderBinderL
 
-universe u
-
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -309,22 +281,6 @@ def El : (Γ : Ctx) → Ty Γ → Type
   | _, .many Γ f g => (n : Nat) → El (.ext Γ (f n)) (g n)
 end
 
-example (Γ : Ctx) : El Γ (Ty.base Γ) = Nat := rfl
-example (Γ : Ctx) (f : Nat → Ty Γ) (g : (n : Nat) → Ty (.ext Γ (f n))) :
-    El Γ (Ty.many Γ f g) = ((n : Nat) → El (.ext Γ (f n)) (g n)) := rfl
-
-/-- The recursor's equation at `many` is definitional too. -/
-example {motive : Ctx → Sort u} {motive_2 : (Γ : Ctx) → Ty Γ → Sort u}
-    (nil : motive .nil) (ext : ∀ Γ A, motive Γ → motive_2 Γ A → motive (.ext Γ A))
-    (base : ∀ Γ, motive Γ → motive_2 Γ (.base Γ))
-    (many : ∀ Γ f g, motive Γ → (∀ n, motive_2 Γ (f n)) → (∀ n, motive_2 (.ext Γ (f n)) (g n)) →
-      motive_2 Γ (.many Γ f g))
-    (Γ : Ctx) (f : Nat → Ty Γ) (g : (n : Nat) → Ty (.ext Γ (f n))) :
-    @Ty.rec motive motive_2 nil ext base many Γ (.many Γ f g) =
-      many Γ f g (@Ctx.rec motive motive_2 nil ext base many Γ)
-        (fun n => @Ty.rec motive motive_2 nil ext base many Γ (f n))
-        (fun n => @Ty.rec motive motive_2 nil ext base many (.ext Γ (f n)) (g n)) := rfl
-
 end UnderBinderL
 
 /-! ## Constructors nested inside constructors in index terms
@@ -336,8 +292,11 @@ and every equation is still definitional. -/
 
 namespace NestedL
 
-universe u
-
+-- What is given up: a decoder equation whose right-hand side reads a decoder
+-- at a nested index transports along the decode of that index, which does not
+-- reduce here, so `El_deep` and `El_shift` are not definitional and are not
+-- stated; the iota rules are.
+ir_spec (unproven := [El_deep, El_shift])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -358,38 +317,6 @@ def depth : Ctx → Nat
   | .nil => 0
   | .ext Γ A => depth Γ + 1
 end
-
-example (Γ : Ctx) (A : Ty Γ) : depth (.ext Γ A) = depth Γ + 1 := rfl
-
--- What is given up: a decoder equation whose right-hand side reads a decoder
--- at a nested index transports along the decode of that index, which does not
--- reduce here, so `El_deep` and `El_shift` are not definitional and are not
--- stated; the iota rules below are.
-/-- error: Unknown identifier `El_deep` -/
-#guard_msgs in
-#check El_deep
-
-/-- The iota rules at both, by the joint recursor. -/
-example {motive : Ctx → Sort u} {motive_2 : (Γ : Ctx) → Ty Γ → Sort u}
-    (nil : motive .nil) (ext : ∀ Γ A, motive Γ → motive_2 Γ A → motive (.ext Γ A))
-    (U : ∀ Γ, motive Γ → motive_2 Γ (.U Γ))
-    (deep : ∀ Γ A B C, motive Γ → motive_2 Γ A → motive_2 (.ext Γ A) B →
-      motive_2 (.ext (.ext Γ A) B) C → motive_2 Γ (.deep Γ A B C))
-    (shift : ∀ Γ A B f, motive Γ → motive_2 Γ A → motive_2 (.ext Γ A) B →
-      (∀ n, motive_2 (.ext (.ext Γ A) B) (f n)) → motive_2 (.ext (.ext Γ A) B) (.shift Γ A B f))
-    (Γ : Ctx) (A : Ty Γ) (B : Ty (.ext Γ A)) (C : Ty (.ext (.ext Γ A) B))
-    (f : (n : Nat) → Ty (.ext (.ext Γ A) B)) :
-    @Ty.rec motive motive_2 nil ext U deep shift Γ (.deep Γ A B C) =
-      deep Γ A B C (@Ctx.rec motive motive_2 nil ext U deep shift Γ)
-        (@Ty.rec motive motive_2 nil ext U deep shift Γ A)
-        (@Ty.rec motive motive_2 nil ext U deep shift (.ext Γ A) B)
-        (@Ty.rec motive motive_2 nil ext U deep shift (.ext (.ext Γ A) B) C) ∧
-    @Ty.rec motive motive_2 nil ext U deep shift (.ext (.ext Γ A) B) (.shift Γ A B f) =
-      shift Γ A B f (@Ctx.rec motive motive_2 nil ext U deep shift Γ)
-        (@Ty.rec motive motive_2 nil ext U deep shift Γ A)
-        (@Ty.rec motive motive_2 nil ext U deep shift (.ext Γ A) B)
-        (fun n => @Ty.rec motive motive_2 nil ext U deep shift (.ext (.ext Γ A) B) (f n)) :=
-  ⟨rfl, rfl⟩
 
 /-- How many `ext`s a context has, counting through the types it holds. -/
 def size : Ctx → Nat :=

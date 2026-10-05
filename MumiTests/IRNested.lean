@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # Nested occurrences in an IR block
@@ -13,7 +13,8 @@ Underneath, the kernel sees a copy of `List` specialised to `U`, as it does for
 any nested inductive.  A value stores the copy, so the recursor's rule at the
 nested constructor itself, `U.rec … (U.tuple fs)`, holds as the equation
 `U.rec_tuple`, and by `rfl` once `fs` is closed; every other rule, and every
-decoder equation, is `rfl`.
+decoder equation, is `rfl`.  `ir_spec` checks all of it, the nested rules
+named; what follows each block is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -21,6 +22,7 @@ set_option autoImplicit false
 namespace Codes
 set_option mumi.mahlo false
 
+ir_spec (simp := [U.rec_tuple, U.rec_opt])
 mutual
 inductive U : Type where
   | nat : U
@@ -40,50 +42,7 @@ def Elo : Option U → Type
   | some a => El a
 end
 
-/-- info: U.tuple : List U → U -/
-#guard_msgs in
-#check @U.tuple
-
-/-- info: Codes.Els : List U → Type -/
-#guard_msgs in
-#check Els
-
-/--
-info: @U.rec : {motive_1 : U → Sort u_1} →
-  {motive_2 : List U → Sort u_1} →
-    {motive_3 : Option U → Sort u_1} →
-      motive_1 U.nat →
-        ((fs : List U) → motive_2 fs → motive_1 (U.tuple fs)) →
-          ((o : Option U) → motive_3 o → motive_1 (U.opt o)) →
-            ((a : U) → (b : El a → U) → motive_1 a → ((a_1 : El a) → motive_1 (b a_1)) → motive_1 (a.pi b)) →
-              motive_2 [] →
-                ((head : U) → (tail : List U) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-                  motive_3 none → ((val : U) → motive_1 val → motive_3 (some val)) → (t : U) → motive_1 t
--/
-#guard_msgs in
-#check @U.rec
-
-/--
-info: @U.rec_1 : {motive_1 : U → Sort u_1} →
-  {motive_2 : List U → Sort u_1} →
-    {motive_3 : Option U → Sort u_1} →
-      motive_1 U.nat →
-        ((fs : List U) → motive_2 fs → motive_1 (U.tuple fs)) →
-          ((o : Option U) → motive_3 o → motive_1 (U.opt o)) →
-            ((a : U) → (b : El a → U) → motive_1 a → ((a_1 : El a) → motive_1 (b a_1)) → motive_1 (a.pi b)) →
-              motive_2 [] →
-                ((head : U) → (tail : List U) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-                  motive_3 none → ((val : U) → motive_1 val → motive_3 (some val)) → (t : List U) → motive_2 t
--/
-#guard_msgs in
-#check @U.rec_1
-
--- the decoders compute at variables
-example (fs : List U) : El (.tuple fs) = Els fs := rfl
-example (o : Option U) : El (.opt o) = Elo o := rfl
-example : Els [] = Unit := rfl
-example (a : U) (as : List U) : Els (a :: as) = (El a × Els as) := rfl
-example (a : U) : Elo (some a) = El a := rfl
+-- the decoders compute at a closed value
 example : El (.tuple [.nat, .opt (some .nat)]) = (Nat × Nat × Unit) := rfl
 
 def size : U → Nat :=
@@ -116,6 +75,7 @@ namespace CodesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
+ir_spec (simp := [U.rec_tuple, U.rec_opt])
 mutual
 inductive U : Type where
   | nat : U
@@ -134,14 +94,6 @@ def Elo : Option U → Type
   | none => Unit
   | some a => El a
 end
-
-/-- info: U.tuple : List U → U -/
-#guard_msgs in
-#check @U.tuple
-
-example (fs : List U) : El (.tuple fs) = Els fs := rfl
-example (a : U) (as : List U) : Els (a :: as) = (El a × Els as) := rfl
-example (a : U) : Elo (some a) = El a := rfl
 
 def size : U → Nat :=
   U.rec (motive_2 := fun _ => Nat) (motive_3 := fun _ => Nat)
@@ -168,6 +120,9 @@ end CodesLower
 namespace Shapes
 set_option mumi.mahlo false
 
+-- one motive per nested application, in the order they are met: the inner
+-- `Option (U α)` last
+ir_spec (simp := [U.rec_tuple])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -187,37 +142,6 @@ def Elp (α : Type) : U α × U α → Type
   | (a, b) => El α a ⊕ El α b
 end
 
-/-- info: @U.tuple : {α : Type} → List (Option (U α)) → U α -/
-#guard_msgs in
-#check @U.tuple
-
-/-- info: @U.pair : {α : Type} → U α × U α → U α -/
-#guard_msgs in
-#check @U.pair
-
--- one motive per nested application, in the order they are met: the inner
--- `Option (U α)` last
-/--
-info: @U.rec : {α : Type} →
-  {motive_1 : U α → Sort u_1} →
-    {motive_2 : List (Option (U α)) → Sort u_1} →
-      {motive_3 : U α × U α → Sort u_1} →
-        {motive_4 : Option (U α) → Sort u_1} →
-          ((a : α) → motive_1 (U.atom a)) →
-            ((fs : List (Option (U α))) → motive_2 fs → motive_1 (U.tuple fs)) →
-              ((p : U α × U α) → motive_3 p → motive_1 (U.pair p)) →
-                motive_2 [] →
-                  ((head : Option (U α)) →
-                      (tail : List (Option (U α))) → motive_4 head → motive_2 tail → motive_2 (head :: tail)) →
-                    ((fst snd : U α) → motive_1 fst → motive_1 snd → motive_3 (fst, snd)) →
-                      motive_4 none → ((val : U α) → motive_1 val → motive_4 (some val)) → (t : U α) → motive_1 t
--/
-#guard_msgs in
-#check @U.rec
-
-example (α : Type) (fs : List (Option (U α))) : El α (.tuple fs) = Elss α fs := rfl
-example (α : Type) (o : Option (U α)) (os : List (Option (U α))) : Elss α (o :: os) = (Elo α o × Elss α os) := rfl
-example (α : Type) (a b : U α) : El α (.pair (a, b)) = (El α a ⊕ El α b) := rfl
 example : El Nat (.tuple [some (.atom 1), none]) = (Nat × PUnit × Unit) := rfl
 
 def leaves {α : Type} : U α → Nat :=
@@ -234,6 +158,7 @@ namespace ShapesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
+ir_spec (simp := [U.rec_tuple])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -245,12 +170,5 @@ def Els (α : Type) : List (U α) → Type
   | [] => Unit
   | a :: as => El α a × Els α as
 end
-
-/-- info: @U.tuple : {α : Type} → List (U α) → U α -/
-#guard_msgs in
-#check @U.tuple
-
-example (α : Type) (fs : List (U α)) : El α (.tuple fs) = Els α fs := rfl
-example (α : Type) (a : U α) (as : List (U α)) : Els α (a :: as) = (El α a × Els α as) := rfl
 
 end ShapesLower

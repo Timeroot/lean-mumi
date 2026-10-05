@@ -1,11 +1,14 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # Induction-induction and induction-recursion in one block
 
 The `Family` path of the IR frontend: carriers indexed by other carriers and by
 decoder values, decoders over indexed carriers, and the equations each of them
-comes with.  Everything here is one universe up, and every equation is `rfl`.
+comes with.  Everything here is one universe up, and every equation is `rfl`:
+`ir_spec` checks each block's declarations and rules against what Lean's own
+rules say they should be; what follows each block is what that leaves out --
+values computed, functions through the recursors, tactics, axioms.
 -/
 
 set_option autoImplicit false
@@ -19,6 +22,7 @@ field out of a constructor. -/
 
 namespace CtxTy
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -33,28 +37,6 @@ def El : (Γ : Ctx) → Ty Γ → Env Γ → Type
   | _, .U Γ => fun _ => Nat
   | _, .Pi Γ A B => fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩
 end
-
-example : Type 1 := Ctx
-example (Γ : Ctx) : Type 1 := Ty Γ
-example : Env Ctx.nil = PUnit := rfl
-example (Γ : Ctx) (A : Ty Γ) : Env (Ctx.ext Γ A) = ((ρ : Env Γ) × El Γ A ρ) := rfl
-example (Γ : Ctx) : El Γ (Ty.U Γ) = fun _ => Nat := rfl
-example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.ext Γ A)) :
-    El Γ (Ty.Pi Γ A B) = fun ρ => (a : El Γ A ρ) → El (Ctx.ext Γ A) B ⟨ρ, a⟩ := rfl
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (Γ : Ctx) → Ty Γ → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_1 (Γ.ext A)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.U Γ)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (B : Ty (Γ.ext A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.ext A) B → motive_2 Γ (Ty.Pi Γ A B)) →
-            {Γ : Ctx} → (t : Ty Γ) → motive_2 Γ t
--/
-#guard_msgs in
-#check @Ty.rec
 
 /-- The one-motive recursor `induction` drives: the other motive is discharged at
 `PUnit`, and the hypothesis at a field of the other carrier goes with it. -/
@@ -108,6 +90,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValue
 
+ir_spec
 mutual
 inductive Code : Type where
   | one : Code
@@ -123,9 +106,6 @@ def depth : (c : Code) → (n : Nat) → Path c n → Nat
   | _, _, .left a b p => depth a (size a) p + 1
 end
 
-example (a b : Code) : size (Code.pair a b) = size a + size b := rfl
-example (a b : Code) (p : Path a (size a)) :
-    depth (Code.pair a b) (size a + size b) (Path.left a b p) = depth a (size a) p + 1 := rfl
 example : size (Code.pair Code.one Code.one) = 2 := rfl
 example : depth _ _ (Path.left Code.one Code.one (Path.stop Code.one)) = 1 := rfl
 
@@ -140,6 +120,7 @@ end ByValue
 namespace Poly
 universe u
 
+ir_spec
 mutual
 inductive Ctx (X : Type u) : Type u where
   | nil : Ctx X
@@ -152,9 +133,6 @@ def El (X : Type u) : (Γ : Ctx X) → Ty X Γ → Type u
   | _, .pi Γ A B => (a : El X Γ A) → El X (Ctx.ext Γ A) (B a)
 end
 
-example (X : Type u) (Γ : Ctx X) (A : Ty X Γ) (B : El X Γ A → Ty X (Ctx.ext Γ A)) :
-    El X Γ (Ty.pi Γ A B) = ((a : El X Γ A) → El X (Ctx.ext Γ A) (B a)) := rfl
-
 /-- info: 'Poly.El_pi' does not depend on any axioms -/
 #guard_msgs in
 #print axioms El_pi
@@ -165,6 +143,7 @@ end Poly
 
 namespace Dotted
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -176,9 +155,6 @@ def El : (Γ : Ctx) → Ty Γ → Type
   | _, .base Γ => Nat
   | _, .many Γ A g => (n : Nat) → El (.ext Γ A) (g n)
 end
-
-example (Γ : Ctx) (A : Ty Γ) (g : Nat → Ty (Ctx.ext Γ A)) :
-    El Γ (Ty.many Γ A g) = ((n : Nat) → El (Ctx.ext Γ A) (g n)) := rfl
 
 example (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -196,6 +172,7 @@ through it are `noncomputable`. -/
 
 namespace Plain
 
+ir_spec
 mutual
 inductive Vec : Nat → Type where
   | nil : Vec 0
@@ -210,8 +187,6 @@ def Env : (n : Nat) → Vec n → Type
   | _, .nil => PUnit
   | _, .cons n a v => El a × Env n v
 end
-
-example (n : Nat) (a : Code) (v : Vec n) : Env (n + 1) (Vec.cons n a v) = (El a × Env n v) := rfl
 
 noncomputable def len (n : Nat) (v : Vec n) : Nat :=
   Vec.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ => Unit)

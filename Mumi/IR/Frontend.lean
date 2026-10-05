@@ -65,6 +65,11 @@ structure Decoder where
   doc : String := ""
   deriving Inhabited
 
+/-- The name a decoder's major premise shows: its author's, or none, `_ir_self`
+(published as `t`). -/
+private def selfName (d : Decoder) : Name :=
+  if d.major.hasMacroScopes || d.major.toString.startsWith "_ir" then `_ir_self else d.major
+
 structure Block where
   members : Array Member
   decoders : Array Decoder
@@ -112,6 +117,10 @@ constructors of its inductives: what `pinUniverses` pins the universes of.
 Not what Lean or `Mumi` declared alongside, whose universes are their own. -/
 initialize blockConsts : IO.Ref NameSet ← IO.mkRef {}
 
+/-- The universe of the motive of each eliminator the block has declared, named
+as Lean names a recursor's: what a generated declaration binds as `_ir_elim`. -/
+initialize elimUniverse : IO.Ref (NameMap Name) ← IO.mkRef {}
+
 /-- The names a command declares, relative to the namespace. -/
 private partial def declaredNames (stx : Syntax) : Array Name :=
   if stx.isOfKind ``Parser.Command.declaration then
@@ -134,6 +143,7 @@ def pinUniverses (s : String) : CommandElabM String := do
   let ns ← getCurrNamespace
   let inScope := (← getScope).levelNames
   let block ← blockConsts.get
+  let elims ← elimUniverse.get
   let isId (c : Char) := c.isAlphanum || c == '_' || c == '.' || c == '\'' || c.val > 127
   let a := s.toList.toArray
   let mut out := ""
@@ -152,7 +162,10 @@ def pinUniverses (s : String) : CommandElabM String := do
       let bare := out.endsWith "implemented_by " || s.startsWith "attribute ["
       if !pinned && !bare && block.contains (ns ++ base.toName) then
         if let some ci := env.find? (ns ++ base.toName) then
-          let lps := ci.levelParams
+          -- an eliminator's motive universe, published under a name of Lean's, is
+          -- the one the generated declarations bind
+          let elim := elims.find? (ns ++ base.toName)
+          let lps := ci.levelParams.map fun l => if elim == some l then `_ir_elim else l
           if !lps.isEmpty && lps.all inScope.contains then
             res := base ++ ".{" ++ String.intercalate ", " (lps.map toString) ++ "}" ++ (if tok.endsWith "." then "." else "")
       out := out ++ res
@@ -185,24 +198,163 @@ def renameToken (s old new : String) : String := Id.run do
 /-- Whether the identifier `x` occurs in `s`. -/
 def mentionsToken (s x : String) : Bool := renameToken s x "\u0000" != s
 
-/-- The major premise of an eliminator is `t`, as Lean names it, made fresh
-against everything the declaration says. -/
-private def nameMajor (s : String) : String := Id.run do
-  unless mentionsToken s "_ir_self" do return s
-  let mut n := "t"
-  let mut i := 1
-  while mentionsToken s n do
-    n := "t_" ++ toString i
-    i := i + 1
-  return renameToken s "_ir_self" n
+/-- The identifiers `s` mentions. -/
+partial def identsOf (s : Syntax) : Array Name :=
+  if s.isIdent then #[s.getId] else s.getArgs.flatMap identsOf
 
-/-- Whether a declared name is a public eliminator's, whose major is displayed. -/
-private def isEliminator (n : Name) : Bool :=
-  match n with
-  | .str _ s => s == "rec" || s == "recOn" || s == "casesOn" || s == "cases" || s == "recD" || s == "_ir_recImpl" ||
-      -- a nested occurrence's, `X.rec_1`
-      (s.startsWith "rec_" && (s.drop 4).all Char.isDigit && s.length > 4)
-  | _ => false
+/-- `x`, or `x_1`, `x_2`, … : the first that is not `taken`. -/
+private def freshFrom (taken : String → Bool) (x : String) : String := Id.run do
+  let mut n := x
+  let mut i := 1
+  while taken n do
+    n := x ++ "_" ++ toString i
+    i := i + 1
+  return n
+
+/-- The minor premise at constructor `ci` of member `i`, as the frontend
+writes it: a name of its own, which a public declaration shows as the
+constructor's, `c`, as Lean does, however many members have one. -/
+def minorVar (i ci : Nat) (c : Name) : String :=
+  "_ir_minor_" ++ toString i ++ "_" ++ toString ci ++ "_" ++ c.toString
+
+/-- The constructor name in a minor premise's own, `_ir_minor_i_ci_c`. -/
+private def minorCtor (tok : String) : String :=
+  match ((tok.drop "_ir_minor_".length).toString.splitOn "_").drop 2 with
+  | [] => tok
+  | cs =>
+    let c := "_".intercalate cs
+    -- the nested pass's own name for a constructor it renames, `_nested_c`
+    if c.startsWith "_nested_" then (c.drop "_nested_".length).toString else c
+
+/-- The distinct identifiers in `s` that begin with `pre`. -/
+private def tokensWith (s pre : String) : Array String :=
+  (((s.splitOn pre).drop 1).map fun piece => pre ++ String.mk (piece.toList.takeWhile identChar)).eraseDups.toArray
+
+/-- How many times the identifier `x` occurs in `s`. -/
+private def occurrences (s x : String) : Nat :=
+  ((renameToken s x "\u0000").toList.filter (· == '\u0000')).length
+
+/-- The type of a public declaration with its binders named as Lean names
+them: the major premise `t`, the hypothesis at field `x` `x_ih`, the minor
+premise at constructor `c` `c` -- or, where the type refers to one by name,
+the first name of that sort that says nothing else.  `outer` are the names the
+declaration's own binders give, which a later binder could capture. -/
+private def publicType (ty : String) (outer : Array String) : String := Id.run do
+  let mut ty := ty
+  if mentionsToken ty "_ir_self" then
+    ty := renameToken ty "_ir_self" (freshFrom outer.contains "t")
+  for old in tokensWith ty "_ir_ih_" do
+    ty := renameToken ty old (freshFrom (mentionsToken ty) ((old.drop "_ir_ih_".length).toString ++ "_ih"))
+  for old in tokensWith ty "_ir_minor_" do
+    let c := minorCtor old
+    -- bound and never mentioned: the constructor's name, as two minors may share
+    let new := if occurrences ty old == 1 && !outer.contains c then c else freshFrom (mentionsToken ty) c
+    ty := renameToken ty old new
+  return ty
+
+/-- Whether `s` names something the public binders rename. -/
+private def internalBinders (s : String) : Bool :=
+  mentionsToken s "_ir_self" || !(tokensWith s "_ir_ih_").isEmpty || !(tokensWith s "_ir_minor_").isEmpty
+
+/-- The first node in `s` of one of the kinds `k`. -/
+private partial def findKind (k : Array SyntaxNodeKind) (s : Syntax) : Option Syntax :=
+  if k.any s.isOfKind then some s else s.getArgs.findSome? (findKind k)
+
+/-- A public declaration `s` (parsed, `cmd`) with its binders as Lean names
+them.  Those before the colon move into the type, `def f bs : T := v` written
+`def f : ∀ bs, T := fun bs => v`: the type takes the public names and the
+value keeps the frontend's own, so that the value refers to each binder by a
+name of its own. -/
+private def publish (s : String) (cmd : Syntax) : String := Id.run do
+  let some sig := findKind #[``Parser.Command.declSig, ``Parser.Command.optDeclSig] cmd | return s
+  let some val := findKind #[``Parser.Command.declValSimple, ``Parser.Command.declValEqns] cmd | return s
+  let ty := if sig.isOfKind ``Parser.Command.declSig then sig[1] else sig[1][0]
+  let (some sigStart, some colon, some valStart) := (sig.getPos?, ty.getPos?, val.getPos?) | return s
+  let binders := (String.Pos.Raw.extract s sigStart colon).trim
+  let type := (String.Pos.Raw.extract s colon valStart).trim.drop 1 |>.toString.trim
+  unless internalBinders binders || internalBinders type do return s
+  let pre := String.Pos.Raw.extract s 0 sigStart
+  let value := String.Pos.Raw.extract s valStart s.rawEndPos
+  let outer := (sig[0].getArgs.flatMap fun b => identsOf b[1]).map (·.toString)
+  if binders.isEmpty then
+    return pre ++ " : " ++ publicType type outer ++ " " ++ value
+  let body := if val.isOfKind ``Parser.Command.declValSimple then (value.trim.drop 2).toString else "fun\n" ++ value
+  return pre ++ " : ∀ " ++ publicType (binders ++ ", " ++ type) outer ++ " :=\n  fun " ++ binders ++ " =>\n  " ++ body
+
+/-- The universe names `s` writes: in `Sort l`, `Type l` and `c.{l, …}`. -/
+private def universesIn (s : String) : Array Name := Id.run do
+  let a := s.toList.toArray
+  let mut out := #[]
+  let mut i := 0
+  while i < a.size do
+    -- where a universe expression starts, and how far it runs
+    let start? : Option Nat :=
+      if a[i]! == '.' && a[i+1]? == some '{' then some (i + 2)
+      else if (String.mk (a.extract i (i + 5)).toList == "Sort " || String.mk (a.extract i (i + 5)).toList == "Type ") &&
+          (i == 0 || !identChar a[i-1]!) then some (i + 5)
+      else none
+    match start? with
+    | none => i := i + 1
+    | some j =>
+      -- a bracketed expression to its close; else one identifier
+      let mut k := j
+      let mut depth := 0
+      let bracketed := a[j]? == some '(' || a[i]! == '.'
+      while k < a.size && (if bracketed then !(depth == 0 && (a[k]! == ')' || a[k]! == '}') && k > j) || (a[k]! == '(' && k == j)
+          else identChar a[k]!) do
+        if a[k]! == '(' then depth := depth + 1
+        if a[k]! == ')' then depth := depth - 1
+        k := k + 1
+      let expr := String.mk (a.extract j k).toList
+      for w in (expr.split fun c => !identChar c) do
+        let w := w.toString
+        if !w.isEmpty && !(w.all Char.isDigit) && w != "max" && w != "imax" then out := out.push (Name.mkSimple w)
+      i := k
+  return out
+
+/-- The nodes in `s` of kind `k`. -/
+private partial def allKind (k : SyntaxNodeKind) (s : Syntax) : Array Syntax :=
+  if s.isOfKind k then #[s] else s.getArgs.flatMap (allKind k)
+
+/-- An eliminator's universes as Lean orders and names a recursor's: the
+motive's first, `u` or the first `u_i` the others do not use, then those of the
+member it eliminates -- for the public one, and for the companions it is
+implemented by alike.  The declarations list them all, so these are to be
+taken out of the section's while they are elaborated: it returns them. -/
+private def elimUniverses (s : String) (cmd : Syntax) : CommandElabM (String × List Name) := do
+  unless mentionsToken s "_ir_elim" do return (s, [])
+  let ns ← getCurrNamespace
+  let block ← blockConsts.get
+  let ids := allKind ``Parser.Command.declId cmd
+  -- each declaration a member's, and one list for all, as a `mutual` has
+  let mut found : Option (List Name) := none
+  for id in ids do
+    unless id[1].isNone do return (s, [])
+    let owner := (ns ++ id[0].getId).getPrefix
+    let some ci := (← getEnv).find? owner | return (s, [])
+    unless block.contains owner do return (s, [])
+    if found.any (· != ci.levelParams) then return (s, [])
+    found := some ci.levelParams
+  let some own := found | return (s, [])
+  -- what the declaration names besides; a universe of the section it does not
+  -- name is no matter, as it is not the kernel's for Lean's own
+  let others := own ++ ((universesIn s).filter (!own.contains ·)).toList
+  let mut elim := `u
+  let mut i := 1
+  while others.contains elim do
+    elim := Name.mkSimple ("u_" ++ toString i)
+    i := i + 1
+  let listed := ".{" ++ ", ".intercalate ((elim :: own).map toString) ++ "}"
+  -- from the last, so that the positions before stay
+  let mut s := s
+  for id in ids.reverse do
+    let some tail := id[0].getTailPos? | return (s, [])
+    s := String.Pos.Raw.extract s 0 tail ++ listed ++ String.Pos.Raw.extract s tail s.rawEndPos
+  return (renameToken s "_ir_elim" elim.toString, elim :: own)
+
+/-- Whether a declared name is public, its binders displayed. -/
+private def isPublic (n : Name) : Bool :=
+  !n.components.any fun c => (c.toString.startsWith "_ir") || (c.toString.startsWith "_nested")
 
 /-- The names of the binders of a recursive field's domain: each its own, or `a`
 for one written as an arrow, as Lean names it, fresh against `avoid`. -/
@@ -218,16 +370,19 @@ def domainNames (xs : Array Name) (avoid : Array Name) : Array Name := Id.run do
     out := out.push n
   return out
 
-/-- The identifiers `s` mentions. -/
-partial def identsOf (s : Syntax) : Array Name :=
-  if s.isIdent then #[s.getId] else s.getArgs.flatMap identsOf
+/-- A declaration as Lean's own would read: a public one's binders, and an
+eliminator's universes, named as Lean names them; and the section's universes
+it lists itself. -/
+private def publicForm (s : String) : CommandElabM (String × List Name) := do
+  let .ok t := Parser.runParserCategory (← getEnv) `command s | return (s, [])
+  let s := if (declaredNames t).any isPublic then publish s t else s
+  let .ok t := Parser.runParserCategory (← getEnv) `command s | return (s, [])
+  elimUniverses s t
 
 def emit (s : String) : CommandElabM Unit := do
   let s ← pinUniverses s
-  -- a public eliminator's major is displayed: it gets the name Lean gives one
-  let s ← match Parser.runParserCategory (← getEnv) `command s with
-    | .ok t => pure (if (declaredNames t).any isEliminator then nameMajor s else s)
-    | .error _ => pure s
+  -- a public declaration's binders are displayed: they get the names Lean gives them
+  let (s, listed) ← publicForm s
   trace[Mumi.ir] "{s}"
   let stx ← match Parser.runParserCategory (← getEnv) `command s with
     | .ok t => pure t
@@ -242,7 +397,8 @@ def emit (s : String) : CommandElabM Unit := do
       let names := stx[1].getArgs.map (·.getId)
       unless names.all (← getScope).levelNames.contains do elabCommand stx
     else
-      withScope (fun sc => { sc with opts := (sc.opts.setBool `linter.unusedVariables false).setBool `linter.unusedSimpArgs false }) do
+      let opts (o : Options) := (o.setBool `linter.unusedVariables false).setBool `linter.unusedSimpArgs false
+      withScope (fun sc => { sc with opts := opts sc.opts, levelNames := sc.levelNames.filter (!listed.contains ·) }) do
         elabCommand stx
   catch e => throwError "While generating IR declaration:\n{s}\n{← e.toMessageData.toString}"
   let errors := ((← get).messages.reportedPlusUnreported.toList.drop n).filter (·.severity == .error)
@@ -256,6 +412,7 @@ def emit (s : String) : CommandElabM Unit := do
     let n := ns ++ n
     if env.contains n then
       blockConsts.modify (·.insert n)
+      if let some elim := listed.head? then elimUniverse.modify (·.insert n elim)
       if let some (.inductInfo info) := env.find? n then
         for c in info.ctors do blockConsts.modify (·.insert c)
 
@@ -629,8 +786,9 @@ private def emitUpper (b : Block) : CommandElabM Unit := do
     emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ ps ++ " : Type (" ++ b.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ par (atParams b (graph m)))
   for j in [:b.decoders.size] do
     let d := b.decoders[j]!
-    let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-    emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := _ir_self.1." ++ outField j)
+    let self := selfName d
+    let result := subst d.result #[(d.major, mkIdent self)]
+    emit (d.doc ++ "@[reducible] def " ++ d.name.toString ++ " " ++ ps ++ " (" ++ self.toString ++ " : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ self.toString ++ ".1." ++ outField j)
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -649,17 +807,10 @@ as Lean names a mutual block's; `single` when there is one motive, then
 `motive`, as Lean names an inductive's. -/
 def motiveFor (single : Bool) (i : Nat) := if single then "motive" else "motive_" ++ toString (i+1)
 private def motive (b : Block) (i : Nat) := motiveFor (b.members.size == 1) i
-private def minor (b : Block) (i ci : Nat) := Id.run do
-  let c := b.members[i]!.ctors[ci]!
-  let count := b.members.foldl (fun n m => n + (m.ctors.filter (·.name == c.name)).size) 0
-  let n := if count == 1 then c.name.toString else
-    b.members[i]!.name.toString.replace "." "_" ++ "_" ++ c.name.toString
-  let used := b.params.any (fun p => p.name.toString == n) ||
-    b.members.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n)))
-  return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
+private def minor (b : Block) (i ci : Nat) := minorVar i ci b.members[i]!.ctors[ci]!.name
 private def motiveArgs (b : Block) := (Array.range b.members.size).map (motive b)
 private def minorArgs (b : Block) := (Array.range b.members.size).flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
-private def motiveDecls (b : Block) := join ((Array.range b.members.size).map fun i => "{" ++ motive b i ++ " : " ++ typeAt b i ++ " → Sort _ir_elim}")
+private def motiveDecls (b : Block) := join ((Array.range b.members.size).map fun i => "{" ++ motive b i ++ " : (_ir_self : " ++ typeAt b i ++ ") → Sort _ir_elim}")
 /-- `@X.c params xs`. -/
 private def ctorApp (b : Block) (i ci : Nat) (xs : Array String) :=
   app ("@" ++ b.members[i]!.name.toString ++ "." ++ b.members[i]!.ctors[ci]!.name.toString) (pArgs b ++ xs)
@@ -836,8 +987,9 @@ private def emitLower (b : Block) : CommandElabM Unit := do
   for m in b.members do
     emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ ps ++ " : Type " ++ b.level ++ " := { a : " ++ atParams b (raw m) ++ " // " ++ app (atParams b (good m)) #["a"] ++ " }")
   for d in b.decoders do
-    let result := subst d.result #[(d.major, mkIdent `_ir_self)]
-    emitDefinition (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ ps ++ " (_ir_self : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ app (aux d.name) (pArgs b ++ #["_ir_self.val"]))
+    let self := selfName d
+    let result := subst d.result #[(d.major, mkIdent self)]
+    emitDefinition (d.doc ++ "@[reducible] ") (d.name.toString ++ " " ++ ps ++ " (" ++ self.toString ++ " : " ++ typeAt b d.target ++ ") : " ++ (← text result) ++ " := " ++ app (aux d.name) (pArgs b ++ #[self.toString ++ ".val"]))
   for i in [:b.members.size] do
     let m := b.members[i]!
     for ci in [:m.ctors.size] do
@@ -993,6 +1145,7 @@ private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
 def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
   blockConsts.set {}
+  elimUniverse.set {}
   emit "universe _ir_elim"
   emitSemantics b
   if mumi.mahlo.get (← getOptions) then

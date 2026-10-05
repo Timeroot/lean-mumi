@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # Notations and implicit binders
@@ -8,11 +8,10 @@ subtypes, `fun x ↦`, typed or not.  A binder of a field written without a
 type is left to inference; a field is still a carrier, a function into one,
 a proof of a `Prop` member under binders, or a plain type, so `∃ x, Good (b x)`
 is a clause's to say, not a field's.  A constructor field written `{x : T}` is
-implicit in the public constructor and bound explicitly in the minor
-premises, as Lean's own are; an index of a decoder written `{Γ : Ctx}` is
-implicit in the public decoder, and the clauses write the explicit ones
-only.  Inside the block a constructor application in an index term lists
-every field, the implicit ones included, since the reader resolves it itself.
+implicit in the public constructor and in the minor premises, as Lean's own
+are; an index of a decoder written `{Γ : Ctx}` is implicit in the public
+decoder, and the clauses write the explicit ones only.  `ir_spec` checks the
+declarations and equations of each block; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -20,6 +19,7 @@ set_option autoImplicit false
 namespace Notations
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -47,9 +47,6 @@ def Fn : U → Nat → Nat
   | .sig a b => λ n => n + 2
 end
 
-example (a : U) (b : El a → U) : Inh (U.sig a b) = ∃ x, Inh (b x) := rfl
-example (a : U) (b : El a → U) : El (U.sig a b) = Σ x : El a, El (b x) := rfl
-example (a : U) (b : El a → U) (h : Good a) : Fn (U.pi a b h) 3 = 4 := rfl
 theorem Good.t (u : U) (g : Good u) : True := by
   induction g with
   | base => trivial
@@ -62,6 +59,7 @@ namespace NotationsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -85,8 +83,6 @@ def Fn : U → Nat → Nat
   | .sig a b => λ n => n + 2
 end
 
-example (a : U) (b : El a → U) : Inh (U.sig a b) = ∃ x, Inh (b x) := rfl
-example (a : U) (b : El a → U) (h : Good a) : Fn (U.pi a b h) 3 = 4 := rfl
 theorem Good.t (u : U) (g : Good u) : True := by
   induction g with
   | base => trivial
@@ -98,6 +94,7 @@ end NotationsLower
 namespace Implicit
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -113,19 +110,10 @@ def Val {Γ : Ctx} : Ty Γ → Type
   | .pi A B => (x : Val A) → Val B
 end
 
-/-- info: @Ty.pi : {Γ : Ctx} → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
-#guard_msgs in
-#check @Ty.pi
-
-/-- info: Implicit.Val {Γ : Ctx} : Ty Γ → Type -/
-#guard_msgs in
-#check Val
-
-example (Γ : Ctx) (A : Ty Γ) : Val (Ty.pi A Ty.base) = ((x : Val A) → Nat) := rfl
-example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : Val (Ty.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
-/-- The minor premises bind every field, as Lean's own recursors do. -/
+/-- The minor premises bind every field, an implicit one implicitly, as Lean's
+own recursors do. -/
 def tsize (Γ : Ctx) (A : Ty Γ) : Nat :=
-  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ => 0) (fun _ _ _ ihA ihB => ihA + ihB + 1) A
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : tsize Γ (Ty.pi A B) = tsize Γ A + tsize _ B + 1 := rfl
 theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -138,6 +126,7 @@ namespace ImplicitLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -153,13 +142,8 @@ def Val {Γ : Ctx} : Ty Γ → Type
   | .pi A B => (x : Val A) → Val B
 end
 
-/-- info: @Ty.pi : {Γ : Ctx} → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
-#guard_msgs in
-#check @Ty.pi
-
-example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : Val (Ty.pi A B) = ((x : Val A) → Val B) := Val_pi Γ A B
 def tsize (Γ : Ctx) (A : Ty Γ) : Nat :=
-  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ => 0) (fun _ _ _ ihA ihB => ihA + ihB + 1) A
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) : tsize Γ (Ty.pi A B) = tsize Γ A + tsize _ B + 1 := rfl
 theorem Ty.t (Γ : Ctx) (A : Ty Γ) : True := by
   induction A with
@@ -176,6 +160,7 @@ a decoder call writes the ones its declaration binds explicitly. -/
 namespace Params
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -191,18 +176,10 @@ def Val (X : Type) {Γ : Ctx X} : Ty X Γ → Type
   | .pi A B => (x : Val X A) → Val X B
 end
 
-/-- info: @Ty.pi : {X : Type} → {Γ : Ctx X} → (A : Ty X Γ) → Ty X (Γ.snoc A) → Ty X Γ -/
-#guard_msgs in
-#check @Ty.pi
-
-/-- info: Params.El {X : Type} : Ctx X → Type -/
-#guard_msgs in
-#check El
-
 example (A : Ty Nat .nil) : El (.snoc .nil A) = (Unit × Val Nat A) := rfl
 example : Val Nat (Ty.pi (Γ := .nil) (.base 0) (.base 1)) = (Nat → Nat) := rfl
 def tsize {X : Type} (Γ : Ctx X) (A : Ty X Γ) : Nat :=
-  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ ihA ihB => ihA + ihB + 1) A
 example : tsize .nil (Ty.pi (X := Nat) (.base 0) (.base 1)) = 1 := rfl
 theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
   induction A with
@@ -215,6 +192,7 @@ namespace ParamsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -230,13 +208,8 @@ def Val (X : Type) {Γ : Ctx X} : Ty X Γ → Type
   | .pi A B => (x : Val X A) → Val X B
 end
 
-/-- info: @Ty.pi : {X : Type} → {Γ : Ctx X} → (A : Ty X Γ) → Ty X (Γ.snoc A) → Ty X Γ -/
-#guard_msgs in
-#check @Ty.pi
-
-example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (B : Ty X (Ctx.snoc Γ A)) : Val X (Ty.pi A B) = ((x : Val X A) → Val X B) := Val_pi X Γ A B
 def tsize {X : Type} (Γ : Ctx X) (A : Ty X Γ) : Nat :=
-  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ ihA ihB => ihA + ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) 0 (fun _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ ihA ihB => ihA + ihB + 1) A
 theorem Ty.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) : True := by
   induction A with
   | base => trivial
@@ -248,6 +221,7 @@ end ParamsLower
 inductive (`MumiTests/IRParams.lean` has more). -/
 
 namespace ImplicitCarrier
+ir_spec
 mutual
 inductive U {α : Type} : Type where
   | base : U

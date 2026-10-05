@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # A `Prop` running a dependency between universes
@@ -11,7 +11,7 @@ Lean's `mutual` refuses it twice over -- one universe for the block, and
 `A` and `B` are declared by `Mumi` across the two universes, and the proofs
 go into well-formedness predicates over the graphs, `P` among them, which
 Lean's own `mutual` takes in `Prop`.  Each carrier lands one above where it
-was written.
+was written.  `ir_spec` checks each block; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -19,6 +19,7 @@ set_option mumi.mahlo false
 
 namespace UnivProp
 
+ir_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -37,11 +38,6 @@ def G : B → Type 3
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
 
-example : Type 2 := A
-example : Type 4 := B
-example (x : A) : Prop := P x
-example (x : A) (f : F x → A) (h : P x) : F (A.a1 x f h) = ((y : F x) → F (f y)) := rfl
-example (x : A) (v : F x) (b : B) (g : G b → B) : G (B.b1 x v b g) = (F x × ((z : G b) → G (g z))) := rfl
 example : F A.a0 = Type := rfl
 example (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) (hx : P x) : P (A.a1 x f h) := P.one x f h b k hx
 
@@ -95,6 +91,7 @@ namespace UnivPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -112,11 +109,6 @@ def G : B → Type 3
   | .b0 => Type 2
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
-
-example : Type 1 := A
-example : Type 3 := B
-example (x : A) (f : F x → A) (h : P x) : F (A.a1 x f h) = ((y : F x) → F (f y)) := rfl
-example (x : A) (v : F x) (b : B) (g : G b → B) : G (B.b1 x v b g) = (F x × ((z : G b) → G (g z))) := rfl
 
 def depth : A → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
 def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => depth x + ih + 1)
@@ -156,12 +148,15 @@ end UnivPropLower
 /-! An indexed carrier of the lower universe as a field of the higher one,
 and the proof tying them back: `Big.over` takes a context and a type over it,
 `Fine` takes a `Big`.  One universe up `Ctx` and `Ty` are induction-inductive
-and `Big` leaves that block, and the recursion is still joint; at the written
-universe `Big`'s engine reads `Ty`'s raw terms with their coherence. -/
+and `Big` leaves that block; at the written universe `Big`'s engine reads
+`Ty`'s raw terms with their coherence.  Either way the recursion is one per
+universe, as a `mutual` has one: `Ctx.rec` over `Ctx` and `Ty`, `Big.rec` over
+`Big`, with no hypothesis at its `Ctx` or `Ty`. -/
 
 namespace MixIdx
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -186,17 +181,12 @@ def Large : Big → Type 2
   | .over Γ A v b g => Val Γ A × ((z : Large b) → Large (g z))
 end
 
-example : Type 1 := Ctx
-example : Type 3 := Big
-example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
-    Large (Big.over Γ A v b g) = (Val Γ A × ((z : Large b) → Large (g z))) := rfl
-example (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : El (Ctx.snoc Γ A h) = (El Γ × Val Γ A) := rfl
-
-/-- One recursion over the three, as `Mumi.IndInd` declares the graphs. -/
 def clen : Ctx → Nat :=
-  Ctx.rec (motive_2 := fun _ _ => Nat) (motive_3 := fun _ => Nat) 0 (fun _ _ _ ih _ => ih + 1)
-    (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1) 0 (fun _ _ _ _ _ _ _ ih _ => ih + 1)
+  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
+def bsize : Big → Nat := Big.rec 0 (fun Γ _ _ _ _ ih _ => clen Γ + ih + 1)
 example (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : clen (Ctx.snoc Γ A h) = clen Γ + 1 := rfl
+example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
+    bsize (Big.over Γ A v b g) = clen Γ + bsize b + 1 := rfl
 
 theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
   induction h with
@@ -217,6 +207,7 @@ namespace MixIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -241,12 +232,6 @@ def Large : Big → Type 2
   | .over Γ A v b g => Val Γ A × ((z : Large b) → Large (g z))
 end
 
-example : Type := Ctx
-example : Type 2 := Big
-example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
-    Large (Big.over Γ A v b g) = (Val Γ A × ((z : Large b) → Large (g z))) := rfl
-
-/-- `Big` is its own engine: `Big.rec` has one motive, with no hypothesis at its `Ctx` or `Ty`. -/
 def clen : Ctx → Nat :=
   Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
 def bsize : Big → Nat := Big.rec 0 (fun Γ _ _ _ _ ih _ => clen Γ + ih + 1)
@@ -277,6 +262,7 @@ universe u
 namespace PolyMix
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -295,8 +281,6 @@ def G : B → Type (u+1)
   | .b1 x b g => F x × ((z : G b) → G (g z))
 end
 
-example : Type (u+1) := A.{u}
-example : Type (u+2) := B.{u}
 def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
 def sizeB : B.{u} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
 example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
@@ -315,6 +299,7 @@ namespace PolyMixLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -333,8 +318,6 @@ def G : B → Type (u+1)
   | .b1 x b g => F x × ((z : G b) → G (g z))
 end
 
-example : Type u := A.{u}
-example : Type (u+1) := B.{u}
 def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
 def sizeB : B.{u} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
 example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
@@ -357,6 +340,7 @@ namespace TwoParams
 set_option mumi.mahlo false
 set_option linter.unusedVariables false
 
+ir_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -386,6 +370,7 @@ set_option mumi.mahlo true
 set_option maxRecDepth 6000
 set_option linter.unusedVariables false
 
+ir_spec
 mutual
 inductive A : Type u where
   | a0 : A

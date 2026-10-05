@@ -1,4 +1,13 @@
-import Mumi
+import MumiTests.IRSpec.Harness
+
+/-!
+# Shapes of fields and clauses
+
+A field whose domain reads a decoder twice over, a proof field about a decoder,
+a carrier holding a value of a decoder of another, a decoder into the values of
+another (`pointValue`), and clauses with `let` and `match` inside.  `ir_spec`
+checks each block's declarations and equations.
+-/
 
 set_option maxRecDepth 6000
 
@@ -6,6 +15,7 @@ namespace IRShapesUpper
 set_option mumi.mahlo false
 
 universe u
+ir_spec
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -17,11 +27,7 @@ mutual
     | .checked t h => width t
 end
 
-example (n : Nat) : width (Tree.leaf.{u} n) = n := rfl
-example (t : Tree.{u}) (f : ∀ (i : Fin (width t)) (_j : Fin (i.val+1)), Tree.{u}) :
-    width (Tree.node t f) = width t + 1 := rfl
-example (t : Tree.{u}) (h : width t = width t) : width (Tree.checked t h) = width t := rfl
-
+ir_spec
 mutual
   inductive Ty : Type where
     | nat : Ty
@@ -37,10 +43,8 @@ mutual
     | .mark a x => x
 end
 
-example (a : Ty) (x : El a) : pointValue (Point.mark a x) = x := rfl
-example (p : Point) : El (Ty.forget p) = pointType p := rfl
-
 namespace Names
+ir_spec
 mutual
   inductive Value : Type where
     | leaf (n : Nat) : Value
@@ -50,7 +54,6 @@ mutual
     | .leaf k => fun x => k + x
 end
 example (n : Nat) : get (Value.leaf n) = n := by cases n <;> rfl
-example (n x : Nat) : add (Value.leaf n) x = n + x := rfl
 end Names
 
 end IRShapesUpper
@@ -59,6 +62,7 @@ namespace IRShapesLower
 set_option mumi.mahlo true
 
 universe u
+ir_spec
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -70,11 +74,7 @@ mutual
     | .checked t h => width t
 end
 
-example (n : Nat) : width (Tree.leaf.{u} n) = n := rfl
-example (t : Tree.{u}) (f : ∀ (i : Fin (width t)) (_j : Fin (i.val+1)), Tree.{u}) :
-    width (Tree.node t f) = width t + 1 := rfl
-example (t : Tree.{u}) (h : width t = width t) : width (Tree.checked t h) = width t := rfl
-
+ir_spec
 mutual
   inductive Ty : Type where
     | nat : Ty
@@ -90,10 +90,8 @@ mutual
     | .mark a x => x
 end
 
-example (a : Ty) (x : El a) : pointValue (Point.mark a x) = x := rfl
-example (p : Point) : El (Ty.forget p) = pointType p := rfl
-
 namespace Names
+ir_spec
 mutual
   inductive Value : Type where
     | leaf (n : Nat) : Value
@@ -103,7 +101,6 @@ mutual
     | .leaf k => fun x => k + x
 end
 example (n : Nat) : get (Value.leaf n) = n := by cases n <;> rfl
-example (n x : Nat) : add (Value.leaf n) x = n + x := rfl
 end Names
 
 end IRShapesLower

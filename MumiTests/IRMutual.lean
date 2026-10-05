@@ -1,10 +1,19 @@
-import Mumi
+import MumiTests.IRSpec.Harness
+
+/-!
+# Mutual carriers, and functions over them in the same block
+
+Two carriers in one recursion, their decoders, and functions into the
+decoders' values beside them -- `default`, `measure` -- as one block.  `ir_spec`
+checks every declaration and equation; what follows is what that leaves out.
+-/
 
 set_option maxRecDepth 6000
 
 namespace IRMutualUpper
 set_option mumi.mahlo false
 
+ir_spec
 mutual
   inductive Ty : Type where
     | base : Ty
@@ -35,15 +44,6 @@ mutual
     | .empty => 0
     | .extend g a => measureCtx g + measure (a (defaultEnv g)) + 1
 end
-
-example (a : Ty) (b : El a → Ty) :
-    El (Ty.pi a b) = ((x : El a) → El (b x)) := rfl
-example (g : Ctx) (a : Env g → Ty) :
-    Env (Ctx.extend g a) = ((x : Env g) × El (a x)) := rfl
-example (g : Ctx) (a : Env g → Ty) :
-    defaultEnv (Ctx.extend g a) = ⟨defaultEnv g, default (a (defaultEnv g))⟩ := rfl
-example (a : Ty) (b : El a → Ty) :
-    measure (Ty.pi a b) = measure a + measure (b (default a)) + 1 := rfl
 
 noncomputable def exampleCtx : Ctx := Ctx.extend Ctx.empty (fun _ => Ty.base)
 example : measureCtx exampleCtx = 2 := by
@@ -58,6 +58,7 @@ end IRMutualUpper
 namespace IRMutualLower
 set_option mumi.mahlo true
 
+ir_spec
 mutual
   inductive Ty : Type where
     | base : Ty
@@ -88,15 +89,6 @@ mutual
     | .empty => 0
     | .extend g a => measureCtx g + measure (a (defaultEnv g)) + 1
 end
-
-example (a : Ty) (b : El a → Ty) :
-    El (Ty.pi a b) = ((x : El a) → El (b x)) := rfl
-example (g : Ctx) (a : Env g → Ty) :
-    Env (Ctx.extend g a) = ((x : Env g) × El (a x)) := rfl
-example (g : Ctx) (a : Env g → Ty) :
-    defaultEnv (Ctx.extend g a) = ⟨defaultEnv g, default (a (defaultEnv g))⟩ := rfl
-example (a : Ty) (b : El a → Ty) :
-    measure (Ty.pi a b) = measure a + measure (b (default a)) + 1 := rfl
 
 def exampleCtx : Ctx := Ctx.extend Ctx.empty (fun _ => Ty.base)
 example : measureCtx exampleCtx = 2 := by

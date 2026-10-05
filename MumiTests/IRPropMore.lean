@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # More `Prop` members: indexed by proofs, relating values, eliminating large
@@ -13,6 +13,9 @@ import Mumi
   of the member declared on its own after the block.  Its recursor's rule is
   an equation.  A decoder may recurse over such a member, and only over such a
   one: over any other, equal proofs could decode differently.
+
+`ir_spec` checks each block, the `Prop` members' recursor into `Prop` or into
+any sort as Lean's own rule decides; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -22,6 +25,7 @@ set_option autoImplicit false
 namespace Deep
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -42,10 +46,6 @@ def Val : (Γ : Ctx) → Ty Γ → Type
   | _, .base Γ => Nat
   | _, .checked Γ h s => Unit
 end
-
-/-- info: Deep.Sound (Γ : Ctx) (a : Ok Γ) : Prop -/
-#guard_msgs in
-#check Sound
 
 -- `Sound` is in the block: a type may be built under a proof of it.  Its proof
 -- index is irrelevant
@@ -64,6 +64,7 @@ namespace DeepLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -85,10 +86,6 @@ def Val : (Γ : Ctx) → Ty Γ → Type
   | _, .checked Γ h s => Unit
 end
 
-/-- info: DeepLower.Sound (Γ : Ctx) (a : Ok Γ) : Prop -/
-#guard_msgs in
-#check Sound
-
 example (Γ : Ctx) (h h' : Ok Γ) : Sound Γ h = Sound Γ h' := rfl
 
 theorem sound (Γ : Ctx) (h : Ok Γ) : Sound Γ h :=
@@ -105,6 +102,7 @@ it, which ties it into the block. -/
 namespace Rel
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -120,14 +118,6 @@ def Den : Ty → Type
   | .base => Nat
   | .arr A B => Den A → Den B
 end
-
-/-- info: Rel.Conv (A : Ty) (a a_1 : Tm A) : Prop -/
-#guard_msgs in
-#check Conv
-
-/-- info: Conv.lam : ∀ (A B : Ty) (t t' : Tm B), Conv B t t' → Conv (A.arr B) (Tm.lam A B t) (Tm.lam A B t') -/
-#guard_msgs in
-#check @Conv.lam
 
 theorem Conv.symm' {A : Ty} {t t' : Tm A} (h : Conv A t t') : Conv A t' t := by
   induction h using Conv.rec with
@@ -145,6 +135,7 @@ namespace RelLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
+ir_spec
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -177,6 +168,7 @@ a proof -- so it eliminates into any sort, as Lean's would. -/
 namespace Large
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -192,23 +184,10 @@ def Wit : (a : U) → Pos a → Type
   | _, .mk a h => PLift (Nonempty (El a))
 end
 
-/--
-info: @Pos.rec : {motive : (a : U) → Pos a → Sort u_1} →
-  ((a : U) → (h : Nonempty (El a)) → motive a ⋯) → {a : U} → (t : Pos a) → motive a t
--/
-#guard_msgs in
-#check @Pos.rec
-
+-- a definition by a large recursor is `noncomputable`, as one by `Acc.rec` is
 noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
 example (a : U) (h : Nonempty (El a)) : tag a (.mk a h) = 7 := by
   simp only [tag, Pos.rec_mk]
-
-/-- info: Wit : (a : U) → Pos a → Type -/
-#guard_msgs in
-#check @Wit
-
-example (a : U) (h : Nonempty (El a)) : Wit a (.mk a h) = PLift (Nonempty (El a)) := by
-  simp only [Wit_mk]
 
 end Large
 
@@ -216,6 +195,7 @@ namespace LargeLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
+ir_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -229,6 +209,7 @@ def El : U → Type
   | .some a p => El a
 end
 
+-- a definition by a large recursor is `noncomputable`, as one by `Acc.rec` is
 noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
 example (a : U) (h : Nonempty (El a)) : tag a (.mk a h) = 7 := by
   simp only [tag, Pos.rec_mk]
@@ -243,6 +224,7 @@ relation.  Its recursion is well-founded recursion on codes, into any sort. -/
 namespace LargeAcc
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -256,14 +238,6 @@ def El : U → Type
   | .boxed a h => El a
 end
 
-/--
-info: @Fin'.rec : {motive : (a : U) → Fin' a → Sort u_1} →
-  ((a : U) → (below : ∀ (x : El a), Fin' a) → ((x : El a) → motive a ⋯) → motive a ⋯) →
-    {a : U} → (t : Fin' a) → motive a t
--/
-#guard_msgs in
-#check @Fin'.rec
-
 noncomputable def count (a : U) (h : Fin' a) : Nat := Fin'.rec (motive := fun _ _ => Nat) (fun _ _ _ => 0) h
 
 end LargeAcc
@@ -273,6 +247,9 @@ end LargeAcc
 namespace NotLarge
 set_option mumi.mahlo false
 
+-- `Inh .nat` has a proof for each `n`: eliminating into `Nat` would tell them
+-- apart, so its recursor is into `Prop`
+ir_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -284,16 +261,6 @@ def El : U → Type
   | .nat => Nat
   | .some a p => El a
 end
-
--- (a definition by a large recursor is `noncomputable`, as one by `Acc.rec` is)
--- `Inh .nat` has a proof for each `n`: eliminating into `Nat` would tell them apart
-/--
-info: @Inh.rec : ∀ {motive : (a : U) → Inh a → Prop},
-  (∀ (n : Nat), motive U.nat ⋯) →
-    (∀ (a : U) (p h : Inh a), motive a p → motive a h → motive (a.some p) ⋯) → ∀ {a : U} (t : Inh a), motive a t
--/
-#guard_msgs in
-#check @Inh.rec
 
 end NotLarge
 
@@ -322,6 +289,7 @@ end
 namespace Mixed
 set_option mumi.mahlo false
 
+ir_spec (simp := [Code.rec_list])
 mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n
@@ -340,12 +308,6 @@ def Dens {σ : Type} : List (Code (σ := σ) 0) → Type
   | c :: cs => Den 0 c × Dens cs
 end
 
-/-- info: @Code.succ : {σ : Type} → {n : Nat} → Code (n + 1) → Code n -/
-#guard_msgs in
-#check @Code.succ
-
-example (c : Code (σ := Bool) 1) : Den 0 (.succ c) = Den 1 c := rfl
-example (c : Code (σ := Bool) 0) : Dens [c] = (Den 0 c × Unit) := rfl
 example (s : Bool) : Den 2 (Code.checked (.base s) (.base s)) = Den 0 (Code.base (σ := Bool) s) := rfl
 
 end Mixed

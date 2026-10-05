@@ -69,12 +69,17 @@ Each member gets its named constructors and:
 
 Shared parameters follow Lean's own convention: the carrier takes them
 explicitly (`U A`), its constructors and eliminators implicitly (`U.pi a b`,
-`U.rec`), and a decoder as its author bound them. All recursor motives share one
-elimination universe. For mutual blocks the motives are named `motive_1`,
-`motive_2`, etc., in carrier declaration order, as Lean names a mutual
-block's (just `motive` when a recursor has one). Cases follow carrier order and
-then constructor order; recursive hypotheses follow the constructor's ordinary
-arguments. Repeated constructor names are disambiguated in the case binders.
+`U.rec`), and a decoder as its author bound them. Every public declaration
+reads as Lean's own would, binder for binder: all recursor motives share one
+elimination universe, named and ordered as Lean names a recursor's (`U.rec.{u_1,
+u}`: the motive's first, `u` unless the carrier uses it); for mutual blocks the
+motives are named `motive_1`, `motive_2`, etc., in carrier declaration order
+(just `motive` when a recursor has one); the minor premises are named by their
+constructors, two of them alike where two members' constructors are, and bind
+the fields as the constructor does, an implicit one implicitly; the hypothesis
+at a field `x` is `x_ih`, and the major premise `t`. Cases follow carrier order
+and then constructor order; recursive hypotheses follow the constructor's
+ordinary arguments.
 
 The recursors are registered with `induction_eliminator`; case analysis uses
 `cases_eliminator`. Thus ordinary `induction a` works for a single carrier, and
@@ -182,6 +187,9 @@ equations -- plus `X.recD`, the one-motive recursor with the other carriers'
 motives discharged at `PUnit`, which is what `induction x` uses (`X.rec` asks for
 every motive, so it is for `induction … using` and term mode).  Motives are
 `motive_1`, `motive_2`, … in carrier order (`motive` for a single carrier).
+The constructors' semantics are written by the decoders' clauses, so that a
+decoder at a constructor unfolds to what its clause says (`F (A.cons x c b d)` to
+`F x × D x c b`), and an index term elaborated against one holds no encoding.
 
 Its restrictions, beyond the general ones below:
 
@@ -228,7 +236,8 @@ Its restrictions, beyond the general ones below:
 A block is split only where it has to be.  Its strongly connected components,
 dependencies first, are regrouped as far as a group can be one block --
 carriers in one universe with their decoders -- so that a block in one
-universe stays one block with one joint recursion, as a `mutual` has.  A group
+universe stays one block with one joint recursion, as a `mutual` has -- and
+blocks in different universes have one each, in both modes.  A group
 of carriers and decoders is an induction-recursion of its own; one of
 definitions alone, or of `Prop` inductives, is Lean's.  So the members may sit
 in different universes as long as no component mixes them -- and without a
@@ -245,7 +254,9 @@ universe, `A`'s first, `B`'s reading `A`'s raw terms and decoder as values of
 a type already there -- a plain field, with its certificate demanded by `B`'s
 -- and the certificates of all of them in one `mutual` after every engine.
 `B.rec` is then the recursion of `B`'s engine, with no hypothesis at its
-`A`, as one universe up.
+`A`, as one universe up, where the graphs' joint recursion, which spans the
+universes, is split to match: each universe's recursor is the graphs' at
+`PUnit` for the members of the others.
 
 ## A `Prop` in the block
 
@@ -394,8 +405,7 @@ Current restrictions are explicit:
   so one of type `Type` needs the carrier in `Type 1`, and a small one, `(n :
   Nat)`, varies in `Type` as well.
 - A constructor field written `{x : T}`, `⦃x : T⦄` or `[x : T]` is bound so
-  in the public constructor and explicitly in the minor premises, as Lean's
-  own are. Inside the block a constructor application in an index term writes
+  in the public constructor and in the minor premises, as Lean's own are. Inside the block a constructor application in an index term writes
   every field or only the explicit ones, `Tm Γ (.pi A .base)` for
   `Ty.pi {Γ} (A) (B)`; the implicit ones are found as Lean's elaborator would
   find them here, by matching the constructor's conclusion against the index
@@ -471,6 +481,24 @@ automatically generated constructor `injEq` lemmas can use `propext`.
 ## Tests
 
 Run `lake test`, or `lake build Mumi MumiTests`.
+
+Most blocks are tested by specification: `ir_spec mutual … end`
+([MumiTests/IRSpec/Harness.lean](../../MumiTests/IRSpec/Harness.lean))
+elaborates the block, then computes from the block as written what Lean's own
+rules say it should declare -- type formers, constructors, each recursor with
+its motives, minor premises and hypotheses, the `Prop` members' recursor into
+`Prop` or any sort -- and checks each declaration against it: up to
+definitional equality, with binder names, binder annotations and universes
+exactly, and no internal name where a reader would see it.  Then each rule --
+a recursor's at each constructor, a decoder's at each clause -- has to hold by
+`rfl` in the kernel, or, where the test lists it `(simp := [...])`, only by
+`simp` with its lemma, or, listed `(unproven := [...])`, neither.  The one thing
+the specification takes from the mode is the universe of an upper-mode
+carrier.  What a test file states beside it is what the specification leaves
+out: values computed and run, functions defined through the recursors,
+tactics, axioms, rejections.  `MumiTests/IRUpper.lean` and
+`MumiTests/IRLower.lean` are written out by hand, as a reader's first stop.
+
 `MumiTests/IRFamily.lean` and `MumiTests/IRTangle.lean` cover the indexed and
 induction-inductive blocks of the section above one universe up, what they
 reject included; `MumiTests/IRFamilyLower.lean` and

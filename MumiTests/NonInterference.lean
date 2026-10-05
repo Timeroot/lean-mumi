@@ -253,18 +253,17 @@ inductive MBadP2 : Type where
 end
 
 -- a `mutual` of an inductive and a definition is not a block to Lean; after Lean
--- says so it is offered to the induction-recursion frontend, which reports its
--- own reason for declining (`MumiTests/IRRejection.lean` pins Lean's message
--- under `mumi.enabled false`)
-/--
-error: IR decoder must have signature Carrier → Result or (a : Carrier) → Result
--/
-#guard_msgs in
+-- says so it is offered to the induction-recursion frontend, which declares
+-- each part on its own, as neither names the other (`MumiTests/IRRejection.lean`
+-- pins Lean's message under `mumi.enabled false`)
 mutual
 inductive MMixed : Type where
   | mk
 def mMixed : Nat := 0
 end
+
+example : MMixed := .mk
+example : mMixed = 0 := rfl
 
 /-! ## Errors are still Lean's
 

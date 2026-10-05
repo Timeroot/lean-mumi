@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # One strongly connected block of everything
@@ -8,7 +8,7 @@ the `B` inside; `B` is indexed by an `A` and by `F` of it; `D` is a type compute
 from a `B`, and reads `F` and itself; `E` is indexed by all of `A`, `F` and `B`,
 and `G` counts through it.  Nothing here means anything.  The point is that one
 block lowers, every carrier gets its recursor, every decoder its equations, and
-all of it is `rfl`.
+all of it is `rfl`: `ir_spec` checks it; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -16,6 +16,7 @@ set_option mumi.mahlo false
 
 namespace Tangle
 
+ir_spec
 mutual
 inductive A : Type where
   | nil : A
@@ -39,54 +40,14 @@ def G : (x : A) → (c : F x) → (b : B x c) → E x c b → Nat
   | _, _, _, .up x c b e d => G x c b e + 1
 end
 
-/-! ## The decoders compute -/
-
-example : F A.nil = PUnit := rfl
-example (x : A) (c : F x) (b : B x c) (d : D x c b) : F (A.cons x c b d) = (F x × D x c b) := rfl
-example (x : A) (c : F x) : D x c (B.leaf x c) = F x := rfl
-example (x : A) (c : F x) (b : B x c) (e : D x c b) (f : (y : D x c b) → B (A.cons x c b y) (c, y)) :
-    D x c (B.node x c b e f) = ((y : D x c b) → D (A.cons x c b y) (c, y) (f y)) := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) :
-    G _ _ _ (E.up x c b e d) = G x c b e + 1 := rfl
+/-! ## The decoders compute at closed terms -/
 
 /-- A closed term through every carrier. -/
 def a1 : A := A.cons A.nil PUnit.unit (B.leaf A.nil PUnit.unit) PUnit.unit
 example : F a1 = (PUnit × PUnit) := rfl
 example : G _ _ _ (E.up A.nil PUnit.unit (B.leaf _ _) (E.mk _ _ _ PUnit.unit) PUnit.unit) = 1 := rfl
 
-/-! ## The recursors -/
-
-/--
-info: @E.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : (x : A) → (a : F x) → B x a → Sort u_1} →
-    {motive_3 : (x : A) → (c : F x) → (a : B x c) → E x c a → Sort u_1} →
-      motive_1 A.nil →
-        ((x : A) → (c : F x) → (b : B x c) → (d : D x c b) → motive_1 x → motive_2 x c b → motive_1 (x.cons c b d)) →
-          ((x : A) → (c : F x) → motive_1 x → motive_2 x c (B.leaf x c)) →
-            ((x : A) →
-                (c : F x) →
-                  (b : B x c) →
-                    (e : D x c b) →
-                      (f : (y : D x c b) → B (x.cons c b y) (c, y)) →
-                        motive_1 x →
-                          motive_2 x c b →
-                            ((y : D x c b) → motive_2 (x.cons c b y) (c, y) (f y)) → motive_2 x c (B.node x c b e f)) →
-              ((x : A) →
-                  (c : F x) →
-                    (b : B x c) → (d : D x c b) → motive_1 x → motive_2 x c b → motive_3 x c b (E.mk x c b d)) →
-                ((x : A) →
-                    (c : F x) →
-                      (b : B x c) →
-                        (e : E x c b) →
-                          (d : D x c b) →
-                            motive_1 x →
-                              motive_2 x c b →
-                                motive_3 x c b e →
-                                  motive_3 (x.cons c b d) (c, d) (B.leaf (x.cons c b d) (c, d)) (E.up x c b e d)) →
-                  {x : A} → {c : F x} → {a : B x c} → (t : E x c a) → motive_3 x c a t
--/
-#guard_msgs in
-#check @E.rec
+/-! ## Through the recursors -/
 
 /-- The number of `cons`es in an `A`, counting through the `B` it holds. -/
 def size : A → Nat :=
@@ -117,6 +78,7 @@ end Tangle
 
 namespace Dependent
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -132,7 +94,6 @@ def dflt : (Γ : Ctx) → (A : Ty Γ) → El Γ A
   | _, .arr Γ A B => fun _ => dflt Γ B
 end
 
-example (Γ : Ctx) (A B : Ty Γ) : dflt Γ (Ty.arr Γ A B) = fun _ => dflt Γ B := rfl
 example : dflt Ctx.nil (Ty.arr _ (Ty.nat _) (Ty.nat _)) 5 = 0 := rfl
 
 end Dependent

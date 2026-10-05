@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # A `Prop` in the block
@@ -10,7 +10,9 @@ indexed by `U` and reads `El` and `Inh`, and `Fine` is mutual with it.  Such a
 member is not part of the induction-recursion -- nothing is defined by
 recursion on a proof -- so it is declared right after the block it refers to,
 in both modes; one the block's carriers or decoders mention is part of the
-induction-recursion, which `IRPropSCC.lean` covers.
+induction-recursion, which `IRPropSCC.lean` covers.  `ir_spec` checks each
+block, the `Prop` members' joint recursor included; what follows is what that
+leaves out.
 -/
 
 set_option autoImplicit false
@@ -18,6 +20,7 @@ set_option autoImplicit false
 namespace PropUpper
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -35,9 +38,6 @@ def Inh : U → Prop
   | .base => True
   | .pi a b h => ∀ x : El a, Inh (b x)
 end
-
-example (a : U) (b : El a → U) (h : Inh a) : Inh (U.pi a b h) = ∀ x : El a, Inh (b x) := rfl
-example (a : U) (b : El a → U) (h : Inh a) : El (U.pi a b h) = ((x : El a) → El (b x)) := rfl
 
 /-- A certified code is inhabited, by the joint recursor of the two `Prop`s
 (`induction` does not take a mutual inductive). -/
@@ -63,6 +63,7 @@ end PropUpper
 namespace PropLower
 set_option mumi.mahlo true
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -80,9 +81,6 @@ def Inh : U → Prop
   | .base => True
   | .pi a b h => ∀ x : El a, Inh (b x)
 end
-
-example (a : U) (b : El a → U) (h : Inh a) : Inh (U.pi a b h) = ∀ x : El a, Inh (b x) := rfl
-example (a : U) (b : El a → U) (h : Inh a) : El (U.pi a b h) = ((x : El a) → El (b x)) := rfl
 
 theorem Good.inh (u : U) (g : Good u) : Inh u :=
   Good.rec (motive_1 := fun u _ => Inh u) (motive_2 := fun u _ => Inh u)

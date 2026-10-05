@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # A `Prop` member the carriers depend on
@@ -8,7 +8,8 @@ proof of it, so the block cannot be declared without it, and `Good` reads `El`
 and `Inh` and recurses into itself.  One universe up the `Prop` member's graph
 is a `Prop` family indexed by the carriers' graphs, in the one `mutual` with
 them, which `Mumi` declares across the two universes: `U.rec` is over the data
-with the proof as a field, and `Good.rec` is the predicate's own.
+with the proof as a field, and `Good.rec` is the predicate's own.  `ir_spec`
+checks each block; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -16,6 +17,7 @@ set_option mumi.mahlo false
 
 namespace PropSCC
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -31,8 +33,6 @@ def Inh : U → Prop
   | .pi a b h => ∀ x : El a, Inh (b x)
 end
 
-example (a : U) (b : El a → U) (h : Good a) : El (U.pi a b h) = ((x : El a) → El (b x)) := rfl
-example (a : U) (b : El a → U) (h : Good a) : Inh (U.pi a b h) = ∀ x : El a, Inh (b x) := rfl
 example : Good .base := Good.base
 
 /-- The data recursor: the proof is a field, with no hypothesis of its own. -/
@@ -73,6 +73,7 @@ the well-formedness sits on top of them. -/
 namespace PropIdx
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -90,10 +91,6 @@ def Val : (Γ : Ctx) → Ty Γ → Type
   | _, .base Γ => Nat
   | _, .pi Γ A h B => (x : Val Γ A) → Val (.snoc Γ A h) B
 end
-
-example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) : El (Ctx.snoc Γ A h) = (El Γ × Val Γ A) := rfl
-example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) (B : Ty (.snoc Γ A h)) :
-    Val Γ (Ty.pi Γ A h B) = ((x : Val Γ A) → Val (.snoc Γ A h) B) := rfl
 
 /-- One joint recursion over `Ctx` and `Ty`, the proofs as fields. -/
 def clen : Ctx → Nat :=
@@ -125,6 +122,7 @@ namespace PropSCCLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -140,9 +138,6 @@ def Inh : U → Prop
   | .pi a b h => ∀ x : El a, Inh (b x)
 end
 
-example : Type := U
-example (a : U) (b : El a → U) (h : Good a) : El (U.pi a b h) = ((x : El a) → El (b x)) := rfl
-example (a : U) (b : El a → U) (h : Good a) : Inh (U.pi a b h) = ∀ x : El a, Inh (b x) := rfl
 
 def depth : U → Nat := U.rec 0 (fun _ _ _ ih _ => ih + 1)
 example (a : U) (b : El a → U) (h : Good a) : depth (U.pi a b h) = depth a + 1 := rfl
@@ -174,6 +169,7 @@ namespace PropIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -191,10 +187,6 @@ def Val : (Γ : Ctx) → Ty Γ → Type
   | _, .base Γ => Nat
   | _, .pi Γ A h B => (x : Val Γ A) → Val (.snoc Γ A h) B
 end
-
-example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) : El (Ctx.snoc Γ A h) = (El Γ × Val Γ A) := rfl
-example (Γ : Ctx) (A : Ty Γ) (h : Ok Γ A) (B : Ty (.snoc Γ A h)) :
-    Val Γ (Ty.pi Γ A h B) = ((x : Val Γ A) → Val (.snoc Γ A h) B) := rfl
 
 def clen : Ctx → Nat :=
   Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
@@ -218,12 +210,15 @@ end PropIdxLower
 
 /-! Several `Prop` members in the component, mutual with each other, over a
 parameter, with the constructors written `.c` and documentation on the members:
-one joint `Good.rec` over both, named minor premises apart, and each member's
-own `casesOn`.  A `Prop` with no index at all is taken the same way. -/
+one joint `Good.rec` over both, and each member's own `casesOn`.  The minor
+premises are named by their constructors, as Lean names a mutual block's, so
+two are `base` and two `pi`.  A `Prop` with no index at all is taken the same
+way. -/
 
 namespace Several
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 /-- codes over `α` -/
 inductive U (α : Type) : Type where
@@ -241,15 +236,12 @@ def El (α : Type) : U α → Type
   | .pi a b h h' => (x : El α a) → El α (b x)
 end
 
-example (α : Type) : El α .base = α := rfl
-example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
-    El α (U.pi a b h h') = ((x : El α a) → El α (b x)) := rfl
 theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
-  induction g using Good.rec (motive_2 := fun _ _ => True) with
-  | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
+  induction g using Good.rec (motive_2 := fun _ _ => True) <;> trivial
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
+ir_spec
 mutual
 inductive T : Type where
   | base : T
@@ -276,6 +268,7 @@ namespace SeveralLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 /-- codes over `α` -/
 inductive U (α : Type) : Type where
@@ -293,14 +286,12 @@ def El (α : Type) : U α → Type
   | .pi a b h h' => (x : El α a) → El α (b x)
 end
 
-example (α : Type) (a : U α) (b : El α a → U α) (h : Good α a) (h' : Fine α a) :
-    El α (U.pi a b h h') = ((x : El α a) → El α (b x)) := rfl
 theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
-  induction g using Good.rec (motive_2 := fun _ _ => True) with
-  | Good_base => trivial | Good_pi => trivial | Fine_base => trivial | Fine_pi => trivial
+  induction g using Good.rec (motive_2 := fun _ _ => True) <;> trivial
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
+ir_spec
 mutual
 inductive T : Type where
   | base : T
@@ -323,6 +314,7 @@ clauses: given their full names when the block is read. -/
 namespace NestedProp
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -341,8 +333,6 @@ def Val (X : Type) : (Γ : Ctx X) → Ty X Γ → Type
   | _, .pi Γ A h B => (x : Val X Γ A) → Val X (.snoc Γ A h) B
 end
 
-example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc Γ A h)) :
-    Val X Γ (Ty.pi Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc Γ A h) B) := Val_pi X Γ A h B
 def clen (X : Type) : Ctx X → Nat :=
   Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
 theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by
@@ -358,6 +348,7 @@ namespace NestedPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
+ir_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -376,8 +367,6 @@ def Val (X : Type) : (Γ : Ctx X) → Ty X Γ → Type
   | _, .pi Γ A h B => (x : Val X Γ A) → Val X (.snoc Γ A h) B
 end
 
-example (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) (B : Ty X (Ctx.snoc Γ A h)) :
-    Val X Γ (Ty.pi Γ A h B) = ((x : Val X Γ A) → Val X (Ctx.snoc Γ A h) B) := Val_pi X Γ A h B
 def clen (X : Type) : Ctx X → Nat :=
   Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
 theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by

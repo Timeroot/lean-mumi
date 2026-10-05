@@ -217,6 +217,13 @@ partial def replaceStx (f : Syntax → Option Syntax) (s : Syntax) : Syntax :=
 def elimName (b : Block) (m : Member) (base : String) : String :=
   m.name.toString ++ "." ++ b.elimPrefix ++ base
 
+/-- The block as its `Prop` members' eliminators are named: publicly even in
+the nested pass, which rebuilds only the data members' (theirs mention no
+copy); the one into `Prop` set aside (`propPrefix`) where the large one, not
+`small`, takes the public name. -/
+def Block.forProp (b : Block) (small := true) : Block :=
+  { b with elimPrefix := if small then b.propPrefix else "" }
+
 /-- `attrs` without the tactic registrations where the eliminators are not the
 public ones. -/
 def elimAttrs (b : Block) (attrs : String) : String :=
@@ -244,12 +251,18 @@ private def dataTarget (b : Block) (f : Field) : Option (Nat × Array Syntax) :=
 /-- The data members, in order. -/
 private def dataMembers (b : Block) : Array Nat :=
   (Array.range b.members.size).filter fun i => !b.members[i]!.prop
-/-- The data members `X.rec` takes motives for: those its graph's recursor
-does, or, where that is not known, every one. -/
-private def scope (b : Block) (i : Nat) : Array Nat :=
+/-- The data members of the graph's joint recursion data member `i` is in: those
+its graph's recursor takes motives for, or, where that is not known, every one. -/
+private def graphScope (b : Block) (i : Nat) : Array Nat :=
   match b.recs[i]? with
   | some s => if s.isEmpty then dataMembers b else s
   | none => dataMembers b
+/-- The data members of member `i`'s public recursion: one per universe, as a
+`mutual` has one -- at the written universe each is an engine of its own, and
+one universe up the graph's joint recursion, which may span universes, is
+split to match. -/
+private def scope (b : Block) (i : Nat) : Array Nat :=
+  (graphScope b i).filter (b.members[·]!.level == b.members[i]!.level)
 /-- The field's target when it is a data member of `scope`: a field the recursor gives a hypothesis at. -/
 private def scopedTarget (b : Block) (scope : Array Nat) (f : Field) : Option (Nat × Array Syntax) :=
   (dataTarget b f).filter fun (k, _) => scope.contains k
@@ -1356,7 +1369,7 @@ private def emitInv (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
   for i in dataMembers b do
     let m := b.members[i]!
-    let scope := scope b i
+    let scope := graphScope b i
     let (arity, _) ← graphArity b i
     let (implicitArity, _) ← graphArity b i (implicit := true)
     let gIdx := graphIdxNames b i
@@ -1382,7 +1395,6 @@ private def emitInv (b : Block) : CommandElabM Unit := do
       app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[untypedLambda (gIdx ++ #["_ir_s", "_ir_a", "_"]) (withParams b (invName m) (gIdx ++ #["_ir_s", "_ir_a"]))] ++ gIdx ++ #["_ir_s", "_ir_a", "_ir_w"] ++ inverts))
 
 private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM Unit := do
-  let ps ← paramsDecl b
   for o in order do
     match o with
     | .inl i =>
@@ -1422,28 +1434,27 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       let result ← c.pubResult.mapM text
       let head := m.name.toString ++ "." ++ c.name.toString ++ " " ++ (← pubParamsDecl b) ++ " " ++ join fields ++ " : " ++ typeAt b i result
       let wfApp := app (wfName m ++ "." ++ c.name.toString) (xs ++ wfs ++ props)
+      -- the node's semantics as its decoders' equations say, by the public
+      -- decoders: what unfolding one at the constructor shows
+      let mut outs := #[]
+      for j in [:b.decoders.size] do
+        let d := b.decoders[j]!
+        if d.target == i then outs := outs.push (outField j ++ " := " ++ (← text d.clauses[ci]!))
+      let sem := if outs.isEmpty then "_" else "{ " ++ ", ".intercalate outs.toList ++ " }"
       if m.prop then
         emit (c.doc ++ "theorem " ++ head ++ " := " ++ wfApp)
       else if b.wf then
-        emit (c.doc ++ attrs ++ "def " ++ head ++ " := ⟨⟨_, " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩, " ++ wfApp ++ "⟩")
+        emit (c.doc ++ attrs ++ "def " ++ head ++ " := ⟨⟨" ++ sem ++ ", " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩, " ++ wfApp ++ "⟩")
       else
-        emit (c.doc ++ attrs ++ "def " ++ head ++ " := ⟨_, " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩")
+        emit (c.doc ++ attrs ++ "def " ++ head ++ " := ⟨" ++ sem ++ ", " ++ app (graphName m ++ "." ++ c.name.toString) xs ++ "⟩")
 
 /-! ## Recursors -/
 
-private def minor (b : Block) (i ci : Nat) := Id.run do
-  let c := b.members[i]!.ctors[ci]!
-  let count := b.members.foldl (fun n m => n + (m.ctors.filter (·.name == c.name)).size) 0
-  let n := if count == 1 then c.name.toString else
-    b.members[i]!.name.toString.replace "." "_" ++ "_" ++ c.name.toString
-  let used := b.params.any (fun p => p.name.toString == n) ||
-    b.members.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n))) ||
-    b.members.any (fun m => m.indices.any (fun x => x.name.toString == n))
-  return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
+private def minor (b : Block) (i ci : Nat) := minorVar i ci b.members[i]!.ctors[ci]!.name
 /-- The motive of data member `i`: `motive_k` for the `k`th data member, as the
 recursion lists them, or `motive` alone. -/
 private def motive (b : Block) (i : Nat) :=
-  let ds := dataMembers b
+  let ds := scope b i
   motiveFor (ds.size == 1) ((ds.findIdx? (· == i)).getD i)
 private def motiveArgs (b : Block) (scope : Array Nat := dataMembers b) := scope.map (motive b)
 private def minorArgs (b : Block) (scope : Array Nat := dataMembers b) :=
@@ -1458,6 +1469,9 @@ private def motiveDecls (b : Block) (scope : Array Nat := dataMembers b) : Comma
 private def ctorApp (b : Block) (i ci : Nat) (xs : Array String) :=
   withParams b ("@" ++ b.members[i]!.name.toString ++ "." ++ b.members[i]!.ctors[ci]!.name.toString) xs
 private def fieldNames (c : Ctor) := c.fields.map (·.name.toString)
+/-- The fields of `c` as a lambda given for a minor premise binds them: an
+implicit one in braces, as the minor premise binds it. -/
+private def fieldBinders (c : Ctor) := c.fields.map fun f => if f.implicit then "{" ++ f.name.toString ++ "}" else f.name.toString
 private def fieldsDecl (c : Ctor) : CommandElabM String := do
   return join (← c.fields.mapM fun f => fieldDecl { name := f.name, type := f.type })
 /-- The fields of `c` as the public constructor binds them: an implicit one implicit. -/
@@ -1484,15 +1498,16 @@ private def minorDecls (b : Block) (induction : Bool) (scope : Array Nat := data
             ihs := ihs.push (par (ihVar f.name ++ " : " ++ (← ihType b f)))
       let result ← c.pubResult.mapM text
       let concl := app (motive b i) (result ++ #[ctorApp b i ci (fieldNames c)])
-      let decls ← fieldsDecl c
+      let decls ← ctorDecl c
       let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join ihs ++ ", " ++ concl
       out := out.push (par (minor b i ci ++ " : " ++ ty))
   return join out
 
 /-- The graph motive standing for the public `motive_i`: in a well-formed
 block, under the well-formedness of the indices and of the node. -/
-private def graphMotive (b : Block) (i : Nat) : CommandElabM String := do
-  let value := app (motive b i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
+private def graphMotive (b : Block) (i : Nat) (filler := false) : CommandElabM String := do
+  let value := if filler then "PUnit" else
+    app (motive b i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
   let body ← if b.wf then do
       let hyps := (← arityHyps b i).map (fun (n, t) => par (n ++ " : " ++ t)) |>.push
         (par ("_ir_w : " ++ wfAt b i (graphIdxNames b i) "_ir_s" "_ir_g"))
@@ -1522,7 +1537,8 @@ the node's inversion, the proof fields too; a hypothesis is passed on at the
 well-formedness of the field's indices and its own.  For the compiled
 companion (`impl`), a `casesOn` minor: no hypotheses are taken, and each is a
 recursive call on the repacked field. -/
-private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool) (scope : Array Nat) (impl := false) : CommandElabM String := do
+private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool) (scope : Array Nat) (impl := false)
+    (joint := scope) (filler := false) : CommandElabM String := do
   let c := b.members[i]!.ctors[ci]!
   let inv := withParams b (invertName b.members[i]!) #["_ir_w"]
   -- a proof field is no binder here: where an index term names one, it is the inversion's conjunct
@@ -1543,12 +1559,13 @@ private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool
       let halves := "⟨" ++ applyDomain (semVar f.name) dom ++ ", " ++ applyDomain f.name.toString dom ++ "⟩"
       let image := if b.wf then "⟨" ++ halves ++ ", " ++ applyDomain w dom ++ "⟩" else halves
       images := images.push (← lambda dom image)
-      if scope.contains k then
-        if impl then
+      if impl then
+        if scope.contains k then
           let recArgs := pArgs b ++ motiveArgs b scope ++ minorArgs b scope ++ (pubIndicesOf b k).map (fun _ => "_")
           ihImages := ihImages.push (← lambda dom (app ("@" ++ recImplName b.members[k]!) (recArgs.push image)))
-        else
-          ihNames := ihNames.push (ihVar f.name)
+      else if joint.contains k then
+        ihNames := ihNames.push (ihVar f.name)
+        if scope.contains k then
           if b.wf then
             let mut ws := #[]
             for (x, t) in b.members[k]!.indices.zip args do
@@ -1567,7 +1584,8 @@ private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool
       images := images.push f.name.toString
   let idxWf ← arityHyps b i
   let tail := if b.wf then (idxWf.map (·.1)).push "_ir_w" else #[]
-  return untypedLambda (binders ++ ihNames ++ tail) (app minorName (images ++ (if ihs then ihImages else #[])))
+  if filler then return untypedLambda ((binders ++ ihNames ++ tail).map fun _ => "_") "PUnit.unit"
+  return untypedLambda (binders ++ ihNames ++ tail) (app ("@" ++ minorName) (images ++ (if ihs then ihImages else #[])))
 
 /-- `X.rec` is the graph's recursor at repacked motives and minor premises --
 a kernel recursor application when Lean declared the graph block, which the
@@ -1613,11 +1631,14 @@ private def emitRec (b : Block) : CommandElabM Unit := do
         set saved
         trace[Mumi.ir] "no compiled companion for the recursors of {scope.map (b.members[·]!.name)}, which are noncomputable:\n{e.toMessageData}"
         pure false
+    -- the graph's recursion at the public one's motives, and at `PUnit` for
+    -- the members of other universes it spans
+    let joint := graphScope b i
     let mut gargs := pArgs b
-    for k in scope do gargs := gargs.push (← graphMotive b k)
-    for k in scope do
+    for k in joint do gargs := gargs.push (← graphMotive b k (filler := !scope.contains k))
+    for k in joint do
       for ck in [:b.members[k]!.ctors.size] do
-        gargs := gargs.push (← graphMinor b k ck (minor b k ck) true scope)
+        gargs := gargs.push (← graphMinor b k ck (minor b k ck) true scope (joint := joint) (filler := !scope.contains k))
     for k in scope do
       let m := b.members[k]!
       let idx := pubIdxNames b k
@@ -1628,17 +1649,7 @@ private def emitRec (b : Block) : CommandElabM Unit := do
 
 /-- The minor premise of a `Prop` member's recursor at constructor `ci`: the
 constructor's name, which nothing else of the member's takes. -/
-private def propMinor (b : Block) (i ci : Nat) (joint := true) : String := Id.run do
-  let m := b.members[i]!
-  let c := m.ctors[ci]!
-  let props := if joint then (propMembers b).map (b.members[·]!) else #[m]
-  -- the `Prop` members share one recursor, so a name two of them use is qualified there
-  let count := props.foldl (fun n m => n + (m.ctors.filter (·.name == c.name)).size) 0
-  let n := if count == 1 then c.name.toString else m.name.toString.replace "." "_" ++ "_" ++ c.name.toString
-  let used := b.params.any (fun p => p.name.toString == n) ||
-    props.any (fun m => m.ctors.any (fun c => c.fields.any (fun f => f.name.toString == n))) ||
-    props.any (fun m => m.indices.any (fun x => x.name.toString == n))
-  return if used then "_ir_case" ++ toString i ++ "_" ++ toString ci else n
+private def propMinor (b : Block) (i ci : Nat) : String := minorVar i ci b.members[i]!.ctors[ci]!.name
 /-- The motive of `Prop` member `j`: `motive` when it is the only one. -/
 private def propMotive (b : Block) (j : Nat) : String :=
   let ps := propMembers b
@@ -1653,7 +1664,7 @@ private def wfMinorArity (b : Block) (c : Ctor) : Nat :=
 /-- A `Prop` member's minor premise at constructor `ci` as the public
 recursor binds it: the fields, a hypothesis at each proof field when `ihs`,
 and the motive `conclName` at the constructor. -/
-private def propMinorPub (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) (joint := true) : CommandElabM String := do
+private def propMinorPub (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) : CommandElabM String := do
   let c := b.members[j]!.ctors[ci]!
   let mut hyps := #[]
   if ihs then
@@ -1662,17 +1673,17 @@ private def propMinorPub (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Stri
         if b.members[k]!.prop then hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType b f (some (propMotive b k)))))
   let result ← c.pubResult.mapM text
   let concl := app conclName (result ++ #[ctorApp b j ci (fieldNames c)])
-  let decls ← fieldsDecl c
+  let decls ← ctorDecl c
   let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join hyps ++ ", " ++ concl
-  return par (propMinor b j ci joint ++ " : " ++ ty)
+  return par (propMinor b j ci ++ " : " ++ ty)
 
 /-- A `Prop` member's minor premise, public and as the well-formedness
 recursor takes it: at `rec` with a hypothesis at each proof of a `Prop`
 member, with `conclName` the motive the public one concludes at. -/
-private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) (joint := true) : CommandElabM (String × String) := do
+private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) : CommandElabM (String × String) := do
   let m := b.members[j]!
   let c := m.ctors[ci]!
-  let pub ← propMinorPub b j ci ihs conclName joint
+  let pub ← propMinorPub b j ci ihs conclName
   -- the graph minor's binders: the graph fields, the well-formedness of each
   -- field of carrier type, the proof fields, a hypothesis at each of the
   -- latter two, and the well-formedness of the arity
@@ -1711,7 +1722,7 @@ private def propMinorPair (b : Block) (j ci : Nat) (ihs : Bool) (conclName : Str
       images := images.push f.name.toString
   let wfIhs := if ihs then wfs.map fun _ => "_" else #[]
   let tail := (← arityHyps b j).map (·.1)
-  let g := untypedLambda (binders ++ wfs ++ props ++ wfIhs ++ ihBinders ++ tail) (app (propMinor b j ci joint) (images ++ (if ihs then ihImages else #[])))
+  let g := untypedLambda (binders ++ wfs ++ props ++ wfIhs ++ ihBinders ++ tail) (app ("@" ++ propMinor b j ci) (images ++ (if ihs then ihImages else #[])))
   return (pub, g)
 
 /-- The `Prop` members' recursors and `casesOn`, from the well-formedness
@@ -1719,7 +1730,7 @@ block's: `rec` joint over the `Prop` members, with a hypothesis at each proof
 of one, the data members' predicates at `True`; `casesOn` with one motive. -/
 private def emitPropRec (b : Block) : CommandElabM Unit := do
   -- the recursors into `Prop` under a name of their own where large ones are public
-  let bn : Block := { b with elimPrefix := b.elimPrefix ++ b.propPrefix }
+  let bn : Block := b.forProp
   let ps ← pubParamsDecl b
   let props := propMembers b
   let mut motives := #[]
@@ -1755,7 +1766,7 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
     let mut cminors := #[]
     let mut cgminors := #[]
     for ci in [:m.ctors.size] do
-      let (pub, g) ← propMinorPair b j ci false "motive" (joint := false)
+      let (pub, g) ← propMinorPair b j ci false "motive"
       cminors := cminors.push pub
       cgminors := cgminors.push g
     emit (elimAttrs bn "@[elab_as_elim, cases_eliminator] " ++ "theorem " ++ elimName bn m "casesOn" ++ " " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[gmotive] ++ pubPairIdx b j idx ++ #["_ir_self"] ++ cgminors ++ pubIdxWf b j idx))
@@ -1824,7 +1835,7 @@ private def emitEquations (b : Block) : CommandElabM Unit := do
           let idx ← (if f.pubArgs.size ≥ idx.size then f.pubArgs else idx).mapM text
           ihs := ihs.push (← lambda f.domain (app ("@" ++ elimName b b.members[j]! "rec") (args ++ idx ++ #[applyDomain f.name.toString f.domain])))
       let result ← c.pubResult.mapM text
-      emitEquation b (elimName b b.members[i]! "rec" ++ "_" ++ c.name.toString) (common ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b b.members[i]! "rec") (args ++ result ++ #[ctorApp b i ci (fieldNames c)]) ++ " = " ++ app (minor b i ci) (fieldNames c ++ ihs))
+      emitEquation b (elimName b b.members[i]! "rec" ++ "_" ++ c.name.toString) (common ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b b.members[i]! "rec") (args ++ result ++ #[ctorApp b i ci (fieldNames c)]) ++ " = " ++ app ("@" ++ minor b i ci) (fieldNames c ++ ihs))
     let m := b.members[i]!
     let idx := pubIdxNames b i
     emitDef "@[elab_as_elim] " (elimName b m "recOn" ++ " " ++ (← pubParamsDecl b) ++ " " ++ (← motiveDecls b scope) ++ " " ++ (← pubArity b i (implicit := true)) ++ " (_ir_self : " ++ typeAt b i idx ++ ") " ++ (← minorDecls b true scope) ++ " : " ++ app (motive b i) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ elimName b m "rec") (args ++ idx ++ #["_ir_self"]))
@@ -1843,7 +1854,7 @@ private def soloMinors (b : Block) (i : Nat) (ihs : Bool) : CommandElabM (Array 
           hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType b f (some "motive"))))
     let result ← c.pubResult.mapM text
     let concl := app "motive" (result ++ #[ctorApp b i ci (fieldNames c)])
-    let decls ← fieldsDecl c
+    let decls ← ctorDecl c
     let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join hyps ++ ", " ++ concl
     minors := minors.push (par (minor b i ci ++ " : " ++ ty))
   return minors
@@ -1862,10 +1873,10 @@ private def soloArgs (b : Block) (i : Nat) (ihs : Bool) : Array String := Id.run
       let recursive := c.fields.filter fun f => (scopedTarget b scope f).isSome
       if k == i then
         let own := recursive.filter fun f => (dataTarget b f).any (·.1 == i)
-        let binders := fieldNames c ++ recursive.map (ihVar ·.name)
-        args := args.push (untypedLambda binders (app (minor b i ck) (fieldNames c ++ (if ihs then own.map (ihVar ·.name) else #[]))))
+        let binders := fieldBinders c ++ recursive.map (ihVar ·.name)
+        args := args.push (untypedLambda binders (app ("@" ++ minor b i ck) (fieldNames c ++ (if ihs then own.map (ihVar ·.name) else #[]))))
       else
-        args := args.push (untypedLambda ((Array.range (c.fields.size + recursive.size)).map fun _ => "_") "PUnit.unit")
+        args := args.push (untypedLambda (c.fields.map (fun f => if f.implicit then "{_}" else "_") ++ recursive.map fun _ => "_") "PUnit.unit")
   return args
 
 /-- `recD`, `casesOn` and `cases`: one motive, the others at `PUnit`.  `recD` is
@@ -1896,7 +1907,7 @@ private def emitSolo (b : Block) : CommandElabM Unit := do
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       let result ← c.pubResult.mapM text
-      emitEquation b (elimName b m "casesOn" ++ "_" ++ c.name.toString) (ps ++ " " ++ mot ++ " " ++ join minors ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b m "casesOn") (pArgs b ++ #["motive"] ++ result ++ #[ctorApp b i ci (fieldNames c)] ++ minorNames) ++ " = " ++ app (minor b i ci) (fieldNames c))
+      emitEquation b (elimName b m "casesOn" ++ "_" ++ c.name.toString) (ps ++ " " ++ mot ++ " " ++ join minors ++ " " ++ (← fieldsDecl c)) (app ("@" ++ elimName b m "casesOn") (pArgs b ++ #["motive"] ++ result ++ #[ctorApp b i ci (fieldNames c)] ++ minorNames) ++ " = " ++ app ("@" ++ minor b i ci) (fieldNames c))
 
 /-! ## Lower mode: the carrier at `Type u`
 
@@ -2907,7 +2918,7 @@ private def emitSteps (b : Block) (g : Nat) : CommandElabM Unit := do
         else
           castArgs := castArgs.push ("_ir_idx_" ++ x.name.toString) |>.push pt |>.push ("_ir_shape" ++ conj ei)
         ei := ei + 1
-      body := body ++ withParams b ("@" ++ castName m) (motiveArgs b scope ++ castArgs ++ #["_ir_node", par ctor ++ ".val", "_ir_shape.1", "_ir_good", par ctor ++ ".property", app (minor b k ci) (images ++ ihs)])
+      body := body ++ withParams b ("@" ++ castName m) (motiveArgs b scope ++ castArgs ++ #["_ir_node", par ctor ++ ".val", "_ir_shape.1", "_ir_good", par ctor ++ ".property", app ("@" ++ minor b k ci) (images ++ ihs)])
       emitDefL "" (stepName m c ++ " " ++ common ++ " (_ir_stage : (Mumi.IR.model " ++ sigAt b g ++ ").Level) (_ir_children : ∀ _ir_j, " ++ lt ++ " _ir_j _ir_stage → Acc " ++ lt ++ " _ir_j) " ++ join comps ++ " " ++ recurse ++ " (_ir_p : " ++ mPacked ++ ") (_ir_good : " ++ atProj mProj (withParams b (goodName m) (mGood ++ #[par node])) ++ ") : " ++ atProj mProj (app (motive b k) (mPub ++ #["⟨" ++ node ++ ", _ir_good⟩"])) ++ " :=\n  " ++ body)
   -- the induction itself, and the public recursors
   let mut ss := #[]
@@ -2947,10 +2958,10 @@ the certificates' recursor takes it.  The latter is a proof, so it is closed
 by tactic: the equations pinning hidden conclusion fields substituted, the
 written minor premise applied at the public values of the fields, and a
 hypothesis at the certificates of its field's indices. -/
-private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) (joint := true) : CommandElabM (String × String) := do
+private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : String) : CommandElabM (String × String) := do
   let m := b.members[j]!
   let c := m.ctors[ci]!
-  let pub ← propMinorPub b j ci ihs conclName joint
+  let pub ← propMinorPub b j ci ihs conclName
   -- the certificate's arguments, a hypothesis per certificate among them, the arity's certificates
   let r ← rawFields b c (forGood := true)
   let ihNames := (r.names.filter fun (_, kind) => kind == .cert || kind == .proof).map fun (n, kind) =>
@@ -2983,7 +2994,7 @@ private def lowerPropMinor (b : Block) (j ci : Nat) (ihs : Bool) (conclName : St
     else images := images.push f.name.toString
   let eqs := (r.names.filter (·.2 == .eq)).map (·.1)
   let substs := if eqs.isEmpty then "" else "subst " ++ join eqs ++ "; "
-  let body := "by " ++ substs ++ "exact\n      " ++ lets ++ app (propMinor b j ci joint) (images ++ (if ihs then ihImages else #[]))
+  let body := "by " ++ substs ++ "exact\n      " ++ lets ++ app ("@" ++ propMinor b j ci) (images ++ (if ihs then ihImages else #[]))
   let g := if binders.isEmpty then par body else untypedLambda binders body
   return (pub, g)
 
@@ -2993,7 +3004,7 @@ the certificates' joint recursor: a data member's certificate at the motive
 indices, which make the public values of those. -/
 private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
   -- the recursors into `Prop` under a name of their own where large ones are public
-  let bn : Block := { b with elimPrefix := b.elimPrefix ++ b.propPrefix }
+  let bn : Block := b.forProp
   let ps ← pubParamsDecl b
   let props := propMembers b
   let mut motives := #[]
@@ -3033,7 +3044,7 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
     let mut cminors := #[]
     let mut cgminors := #[]
     for ci in [:m.ctors.size] do
-      let (pub, g) ← lowerPropMinor b j ci false "motive" (joint := false)
+      let (pub, g) ← lowerPropMinor b j ci false "motive"
       cminors := cminors.push pub
       cgminors := cgminors.push g
     emitL (elimAttrs bn "@[elab_as_elim, cases_eliminator] " ++ "theorem " ++ elimName bn m "casesOn" ++ " " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".casesOn") (pArgs b ++ #[← gmotive j "motive"] ++ gIdx ++ #["_ir_self"] ++ cgminors ++ certs))
@@ -3133,9 +3144,9 @@ private def emitLarge (b : Block) (j : Nat) : CommandElabM Unit := do
   -- one way by the member's own recursion into `Prop`, the other by the shadow's
   let toFields ← shadowFields b j fun f => pure (ihVar f.name)
   emit ("theorem " ++ m.name.toString ++ ".toLarge " ++ pubPs ++ " " ++ arityI ++ " " ++ self ++ " : " ++ shadowAt idx ++ " := " ++
-    app ("@" ++ elimName { b with elimPrefix := b.elimPrefix ++ b.propPrefix } m "rec")
+    app ("@" ++ elimName b.forProp m "rec")
       (pa ++ #[untypedLambda (idx ++ #["_"]) (shadowAt idx),
-        untypedLambda (fieldNames c ++ ihNames) (app ("@" ++ sh ++ "." ++ c.name.toString) (pa ++ toFields))] ++ idx ++ #["_ir_self"]))
+        untypedLambda (fieldBinders c ++ ihNames) (app ("@" ++ sh ++ "." ++ c.name.toString) (pa ++ toFields))] ++ idx ++ #["_ir_self"]))
   emit ("theorem " ++ m.name.toString ++ ".ofLarge " ++ pubPs ++ " " ++ arityI ++ " (_ir_self : " ++ shadowAt idx ++ ") : " ++ typeAt b j idx ++ " := " ++
     app ("@" ++ sh ++ ".rec")
       (pa ++ #[untypedLambda (idx ++ #["_"]) (typeAt b j idx),
@@ -3145,17 +3156,17 @@ private def emitLarge (b : Block) (j : Nat) : CommandElabM Unit := do
   let back := untypedLambda (idx ++ #["_ir_h"]) (app "motive" (idx ++ #[app (m.name.toString ++ ".ofLarge") #["_ir_h"]]))
   let ofFields ← shadowFields b j fun f => lambda f.domain (app (m.name.toString ++ ".ofLarge") #[applyDomain f.name.toString f.domain])
   let minorName := propMinor b j 0
-  let recMinor := untypedLambda (fieldNames c ++ ihNames) (app minorName (ofFields ++ ihNames))
+  let recMinor := untypedLambda (fieldNames c ++ ihNames) (app ("@" ++ minorName) (ofFields ++ ihNames))
   let toMajor := app (m.name.toString ++ ".toLarge") #["_ir_self"]
-  emitDef "@[elab_as_elim, induction_eliminator] " (elimName b m "rec" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++
+  emitDef "@[elab_as_elim, induction_eliminator] " (elimName (b.forProp false) m "rec" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++
     (← propMinorPub b j 0 true "motive") ++ " " ++ arityI ++ " " ++ self ++ " : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++
     app ("@" ++ sh ++ ".rec") (pa ++ #[back, recMinor] ++ idx ++ #[toMajor]))
-  emitDef "@[elab_as_elim, cases_eliminator] " (elimName b m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arityI ++ " " ++ self ++ " " ++
+  emitDef "@[elab_as_elim, cases_eliminator] " (elimName (b.forProp false) m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arityI ++ " " ++ self ++ " " ++
     (← propMinorPub b j 0 false "motive") ++ " : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++
-    app ("@" ++ sh ++ ".casesOn") (pa ++ #[back] ++ idx ++ #[toMajor, untypedLambda (fieldNames c) (app minorName ofFields)]))
+    app ("@" ++ sh ++ ".casesOn") (pa ++ #[back] ++ idx ++ #[toMajor, untypedLambda (fieldNames c) (app ("@" ++ minorName) ofFields)]))
   -- the rule: the shadow's at the constructor, the major a proof of it like any other
   let result ← c.pubResult.mapM text
-  let recAt (i : Array String) (t : String) := app ("@" ++ elimName b m "rec") (pa ++ #["motive", minorName] ++ i ++ #[t])
+  let recAt (i : Array String) (t : String) := app ("@" ++ elimName (b.forProp false) m "rec") (pa ++ #["motive", minorName] ++ i ++ #[t])
   let mut ihs := #[]
   for f in recursive do
     let some (_, args) := f.target | continue
@@ -3163,9 +3174,9 @@ private def emitLarge (b : Block) (j : Nat) : CommandElabM Unit := do
     ihs := ihs.push (← lambda f.domain (recAt (← args.mapM text) (applyDomain f.name.toString f.domain)))
   let toShadow ← shadowFields b j fun f => lambda f.domain (app (m.name.toString ++ ".toLarge") #[applyDomain f.name.toString f.domain])
   let lhs := recAt result (ctorApp b j 0 (fieldNames c))
-  emit ("theorem " ++ elimName b m "rec" ++ "_" ++ c.name.toString ++ " " ++ ps ++ " " ++ mot ++ " " ++
-    (← propMinorPub b j 0 true "motive") ++ " " ++ (← fieldsDecl c) ++ " : " ++ lhs ++ " = " ++ app minorName (fieldNames c ++ ihs) ++
-    " := by\n  unfold _root_." ++ ((← getCurrNamespace) ++ (elimName b m "rec").toName).toString ++ "\n  rw [show " ++ app (m.name.toString ++ ".toLarge") #[ctorApp b j 0 (fieldNames c)] ++
+  emit ("theorem " ++ elimName (b.forProp false) m "rec" ++ "_" ++ c.name.toString ++ " " ++ ps ++ " " ++ mot ++ " " ++
+    (← propMinorPub b j 0 true "motive") ++ " " ++ (← fieldsDecl c) ++ " : " ++ lhs ++ " = " ++ app ("@" ++ minorName) (fieldNames c ++ ihs) ++
+    " := by\n  unfold _root_." ++ ((← getCurrNamespace) ++ (elimName (b.forProp false) m "rec").toName).toString ++ "\n  rw [show " ++ app (m.name.toString ++ ".toLarge") #[ctorApp b j 0 (fieldNames c)] ++
     " = " ++ app ("@" ++ sh ++ "." ++ c.name.toString) (pa ++ toShadow) ++ " from rfl]")
 
 /-- `s` with each call of decoder `d` at a recursive field `f` (or `f` applied)
@@ -3194,15 +3205,15 @@ private def emitPropDecoders (b : Block) (j : Nat) : CommandElabM Unit := do
     -- a recursive call at a recursive field is that field's hypothesis
     let recursive := c.fields.filter fun f => f.target.any (·.1 == j)
     let clause := recCalls d.name (recursive.map (·.name)) d.clauses[0]!
-    let minor := untypedLambda (fieldNames c ++ recursive.map (ihVar ·.name)) (par (← text clause))
+    let minor := untypedLambda (fieldBinders c ++ recursive.map (ihVar ·.name)) (par (← text clause))
     emitDef (d.doc ++ "") (d.name.toString ++ " " ++ (← decParamsDecl d) ++ " " ++ join (← d.idx.mapM fieldDecl) ++ " : " ++
       (← decoderTail d) ++ " := fun _ir_self => " ++
-      app ("@_root_." ++ ((← getCurrNamespace) ++ (elimName b m "rec").toName).toString) (pa ++ #[motive, minor] ++ idxNames ++ #["_ir_self"]))
+      app ("@_root_." ++ ((← getCurrNamespace) ++ (elimName (b.forProp false) m "rec").toName).toString) (pa ++ #[motive, minor] ++ idxNames ++ #["_ir_self"]))
     let result ← c.pubResult.mapM text
     let name := d.name.toString ++ "_" ++ c.name.toString
     emit ("theorem " ++ name ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++
       app ("@" ++ d.name.toString) (dargs ++ result ++ #[ctorApp b j 0 (fieldNames c)]) ++ " = " ++ par (← text d.clauses[0]!) ++
-      " := by\n  simp only [" ++ d.name.toString ++ ", _root_." ++ ((← getCurrNamespace) ++ (elimName b m "rec" ++ "_" ++ c.name.toString).toName).toString ++ "]")
+      " := by\n  simp only [" ++ d.name.toString ++ ", _root_." ++ ((← getCurrNamespace) ++ (elimName (b.forProp false) m "rec" ++ "_" ++ c.name.toString).toName).toString ++ "]")
 
 /-- Large elimination for the block's `Prop` member, where Lean allows it, and
 the decoders over it, which need it; what has to come before the member's own
@@ -3270,6 +3281,7 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   let b ← readBlock elems
   let b := { b with elimPrefix := ← nestedPrefix.get }
   blockConsts.set {}
+  elimUniverse.set {}
   let order ← declarationOrder b
   if mumi.mahlo.get (← getOptions) then
     elaborateLower { b with lower := true } order
@@ -3770,7 +3782,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
         else match copyField f with
           | some i' => at_ (copyName i' ++ ".toOrig") #[f.name.toString]
           | none => f.name.toString
-      ms := ms.push (untypedLambda (fieldNames c ++ own.map (ihVar ·.name)) (← dc (ctorApp b k ci conv)))
+      ms := ms.push (untypedLambda (fieldBinders c ++ own.map (ihVar ·.name)) (← dc (ctorApp b k ci conv)))
     emitDef "" (C ++ ".toOrig " ++ pubPs ++ " (_ir_c : " ++ typeAt b k #[] ++ ") : " ++ orig i ++ " := " ++
       app ("@" ++ free (elimName b m "recD")) (pa ++ #["(fun _ => " ++ orig i ++ ")", "_ir_c"] ++ ms))
     let mut eqs := #[]
@@ -3793,7 +3805,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       let own := c.fields.filter fun f => (dataTarget b f).any (·.1 == k)
-      bs := bs.push (untypedLambda (fieldNames c ++ own.map (ihVar ·.name))
+      bs := bs.push (untypedLambda (fieldBinders c ++ own.map (ihVar ·.name))
         ("(by simp only [" ++ String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ back ++ ["*"]) ++ "])"))
     emit ("theorem " ++ C ++ ".ofOrig_toOrig " ++ pubPs ++ " (_ir_c : " ++ typeAt b k #[] ++ ") : " ++
       at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c := " ++
@@ -3846,11 +3858,11 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
     let m := b.members[j]!
     let c := m.ctors[ci]!
     let recs := if ihs then c.fields.filter fun f => (scopedTarget b scope f).isSome else #[]
-    let binders := fieldNames c ++ recs.map (ihVar ·.name)
+    let binders := fieldBinders c ++ recs.map (ihVar ·.name)
     let conv := c.fields.map fun f => match copyField f with
       | some i' => at_ (copyName i' ++ ".toOrig") #[f.name.toString]
       | none => f.name.toString
-    let base := app (← pubMinor j ci) (conv ++ recs.map (ihVar ·.name))
+    let base := app ("@" ++ (← pubMinor j ci)) (conv ++ recs.map (ihVar ·.name))
     if (copyOf j).isSome then return untypedLambda binders base
     let copies := (Array.range c.fields.size).filter fun x => (copyField c.fields[x]!).isSome
     if copies.isEmpty then return untypedLambda binders base
@@ -3894,7 +3906,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
         if let some (j, args) := scopedTarget b scope f then
           let args ← args.mapM text
           ihs := ihs.push (app ("@" ++ recOf j) (pa ++ motiveArgs ++ minorArgs ++ (if (copyOf j).isSome then #[] else args) ++ #[f.name.toString]))
-      cs := cs.push ("  | ." ++ c.name.toString ++ " " ++ join (fieldNames c) ++ " => " ++ app (← pubMinor k ci) (fieldNames c ++ ihs))
+      cs := cs.push ("  | ." ++ c.name.toString ++ " " ++ join (fieldNames c) ++ " => " ++ app ("@" ++ (← pubMinor k ci)) (fieldNames c ++ ihs))
     emitDef "@[elab_as_elim] " (recOf k ++ " " ++ common ++ " : (_ir_self : " ++ orig i ++ ") → " ++ app (motive b k) #["_ir_self"] ++ "\n" ++
       String.intercalate "\n" cs.toList)
   -- `X.casesOn`, for each member written
@@ -3928,7 +3940,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
       let result ← c.pubResult.mapM text
       let major ← dc (ctorApp b k ci (fieldNames c))
       let lhs := app ("@" ++ recOf k) (pa ++ motiveArgs ++ minorArgs ++ (if (copyOf k).isSome then #[] else result) ++ #[major])
-      let rhs := app (← pubMinor k ci) (fieldNames c ++ (← ihsAt c))
+      let rhs := app ("@" ++ (← pubMinor k ci)) (fieldNames c ++ (← ihsAt c))
       let name := recOf k ++ "_" ++ (← dc c.name.toString)
       let copies := c.fields.filter fun f => (copyField f).isSome
       if (copyOf k).isSome || copies.isEmpty then
@@ -3969,7 +3981,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
       let result ← c.pubResult.mapM text
       let major ← dc (ctorApp b k ci (fieldNames c))
       let lhs := app ("@" ++ recOf k) (pa ++ motiveArgs ++ minorArgs ++ result ++ #[major])
-      let rhs := app (← pubMinor k ci) (fieldNames c ++ (← ihsAt c))
+      let rhs := app ("@" ++ (← pubMinor k ci)) (fieldNames c ++ (← ihsAt c))
       let pubCtor ← dc (m.name.toString ++ "." ++ c.name.toString)
       let mut steps := #["simp only [" ++ recOf k ++ ".eq_1, " ++ pubCtor ++ "]", "erw [" ++ elimName b m "rec" ++ "_" ++ c.name.toString ++ "]",
         "try dsimp only", "apply eq_of_heq"]

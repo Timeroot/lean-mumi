@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # Members in different universes
@@ -9,6 +9,8 @@ mixes them -- and without a `Prop` to run the dependency through, none can: a
 `Type 1` carrier cannot take a `Type 3` field, so `A` and `F` are one
 component, `B` and `G`, which read them, another.  One universe up each lands
 one above where it was written; at the written universe, where it was written.
+Each component in its universe has its own recursion, as a `mutual` would;
+`ir_spec` checks all of it.
 -/
 
 set_option autoImplicit false
@@ -16,6 +18,7 @@ set_option autoImplicit false
 namespace UnivUpper
 set_option mumi.mahlo false
 
+ir_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -31,10 +34,6 @@ def G : B → Type 3
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
 
-example : Type 2 := A
-example : Type 4 := B
-example (x : A) (f : F x → A) : F (A.a1 x f) = ((y : F x) → F (f y)) := rfl
-example (x : A) (v : F x) (b : B) (g : G b → B) : G (B.b1 x v b g) = (F x × ((z : G b) → G (g z))) := rfl
 example : F (A.a1 A.a0 (fun _ => A.a0)) = (Type → Type) := rfl
 example : G (B.b1 A.a0 Nat B.b0 (fun _ => B.b0)) = (Type × (Type 2 → Type 2)) := rfl
 
@@ -57,6 +56,7 @@ end UnivUpper
 namespace UnivLower
 set_option mumi.mahlo true
 
+ir_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -71,11 +71,6 @@ def G : B → Type 3
   | .b0 => Type 2
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
-
-example : Type 1 := A
-example : Type 3 := B
-example (x : A) (f : F x → A) : F (A.a1 x f) = ((y : F x) → F (f y)) := rfl
-example (x : A) (v : F x) (b : B) (g : G b → B) : G (B.b1 x v b g) = (F x × ((z : G b) → G (g z))) := rfl
 
 def sizeA : A → Nat := A.rec 0 (fun _ _ ih _ => ih + 1)
 def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => sizeA x + ih + 1)
@@ -97,6 +92,7 @@ end UnivLower
 
 namespace Split
 
+ir_spec
 mutual
 inductive U : Type where
   | base : U
@@ -114,7 +110,6 @@ def twice (n : Nat) : Nat := thrice n + n
 def thrice (n : Nat) : Nat := n + n + n
 end
 
-example (c : Code) (f : Nat → Code) : Val (Code.pair c f) = (Val c × ((n : Nat) → Val (f n))) := rfl
 example : twice 1 = 4 := rfl
 -- one block: `U.rec` takes a motive for `Code` as well
 example : U → Nat := U.rec (motive_2 := fun _ => Unit) 0 (fun _ _ ih _ => ih + 1) () (fun _ _ _ _ => ())

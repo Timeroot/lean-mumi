@@ -1,5 +1,12 @@
 import Mumi
 
+/-!
+# The baseline, at the universe written
+
+`IRUpper.lean`'s block on the reflection axiom, where the carrier stays in the
+universe it was written at.  Written out by hand, as a reader's first stop.
+-/
+
 set_option autoImplicit false
 set_option mumi.mahlo true
 set_option maxRecDepth 4000
@@ -15,6 +22,16 @@ mutual
     | .base => A
     | .pi a b => (x : El A a) → El A (b x)
 end
+
+/--
+info: @U.rec : {A : Type u_2} →
+  {motive : U A → Sort u_1} →
+    motive U.base →
+      ((a : U A) → (b : El A a → U A) → motive a → ((a_1 : El A a) → motive (b a_1)) → motive (a.pi b)) →
+        (t : U A) → motive t
+-/
+#guard_msgs in
+#check @U.rec
 
 example (A : Type u) : Type u := U A
 example (A : Type u) : El A .base = A := rfl

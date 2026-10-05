@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # A data decoder the rest of the block reads
@@ -10,7 +10,8 @@ decoder feeds the rest of the block: `G` types a constructor field (`v : Fin
 e (G x c b e)`), and is what two type-valued decoders compute with -- `H` by a
 function type over `Fin (G …)`, `K` by `Nat.rec` on it -- while `L` reads `G`
 back out of a `W`.  This is the file one universe up; `IRTangle2Lower.lean` is
-the same block at the written universe.
+the same block at the written universe. `ir_spec` checks every declaration
+and equation; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -18,6 +19,7 @@ set_option mumi.mahlo false
 
 namespace Tangle2
 
+ir_spec
 mutual
 inductive A : Type where
   | nil : A
@@ -54,20 +56,6 @@ def L : (x : A) → (c : F x) → (b : B x c) → (e : E x c b) → (n : Nat) �
   | _, _, _, _, _, .step x c b e n w h => L x c b e n w + 1
 end
 
-/-! ## The decoders compute, data and types alike -/
-
-example (x : A) (c : F x) (b : B x c) (d : D x c b) : G x c b (E.mk x c b d) = 0 := rfl
-example (x : A) (c : F x) (b : B x c) (d : D x c b) : H x c b (E.mk x c b d) = PUnit := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) (v : Fin (G x c b e + 1)) :
-    G _ _ _ (E.up x c b e d v) = G x c b e + v.val + 1 := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) (v : Fin (G x c b e + 1)) :
-    H _ _ _ (E.up x c b e d v) = (Fin (G x c b e) → H x c b e) := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) (v : Fin (G x c b e + 1)) :
-    K _ _ _ (E.up x c b e d v) = Nat.rec (motive := fun _ => Type) PUnit (fun _ T => Option T) (G x c b e) := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) : L x c b e _ (W.top x c b e) = G x c b e := rfl
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (n : Nat) (w : W x c b e n) (h : H x c b e) :
-    L x c b e _ (W.step x c b e n w h) = L x c b e n w + 1 := rfl
-
 /-! ## Closed terms, through the data -/
 
 def e0 : E A.nil PUnit.unit (B.leaf A.nil PUnit.unit) := E.mk A.nil PUnit.unit (B.leaf A.nil PUnit.unit) PUnit.unit
@@ -83,7 +71,7 @@ example : K _ _ _ e2 = Option PUnit := rfl
 
 /-- The number of `step`s above the `top`. -/
 def height : (x : A) → (c : F x) → (b : B x c) → (e : E x c b) → (n : Nat) → W x c b e n → Nat :=
-  fun x c b e n w =>
+  fun _ _ _ _ _ w =>
     W.recD (motive := fun _ _ _ _ _ _ => Nat) w (fun _ _ _ _ => 0) (fun _ _ _ _ _ _ _ ih => ih + 1)
 
 def w2 : W A.nil PUnit.unit (B.leaf A.nil PUnit.unit) e0 (G _ _ _ e0 + 1 + 1) :=

@@ -1,5 +1,16 @@
 import Mumi
 
+/-!
+# The baseline, one universe up
+
+A plain test of the smallest induction-recursion, written out by hand, as a
+reader's first stop: what the block declares, its recursor in the shape Lean
+gives one, its equations by `rfl`, values computed and run.  The other test
+files state the same of their blocks through `ir_spec`
+(`MumiTests/IRSpec/Harness.lean`), which checks every declaration and rule of
+a block against what Lean's own rules say it should be.
+-/
+
 set_option autoImplicit false
 set_option mumi.mahlo false
 
@@ -14,6 +25,16 @@ mutual
     | .base => A
     | .pi a b => (x : El A a) → El A (b x)
 end
+
+/--
+info: @U.rec : {A : Type u_2} →
+  {motive : U A → Sort u_1} →
+    motive U.base →
+      ((a : U A) → (b : El A a → U A) → motive a → ((a_1 : El A a) → motive (b a_1)) → motive (a.pi b)) →
+        (t : U A) → motive t
+-/
+#guard_msgs in
+#check @U.rec
 
 example (A : Type u) : Type (u+1) := U A
 example (A : Type u) : El A .base = A := rfl

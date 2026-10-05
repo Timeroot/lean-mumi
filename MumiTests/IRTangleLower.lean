@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.IRSpec.Harness
 
 /-!
 # One strongly connected block of everything
@@ -8,7 +8,8 @@ the `B` inside; `B` is indexed by an `A` and by `F` of it; `D` is a type compute
 from a `B`, and reads `F` and itself; `E` is indexed by all of `A`, `F` and `B`,
 and `G` counts through it.  Nothing here means anything.  The point is that one
 block lowers, every carrier gets its recursor, every decoder its equations, and
-all of it is `rfl`.
+all of it is `rfl`. `ir_spec` checks every declaration
+and equation; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -16,6 +17,7 @@ set_option mumi.mahlo true
 
 namespace TangleL
 
+ir_spec
 mutual
 inductive A : Type where
   | nil : A
@@ -39,21 +41,7 @@ def G : (x : A) → (c : F x) → (b : B x c) → E x c b → Nat
   | _, _, _, .up x c b e d => G x c b e + 1
 end
 
-/-! ## The decoders compute -/
-
-example : F A.nil = PUnit := rfl
-example (x : A) (c : F x) (b : B x c) (d : D x c b) : F (A.cons x c b d) = (F x × D x c b) := rfl
-example (x : A) (c : F x) : D x c (B.leaf x c) = F x := rfl
-example (x : A) (c : F x) (b : B x c) (e : D x c b) (f : (y : D x c b) → B (A.cons x c b y) (c, y)) :
-    D x c (B.node x c b e f) = ((y : D x c b) → D (A.cons x c b y) (c, y) (f y)) := rfl
--- at an index with a constructor nested inside another the kernel sees the
--- equation, the elaborator's unifier does not: it is the `@[simp]` lemma
-example (x : A) (c : F x) (b : B x c) (e : E x c b) (d : D x c b) :
-    G _ _ _ (E.up x c b e d) = G x c b e + 1 := G_up x c b e d
-
-/-! ## The recursors -/
-
-#check @E.rec
+/-! ## Through the recursors -/
 
 /-- The number of `cons`es in an `A`, counting through the `B` it holds. -/
 def size : A → Nat :=
@@ -61,7 +49,6 @@ def size : A → Nat :=
     0 (fun _ _ _ _ ihx ihb => ihx + ihb + 1)
     (fun _ _ ihx => ihx) (fun _ _ _ _ _ ihx ihb _ => ihx + ihb)
     (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())
-
 
 /-- info: 'TangleL.size' depends on axioms: [IR.mahlo] -/
 #guard_msgs in
@@ -96,6 +83,7 @@ end TangleL
 
 namespace DependentL
 
+ir_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -110,7 +98,5 @@ def dflt : (Γ : Ctx) → (A : Ty Γ) → El Γ A
   | _, .nat Γ => 0
   | _, .arr Γ A B => fun _ => dflt Γ B
 end
-
-example (Γ : Ctx) (A B : Ty Γ) : dflt Γ (Ty.arr Γ A B) = fun _ => dflt Γ B := rfl
 
 end DependentL
