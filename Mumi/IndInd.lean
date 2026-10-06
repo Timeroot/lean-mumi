@@ -1253,8 +1253,9 @@ def Block.withRawFront {α} [Inhabited α] (b : Block) (ps : Array Expr) (f : Fr
         minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
           forallTelescope (← b.ctorType cc ps) fun xs concl => do
             let kinds := b.fieldKinds cc.kinds
-            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (f.ihPos kinds).map fun z => (`ih, fun _ => do
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) ←
+              (f.ihPos kinds).mapM fun z => do
+               return ((← xs[z]!.fvarId!.getUserName).appendAfter "_ih", fun _ => do
                 let r? ← b.withRecTarget? (← inferType xs[z]!) fun ys m args =>
                   mkForallFVars ys
                     (mkAppN motives[f.pos m]! (b.idxArgs args ++ #[mkAppN xs[z]! ys]))
@@ -4320,8 +4321,9 @@ def withNiceFront {α} [Inhabited α] (c : BridgeCtx) (f : Front)
         minorDecls := minorDecls.push (Name.mkSimple cc.name.getString!, fun _ => do
           forallTelescope (← c.unCopy (← instantiateForall cc.type c.ps)) fun ys concl => do
             let kinds := b.fieldKinds cc.kinds
-            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) :=
-              (f.ihPos kinds).map fun z => (`ih, fun _ => do
+            let ihDecls : Array (Name × (Array Expr → TermElabM Expr)) ←
+              (f.ihPos kinds).mapM fun z => do
+               return ((← ys[z]!.fvarId!.getUserName).appendAfter "_ih", fun _ => do
                 let some mm := kinds[z]!.ihTarget? | throwError "Not a recursive field"
                 forallTelescope (← inferType ys[z]!) fun zs tgt => do
                   mkForallFVars zs (mkAppN nmotives[f.pos mm]!
@@ -5070,7 +5072,9 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
       throwError "`{m.name}` is indexed by a proposition of the block, which the recursion \
         over the whole of it has no hypothesis to offer about"
   let lvl := Level.param lp
-  let ihName (n : Name) : Name := if n.hasMacroScopes then `ih else n.appendAfter "_ih"
+  -- as Lean names one: after the field, which keeps an anonymous field's
+  -- hypothesis inaccessible
+  let ihName (n : Name) : Name := n.appendAfter "_ih"
   -- everything below is stated in the raw world, where the copies are the types
   -- and anything the bridge will rename goes by its hidden name -- a
   -- constructor whose type mentions a copy, and a proposition indexed by one
@@ -5110,19 +5114,9 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
     let strayAt (n : Name) : Array Nat := strayList[minorPos n]!
     -- this is a recursor over the whole block, one motive per member and one
     -- minor per constructor, so it is named the way Lean names its own: two
-    -- members can share a constructor's short name, and a repeated binder is
-    -- one `induction .. using` cannot address, so repeats are numbered
-    let minorNames : Array Name := Id.run do
-      let mut out : Array Name := #[]
-      for (_, c) in ctors do
-        let base := c.name.getString!
-        let mut n := Name.mkSimple base
-        let mut k := 0
-        while out.contains n do
-          k := k + 1
-          n := Name.mkSimple s!"{base}_{k}"
-        out := out.push n
-      return out
+    -- each minor premise after its constructor's short name, repeats and all,
+    -- as in a native mutual recursor
+    let minorNames : Array Name := ctors.map fun (_, c) => Name.mkSimple c.name.getString!
     let mnames := motiveNames ord.size
     -- which fields of a data constructor its minor premise gives a hypothesis
     -- about: everything the recursion has a value at, which a plain field is
@@ -5138,7 +5132,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
             let dArgs ← dataIdxArgs b m.name d
             withLocalDeclD (ihName (← d.fvarId!.getUserName))
                 (mkAppN acc[mpos s.data]! (dArgs ++ #[d])) fun xih =>
-              withLocalDeclD `h (mkAppN (b.memberCst i) (ps ++ idxs)) fun h =>
+              withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun h =>
                 mkForallFVars (idxs ++ #[xih, h]) (mkSort Level.zero)
           | none =>
             withLocalDeclD `t (mkAppN (b.memberCst i) (ps ++ idxs)) fun t =>
@@ -5547,7 +5541,7 @@ def emitGrandRecs (b : Block) (docCtx : LocalContext × LocalInstances) (lp : Na
           let s := slots[si]!
           let m := b.members[s.j]!
           recs := recs.push <| ← forallTelescope (← instantiateForall m.type ps) fun idxs _ =>
-            withLocalDeclD `h (mkAppN (b.memberCst s.j) (ps ++ idxs)) fun h => do
+            withLocalDeclD `t (mkAppN (b.memberCst s.j) (ps ++ idxs)) fun h => do
               let d := idxs[s.pos]!
               let dArgs ← dataIdxArgs b m.name d
               let vargs ← b.valArgs s.data (ps ++ dArgs)
@@ -5841,7 +5835,8 @@ private def peeledMinorType (numParams : Nat) (memberAt : Name → Option Nat)
         let args := res.getAppArgs
         return some <| ← mkForallFVars ys
           (mkAppN motives[o]! (args.extract numParams args.size ++ #[mkAppN x ys]))
-      if let some ih := ih? then ihs := ihs.push (`ih, fun _ => pure ih)
+      if let some ih := ih? then
+        ihs := ihs.push ((← x.fvarId!.getUserName).appendAfter "_ih", fun _ => pure ih)
     withLocalDeclsD ihs fun ihs => do
       let args := concl.getAppArgs
       mkForallFVars (xs ++ ihs) <| mkAppN motive
@@ -7115,6 +7110,19 @@ def emit (p : Plan) : TermElabM Unit := do
     unless copyNames.contains m.name || (← m.ctors[0]?.mapM fun c =>
         return ((← getEnv).find? c.name).any (·.isCtor)).getD true do
       addPropEliminators b.numParams m.name
+  -- a member that left the block is a definition over a real inductive of its
+  -- own, whose constructors it shares; it has the block's recursor and a
+  -- `casesD`, and the two eliminators are those reordered
+  for m in b.members do
+    if copyNames.contains m.name then continue
+    unless (← getConstInfo m.name).isDefinition do continue
+    let env ← getEnv
+    let cases := [`casesD, `casesP].map (m.name ++ ·) |>.find? env.contains
+    if let some cases := cases then
+      discard <| attempt? `Mumi.view m!"no `casesOn` for `{m.name}`" <|
+        addMajorFirst b.numParams m.name cases (m.name ++ `casesOn)
+    discard <| attempt? `Mumi.view m!"no `recOn` for `{m.name}`" <|
+      addMajorFirst b.numParams m.name (m.name ++ `rec) (m.name ++ `recOn)
 
 /-! ## The entry point -/
 

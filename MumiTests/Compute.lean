@@ -42,7 +42,7 @@ namespace MumiTests.Compute
 `up` crosses the index: its second field is stated one context along from the
 one the constructor concludes at. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -151,7 +151,7 @@ no erased block in sight. -/
 
 namespace Stock
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive P (n : Nat) : Type where
   | mk : P n
   | wrap : P n → P n
@@ -245,7 +245,7 @@ mumi_spec
 inductive Wrap (α : Type) where
   | mk : α → Wrap α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive WT : Type where
   | leaf : WT
@@ -275,7 +275,7 @@ copies: the two agree on a constructor by computation apart from the recursive
 positions.  The block closes that gap with a `sizeOf_ofOrig` lemma per copy, and
 proves the constructor's `sizeOf_spec` by rewriting with it. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LstT.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive LstT : Type where
   | node (cs : List LstT) (h : LOk cs) : LstT
@@ -305,7 +305,7 @@ axioms here are the ones the idiom costs anywhere. -/
 
 namespace Stock
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LT : Type where
   | node : List LT → LT
 

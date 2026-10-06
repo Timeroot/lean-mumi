@@ -35,7 +35,7 @@ namespace MumiTests.SoloRec
 
 namespace Flagship
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil
@@ -58,7 +58,7 @@ info: @Fresh.recP : ∀ {motive : (a : String) → (a_1 : Ctx) → Fresh a a_1 �
   (∀ (x : String), motive x Ctx.nil ⋯) →
     (∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (hne : x ≠ y) (hΓ : Fresh x Γ),
         motive y Γ h → motive x Γ hΓ → motive x (Γ.snoc y h) ⋯) →
-      ∀ {a : String} {a_1 : Ctx} (h : Fresh a a_1), motive a a_1 h
+      ∀ {a : String} {a_1 : Ctx} (t : Fresh a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @Fresh.recP
@@ -100,7 +100,7 @@ and a tactic that finds no eliminator unfolds it rather than stopping.
 
 namespace TwoProps
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive C : Type where
   | nil
@@ -121,14 +121,12 @@ info: @C.recD : {motive : C → Sort u_1} →
 
 /--
 info: @P.recP : ∀ {motive : (a : String) → (a_1 : C) → P a a_1 → Prop},
-  (∀ (x : String), motive x C.nil ⋯) → ∀ {a : String} {a_1 : C} (h : P a a_1), motive a a_1 h
+  (∀ (x : String), motive x C.nil ⋯) → ∀ {a : String} {a_1 : C} (t : P a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @P.recP
 
-/--
-info: @Q.recP : ∀ {motive : (a : C) → Q a → Prop}, motive C.nil Q.nil → ∀ {a : C} (h : Q a), motive a h
--/
+/-- info: @Q.recP : ∀ {motive : (a : C) → Q a → Prop}, motive C.nil Q.nil → ∀ {a : C} (t : Q a), motive a t -/
 #guard_msgs in
 #check @Q.recP
 
@@ -166,14 +164,14 @@ mumi_spec
 inductive Tree (α : Type) : Type where
   | leaf | node (l : Tree α) (a : α) (r : Tree α)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Tree.WF {α : Type} : Tree α → Prop where
   | leaf : Tree.WF .leaf
   | node (l a r) : Tree.WF l → Tree.WF r → Tree.WF (.node l a r)
 
 def WFTree (α : Type) : Type := { t : Tree α // t.WF }
 
-mumi_spec (unproven := [R.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 inductive R : Type where
   | tip
   | mk (x : WFTree R)

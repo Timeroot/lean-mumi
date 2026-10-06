@@ -331,7 +331,7 @@ the step where there is one, are quantified inside and put back at the caller's
 own where the table is applied.  Nothing of that shows in the four signatures,
 which come out exactly as they would for an ordinary index. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive KCtx : Type where
   | nil : KCtx
@@ -371,7 +371,7 @@ example : kDep (KTy.arr .nil 2 (.base .nil 2) (.base .nil 2)) = 1 := by decide
 beside it, since it cannot stay fixed while the kept one varies.  Bound, not
 generalised: the caller's motive is about that one deleted index and no other. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive NCtx : Nat → Type where
   | nil : NCtx 0
@@ -404,7 +404,7 @@ example : nDep (NTy.arr 0 .nil (.base 0 .nil) (.base 0 .nil)) = 1 := by decide
 no matching it at a variable `n` however the table is built.  Where that is the
 only recursion there is, Lean recurses on the index instead and never asks: -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UCtx : Type where
   | nil : UCtx
@@ -447,7 +447,7 @@ A constructor can have no recursive field, or several, or infinitely many, and
 the block can have parameters in front of all of it.  Each of those is a
 different shape of row in `below`, so each is recursed over here. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [injEq])
 mutual
 inductive Tree (α : Type) : Type where
   | leaf (a : α) : Tree α
@@ -783,7 +783,7 @@ The view comes from the block, not from the shape of the member, so the same
 
 namespace Param
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx (α : Type) : Type where
   | nil
@@ -814,7 +814,7 @@ is what the two axioms below say. -/
 
 namespace Typed
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ty : Type where
   | base
@@ -855,7 +855,7 @@ own sort. -/
 
 namespace Hetero
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive C : Type 1 where
   | nil : C
@@ -913,7 +913,7 @@ end Nested
 
 namespace Poly
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type u where
   | nil

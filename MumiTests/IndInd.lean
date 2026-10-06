@@ -23,7 +23,7 @@ A context, and the proposition that a name is fresh for it.  `Fresh`'s arity
 mentions `Ctx`, and `Ctx.snoc` carries a `Fresh`.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -109,8 +109,8 @@ example : ex.length = 2 := rfl
 The constructors are `def`s, so `match` does not see them; a bare `cases` does,
 through the eliminator the next section pins.  The recursor's minor premises are
 named after the constructors, so `induction using` reads the way it would for a
-real inductive; a name two members share is numbered, again as it would be for a
-Lean `mutual`.  The motives the goal does not fix have to be given, since one
+real inductive; a name two members share is repeated, again as it is for a Lean
+`mutual`, where only the first can be named in a `with` and `_` takes the rest.  The motives the goal does not fix have to be given, since one
 recursor serves the whole block.
 
 The `Prop` members' recursors are for term mode, not for `induction using`:
@@ -123,8 +123,7 @@ example (Γ : Ctx) : 0 ≤ Γ.length := by
   induction Γ using Ctx.rec (motive_2 := Ctx.trivialMotive) with
   | nil => simp [Ctx.length]
   | snoc Γ x h ih ih' => simp
-  | nil_1 => trivial
-  | snoc_1 => intros; trivial
+  | _ => intros; trivial
 
 /-! ### `@[elab_as_elim]`
 
@@ -178,7 +177,7 @@ info: @Ctx.casesD : {motive : Ctx → Sort u_1} →
 info: @Fresh.casesP : ∀ {motive : (a : String) → (a_1 : Ctx) → Fresh a a_1 → Prop},
   (∀ (x : String), motive x Ctx.nil ⋯) →
     (∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (a : x ≠ y) (a_1 : Fresh x Γ), motive x (Γ.snoc y h) ⋯) →
-      ∀ {a : String} {a_1 : Ctx} (h : Fresh a a_1), motive a a_1 h
+      ∀ {a : String} {a_1 : Ctx} (t : Fresh a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @Fresh.casesP
@@ -216,7 +215,7 @@ its own, and a data constructor's minor premise gets one induction hypothesis
 per erased field.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Tm : Type where
   | var : Nat → Tm
@@ -256,7 +255,7 @@ example (f a : Tm) (hf : Ok f) (ha : Ok a) :
 
 /-! ## The `Prop` member may come first -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ok3 : Vec3 → Prop where
   | nil : Ok3 .nil
@@ -284,7 +283,7 @@ Both members are indexed, and the `Prop` member is indexed by the data member at
 one of its own indices.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (xfail := [axioms])
 mutual
 inductive IVec : Nat → Type where
   | nil : IVec 0
@@ -341,8 +340,7 @@ example (n : Nat) (v : IVec n) : 0 ≤ IVec.sum n v := by
   induction v using IVec.rec (motive_2 := IVec.trivialFresh) with
   | nil => exact Nat.zero_le _
   | cons n v x h ih ihh => exact Nat.zero_le _
-  | nil_1 => intros; trivial
-  | cons_1 => intros; trivial
+  | _ => intros; trivial
 
 /-! ### A block that separates, and so is Lean's
 
@@ -484,7 +482,7 @@ to know anything about the other's problem.
 sits at `Type 1` beside `HCtx` at `Type`, so it is heterogeneous as well.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive HCtx : Type where
   | nil : HCtx
@@ -537,7 +535,7 @@ Nothing about the composition counts to two: the lowering emits one ordinary
 block per component of the pre-block, in topological order, however many that
 comes to. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive U3a : Type where
   | nil : U3a
@@ -560,7 +558,7 @@ disagree symbolically rather than at a literal. -/
 section
 universe v
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UPCtx (α : Type v) : Type v where
   | nil : UPCtx α
@@ -584,7 +582,7 @@ example : (UPCtx.snoc (UPCtx.nil (α := Nat)) 3 .nil).len = 1 := rfl
 
 /-! ### Indices on the data members, and a proposition over the bigger one -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UIVec : Nat → Type where
   | nil : UIVec 0
@@ -617,7 +615,7 @@ mumi_spec
 inductive UWrap (α : Type u) : Type u where
   | mk : α → UWrap α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive UNCtx : Type where
   | nil : UNCtx
@@ -631,7 +629,7 @@ end
 
 /-! ### `deriving`, on top of all that -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UDCtx : Type where
   | nil : UDCtx
@@ -775,7 +773,7 @@ data recursion computes at `Skel.fan f`, eta-expanded, which is the only term
 that could stand there.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [injEq])
 mutual
 inductive Skel : Type where
   | tip
@@ -970,7 +968,7 @@ list is known; without it neither block typechecks.
 section
 universe u₀ v₀ w₀
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UCtx : Type where
   | nil : UCtx
@@ -987,7 +985,7 @@ end
 
 -- `u` is auto-bound by a field of `VOk`'s second constructor, long after `VBag`
 -- was stubbed over the empty list; the block's own list is `[u]`
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive VBag : Type where
   | nil : VBag
@@ -1017,7 +1015,7 @@ is that none of them mentions a name the user did not write: no `_pre`, no
 `_wf`, no `nested_` copy.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive TreeNested where
   | empty
@@ -1065,7 +1063,7 @@ info: @TreeNested.WFWith.rec : ∀ {motive_1 : TreeNested → Sort u_1}
       motive_2 t l t_ih h → motive_3 t t_ih (TreeNested.WF.intro l t h))
   (mk : (x : TreeNested) → (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h))
   (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) {a : TreeNested} {a_1 : List Nat}
-  (h : a.WFWith a_1), motive_2 a a_1 (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) h
+  (t : a.WFWith a_1), motive_2 a a_1 (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) t
 -/
 #guard_msgs in
 set_option pp.proofs true in
@@ -1093,8 +1091,8 @@ info: @TreeNested.WF.rec : ∀ {motive_1 : TreeNested → Sort u_1}
     ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
       motive_2 t l t_ih h → motive_3 t t_ih (TreeNested.WF.intro l t h))
   (mk : (x : TreeNested) → (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h))
-  (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) {a : TreeNested} (h : a.WF),
-  motive_3 a (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) h
+  (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) {a : TreeNested} (t : a.WF),
+  motive_3 a (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) t
 -/
 #guard_msgs in
 set_option pp.proofs true in
@@ -1211,7 +1209,7 @@ universes it never uses.
 Nothing notices until a second member names the constructor -- which is what a
 proposition indexed by `.nil` does. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive NoResTy (α : Type u) : Type u where
   | nil
@@ -1281,7 +1279,7 @@ are no equations anywhere in it, which is the reason to do it this way at all.
 
 namespace DataOnData
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1372,7 +1370,7 @@ it in the block.
 
 namespace DataOnDataTm
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1476,7 +1474,7 @@ it in the position the writer put it in rather than after the one that left.
 namespace DataOnDataMixed
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1523,7 +1521,7 @@ constructor's conclusion.
 
 namespace DataOnDataLength
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1588,7 +1586,7 @@ constructor's own conclusion gives them.
 
 namespace DataOnDataLengthTm
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1629,7 +1627,7 @@ namespace DataOnDataLengthUniv
 
 universe u
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Nat → Type u where
   | nil  : Ctx α 0
@@ -1649,7 +1647,7 @@ recursion the length along with the context.
 
 namespace DataOnDataLengthProp
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (xfail := [axioms])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1676,7 +1674,7 @@ end DataOnDataLengthProp
 
 namespace DataOnDataLengthTwo
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Bool → Type where
   | nil  : (b : Bool) → Ctx 0 b
@@ -1698,7 +1696,7 @@ length-indexed index.
 
 namespace DataOnDataLengthNest
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ctx.casesOn_snoc]) (xfail := [rec])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1714,7 +1712,7 @@ end DataOnDataLengthNest
 
 namespace DataOnDataLengthSum
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1729,7 +1727,7 @@ end DataOnDataLengthSum
 
 namespace DataOnDataLengthAfter
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1744,7 +1742,7 @@ end DataOnDataLengthAfter
 
 namespace DataOnDataLengthOk
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1781,7 +1779,7 @@ hypothesis at the *built* index `Ctx.snoc n Γ A`.
 
 namespace DataOnDataLengthTac
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1852,7 +1850,7 @@ namespace DataOnDataUniv
 
 universe u
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -1885,7 +1883,7 @@ end DataOnDataUniv
 
 namespace DataOnDataBig
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type 1 where
   | nil  : Ctx
@@ -1923,7 +1921,7 @@ nothing the recursion recursed at to have one about.
 
 namespace DataOnDataProp
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1996,7 +1994,7 @@ on it, which is the only way to say anything about the function itself.
 
 namespace DataOnDataTwo
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2009,7 +2007,7 @@ end
 
 /--
 info: @Ok.casesP : ∀ {motive : (Γ : Ctx) → (a : Ty Γ) → Ok Γ a → Prop},
-  (∀ (Γ : Ctx), motive Γ (Ty.base Γ) ⋯) → ∀ {Γ : Ctx} {a : Ty Γ} (h : Ok Γ a), motive Γ a h
+  (∀ (Γ : Ctx), motive Γ (Ty.base Γ) ⋯) → ∀ {Γ : Ctx} {a : Ty Γ} (t : Ok Γ a), motive Γ a t
 -/
 #guard_msgs in
 #check @Ok.casesP
@@ -2052,7 +2050,7 @@ not about the other two.
 
 namespace DataOnDataJudge
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2072,7 +2070,7 @@ end
 info: @Good.casesP : ∀ {motive : (Γ : Ctx) → (A : Ty Γ) → (a : Tm Γ A) → Good Γ A a → Prop},
   (∀ (Γ : Ctx) (A : Ty Γ), motive Γ A (Tm.var Γ A) ⋯) →
     (∀ (Γ : Ctx) (A B : Ty Γ) (t : Tm Γ A) (a : Good Γ A t), motive Γ B (Tm.wk Γ A B t) ⋯) →
-      ∀ {Γ : Ctx} {A : Ty Γ} {a : Tm Γ A} (h : Good Γ A a), motive Γ A a h
+      ∀ {Γ : Ctx} {A : Ty Γ} {a : Tm Γ A} (t : Good Γ A a), motive Γ A a t
 -/
 #guard_msgs in
 #check @Good.casesP
@@ -2115,7 +2113,7 @@ functions and the two propositions about them, off one set of minors.
 
 namespace DataOnDataTwoProps
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2186,7 +2184,7 @@ bundle in sight.
 
 namespace DataOnDataPropOnProp
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2247,7 +2245,7 @@ type's context carries, and neither step is a separate induction.
 
 namespace DataOnDataStack
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2308,7 +2306,7 @@ namespace DataOnDataPropOnPropUniv
 
 universe u
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2369,7 +2367,7 @@ the visible declaration is which minors are short of an induction hypothesis.
 
 namespace DataOnDataPropTm
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2413,7 +2411,7 @@ namespace DataOnDataPropUniv
 
 universe u
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2452,7 +2450,7 @@ are all globals of this file already.
 
 namespace Shadowed
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2507,7 +2505,7 @@ miss.
 
 namespace DataOnDataBuilt
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2623,7 +2621,7 @@ away before the alternative is ever applied.
 
 namespace DataOnDataBuiltKept
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2725,7 +2723,7 @@ rejections until the well-formedness learned to carry an equation.
 
 namespace BuiltSmall
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Vec4 : Type where
   | nil : Vec4
@@ -2741,7 +2739,7 @@ def Vec4.len : Vec4 → Nat :=
 example : Vec4.len Vec4.nil = 0 := rfl
 example (v : Vec4) (n : Len v) : Vec4.len (Vec4.cons v n) = Vec4.len v + 1 := rfl
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx7 : Type where
   | nil  : Ctx7
@@ -2777,7 +2775,7 @@ namespace BuiltTwo
 -- on it
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2798,7 +2796,7 @@ example (Γ : Ctx) : psize (Pair.mk Γ) = 7 := rfl
 -- both built out of fields rather than out of the one index that was kept, and
 -- both at the same member, so the two transports are along equations about the
 -- same pre-type
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Cx : Type where
   | nil  : Cx
@@ -2824,7 +2822,7 @@ example (Γ Δ : Cx) (A : Tp Γ) (B : Tp Δ) (s : Sub Γ Δ) :
 
 -- and with a proposition in the block, so what the transports move is the
 -- bundle of the data value with the proof, whose type names the well-formedness
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T where
   | tip
@@ -2878,7 +2876,7 @@ and the block is refused only when two of them are.
 namespace RepeatedIdx
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2906,7 +2904,7 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (s : Sub Γ Δ) :
 
 -- three readings of the one field, so two of them are carried
 namespace Three
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2921,7 +2919,7 @@ end Three
 
 -- a repeat and a genuinely built index in the same constructor
 namespace Mixed
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2936,7 +2934,7 @@ end Mixed
 
 -- and the case where only the second reading can be the field
 namespace Choice
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2957,7 +2955,7 @@ end Choice
 
 -- and one in a block a proposition is part of, where the transport moves the
 -- bundle rather than the value
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T where
   | tip
@@ -3005,7 +3003,7 @@ with, and terms compute.
 
 namespace Tower
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3042,7 +3040,7 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A))
 
 -- two built indices reading a third, rather than one reading one
 namespace Chain
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3060,7 +3058,7 @@ end Chain
 -- transport substitutes is a term the earlier transport built and not a binder
 -- the constructor was handed
 namespace FromField
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3077,7 +3075,7 @@ end FromField
 -- and with a proposition in the block, so the transports carry the bundle the
 -- joint recursion runs on rather than a bare value
 namespace WithProp
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3137,7 +3135,7 @@ turned away any more.
 namespace Promoted
 
 namespace AtBuilt
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3164,7 +3162,7 @@ end AtBuilt
 -- a field given as two indices, with a type at each of them.  Whichever reading
 -- stays the field, the other's type is promoted rather than stranded
 namespace BothRead
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3179,7 +3177,7 @@ end BothRead
 
 -- two fields promoted at once, at a member with three indices
 namespace Three
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3216,7 +3214,7 @@ out of it: `motive_4` reads the `Nat` that `motive_1` computed.
 
 namespace BuiltBesideProp
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3280,7 +3278,7 @@ the recursion as an ordinary hypothesis.
 namespace BuiltAtThePropIndex
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T where
   | tip
@@ -3328,7 +3326,7 @@ so the recursion never has to descend into it, and the block goes through with
 
 namespace BuiltWithALiteral
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -3374,7 +3372,7 @@ mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node, U.casesOn_mk]) (xfail := [rec])
 mutual
 inductive T where
   | tip
@@ -3439,7 +3437,7 @@ reading the value the data motive computed.
 
 namespace PropInBuiltCtx
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3551,7 +3549,7 @@ family of variables, whose constructors give their deleted index as a value of a
 
 namespace CwF
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Con : Type where
   | nil  : Con
@@ -3591,7 +3589,7 @@ end CwF
 
 namespace Vars
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3639,7 +3637,7 @@ rather than the inductive one name over.
 
 namespace TwoLeave
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3711,7 +3709,7 @@ into the block ought to give and what no erasure of `F13` could have produced.
 
 namespace FnIndex
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx13 : Type where
   | nil  : Ctx13
@@ -4062,7 +4060,7 @@ mumi_spec
 inductive LocalWrap (α : Type) (n : Nat) : Type where
   | mk (a : α) : LocalWrap α n
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Cx.casesOn_snoc]) (xfail := [rec])
 mutual
 inductive Cx : Type where
   | nil
@@ -4121,7 +4119,7 @@ wrote.
 
 namespace NestAtMember
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ty.casesOn_tup]) (xfail := [rec])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4226,7 +4224,7 @@ index in the copy's constructors exactly as it does in the block's own.
 
 namespace BuiltUnderNesting
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ty.casesOn_pi]) (xfail := [rec])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4267,7 +4265,7 @@ other, and each copy picks up the same locals.  Both come back as themselves.
 
 namespace FamilyAtMember
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive RoseA (α : Type) : Type where
   | node : α → RoseB α → RoseA α
@@ -4276,7 +4274,7 @@ inductive RoseB (α : Type) : Type where
   | cons : RoseA α → RoseB α → RoseB α
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ty.casesOn_rose]) (xfail := [rec])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4297,7 +4295,7 @@ the block, a universe parameter, and a container nested inside a container.
 
 namespace NestVariations
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [PTy.casesOn_tup]) (xfail := [rec])
 mutual
 inductive PCtx (α : Type) : Type where
   | nil  : PCtx α
@@ -4307,7 +4305,7 @@ inductive PTy (α : Type) : PCtx α → Type where
   | tup  : (Γ : PCtx α) → List (PTy α Γ) → PTy α Γ
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [UTy.casesOn_tup]) (xfail := [rec])
 mutual
 inductive UCtx : Type u where
   | nil  : UCtx
@@ -4322,7 +4320,7 @@ end
 #guard_msgs in
 #check UCtx.{5}
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [DTy.casesOn_tup]) (xfail := [rec])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -4443,7 +4441,7 @@ mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec])
 mutual
 inductive T where
   | tip
@@ -4547,7 +4545,7 @@ mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node, U.casesOn_mk]) (xfail := [rec])
 mutual
 inductive T where
   | tip
@@ -4606,7 +4604,7 @@ mumi_spec
 inductive DepPair (α : Type) (β : α → Type) where
   | mk (a : α) (b : β a) : DepPair α β
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [DPCtx.casesOn_ext]) (xfail := [rec])
 mutual
 inductive DPCtx : Type where
   | nil
@@ -4669,7 +4667,7 @@ namespace SectionVars
 
 section
 variable (α : Type) [Inhabited α] (unusedβ : Type)
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [injEq])
 mutual
 inductive C : Type where
   | nil  : C
@@ -4701,7 +4699,7 @@ example (α : Type) [Inhabited α] (Γ : C α) (x : α) :
 -- use is declared before it
 section
 variable (α : Type) (a₀ : α)
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive C3 : Type where
   | nil  : C3
@@ -4714,7 +4712,7 @@ end
 -- and they compose with a nesting at a member
 section
 variable (α : Type)
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T4.casesOn_tup]) (xfail := [rec])
 mutual
 inductive C4 : Type where
   | nil  : C4
@@ -4734,7 +4732,7 @@ that wants constructors has nothing to look at, and the class has to arrive by
 `Subtype`.  So the pre-type is derived for first, quietly, and the member is
 then delta derived onto it. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive DVec : Type where
   | nil : DVec
@@ -4763,7 +4761,7 @@ proof field is gone and the constructors are the pre-type's. -/
 that works and one at a time where it does not, since the data pre-types and
 the `Prop` pre-types are two separate blocks. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive EVec : Type where
   | nil : EVec
@@ -4783,7 +4781,7 @@ reach it -- and does not have to.  A member's visible constructors are ordinary
 functions into it, so the instance is written from whichever of them can be
 applied, which is the instance the writer would have written by hand. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive FVec : Type where
   | nil : FVec
@@ -4804,7 +4802,7 @@ constructor with fields serves as well as a nullary one, and a parameter that is
 a type gets a hypothesis apiece -- the same instance Lean's own handler states
 for an ordinary inductive. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive F2Vec (β : Type) : Type where
   | tip (b : β) (n : Nat) : F2Vec β
@@ -4890,7 +4888,7 @@ recurses along with it, and its constructor's index is built out of the copy's
 own constructor rather than being pinned to a closed term.  Everything the writer
 named still comes out over `List LTree`. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LTree.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive LTree : Type where
   | node : (cs : List LTree) → LOk cs → LTree
@@ -4948,7 +4946,7 @@ them as parameters of its own, and the proposition's arity comes back reading
 `List (PTree α)` at the parameter the writer gave it rather than at whatever the
 copy was made to take. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [PTree.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive PTree (α : Type u) : Type u where
   | node : (cs : List (PTree α)) → POk α cs → PTree α
@@ -4978,7 +4976,7 @@ to be stated over.  Their own recursors come out as the pair they are: either
 name asks for both motives and both sets of minors, and hands back the one it is
 named for. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [QTree.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive QTree : Type where
   | node : (cs : List QTree) → QA cs → QB cs → QTree
@@ -4998,7 +4996,7 @@ grows two members rather than one, and the recursion gets a motive and a pair of
 minors for each -- `motive_2` at `List (List ATree)` and `motive_3` at
 `List ATree`.  The proposition is indexed by the outer one. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [ATree.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive ATree : Type where
   | node : (cs : List (List ATree)) → AOk cs → ATree
@@ -5028,7 +5026,7 @@ put beside it.  `DTy` is indexed by `DCtx`, which is the rule the erasure lifts;
 is the case worth having, and the two data members each get the recursion over
 the whole block. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [DTy.casesOn_pack]) (xfail := [rec, casesOn])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -5069,7 +5067,7 @@ index.  The copy is indexed by that index as well -- `List (EVec n)` is a family
 in `n` -- so the recursion carries it through both the copy's motive and the
 proposition's. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [EVec.casesOn_cons]) (xfail := [rec, casesOn])
 mutual
 inductive EVec : Nat → Type where
   | nil  : EVec 0
@@ -5097,7 +5095,7 @@ namespace HeteroNested
 nesting and the proposition.  `FBig` holds a `Type` and so lives in `Type 1`;
 `FOk` is a proposition; the copy follows `FBig`. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [FBig.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive FBig : Type 1 where
   | ty   : Type → FBig
@@ -5128,7 +5126,7 @@ always had. -/
 namespace ByMember
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [NTm.casesOn_app]) (xfail := [rec])
 mutual
 inductive NTm : Type where
   | app : (ts : List NTm) → NTm
@@ -5168,7 +5166,7 @@ inductive Bag (α : Type u) : Type u where
   | none : Bag α
   | two  : α → α → Bag α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [UTree.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive UTree : Type where
   | node : (cs : Bag UTree) → UOk cs → UTree
@@ -5186,7 +5184,7 @@ of its own, and the proposition is over only the first of them -- which is what
 makes this worth pinning, since the recursion has to know which copy the
 proposition's motive stands on. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [VTree.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive VTree : Type where
   | node : (cs : List VTree) → (o : Option VTree) → VOk cs → VTree
@@ -5210,7 +5208,7 @@ copy, and the recursion filling in the `List` copy's step has a call at its own
 fields and none at what is inside them.  So `XTree.rec` recurses over the data
 and `XOk.rec` is the split one. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [gap])
 mutual
 inductive XTree : Type where
   | node : (cs : List (XTree × Nat)) → XOk cs → XTree
@@ -5228,7 +5226,7 @@ split recursor; `YGood` is over a member and gets the recursion over the whole
 block, concluding at the motive taken at what the data recursion returned.  The
 two sit side by side without either one deciding for the other. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [YTm.casesOn_app]) (xfail := [rec, casesOn])
 mutual
 inductive YTm : Type where
   | app : (ts : List YTm) → YOk ts → YTm
@@ -5254,7 +5252,7 @@ bridge with it, so these are pinned as much as a regression as for the shape. -/
 
 namespace TwoIndices
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (a b : List T) → Ok a b → T
@@ -5279,7 +5277,7 @@ namespace MixedIndices
 
 /-! Three indices, at two nesting types, one of them a nesting of a nesting. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [U.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | node : (a : List U) → (b : List (List U)) → (c : Option U) → Ok a b c → U
@@ -5308,7 +5306,7 @@ mumi_spec
 inductive HWrap (α : Type) (n : Nat) where
   | mk (a : α) : HWrap α n
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [HVec.casesOn_mk]) (xfail := [rec])
 inductive HVec where
   | tip
   | mk (n : Nat) (v : List (HWrap HVec n)) : HVec
@@ -5324,7 +5322,7 @@ declines, and the block came back with `JVec.nested_List_1` visible in the
 constructor it had been written with `List (HWrap JVec n)` in.  Deriving the
 class from a constructor settles it on the route that keeps the written type. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [JVec.casesOn_mk]) (xfail := [rec])
 inductive JVec where
   | tip
   | mk (n : Nat) (v : List (HWrap JVec n)) : JVec
@@ -5336,7 +5334,7 @@ example : (default : JVec) = JVec.tip := rfl
 not tread on each other: `Inhabited` is taken off the list before the rest of it
 is delta derived. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [KVec.casesOn_mk]) (xfail := [rec])
 inductive KVec where
   | tip
   | mk (n : Nat) (v : List (HWrap KVec n)) : KVec
@@ -5386,7 +5384,7 @@ that is itself indexed. -/
 
 namespace MaxUniverse
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive T (α : Type u) (β : Type v) : Type (max u v) where
   | node : (a : α) → (b : β) → (cs : List (T α β)) → Ok α β cs → T α β
@@ -5409,7 +5407,7 @@ namespace PhantomUniverse
 there only in the result, so every occurrence of the block carries it explicitly
 and there is no second way to arrive at it. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive T (α : Type u) : Type (max u v) where
   | node : (a : α) → (cs : List (T.{u, v} α)) → Ok.{u, v} α cs → T α
@@ -5447,7 +5445,7 @@ whole of it.  Both get copies, so the block gains two members the writer did not
 write, and the proposition's `cons` indexes at a pair rather than at a bare
 member. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List ((_ : Nat) × T)) → Ok cs → T
@@ -5472,7 +5470,7 @@ being one of them: `V.cons` at `n` lands in `V (n + n)`.  The nesting is indexed
 as well -- `List (V n)` is a copy carrying an `n` of its own -- so the copy, the
 proposition and the constructor all have to be standing at the same one. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [V.casesOn_cons]) (xfail := [rec, casesOn])
 mutual
 inductive V : Nat → Type where
   | nil  : V 0
@@ -5499,7 +5497,7 @@ the whole block read at a different conclusion, so the proposition's minors
 appear in `Ctx.rec` and `Tm.rec` alike -- and `Ok.rec`, which is over the
 nesting rather than over a member, stays the split one the writer can state. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Tm.casesOn_pack]) (xfail := [rec, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5555,7 +5553,7 @@ goes through the ordinary handlers rather than through the subtype. -/
 
 namespace PeelUnpinned
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5609,7 +5607,7 @@ the block like any other, and `Ok` above is indexed by it and comes back fine --
 so what peels `Long` is `extra` again.  Once it is out, its index really is a
 `List T`, since a peeled member is not denested and has nothing rewritten. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5651,7 +5649,7 @@ namespace PeelMutual
 and each is named by the other, so the peel keeps them as the one mutual group
 they were written as and their recursors share both motives. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5675,7 +5673,7 @@ it -- so `h : t = t` is no reason to take `Same` out of the block, and `Same`
 keeps the recursion over the whole of it.  `Eq` is a nesting here, so the
 recursor carries its motive too. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5706,7 +5704,7 @@ mumi_spec
 inductive Wrap (p : Prop) : Prop where
   | mk : p → Wrap p
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5902,7 +5900,7 @@ None of the three leaves the block the way a peeled proposition does -- `Watch`
 names `Big`, so they are still what the block is stated with, and they share the
 one erased recursion. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5964,7 +5962,7 @@ left out, and a field whose type moved with an earlier one is compared with
 
 namespace Inj
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5999,7 +5997,7 @@ constructor whose last field sits at an index built out of two earlier ones. -/
 
 namespace InjIndexed
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -6028,7 +6026,7 @@ mention of the proof at all. -/
 
 namespace InjProp
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -6088,7 +6086,7 @@ mumi_spec
 inductive InjNested.Pair (α β : Type) where
   | mk (a : α) (b : β)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [InjNested.PVec.casesOn_mk]) (xfail := [rec])
 inductive InjNested.PVec where
   | mk (n : Nat) (v : List (InjNested.Pair (HWrap InjNested.PVec n) (HWrap InjNested.PVec n)))
 
@@ -6101,7 +6099,7 @@ inductive InjNested.FTree (α : Type) where
   | leaf
   | node (f : Nat → InjNested.FTree α) (a : α)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [InjNested.FVec.casesOn_mk]) (xfail := [rec, axioms])
 inductive InjNested.FVec where
   | mk (n : Nat) (v : InjNested.FTree (HWrap InjNested.FVec n))
 
@@ -6126,7 +6124,7 @@ example (n : Nat) (v : List (HWrap InjNested.RVec n)) :
 
 namespace Disjoint
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -6160,7 +6158,7 @@ indices too. -/
 
 namespace DisjointIndexed
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -6193,7 +6191,7 @@ that were written. -/
 
 namespace StdNames
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -6207,14 +6205,14 @@ end
 -- so it still asks for a motive at every member
 
 -- both iota rules of `casesOn` hold by `rfl`
-example : Ctx.casesOn (motive := fun _ => Nat) Ctx.nil 0 (fun _ _ => 1) = 0 := rfl
+example : Ctx.casesOn (motive_1 := fun _ => Nat) Ctx.nil 0 (fun _ _ => 1) = 0 := rfl
 example (Γ : Ctx) (A : Ty Γ) :
-    Ctx.casesOn (motive := fun _ => Nat) (Ctx.snoc Γ A) 0 (fun _ _ => 1) = 1 := rfl
+    Ctx.casesOn (motive_1 := fun _ => Nat) (Ctx.snoc Γ A) 0 (fun _ _ => 1) = 1 := rfl
 
 -- and they compile: `casesOn` is a reducible definition rather than a tagged
 -- auxiliary recursor, so the code generator sees through it to `Ctx.casesD`
 def depth (Γ : Ctx) : Nat :=
-  Ctx.casesOn (motive := fun _ => Nat) Γ 0 (fun _ _ => 1)
+  Ctx.casesOn (motive_1 := fun _ => Nat) Γ 0 (fun _ _ => 1)
 
 /-- info: 1 -/
 #guard_msgs in
@@ -6263,7 +6261,7 @@ end StdNames
 
 namespace StdNamesProp
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx

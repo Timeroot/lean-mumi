@@ -42,7 +42,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 
@@ -378,7 +378,7 @@ mumi_spec
 inductive OkBag (α : Type) where
   | mk (b : Bag α) (h : BagOk α b)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [Rec2.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive Rec2 (β : Type) where
   | leaf (b : β)
   | mk (x : OkBag (Rec2 β))
@@ -398,12 +398,12 @@ info: @Rec2.nested_List_3.cons : {β : Type} → Rec2 β → Rec2.nested_List_3 
 
 /-! ## Indices, on both the data copy and the proof copy -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Vec (α : Type) : Nat → Type where
   | nil : Vec α 0
   | cons : α → {n : Nat} → Vec α n → Vec α (n + 1)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive VecOk (α : Type) : {n : Nat} → Vec α n → Prop where
   | nil : VecOk α .nil
   | cons (a : α) {n} (v : Vec α n) : VecOk α v → VecOk α (.cons a v)
@@ -412,7 +412,7 @@ mumi_spec
 inductive OkVec (α : Type) where
   | mk {n : Nat} (v : Vec α n) (h : VecOk α v)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [Rec3.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive Rec3 where
   | mk (x : OkVec Rec3)
 
@@ -468,7 +468,7 @@ mumi_spec
 inductive Rose (α : Type) : Type where
   | node (a : α) (cs : List (Rose α))
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (unproven := [RT.casesOn_mk]) (xfail := [rec, injEq])
 mutual
 inductive RT : Type where
   | tip
@@ -526,7 +526,7 @@ inductive Ba (α : Type) : Type where
   | cons (f : Fo α) (b : Ba α)
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [MT.casesOn_mk]) (xfail := [rec])
 mutual
 inductive MT : Type where
   | tip
@@ -590,7 +590,7 @@ mumi_spec
 inductive OkFam (α : Type) (n : Nat) where
   | mk (v : Fam α n) (h : FamOk α v)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 inductive BadLocals where
   | tip
   | mk (n : Nat) (x : OkFam BadLocals n)

@@ -56,7 +56,7 @@ motives, and every one of them is spelled in the writer's own names --
 
 namespace Twin
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk, B.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -115,7 +115,7 @@ nesting type is made at it.
 
 namespace Self
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -134,7 +134,7 @@ stays `WFTree (B α)` and the recursor leads with `{α : Type}`.
 
 namespace Param
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A (α : Type) : Type where
   | tip (a : α)
@@ -154,7 +154,7 @@ of `WFTree` at `B`, and both layers show up as motives of their own.
 
 namespace Deep
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -175,7 +175,7 @@ like any other.
 
 namespace Mixed
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -194,7 +194,7 @@ induction hypothesis for each side.
 
 namespace Pair
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -213,7 +213,7 @@ implicitly in the major premise.
 
 namespace Indexed
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Nat → Type where
   | tip : A 0
@@ -240,7 +240,7 @@ are what make it one worth taking.
 
 namespace Modifiers
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 /-- The one with the nesting. -/
 inductive A : Type where
@@ -293,7 +293,7 @@ namespace FreeProp
 -- one declaration at a time
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -326,7 +326,7 @@ the routing. -/
 namespace FreePropField
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -360,7 +360,7 @@ stated over the originals.
 namespace BigSmall
 set_option mumi.separate false
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
 mutual
 inductive A : Type 1 where
   | tip

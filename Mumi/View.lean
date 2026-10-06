@@ -506,6 +506,21 @@ private def minorsStart (numParams : Nat) (xs : Array Expr) (numIndices : Nat) :
   return start
 
 /--
+The name of the motive `X.rec` takes for member `mem`: the one whose major
+premise is of `mem`'s type. -/
+def motiveNameOf? (numParams : Nat) (mem : Name) : MetaM (Option Name) := do
+  let some info := (← getEnv).find? (mem ++ `rec) | return none
+  forallTelescope info.type fun xs _ => do
+    for x in xs[numParams...xs.size] do
+      let d ← x.fvarId!.getDecl
+      let found ← forallTelescope d.type fun ys concl => do
+        unless concl.isSort do return false
+        let some y := ys.back? | return false
+        return (← inferType y).getAppFn.constName? == some mem
+      if found then return some d.userName
+    return none
+
+/--
 `X.casesOn` from `X.casesD`, or `X.recOn` from `X.rec`: the same eliminator with
 the indices and the major premise moved in front of the minor premises.
 
@@ -521,6 +536,9 @@ def addMajorFirst (numParams : Nat) (mem src dst : Name) : MetaM Unit := do
   let numIndices ← forallTelescope mi.type fun bs _ => pure (bs.size - numParams)
   let some info := (← getEnv).find? src | throwError "no `{src}` to reorder"
   let us := info.levelParams.map mkLevelParam
+  -- a one-motive eliminator names its motive as the block's recursor names
+  -- this member's, as Lean's `casesOn` does
+  let motiveName? ← motiveNameOf? numParams mem
   let (type, value) ← forallTelescope info.type fun xs concl => do
     let start ← minorsStart numParams xs numIndices
     unless start + numIndices + 1 ≤ xs.size do
@@ -528,7 +546,12 @@ def addMajorFirst (numParams : Nat) (mem src dst : Name) : MetaM Unit := do
     let numMinors := xs.size - start - numIndices - 1
     let vs := xs[*...start] ++ xs[(start + numMinors)...xs.size] ++
       xs[start...(start + numMinors)]
-    return (← mkForallFVars vs concl, ← mkLambdaFVars vs (mkAppN (mkConst src us) xs))
+    let type ← mkForallFVars vs concl
+    let type := match motiveName? with
+      | some n => if start == numParams + 1 then
+          annotate (fun i nm bi => (if i == numParams then n else nm, bi)) type else type
+      | none => type
+    return (type, ← mkLambdaFVars vs (mkAppN (mkConst src us) xs))
   addDef dst info.levelParams type value (hints := .abbrev)
   setReducibleAttribute dst
   modifyEnv fun env => addProtected env dst

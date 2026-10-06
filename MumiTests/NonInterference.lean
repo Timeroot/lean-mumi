@@ -44,7 +44,7 @@ end
 This is the case the library must leave alone even though it *is* a mutual
 inductive block: it gets Lean's own `rec`, and no `mutualRec`. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive T1 : Type where
   | mk : T2 → T1
@@ -67,7 +67,7 @@ example : t1Depth (T1.mk (T2.mk (T1.mk T2.stop))) = 3 := rfl
 
 /-! ## An all-`Prop` homogeneous block -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive PEven : Nat → Prop where
   | zero : PEven 0
@@ -92,7 +92,7 @@ end
 
 example : (SA.mk 3 none).n = 3 := rfl
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive CA : Type where
   | mk : CB → CA
@@ -104,7 +104,7 @@ end
 
 /-! ## `deriving` on a homogeneous block -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive DA : Type where
   | mk : DB → DA
@@ -121,7 +121,7 @@ end
 
 /-! ## A single, non-mutual inductive -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Solo : Type where
   | leaf : Nat → Solo
   | node : Solo → Solo → Solo
@@ -136,7 +136,7 @@ entirely by Lean, and is exactly the declaration it always was.
 The clearest evidence is `Tree.rec_1`, the auxiliary recursor the kernel adds
 for the specialised `List`: nothing in this library produces one. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Tree : Type where
   | node : List Tree → Tree
 
@@ -157,7 +157,7 @@ example : treeSize (.node [.node [], .node []]) = 3 := rfl
 #guard_msgs in
 #check @Tree.nested_List_1
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive ATree : Type where
   | node : Array ATree → ATree
 
@@ -165,7 +165,7 @@ inductive ATree : Type where
 #guard_msgs in
 #check @ATree.mutualRec
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive ETree : Type where
   | node : Except String ETree → ETree
 

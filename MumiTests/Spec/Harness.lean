@@ -484,8 +484,8 @@ private partial def bindHyps {α} (fields : Array Expr) (hypAt : Hyps → Expr �
     | .none => bindHyps fields hypAt k (i + 1) hyps gaps
     | .gap => bindHyps fields hypAt k (i + 1) hyps (gaps.push (← f.fvarId!.getDecl).userName)
     | .some ty =>
-      let n := (← f.fvarId!.getDecl).userName.eraseMacroScopes
-      withLocalDeclD (Name.mkSimple (n.toString ++ "_ih")) ty fun ih =>
+      -- `f_ih`, inaccessible where the field is, as Lean names it
+      withLocalDeclD ((← f.fvarId!.getDecl).userName.appendAfter "_ih") ty fun ih =>
         bindHyps fields hypAt k (i + 1) (hyps.push (f, ih)) gaps
   else k hyps gaps
 
@@ -579,7 +579,9 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
             if let some (some j) := displayAt[t]![i]? then
               let ty ← instantiateMVars (← inferType ixs[i]!)
               shown := shown.push (i, mkAppN prev[j]! ((motiveArgs j ty).push ixs[i]!))
-          withLocalDecls (shown.map fun (_, ty) => (`v, BinderInfo.default, fun _ => pure ty)) fun vs => do
+          -- nothing is said of a value by name: its binder is inaccessible
+          let v ← mkFreshUserName `v
+          withLocalDecls (shown.map fun (_, ty) => (v, BinderInfo.default, fun _ => pure ty)) fun vs => do
           withLocalDeclD `t major fun x => do
             let mut binders := #[]
             for i in [:ixs.size] do
@@ -933,6 +935,32 @@ private def fixedIndices (members : Array Member) (params : Array Expr) (tys : A
     k := k + 1
   return k
 
+/-- The targets in the order written, members then nested applications, save
+that a `Prop` member follows the data targets its motive takes values of. -/
+private def targetOrder (members : Array Member) (tys params : Array Expr) (uniform : Nat) (nested : Array Expr) :
+    TermElabM (Array Target) := do
+  let written : Array Target := (Array.range members.size).map .member ++ nested.map .nested
+  let depsOf (t : Target) : TermElabM (Array Nat) := do
+    let .member k := t | return #[]
+    unless members[k]!.prop do return #[]
+    forallTelescope tys[k]! fun idx _ => do
+      let mut out := #[]
+      for x in params.extract uniform params.size ++ idx do
+        let ty ← instantiateMVars (← inferType x)
+        let q? := written.findIdx? fun w => match w with
+          | .member j => !members[j]!.prop && ty.getAppFn.isConstOf members[j]!.name
+          | .nested a => (nestedArgs? a ty).isSome
+        if let some q := q? then out := out.push q
+      return out
+  let deps ← written.mapM depsOf
+  let mut order : Array Nat := #[]
+  while order.size < written.size do
+    let some q := (Array.range written.size).find? fun q =>
+        !order.contains q && deps[q]!.all order.contains
+      | break
+    order := order.push q
+  return order.map (written[·]!)
+
 /-- The whole specification of the block, checked against what it declared. -/
 def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native : Bool) : TermElabM Unit := do
   let upper := !(mumi.mahlo.get (← getOptions))
@@ -1103,8 +1131,11 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
     for m in found do
       unless nested.contains m do nested := nested.push m
   let b : Block := { members, tys, params, uniform }
-  let large ← largeElim b props
-  try recursion r b (data.map .member ++ nested.map .nested ++ props.map .member) large
+  -- a `Prop` member alone eliminates as Lean lets it; beside others, into
+  -- `Prop`, as a `mutual` of more than one type does
+  let large ← if members.size == 1 then largeElim b props else pure false
+  let order ← targetOrder members tys params uniform nested
+  try recursion r b order large
   catch e => problem r .recursor m!"the recursion could not be stated: {e.toMessageData}"
   -- the decoders: their types and equations as written
   for d in defs do

@@ -52,7 +52,7 @@ mumi_spec
 inductive OLbl (α : Type u) (β : Type v) : Type (max u v) where
   | mk (x : Lbl α β) (h : x.Ord)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [Nest.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive Nest (γ : Type w) : Type w where
   | leaf (c : γ)
   | mk (x : OLbl (Nest γ) γ)
@@ -135,7 +135,7 @@ mumi_spec
 inductive Good (α : Type) where
   | mk (c : Chain α) (h1 : c.P) (h2 : c.Q)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecGood.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecGood where
   | mk (x : Good RecGood)
 
@@ -207,7 +207,7 @@ mumi_spec
 inductive FBr (α : Type) where
   | mk (b : Br α) (h : b.Fin)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecBr.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecBr where
   | mk (x : FBr RecBr)
 
@@ -294,7 +294,7 @@ mumi_spec
 inductive NESeq (α : Type) where
   | mk (s : Seq α) (h : s.NonEmpty)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecTwo.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecTwo where
   | tip
   | mk (x : FTr RecTwo) (y : NESeq RecTwo)
@@ -372,7 +372,7 @@ inductive Lst (α : Type) where
   | nil
   | cons (a : α) (t : Lst α)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Rel (α : Type) : Lst α → Lst α → Prop where
   | nil : Rel α .nil .nil
   | cons (a b : α) (s t : Lst α) : Rel α s t → Rel α (.cons a s) (.cons b t)
@@ -381,7 +381,7 @@ mumi_spec
 inductive RelPair (α : Type) where
   | mk (s t : Lst α) (h : Rel α s t)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecRel.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecRel where
   | mk (x : RelPair RecRel)
 
@@ -517,7 +517,7 @@ inductive Chain (α : Type) where
   | nil
   | cons (a : α) (t : Chain α)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Chain.Even (α : Type) : Chain α → Prop where
   | nil : Chain.Even α .nil
@@ -530,7 +530,7 @@ mumi_spec
 inductive EChain (α : Type) where
   | mk (c : Chain α) (h : c.Even)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecEven.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecEven where
   | mk (x : EChain RecEven)
 

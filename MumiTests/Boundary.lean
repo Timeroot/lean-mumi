@@ -59,7 +59,7 @@ motive is indexed by the context the list is at.
 
 namespace ListNest
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ctx.casesOn_many, Ty.casesOn_list]) (xfail := [rec])
 mutual
 inductive Ctx : Type where
   | nil
@@ -81,7 +81,7 @@ other summand is unrelated.
 
 namespace OtherNests
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ctx.casesOn_maybe, Ctx.casesOn_either]) (xfail := [rec])
 mutual
 inductive Ctx : Type where
   | nil
@@ -113,7 +113,7 @@ inductive Vec (α : Type) : Nat → Type where
   | nil : Vec α 0
   | cons {n} (a : α) (v : Vec α n) : Vec α (n + 1)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [Ctx.casesOn_snoc]) (xfail := [rec])
 mutual
 inductive Ctx : Type where
   | nil
@@ -134,7 +134,7 @@ hypothesis about it is a family of hypotheses.
 
 namespace Infinitary
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [injEq])
 mutual
 inductive Ctx : Type where
   | nil
@@ -157,7 +157,7 @@ themselves out because the pre-types are the ones that have to agree.
 
 namespace TwoUniverses
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type 1 where
   | nil
@@ -202,7 +202,7 @@ namespace SectionVar
 section
 variable (α : Type)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil
@@ -226,7 +226,7 @@ treated as one the constructor built.
 
 namespace TwoIdx
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil
@@ -250,7 +250,7 @@ so at a recursor applied by hand rather than through `induction`.
 
 namespace Iota
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil
@@ -278,7 +278,7 @@ each other.
 
 namespace EvenOdd
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Tm : Type where
   | z

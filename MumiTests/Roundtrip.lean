@@ -36,7 +36,7 @@ namespace MumiTests.Roundtrip
 
 /-! ## An induction-inductive block, and a renaming of it -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil
@@ -47,7 +47,7 @@ inductive Fresh : String → Ctx → Prop where
       Fresh x (.snoc Γ y h)
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx' : Type where
   | nil
@@ -86,7 +86,7 @@ info: @Fresh.recP : ∀ {motive : (a : String) → (a_1 : Ctx) → Fresh a a_1 �
   (∀ (x : String), motive x Ctx.nil ⋯) →
     (∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (hne : x ≠ y) (hΓ : Fresh x Γ),
         motive y Γ h → motive x Γ hΓ → motive x (Γ.snoc y h) ⋯) →
-      ∀ {a : String} {a_1 : Ctx} (h : Fresh a a_1), motive a a_1 h
+      ∀ {a : String} {a_1 : Ctx} (t : Fresh a a_1), motive a a_1 t
 -/
 #guard_msgs in
 #check @Fresh.recP
@@ -340,7 +340,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 

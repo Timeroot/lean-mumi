@@ -207,7 +207,7 @@ genuinely gone, and they are pinned at the end of this section.
 
 namespace IndInd
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -339,7 +339,7 @@ example (Γ : Ctx) : Nat := by
   | snoc Δ A => exact len Δ + 1
 
 def isNil (Γ : Ctx) : Bool :=
-  Ctx.casesOn (motive := fun _ => Bool) Γ true (fun _ _ => false)
+  Ctx.casesOn (motive_1 := fun _ => Bool) Γ true (fun _ _ => false)
 
 /-- info: false -/
 #guard_msgs in
@@ -437,7 +437,7 @@ work on a proof of it.  The motive lands in `Prop`; section 9 is about why.
 
 namespace Judgement
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -495,7 +495,7 @@ brings in no axiom.
 
 namespace KeptIndex
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive KCtx : Type where
   | nil : KCtx
@@ -548,7 +548,7 @@ compiles, it runs, `simp` proves its equations -- and `rfl` does not, because
 
 namespace CrossIndex
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UCtx : Type where
   | nil : UCtx
@@ -682,7 +682,7 @@ subsingleton.
 
 namespace Forgotten
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T
@@ -726,7 +726,7 @@ forgotten field costs. -/
 
 namespace Kept
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T
@@ -933,7 +933,7 @@ type goes, and finds `Subtype`.
 
 namespace Derive
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive DVec : Type where
   | nil : DVec
@@ -1044,7 +1044,7 @@ namespace CyclicArity
 
 /-! Order alone is fine -- `T` is indexed by a `C` declared after it. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T : C → Type where
   | base (Γ : C) : T Γ

@@ -481,7 +481,7 @@ def D7B.rsize : D7Rose D7B → Nat :=
 
 /-! At indices of the nested type's own, which the recursion crosses at. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive D8Vek (α : Type) : Nat → Type where
   | nil : D8Vek α 0
   | cons : α → D8Vek α n → D8Vek α (n + 1)
@@ -749,7 +749,7 @@ def C3.deep : C3 → Nat
 type's own, not the block's, so it too can be a ghost, and the recursion the
 block gets back crosses `Vek3 B3` at them. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Vek3 (α : Type) : Nat → Type where
   | nil : Vek3 α 0
   | cons : (n : Nat) → α → Vek3 α n → Vek3 α (n + 1)
@@ -798,7 +798,7 @@ recursion goes.  The two reach each other -- `node` has a field at the forest,
 `cons` one at the tree -- so the denesting has to take them together, and the
 recursion the block gets back ranges over the whole family at once. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive FamRose (α : Type u) : Type u where
   | node : α → FamForest α → FamRose α
@@ -849,7 +849,7 @@ def Mu1A.count : Mu1A → Nat
 isomorphic, so the constructor reads back as it was written -- both members at
 once, since the equalities are proved together. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive FamPA (α : Type u) : Prop where
   | mk : α → FamPB α → FamPA α
@@ -876,7 +876,7 @@ example : Mu2A := Mu2A.mk (.mk .tip .nil)
 
 /-! Three members work the same way; nothing about the group is a pair. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive FamT1 (α : Type u) : Type u where
   | a : α → FamT2 α → FamT1 α
@@ -901,7 +901,7 @@ end
 not reach back into `FamS1`, so the two are denested one after the other rather
 than together. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive FamS1 (α : Type u) : Type u where
   | s : α → FamS2 α → FamS1 α
@@ -920,7 +920,7 @@ end
 
 /-! The family may be indexed, and the denesting carries the indices. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive FamIA (α : Type u) : Nat → Type u where
   | z : α → FamIA α 0
@@ -987,7 +987,7 @@ nesting is only there to be seen once it is reduced.  Reducing also exposes a
 second nesting under the first, at an index the enclosing constructor supplies.
 -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive BunTree (α : Type u) : Type u where
   | leaf : α → BunTree α
   | node : BunTree α → BunTree α → BunTree α
@@ -996,7 +996,7 @@ def BunTree.size {α} : BunTree α → Nat
   | .leaf _ => 1
   | .node a b => BunTree.size a + BunTree.size b
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive BunVek (α : Type u) : Nat → Type u where
   | nil : BunVek α 0
   | cons : α → BunVek α n → BunVek α (n + 1)
@@ -1045,7 +1045,7 @@ motive to the application it quantifies over.  `List`'s copy, which its own
 recursor cannot reach past, crosses the shortfall on `RL`'s copy's way back, and
 so the two go in one after the other rather than together. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive RL (α : Type u) : Type u where
   | mk : α → List (RL α) → RL α
 
@@ -1087,7 +1087,7 @@ def Nn1.count : Nn1 → Nat
 /-! Nesting twice over brings in three types at once -- `LL`, and a `List` at
 each depth -- and they go in in the order their definitions need. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LL (α : Type u) : Type u where
   | mk : α → List (List (LL α)) → LL α
 
@@ -1125,7 +1125,7 @@ def Nn3.count : Nn3 → Nat
 /-! The type nested through may be a family of its own, and the recursor that
 reaches furthest is then the one whose family it is. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive MA (α : Type u) : Type u where
   | a : α → List (MB α) → MA α
@@ -1174,7 +1174,7 @@ are different applications and get different motives, and each drags in the
 `List` it recurses through.  Four types are denested, in two groups -- outer
 with its list, inner with its -- and the outer group is built over the inner. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive Xrose (α : Type u) : Type u where
   | node : α → List (Xrose α) → Xrose α
 
@@ -1308,7 +1308,7 @@ constructors are -- but the copy is still named after, and identified with, what
 was written.  Stacking a block on a block therefore reads no differently from
 stacking one on an ordinary type. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive SList (α : Sort u) : Sort (max 1 u) where
   | nil : SList α
   | cons : α → SList α → SList α
@@ -1439,7 +1439,7 @@ end
 /-! A nesting may be at a fixed index of an indexed type, and the constructor
 names the value that was written. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive WVek (α : Type 1) : Nat → Type 1 where
   | nil : WVek α 0
   | cons : α → WVek α n → WVek α (n + 1)
@@ -1516,7 +1516,7 @@ that route already runs takes the copy along with everything else.
 never reaches the erasure at all.  The option holds it there, which is what the
 recursor below is pinned at. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 set_option mumi.separate false in
 mutual
 inductive EqZ : Type 1 where
@@ -1572,7 +1572,7 @@ mumi_spec
 inductive LocWrap (α : Type) (n : Nat) : Type where
   | mk (a : α) : LocWrap α n
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocA.casesOn_mk]) (xfail := [rec])
 inductive LocA : Type where
   | tip
   | mk (n : Nat) (v : List (LocWrap LocA n))
@@ -1651,7 +1651,7 @@ example : locTag (.mk 3 [.mk .tip]) = 3 := rfl
 
 /-! The same in a `mutual`, where the local is a sibling member's index. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocB.casesOn_mk]) (xfail := [rec])
 mutual
 inductive LocB : Type where
   | tip
@@ -1667,7 +1667,7 @@ version of the same thing: the copy of the nesting type would have to be
 parameterised by a value only the constructor knows.  It is not parameterised by
 it -- it is *indexed* by it, and that a copy can be. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocIx.casesOn_mk]) (xfail := [rec])
 inductive LocIx : Nat → Type where
   | tip : LocIx 0
   | mk (n : Nat) (v : List (LocIx n)) : LocIx (n + 1)
@@ -1694,7 +1694,7 @@ inductive LocTree (α : Type) : Type where
   | tip
   | node (l : α) (r : LocTree α)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocS.casesOn_mk]) (xfail := [rec])
 inductive LocS : Nat → Type where
   | base : LocS 0
   | mk (n : Nat) (x : LocTree (LocS n)) : LocS n
@@ -1716,7 +1716,7 @@ example : locSNodes .base = 1 := rfl
 /-! Only the copies that need the local get it.  `LocMix` nests twice, once
 under the local and once not, and the second copy stays unindexed. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocMix.casesOn_mk]) (xfail := [rec, recOn])
 inductive LocMix : Type where
   | tip
   | mk (n : Nat) (v : List (LocWrap LocMix n)) (w : List LocMix)
@@ -1727,7 +1727,7 @@ inductive LocMix : Type where
 
 /-! A local under two layers of nesting reaches both. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocDeep.casesOn_mk]) (xfail := [rec])
 inductive LocDeep : Type where
   | tip
   | mk (n : Nat) (v : List (List (LocWrap LocDeep n)))
@@ -1738,7 +1738,7 @@ inductive LocDeep : Type where
 
 /-! Two different nesting types may hang off the one local. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocTwo.casesOn_mk]) (xfail := [rec, recOn])
 inductive LocTwo where
   | tip
   | mk (n : Nat) (v : List (LocWrap LocTwo n)) (o : Option (LocWrap LocTwo n))
@@ -1749,7 +1749,7 @@ type where `List (LocWrap R n)` is a family, and the narrower one has to win:
 sending `at_0`'s list to the family at `0` would give that member's own `nil` a
 conclusion at a different type than the member it belongs to. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocBoth.casesOn_at_n, LocBoth.casesOn_at_0]) (xfail := [rec, recOn])
 inductive LocBoth where
   | tip
   | at_n (n : Nat) (v : List (LocWrap LocBoth n))
@@ -1773,7 +1773,7 @@ def bothSize : LocBoth → Nat :=
 /-! The nesting may sit under a function type, where the recursion it drives is
 infinitary and the round trip costs `Quot.sound`. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq, axioms])
+mumi_spec (unproven := [LocFun.casesOn_mk]) (xfail := [rec, injEq, axioms])
 inductive LocFun where
   | tip
   | mk (n : Nat) (f : Nat → List (LocWrap LocFun n))
@@ -1785,7 +1785,7 @@ mumi_spec
 inductive LocTag (α : Type) {k : Nat} (i : Fin k) : Type where
   | mk (a : α)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocFin.casesOn_mk]) (xfail := [rec])
 inductive LocFin where
   | tip
   | mk (k : Nat) (i : Fin k) (v : List (LocTag LocFin i))
@@ -1794,7 +1794,7 @@ inductive LocFin where
 as `Sigma`'s second one is.  The local then sits under a lambda, one binder
 deeper than the occurrence that has to carry it out. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 inductive LocSig where
   | tip
   | mk (n : Nat) (p : Σ _ : Nat, LocWrap LocSig n)
@@ -1818,7 +1818,7 @@ def sigSize : LocSig → Nat :=
 /-! The block may just as well be in the component that is *not* under the
 lambda. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 inductive LocSigFst where
   | tip
   | mk (n : Nat) (p : Σ _ : LocWrap LocSigFst n, Nat)
@@ -1830,7 +1830,7 @@ mumi_spec
 inductive LocFn (f : Nat → Type) where
   | mk (g : f 0)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 inductive LocFBox where
   | tip
   | mk (n : Nat) (x : LocFn (fun _ => LocWrap LocFBox n))
@@ -1846,7 +1846,7 @@ mumi_spec
 inductive LocWrapU (α : Type u) (n : Nat) : Type u where
   | mk (a : α)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocU.casesOn_mk]) (xfail := [rec])
 inductive LocU : Type u where
   | tip
   | mk (n : Nat) (v : List (LocWrapU LocU n)) : LocU
@@ -1860,7 +1860,7 @@ mumi_spec
 inductive LocRose (α : Type) (n : Nat) where
   | node (a : α) (cs : List (LocRose α n))
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (unproven := [LocNest.casesOn_mk]) (xfail := [rec, injEq])
 inductive LocNest where
   | tip
   | mk (n : Nat) (r : LocRose LocNest n) : LocNest
@@ -1868,7 +1868,7 @@ inductive LocNest where
 /-! Two constructors whose locals differ only in name are one occurrence, so
 they share a copy and the recursor asks for one motive, not two. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocShare.casesOn_mk1, LocShare.casesOn_mk2]) (xfail := [rec])
 inductive LocShare where
   | tip
   | mk1 (n : Nat) (v : List (LocWrap LocShare n))
@@ -1883,7 +1883,7 @@ inductive LocVec (α : Type) : Nat → Type where
   | nil : LocVec α 0
   | cons (a : α) {k : Nat} (v : LocVec α k) : LocVec α (k + 1)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [LocIxNest.casesOn_mk]) (xfail := [rec])
 inductive LocIxNest where
   | tip
   | mk (n : Nat) (v : LocVec (LocWrap LocIxNest n) n) : LocIxNest
@@ -1891,7 +1891,7 @@ inductive LocIxNest where
 /-! A `Subtype` reaches the local from both of its parameters at once, the
 second under a lambda. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 inductive LocSub where
   | tip
   | mk (n : Nat) (p : { _x : LocWrap LocSub n // n = n }) : LocSub
@@ -1899,7 +1899,7 @@ inductive LocSub where
 /-! And two locals may be reached at two different depths of the one
 occurrence. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 inductive LocPair where
   | tip
   | mk (n m : Nat) (p : Σ _ : LocWrap LocPair n, LocWrap LocPair m) : LocPair
@@ -1928,7 +1928,7 @@ inductive SVWrap (β : Type) (n : Nat) where
 
 section
 variable (α : Type)
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (unproven := [SVR.casesOn_mk]) (xfail := [rec])
 inductive SVR where
   | tip (a : α)
   | mk (n : Nat) (v : List (SVWrap SVR n)) : SVR
