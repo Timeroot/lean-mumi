@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Parameters and universes: implicit, non-uniform, `Sort`
@@ -15,7 +15,7 @@ import MumiTests.IRSpec.Harness
   the carrier would be a proposition, and a decoder into a type would tell
   equal proofs apart.
 
-`ir_spec` checks each block's declarations and rules; what follows a block is
+`mumi_spec` checks each block's declarations and rules; what follows a block is
 what that leaves out.
 -/
 
@@ -26,7 +26,7 @@ set_option autoImplicit false
 namespace ImplicitType
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U {α : Type} : Type where
   | base : U
@@ -46,7 +46,7 @@ namespace ImplicitTypeLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U {α : Type} : Type where
   | base : U
@@ -67,7 +67,7 @@ end ImplicitTypeLower
 namespace NonUniform
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -93,7 +93,7 @@ namespace NonUniformSmall
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive T (n : Nat) : Type where
   | leaf : T n
@@ -116,7 +116,7 @@ namespace NonUniformLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U (α : Type) : Type 1 where
   | atom (a : α) : U α
@@ -147,7 +147,7 @@ end
 namespace NonUniformMixed
 set_option mumi.mahlo false
 
-ir_spec (simp := [U.rec_many])
+mumi_spec (simp := [U.rec_many]) (xfail := [recOn, casesOn, injEq, axioms])
 mutual
 inductive U (β : Type) [Inhabited β] (n : Nat) : Type where
   | here (b : β) : U β n
@@ -188,7 +188,7 @@ namespace SortSucc
 set_option mumi.mahlo false
 universe u
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive U : Sort (u + 1) where
   | base : U

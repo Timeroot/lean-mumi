@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # A `Prop` member as an index domain
@@ -7,7 +7,7 @@ A carrier may be indexed by a proof of one of the block's propositions, as
 `Tm : (Γ : Ctx) → Closed Γ → Ty Γ → Type`.  A proof is never data: the index is
 there for the types to say, and nothing is stored for it, so `Tm Γ h A` and
 `Tm Γ h' A` are the same type by `rfl`, as they are of a real inductive family.
-The recursors take it like any other index.  `ir_spec` checks each block's
+The recursors take it like any other index.  `mumi_spec` checks each block's
 declarations and rules; what follows is what that leaves out.
 -/
 
@@ -16,7 +16,7 @@ set_option autoImplicit false
 namespace Simple
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -59,7 +59,7 @@ namespace SimpleLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -100,7 +100,7 @@ extending a context takes a type at it. -/
 namespace Tied
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -131,7 +131,7 @@ namespace TiedLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

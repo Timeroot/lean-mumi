@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # A data decoder the rest of the block reads
@@ -10,7 +10,7 @@ decoder feeds the rest of the block: `G` types a constructor field (`v : Fin
 e (G x c b e)`), and is what two type-valued decoders compute with -- `H` by a
 function type over `Fin (G …)`, `K` by `Nat.rec` on it -- while `L` reads `G`
 back out of a `W`.  This is the file one universe up; `IRTangle2Lower.lean` is
-the same block at the written universe. `ir_spec` checks every declaration
+the same block at the written universe. `mumi_spec` checks every declaration
 and equation; what follows is what that leaves out.
 -/
 
@@ -19,7 +19,7 @@ set_option mumi.mahlo false
 
 namespace Tangle2
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive A : Type where
   | nil : A

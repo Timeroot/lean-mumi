@@ -251,18 +251,12 @@ private def dataTarget (b : Block) (f : Field) : Option (Nat × Array Syntax) :=
 /-- The data members, in order. -/
 private def dataMembers (b : Block) : Array Nat :=
   (Array.range b.members.size).filter fun i => !b.members[i]!.prop
-/-- The data members of the graph's joint recursion data member `i` is in: those
-its graph's recursor takes motives for, or, where that is not known, every one. -/
-private def graphScope (b : Block) (i : Nat) : Array Nat :=
+/-- The data members `X.rec` takes motives for: those its graph's recursor
+does, or, where that is not known, every one. -/
+private def scope (b : Block) (i : Nat) : Array Nat :=
   match b.recs[i]? with
   | some s => if s.isEmpty then dataMembers b else s
   | none => dataMembers b
-/-- The data members of member `i`'s public recursion: one per universe, as a
-`mutual` has one -- at the written universe each is an engine of its own, and
-one universe up the graph's joint recursion, which may span universes, is
-split to match. -/
-private def scope (b : Block) (i : Nat) : Array Nat :=
-  (graphScope b i).filter (b.members[·]!.level == b.members[i]!.level)
 /-- The field's target when it is a data member of `scope`: a field the recursor gives a hypothesis at. -/
 private def scopedTarget (b : Block) (scope : Array Nat) (f : Field) : Option (Nat × Array Syntax) :=
   (dataTarget b f).filter fun (k, _) => scope.contains k
@@ -1369,7 +1363,7 @@ private def emitInv (b : Block) : CommandElabM Unit := do
   let ps ← paramsDecl b
   for i in dataMembers b do
     let m := b.members[i]!
-    let scope := graphScope b i
+    let scope := scope b i
     let (arity, _) ← graphArity b i
     let (implicitArity, _) ← graphArity b i (implicit := true)
     let gIdx := graphIdxNames b i
@@ -1505,9 +1499,8 @@ private def minorDecls (b : Block) (induction : Bool) (scope : Array Nat := data
 
 /-- The graph motive standing for the public `motive_i`: in a well-formed
 block, under the well-formedness of the indices and of the node. -/
-private def graphMotive (b : Block) (i : Nat) (filler := false) : CommandElabM String := do
-  let value := if filler then "PUnit" else
-    app (motive b i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
+private def graphMotive (b : Block) (i : Nat) : CommandElabM String := do
+  let value := app (motive b i) (repackIdx b i ++ #[if b.wf then "⟨⟨_ir_s, _ir_g⟩, _ir_w⟩" else "⟨_ir_s, _ir_g⟩"])
   let body ← if b.wf then do
       let hyps := (← arityHyps b i).map (fun (n, t) => par (n ++ " : " ++ t)) |>.push
         (par ("_ir_w : " ++ wfAt b i (graphIdxNames b i) "_ir_s" "_ir_g"))
@@ -1537,8 +1530,8 @@ the node's inversion, the proof fields too; a hypothesis is passed on at the
 well-formedness of the field's indices and its own.  For the compiled
 companion (`impl`), a `casesOn` minor: no hypotheses are taken, and each is a
 recursive call on the repacked field. -/
-private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool) (scope : Array Nat) (impl := false)
-    (joint := scope) (filler := false) : CommandElabM String := do
+private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool) (scope : Array Nat) (impl := false) :
+    CommandElabM String := do
   let c := b.members[i]!.ctors[ci]!
   let inv := withParams b (invertName b.members[i]!) #["_ir_w"]
   -- a proof field is no binder here: where an index term names one, it is the inversion's conjunct
@@ -1559,13 +1552,12 @@ private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool
       let halves := "⟨" ++ applyDomain (semVar f.name) dom ++ ", " ++ applyDomain f.name.toString dom ++ "⟩"
       let image := if b.wf then "⟨" ++ halves ++ ", " ++ applyDomain w dom ++ "⟩" else halves
       images := images.push (← lambda dom image)
-      if impl then
-        if scope.contains k then
+      if scope.contains k then
+        if impl then
           let recArgs := pArgs b ++ motiveArgs b scope ++ minorArgs b scope ++ (pubIndicesOf b k).map (fun _ => "_")
           ihImages := ihImages.push (← lambda dom (app ("@" ++ recImplName b.members[k]!) (recArgs.push image)))
-      else if joint.contains k then
-        ihNames := ihNames.push (ihVar f.name)
-        if scope.contains k then
+        else
+          ihNames := ihNames.push (ihVar f.name)
           if b.wf then
             let mut ws := #[]
             for (x, t) in b.members[k]!.indices.zip args do
@@ -1584,7 +1576,6 @@ private def graphMinor (b : Block) (i ci : Nat) (minorName : String) (ihs : Bool
       images := images.push f.name.toString
   let idxWf ← arityHyps b i
   let tail := if b.wf then (idxWf.map (·.1)).push "_ir_w" else #[]
-  if filler then return untypedLambda ((binders ++ ihNames ++ tail).map fun _ => "_") "PUnit.unit"
   return untypedLambda (binders ++ ihNames ++ tail) (app ("@" ++ minorName) (images ++ (if ihs then ihImages else #[])))
 
 /-- `X.rec` is the graph's recursor at repacked motives and minor premises --
@@ -1631,14 +1622,11 @@ private def emitRec (b : Block) : CommandElabM Unit := do
         set saved
         trace[Mumi.ir] "no compiled companion for the recursors of {scope.map (b.members[·]!.name)}, which are noncomputable:\n{e.toMessageData}"
         pure false
-    -- the graph's recursion at the public one's motives, and at `PUnit` for
-    -- the members of other universes it spans
-    let joint := graphScope b i
     let mut gargs := pArgs b
-    for k in joint do gargs := gargs.push (← graphMotive b k (filler := !scope.contains k))
-    for k in joint do
+    for k in scope do gargs := gargs.push (← graphMotive b k)
+    for k in scope do
       for ck in [:b.members[k]!.ctors.size] do
-        gargs := gargs.push (← graphMinor b k ck (minor b k ck) true scope (joint := joint) (filler := !scope.contains k))
+        gargs := gargs.push (← graphMinor b k ck (minor b k ck) true scope)
     for k in scope do
       let m := b.members[k]!
       let idx := pubIdxNames b k

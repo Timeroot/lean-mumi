@@ -3,7 +3,7 @@ Copyright (c) 2026 Alex Meiburg. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Alex Meiburg
 -/
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # A tour of the whole surface
@@ -53,6 +53,7 @@ inductives, so everything Lean does to an inductive it does to these.
 
 namespace Hetero
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 /-- A tree, in `Type`, with one field at the proposition beside it. -/
 inductive Tree : Type where
@@ -77,25 +78,8 @@ MumiTests.Demo.Hetero.Tree.wrap : Hidden → Tree
 #guard_msgs in
 #print Tree
 
-/-- info: Tree.wrap : Hidden → Tree -/
-#guard_msgs in
-#check @Tree.wrap
-
-/-- info: Hidden.mk : ∀ (t : Tree), Hidden -/
-#guard_msgs in
-#check @Hidden.mk
-
 /-! `Tree.rec` is what it would have been with no proposition beside it: one
 motive, one minor premise per constructor. -/
-
-/--
-info: @Tree.rec : {motive : Tree → Sort u_1} →
-  ((n : Nat) → motive (Tree.leaf n)) →
-    ((l r : Tree) → motive l → motive r → motive (l.node r)) →
-      ((h : Hidden) → motive (Tree.wrap h)) → (t : Tree) → motive t
--/
-#guard_msgs in
-#check @Tree.rec
 
 /-! `match` and `cases` work, because there is nothing in the way of them.  A
 `wrap` gives back nothing: its field is a proof and the result is data. -/
@@ -142,6 +126,7 @@ other, so a cycle makes them equal and nothing can lift that.
 
 namespace TwoUniverses
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Small : Type where
   | z : Small
@@ -151,19 +136,6 @@ inductive Large : Type 2 where
   | ty (α : Type 1) : Large
   | pair (a b : Large) : Large
 end
-
-/-- info: Large.of : Small → Large -/
-#guard_msgs in
-#check @Large.of
-
-/--
-info: @Large.rec : {motive : Large → Sort u_1} →
-  ((m : Small) → motive (Large.of m)) →
-    ((α : Type 1) → motive (Large.ty α)) →
-      ((a b : Large) → motive a → motive b → motive (a.pair b)) → (t : Large) → motive t
--/
-#guard_msgs in
-#check @Large.rec
 
 def depth : Large → Nat
   | .of _ => 0
@@ -235,6 +207,7 @@ genuinely gone, and they are pinned at the end of this section.
 
 namespace IndInd
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -254,31 +227,9 @@ Ctx._sub
 #guard_msgs in
 #print Ctx
 
-/-- info: Ctx.snoc : (Γ : Ctx) → Ty Γ → Ctx -/
-#guard_msgs in
-#check @Ctx.snoc
-
-/-- info: Ty.arr : (Γ : Ctx) → (A : Ty Γ) → Ty (Γ.snoc A) → Ty Γ -/
-#guard_msgs in
-#check @Ty.arr
-
 /-! `Ctx.rec` is the whole block's, with a motive per member, which is what an
 induction-inductive block has instead of one recursor each.  The tactics are
 driven off principles cut out of it, further down. -/
-
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_1 (Γ.snoc A)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (B : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) B → motive_2 Γ (Ty.arr Γ A B)) →
-            (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
 
 /-! `match` works, through a view the rewrite puts in the way, and the
 recursion it produces is structural: no `WellFounded.fix`, so the equations hold
@@ -397,12 +348,6 @@ def isNil (Γ : Ctx) : Bool :=
 /-! Injectivity is a theorem and a `@[simp]` lemma, stated the way an ordinary
 constructor's is -- the dependent field compared with `HEq`. -/
 
-/--
-info: Ctx.snoc.injEq : ∀ (Γ : Ctx) (A : Ty Γ) (Γ_1 : Ctx) (A_1 : Ty Γ_1), (Γ.snoc A = Γ_1.snoc A_1) = (Γ = Γ_1 ∧ A ≍ A_1)
--/
-#guard_msgs in
-#check @Ctx.snoc.injEq
-
 example (Γ : Ctx) (A : Ty Γ) : Ctx.snoc Γ A ≠ .nil := by simp
 
 /-! `noConfusion` is stated about the member, and says what an ordinary
@@ -492,6 +437,7 @@ work on a proof of it.  The motive lands in `Prop`; section 9 is about why.
 
 namespace Judgement
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -503,28 +449,11 @@ inductive Ok : Ctx → Prop where
   | snoc (Γ : Ctx) (A : Ty Γ) (h : Ok Γ) : Ok (.snoc Γ A)
 end
 
-/-- info: Ok.snoc : ∀ (Γ : Ctx) (A : Ty Γ), Ok Γ → Ok (Γ.snoc A) -/
-#guard_msgs in
-#check @Ok.snoc
-
 /-! `Ok.rec` is the whole block's, and `motive_3` there takes the value the data
 recursion produced as well as the proof.  So a proposition here can say
 something about what the recursion over `Ctx` returned, which is strictly more
 than a recursion over the propositions alone can state.  Section 8 is a block
 that loses it. -/
-
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (a : Ctx) → motive_1 a → Ok a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_1 (Γ.snoc A))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) (nil_1 : motive_3 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (h : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih h → motive_3 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  {a : Ctx} (h : Ok a), motive_3 a (Ctx.rec nil snoc base nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 /-! `induction` and `cases` work on a proof, with the constructor names the
 block was written with.  A proof can also be had the other way round, by
@@ -566,6 +495,7 @@ brings in no axiom.
 
 namespace KeptIndex
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive KCtx : Type where
   | nil : KCtx
@@ -574,10 +504,6 @@ inductive KTy : KCtx → Nat → Type where
   | base (Γ : KCtx) (k : Nat) : KTy Γ k
   | arr (Γ : KCtx) (k : Nat) (A B : KTy Γ k) : KTy Γ k
 end
-
-/-- info: KTy.arr : (Γ : KCtx) → (k : Nat) → KTy Γ k → KTy Γ k → KTy Γ k -/
-#guard_msgs in
-#check @KTy.arr
 
 def kDep {Γ : KCtx} {k : Nat} : KTy Γ k → Nat
   | .base _ _ => 0
@@ -622,6 +548,7 @@ compiles, it runs, `simp` proves its equations -- and `rfl` does not, because
 
 namespace CrossIndex
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UCtx : Type where
   | nil : UCtx
@@ -631,10 +558,6 @@ inductive UTy : Nat → UCtx → Type where
   | wrap (n : Nat) (Γ : UCtx) (A : UTy n Γ) : UTy n Γ
   | up (n : Nat) (Γ : UCtx) (A : UTy n Γ) : UTy (n + 1) Γ
 end
-
-/-- info: UTy.up : (n : Nat) → (Γ : UCtx) → UTy n Γ → UTy (n + 1) Γ -/
-#guard_msgs in
-#check @UTy.up
 
 /-! Where the crossing call is the *only* recursion, there is something else to
 descend on -- the `Nat` -- and Lean takes it, so this one is structural after
@@ -697,6 +620,7 @@ refuses the block, because `R`'s arity names its siblings.
 
 namespace TwoHosts
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive C : Type where
   | nil : C
@@ -707,15 +631,6 @@ inductive R : C → D → Prop where
   | nil : R .nil .nil
   | cons (c : C) (d : D) (h : R c d) : R c.cons d
 end
-
-/--
-info: @R.rec : ∀ {motive : (a : C) → (a_1 : D) → R a a_1 → Prop},
-  motive C.nil D.nil R.nil →
-    (∀ (c : C) (d : D) (h : R c d), motive c d h → motive c.cons d ⋯) →
-      ∀ {a : C} {a_1 : D} (t : R a a_1), motive a a_1 t
--/
-#guard_msgs in
-#check @R.rec
 
 /-- Its own recursion is the full one, so `induction` on a proof goes through. -/
 theorem r_nil (c : C) (d : D) (h : R c d) : d = .nil := by
@@ -731,12 +646,6 @@ theorem r_shape (c : C) (d : D) (h : R c d) : c = .nil ∨ ∃ k, c = .cons k :=
 
 /-! And `C` is Lean's, with the one motive, so `induction` takes it without
 `using`. -/
-
-/--
-info: @C.rec : {motive : C → Sort u_1} → motive C.nil → ((c : C) → motive c → motive c.cons) → (t : C) → motive t
--/
-#guard_msgs in
-#check @C.rec
 
 example (c : C) : c = c := by
   induction c with
@@ -773,6 +682,7 @@ subsingleton.
 
 namespace Forgotten
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T
@@ -785,28 +695,9 @@ inductive Big : T → Prop where
   | leaf : Big .leaf
 end
 
-/-- info: Big.node : ∀ (cs hs : List T) (h : Ok cs), Big (T.node cs h) -/
-#guard_msgs in
-#check @Big.node
-
 /-! `Big.rec` is the recursion over the propositions alone: one motive, `hs`
 bound in the minor premise for `Big.node`, and no `hs_ih`.  `Ok` did not forget
 anything and is peeled out all the same. -/
-
-/--
-info: @Big.rec : ∀ {motive : (a : T) → Big a → Prop},
-  (∀ (cs hs : List T) (h : Ok cs), motive (T.node cs h) ⋯) → motive T.leaf Big.leaf → ∀ {a : T} (t : Big a), motive a t
--/
-#guard_msgs in
-#check @Big.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (a : List T) → Ok a → Prop},
-  motive [] Ok.nil →
-    (∀ (t : T) (ts : List T) (h : Ok ts), motive ts h → motive (t :: ts) ⋯) → ∀ {a : List T} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 /-! `induction` and `cases` reach for those, so both work on the member with the
 forgotten field, and both bind it. -/
@@ -835,6 +726,7 @@ forgotten field costs. -/
 
 namespace Kept
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T
@@ -846,25 +738,6 @@ inductive Big : T → Prop where
   | node (cs : List T) (h : Ok cs) : Big (.node cs h)
   | leaf : Big .leaf
 end
-
-/--
-info: @Big.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Big a → Prop} {motive_3 : List T → Sort u_1}
-  {motive_4 : (a : List T) → motive_3 a → Ok a → Prop}
-  (node : (cs : List T) → (h : Ok cs) → (cs_ih : motive_3 cs) → motive_4 cs cs_ih h → motive_1 (T.node cs h))
-  (leaf : motive_1 T.leaf)
-  (node_1 :
-    ∀ (cs : List T) (h : Ok cs) (cs_ih : motive_3 cs) (h_ih : motive_4 cs cs_ih h),
-      motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯)
-  (leaf_1 : motive_2 T.leaf leaf Big.leaf) (nil : motive_3 [])
-  (cons : (head : T) → (tail : List T) → motive_1 head → motive_3 tail → motive_3 (head :: tail))
-  (nil_1 : motive_4 [] nil Ok.nil)
-  (cons_1 :
-    ∀ (t : T) (ts : List T) (h : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_3 ts),
-      motive_4 ts ts_ih h → motive_4 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
-  {a : T} (t : Big a), motive_2 a (T.rec node leaf node_1 leaf_1 nil cons nil_1 cons_1 a) t
--/
-#guard_msgs in
-#check @Big.rec
 
 end Kept
 
@@ -890,6 +763,7 @@ what the refusal reads like.
 
 namespace PropElim
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Prop where
   | mk (b : B) : A
@@ -899,14 +773,6 @@ inductive B : Type where
 end
 
 /-! The `Prop` member's motive is `A → Prop`; the data member's is `Sort u`. -/
-/--
-info: @A.rec : ∀ {motive_1 : A → Prop} {motive_2 : B → Sort u_1},
-  (∀ (b : B) (ih_1 : motive_2 b), motive_1 ⋯) →
-    ∀ (case_2 : (n : Nat) → motive_2 (B.leaf n)) (case_3 : (a : A) → motive_1 a → motive_2 (B.fromA a)) (t : A),
-      motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 /--
 error: Type mismatch
@@ -965,13 +831,10 @@ them and a delaborator shows the original.
 
 namespace NestProp
 
+mumi_spec (xfail := [ctors, rec, recOn, casesOn])
 inductive T : Type where
   | mk1 : T
   | mkT (h : Nonempty T) : T
-
-/-- info: T.mkT : Nonempty T → T -/
-#guard_msgs in
-#check @T.mkT
 
 /-! The constructor really is a constructor here: the rescue went through the
 lowering, not through the erasure, so `T` is an inductive. -/
@@ -1010,6 +873,7 @@ directions compile, and nothing costs an axiom.
 
 namespace NestData
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Box (α : Type u) : Type u where
   | mk (a : α) (p : BoxP α) : Box α
@@ -1017,6 +881,7 @@ inductive BoxP (α : Type u) : Prop where
   | p : BoxP α
 end
 
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq])
 mutual
 inductive St : Type 1 where
   | tip : St
@@ -1026,9 +891,6 @@ inductive Other : Type where
 end
 
 /-! The field's type is the copy's name, not `Box St`. -/
-/-- info: St.mk : St.nested_Box_1 → St -/
-#guard_msgs in
-#check @St.mk
 
 /-- info: St.nested_Box_1.toOrig : St.nested_Box_1 → Box St -/
 #guard_msgs in
@@ -1071,6 +933,7 @@ type goes, and finds `Subtype`.
 
 namespace Derive
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive DVec : Type where
   | nil : DVec
@@ -1131,16 +994,13 @@ indexed by a function.
 
 namespace FunIndex
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
 inductive Ty : (Nat → Ctx) → Type where
   | mk (f : Nat → Ctx) : Ty f
 end
-
-/-- info: Ty.mk : (f : Nat → Ctx) → Ty f -/
-#guard_msgs in
-#check @Ty.mk
 
 example (f : Nat → Ctx) (t : Ty f) : True := by
   cases t with
@@ -1184,6 +1044,7 @@ namespace CyclicArity
 
 /-! Order alone is fine -- `T` is indexed by a `C` declared after it. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : C → Type where
   | base (Γ : C) : T Γ
@@ -1191,10 +1052,6 @@ inductive C : Type where
   | nil : C
   | snoc (Γ : C) (A : T Γ) : C
 end
-
-/-- info: T.base : (Γ : C) → T Γ -/
-#guard_msgs in
-#check @T.base
 
 /-! A cycle is not. -/
 

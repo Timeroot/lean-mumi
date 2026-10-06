@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # Universe polymorphism
@@ -12,6 +12,7 @@ universe u v w
 
 /-! ## Three universes at once -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive PA : Prop where
   | fromB : PB → PA
@@ -25,10 +26,6 @@ inductive PC : Type (u + 1) where
   | higher : Type u → PC
   | pair : PB → PC → PC
 end
-
-/-- info: PC.{u} : Type (u + 1) -/
-#guard_msgs in
-#check PC
 
 section
 variable {mA : PA.{u} → Prop} {mB : PB.{u} → Sort w} {mC : PC.{u} → Sort v}
@@ -87,6 +84,7 @@ A dependent function `(a : α) → P a` lives at `Sort (imax (u+1) v)`, which is
 `Prop` when `v` is.  That is fine here: it is the *member's* universe that has
 to be decidably `Prop`-or-not, and `IB` is declared at `Type (max u v)`. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive IA (α : Type u) (P : α → Sort v) : Prop where
   | mk : IB α P → IA α P
@@ -95,10 +93,6 @@ inductive IB (α : Type u) (P : α → Sort v) : Type (max u v) where
   | back : IA α P → IB α P
   | tag : Nat → IB α P
 end
-
-/-- info: IB.{u, v} (α : Type u) (P : α → Sort v) : Type (max u v) -/
-#guard_msgs in
-#check IB
 
 def iTag {α : Type u} {P : α → Sort v} : IB α P → Nat :=
   @IB.mutualRec α P (fun _ => True) (fun _ => Nat)
@@ -125,6 +119,7 @@ the data-only dependency graph, which is what lets them sit at different
 universes.  Note that a field of type `Type v` needs the member at `v + 1`. -/
 
 -- all three appear only inside the `max`, which is exactly what is being tested
+mumi_spec (xfail := [rec, recOn, casesOn])
 set_option linter.checkUnivs false in
 mutual
 inductive MA : Prop where
@@ -137,10 +132,6 @@ inductive MC : Type (max u (max (v + 1) (w + 1))) where
   | fromB : MB → MC
   | big : Type v → Type w → MC
 end
-
-/-- info: MC.{u, v, w} : Type (max u (v + 1) (w + 1)) -/
-#guard_msgs in
-#check MC
 
 def mTag : MC.{u, v, w} → Nat :=
   @MC.mutualRec (fun _ => True) (fun _ => Nat) (fun _ => Nat)
@@ -156,6 +147,7 @@ def mTag : MC.{u, v, w} → Nat :=
 `KB` and `KC` hold each other, so each one's universe has to be at least the
 other's -- they have to be equal.  That still leaves them polymorphic. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive KA : Prop where
   | mk : KB → KA
@@ -180,6 +172,7 @@ def kTag : KB.{u} → Nat :=
 
 Not syntactically `Type _`, but never `Prop` either, so it is a data member. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive SA : Prop where
   | mk : SB → SA
@@ -187,10 +180,6 @@ inductive SB : Sort (max 1 u) where
   | leaf : Nat → SB
   | fromA : SA → SB
 end
-
-/-- info: SB.{u} : Sort (max 1 u) -/
-#guard_msgs in
-#check SB
 
 def sbTag : SB.{u} → Nat :=
   @SB.mutualRec (fun _ => True) (fun _ => Nat) (fun _ _ => trivial)
@@ -202,6 +191,7 @@ def sbTag : SB.{u} → Nat :=
 
 /-! ## Indices and universe polymorphism together -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive XEv : Nat → Prop where
   | zero : XEv 0
@@ -210,10 +200,6 @@ inductive XOd : Nat → Type u where
   | one : XOd 1
   | succ : (n : Nat) → XEv (n + 1) → XOd n → Nat → XOd (n + 2)
 end
-
-/-- info: XOd.{u} : Nat → Type u -/
-#guard_msgs in
-#check XOd
 
 def xSum : (n : Nat) → XOd.{u} n → Nat :=
   fun n t => @XOd.mutualRec (fun _ _ => True) (fun _ _ => Nat)

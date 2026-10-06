@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Induction-induction and induction-recursion in one block, at the universe written
@@ -8,7 +8,7 @@ decoder values, decoders over indexed carriers, and the equations each of them
 comes with.  Everything here stays at the universe it was written at, on the reflection
 axiom, and every equation is still `rfl` but two at nested indices; what is
 given up is closed normalisation, so the closed checks of the upper file are
-not repeated.  `ir_spec` checks each block's declarations and rules; what
+not repeated.  `mumi_spec` checks each block's declarations and rules; what
 follows a block is what that leaves out.
 -/
 
@@ -23,7 +23,7 @@ field out of a constructor. -/
 
 namespace CtxTyL
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -93,7 +93,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValueL
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Code : Type where
   | one : Code
@@ -120,7 +120,7 @@ end ByValueL
 namespace PolyL
 universe u
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx (X : Type u) : Type u where
   | nil : Ctx X
@@ -143,7 +143,7 @@ end PolyL
 
 namespace DottedL
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -171,7 +171,7 @@ the recursor is the stage engine's, and it runs. -/
 
 namespace PlainL
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Vec : Nat → Type where
   | nil : Vec 0
@@ -268,7 +268,7 @@ nothing is erased, so it goes through, equations included. -/
 
 namespace UnderBinderL
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -296,7 +296,7 @@ namespace NestedL
 -- at a nested index transports along the decode of that index, which does not
 -- reduce here, so `El_deep` and `El_shift` are not definitional and are not
 -- stated; the iota rules are.
-ir_spec (unproven := [El_deep, El_shift])
+mumi_spec (unproven := [El_deep, El_shift]) (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Notations and implicit binders
@@ -10,7 +10,7 @@ a proof of a `Prop` member under binders, or a plain type, so `∃ x, Good (b x)
 is a clause's to say, not a field's.  A constructor field written `{x : T}` is
 implicit in the public constructor and in the minor premises, as Lean's own
 are; an index of a decoder written `{Γ : Ctx}` is implicit in the public
-decoder, and the clauses write the explicit ones only.  `ir_spec` checks the
+decoder, and the clauses write the explicit ones only.  `mumi_spec` checks the
 declarations and equations of each block; what follows is what that leaves out.
 -/
 
@@ -19,7 +19,7 @@ set_option autoImplicit false
 namespace Notations
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive U : Type where
   | base : U
@@ -59,7 +59,7 @@ namespace NotationsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive U : Type where
   | base : U
@@ -94,7 +94,7 @@ end NotationsLower
 namespace Implicit
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -126,7 +126,7 @@ namespace ImplicitLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -160,7 +160,7 @@ a decoder call writes the ones its declaration binds explicitly. -/
 namespace Params
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -192,7 +192,7 @@ namespace ParamsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -221,7 +221,7 @@ end ParamsLower
 inductive (`MumiTests/IRParams.lean` has more). -/
 
 namespace ImplicitCarrier
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U {α : Type} : Type where
   | base : U

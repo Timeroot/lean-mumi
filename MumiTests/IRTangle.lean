@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # One strongly connected block of everything
@@ -8,7 +8,7 @@ the `B` inside; `B` is indexed by an `A` and by `F` of it; `D` is a type compute
 from a `B`, and reads `F` and itself; `E` is indexed by all of `A`, `F` and `B`,
 and `G` counts through it.  Nothing here means anything.  The point is that one
 block lowers, every carrier gets its recursor, every decoder its equations, and
-all of it is `rfl`: `ir_spec` checks it; what follows is what that leaves out.
+all of it is `rfl`: `mumi_spec` checks it; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -16,7 +16,7 @@ set_option mumi.mahlo false
 
 namespace Tangle
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive A : Type where
   | nil : A
@@ -78,7 +78,7 @@ end Tangle
 
 namespace Dependent
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

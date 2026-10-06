@@ -1,10 +1,10 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Mutual carriers, and functions over them in the same block
 
 Two carriers in one recursion, their decoders, and functions into the
-decoders' values beside them -- `default`, `measure` -- as one block.  `ir_spec`
+decoders' values beside them -- `default`, `measure` -- as one block.  `mumi_spec`
 checks every declaration and equation; what follows is what that leaves out.
 -/
 
@@ -13,7 +13,7 @@ set_option maxRecDepth 6000
 namespace IRMutualUpper
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Ty : Type where
     | base : Ty
@@ -58,7 +58,7 @@ end IRMutualUpper
 namespace IRMutualLower
 set_option mumi.mahlo true
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Ty : Type where
     | base : Ty

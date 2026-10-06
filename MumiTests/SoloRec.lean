@@ -3,7 +3,7 @@ Copyright (c) 2026 Alex Meiburg. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Alex Meiburg
 -/
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # Recursors with one motive
@@ -35,6 +35,7 @@ namespace MumiTests.SoloRec
 
 namespace Flagship
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil
@@ -99,6 +100,7 @@ and a tactic that finds no eliminator unfolds it rather than stopping.
 
 namespace TwoProps
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive C : Type where
   | nil
@@ -160,15 +162,18 @@ is left after they are discharged is a case split.
 
 namespace TwoData
 
+mumi_spec
 inductive Tree (α : Type) : Type where
   | leaf | node (l : Tree α) (a : α) (r : Tree α)
 
+mumi_spec (xfail := [rec, recOn])
 inductive Tree.WF {α : Type} : Tree α → Prop where
   | leaf : Tree.WF .leaf
   | node (l a r) : Tree.WF l → Tree.WF r → Tree.WF (.node l a r)
 
 def WFTree (α : Type) : Type := { t : Tree α // t.WF }
 
+mumi_spec (unproven := [R.casesOn_mk]) (xfail := [rec, recOn, axioms])
 inductive R : Type where
   | tip
   | mk (x : WFTree R)
@@ -182,30 +187,6 @@ info: @R.recD : {motive : R → Sort u_1} → motive R.tip → ((x : { t // t.WF
 /-! The recursion over the whole block is still there, and still the strong
 one: two of its four motives are data, which is exactly what the one-motive
 version had to give up. -/
-
-/--
-info: @R.rec : {motive_1 : R → Sort u_1} →
-  {motive_2 : { t // t.WF } → Sort u_1} →
-    {motive_3 : Tree R → Sort u_1} →
-      {motive_4 : (a : Tree R) → motive_3 a → a.WF → Prop} →
-        motive_1 R.tip →
-          ((x : { t // t.WF }) → motive_2 x → motive_1 (R.mk x)) →
-            ((val : Tree R) →
-                (property : val.WF) →
-                  (val_ih : motive_3 val) → motive_4 val val_ih property → motive_2 ⟨val, property⟩) →
-              (leaf : motive_3 Tree.leaf) →
-                (node :
-                    (l : Tree R) →
-                      (a : R) → (r : Tree R) → motive_3 l → motive_1 a → motive_3 r → motive_3 (l.node a r)) →
-                  motive_4 Tree.leaf leaf ⋯ →
-                    (∀ (l : Tree R) (a : R) (r : Tree R) (a_1 : l.WF) (a_2 : r.WF) (l_ih : motive_3 l)
-                        (a_ih : motive_1 a) (r_ih : motive_3 r),
-                        motive_4 l l_ih a_1 →
-                          motive_4 r r_ih a_2 → motive_4 (l.node a r) (node l a r l_ih a_ih r_ih) ⋯) →
-                      (t : R) → motive_1 t
--/
-#guard_msgs in
-#check @R.rec
 
 end TwoData
 
@@ -224,6 +205,7 @@ is.
 
 namespace Lowered
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive D : Type where
   | tip
@@ -258,12 +240,6 @@ example (r : R) : True := by
 /-! A lowered data member keeps Lean's own recursor, and Lean's own `induction`
 support with it. -/
 
-/--
-info: @D.rec : {motive : D → Sort u_1} → motive D.tip → ((h : R) → motive (D.mk h)) → (t : D) → motive t
--/
-#guard_msgs in
-#check @D.rec
-
 example (d : D) : True := by
   induction d with
   | tip => trivial
@@ -275,6 +251,7 @@ end Lowered
 
 namespace LoweredIndexed
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive D : Type 1 where
   | tip
@@ -304,6 +281,7 @@ carries two elimination levels; both are pinned, and neither survives into
 
 namespace LoweredTwoSCC
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type where
   | tip
@@ -343,6 +321,7 @@ nothing anywhere else: discharging the other's motive drops a hypothesis. -/
 
 namespace LoweredTwoProps
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive D : Type where
   | tip

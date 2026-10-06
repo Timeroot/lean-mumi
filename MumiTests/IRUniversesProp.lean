@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # A `Prop` running a dependency between universes
@@ -11,7 +11,7 @@ Lean's `mutual` refuses it twice over -- one universe for the block, and
 `A` and `B` are declared by `Mumi` across the two universes, and the proofs
 go into well-formedness predicates over the graphs, `P` among them, which
 Lean's own `mutual` takes in `Prop`.  Each carrier lands one above where it
-was written.  `ir_spec` checks each block; what follows is what that leaves out.
+was written.  `mumi_spec` checks each block; what follows is what that leaves out.
 -/
 
 set_option autoImplicit false
@@ -19,7 +19,7 @@ set_option mumi.mahlo false
 
 namespace UnivProp
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -91,7 +91,7 @@ namespace UnivPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -156,7 +156,7 @@ universe, as a `mutual` has one: `Ctx.rec` over `Ctx` and `Ty`, `Big.rec` over
 namespace MixIdx
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -181,12 +181,11 @@ def Large : Big → Type 2
   | .over Γ A v b g => Val Γ A × ((z : Large b) → Large (g z))
 end
 
+/-- One recursion over the three, as `Mumi.IndInd` declares the graphs. -/
 def clen : Ctx → Nat :=
-  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
-def bsize : Big → Nat := Big.rec 0 (fun Γ _ _ _ _ ih _ => clen Γ + ih + 1)
+  Ctx.rec (motive_2 := fun _ _ => Nat) (motive_3 := fun _ => Nat) 0 (fun _ _ _ ih _ => ih + 1)
+    (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1) 0 (fun _ _ _ _ _ _ _ ih _ => ih + 1)
 example (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : clen (Ctx.snoc Γ A h) = clen Γ + 1 := rfl
-example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
-    bsize (Big.over Γ A v b g) = clen Γ + bsize b + 1 := rfl
 
 theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
   induction h with
@@ -207,7 +206,7 @@ namespace MixIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -262,7 +261,7 @@ universe u
 namespace PolyMix
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type u where
   | a0 : A
@@ -299,7 +298,7 @@ namespace PolyMixLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type u where
   | a0 : A
@@ -340,7 +339,7 @@ namespace TwoParams
 set_option mumi.mahlo false
 set_option linter.unusedVariables false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type u where
   | a0 : A
@@ -370,7 +369,7 @@ set_option mumi.mahlo true
 set_option maxRecDepth 6000
 set_option linter.unusedVariables false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type u where
   | a0 : A

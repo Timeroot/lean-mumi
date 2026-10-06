@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Implicit arguments, as Lean's own declarations have them
@@ -9,7 +9,7 @@ strict-implicit fields `⦃Γ : Ctx⦄`, implicit fields, and implicit decoder
 binders.  Inside the block a constructor application in an index term writes
 only the explicit fields, as a Lean term does: the implicit ones are read off the
 types of the explicit ones and off the index the application stands at.
-`ir_spec` checks every binder annotation of every public declaration, the
+`mumi_spec` checks every binder annotation of every public declaration, the
 minor premises' included, where an implicit field stays implicit as in Lean's.
 -/
 
@@ -20,7 +20,7 @@ set_option autoImplicit false
 namespace Inst
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U (α : Type) [BEq α] : Type where
   | base : U α
@@ -42,7 +42,7 @@ namespace InstLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-ir_spec
+mumi_spec (xfail := [injEq])
 mutual
 inductive U (α : Type) [BEq α] : Type where
   | base : U α
@@ -67,7 +67,7 @@ index of type `Ty (.snoc Γ A)` stands for `.base (.snoc Γ A)`. -/
 namespace Fields
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -107,7 +107,7 @@ namespace FieldsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq, axioms])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

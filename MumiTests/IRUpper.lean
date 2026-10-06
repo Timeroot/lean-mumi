@@ -6,8 +6,8 @@ import Mumi
 A plain test of the smallest induction-recursion, written out by hand, as a
 reader's first stop: what the block declares, its recursor in the shape Lean
 gives one, its equations by `rfl`, values computed and run.  The other test
-files state the same of their blocks through `ir_spec`
-(`MumiTests/IRSpec/Harness.lean`), which checks every declaration and rule of
+files state the same of their blocks through `mumi_spec`
+(`MumiTests/Spec/Harness.lean`), which checks every declaration and rule of
 a block against what Lean's own rules say it should be.
 -/
 

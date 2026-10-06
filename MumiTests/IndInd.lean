@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # Induction-induction through `Prop`
@@ -23,6 +23,7 @@ A context, and the proposition that a name is fresh for it.  `Fresh`'s arity
 mentions `Ctx`, and `Ctx.snoc` carries a `Fresh`.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -33,47 +34,6 @@ inductive Fresh : String → Ctx → Prop where
     Fresh x (.snoc Γ y h)
 end
 
-/-- info: Ctx : Type -/
-#guard_msgs in
-#check @Ctx
-
-/-- info: Fresh : String → Ctx → Prop -/
-#guard_msgs in
-#check @Fresh
-
-/-- info: Ctx.nil : Ctx -/
-#guard_msgs in
-#check @Ctx.nil
-
-/-- info: Ctx.snoc : (Γ : Ctx) → (x : String) → Fresh x Γ → Ctx -/
-#guard_msgs in
-#check @Ctx.snoc
-
-/-- info: Fresh.nil : ∀ (x : String), Fresh x Ctx.nil -/
-#guard_msgs in
-#check @Fresh.nil
-
-/--
-info: Fresh.snoc : ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ), x ≠ y → Fresh x Γ → Fresh x (Γ.snoc y h)
--/
-#guard_msgs in
-#check @Fresh.snoc
-
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : String) → (a_1 : Ctx) → motive_1 a_1 → Fresh a a_1 → Prop} →
-    (nil : motive_1 Ctx.nil) →
-      (snoc :
-          (Γ : Ctx) →
-            (x : String) → (a : Fresh x Γ) → (Γ_ih : motive_1 Γ) → motive_2 x Γ Γ_ih a → motive_1 (Γ.snoc x a)) →
-        (∀ (x : String), motive_2 x Ctx.nil nil ⋯) →
-          (∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (a : x ≠ y) (a_1 : Fresh x Γ) (Γ_ih : motive_1 Γ)
-              (h_ih : motive_2 y Γ Γ_ih h), motive_2 x Γ Γ_ih a_1 → motive_2 x (Γ.snoc y h) (snoc Γ y h Γ_ih h_ih) ⋯) →
-            (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
-
 /-! ### One recursion over the whole block
 
 `Fresh`'s motive takes the value `Ctx`'s motive produced at the context it is
@@ -83,20 +43,6 @@ what they are eliminating -- which is what Lean's own recursors for a `mutual`
 block do, and is what lets a proof by `Fresh.rec` say something about a function
 defined by `Ctx.rec`.
 -/
-
-/--
-info: @Fresh.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : String) → (a_1 : Ctx) → motive_1 a_1 → Fresh a a_1 → Prop}
-  (nil : motive_1 Ctx.nil)
-  (snoc :
-    (Γ : Ctx) → (x : String) → (a : Fresh x Γ) → (Γ_ih : motive_1 Γ) → motive_2 x Γ Γ_ih a → motive_1 (Γ.snoc x a))
-  (nil_1 : ∀ (x : String), motive_2 x Ctx.nil nil ⋯)
-  (snoc_1 :
-    ∀ (x y : String) (Γ : Ctx) (h : Fresh y Γ) (a : x ≠ y) (a_1 : Fresh x Γ) (Γ_ih : motive_1 Γ)
-      (h_ih : motive_2 y Γ Γ_ih h), motive_2 x Γ Γ_ih a_1 → motive_2 x (Γ.snoc y h) (snoc Γ y h Γ_ih h_ih) ⋯)
-  {a : String} {a_1 : Ctx} (h : Fresh a a_1), motive_2 a a_1 (Ctx.rec nil snoc nil_1 snoc_1 a_1) h
--/
-#guard_msgs in
-#check @Fresh.rec
 
 /-! ### The recursor computes, and both iota rules are definitional -/
 
@@ -149,10 +95,6 @@ def ex : Ctx :=
 #eval ex.length
 
 example : ex.length = 2 := rfl
-
-/-- info: 'Ctx.rec' does not depend on any axioms -/
-#guard_msgs in
-#print axioms Ctx.rec
 
 /-- info: 'ex' does not depend on any axioms -/
 #guard_msgs in
@@ -274,6 +216,7 @@ its own, and a data constructor's minor premise gets one induction hypothesis
 per erased field.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Tm : Type where
   | var : Nat → Tm
@@ -286,40 +229,6 @@ inductive Closed : Tm → Prop where
   | var : (n : Nat) → Closed (.var n)
   | lam : (b : Tm) → (h : Closed b) → Closed (.lam b h)
 end
-
-/-- info: Tm.app : (f a : Tm) → Ok f → Ok a → Tm -/
-#guard_msgs in
-#check @Tm.app
-
-/-- info: Tm.lam : (b : Tm) → Closed b → Tm -/
-#guard_msgs in
-#check @Tm.lam
-
-/-- info: Closed.lam : ∀ (b : Tm) (h : Closed b), Closed (b.lam h) -/
-#guard_msgs in
-#check @Closed.lam
-
-/--
-info: @Tm.rec : {motive_1 : Tm → Sort u_1} →
-  {motive_2 : (a : Tm) → motive_1 a → Ok a → Prop} →
-    {motive_3 : (a : Tm) → motive_1 a → Closed a → Prop} →
-      (var : (a : Nat) → motive_1 (Tm.var a)) →
-        ((f a : Tm) →
-            (a_1 : Ok f) →
-              (a_2 : Ok a) →
-                (f_ih : motive_1 f) →
-                  (a_ih : motive_1 a) → motive_2 f f_ih a_1 → motive_2 a a_ih a_2 → motive_1 (f.app a a_1 a_2)) →
-          (lam : (b : Tm) → (a : Closed b) → (b_ih : motive_1 b) → motive_3 b b_ih a → motive_1 (b.lam a)) →
-            (∀ (n : Nat), motive_2 (Tm.var n) (var n) ⋯) →
-              (∀ (b : Tm) (h : Closed b) (b_ih : motive_1 b) (h_ih : motive_3 b b_ih h),
-                  motive_2 (b.lam h) (lam b h b_ih h_ih) ⋯) →
-                (∀ (n : Nat), motive_3 (Tm.var n) (var n) ⋯) →
-                  (∀ (b : Tm) (h : Closed b) (b_ih : motive_1 b) (h_ih : motive_3 b b_ih h),
-                      motive_3 (b.lam h) (lam b h b_ih h_ih) ⋯) →
-                    (t : Tm) → motive_1 t
--/
-#guard_msgs in
-#check @Tm.rec
 
 /-- A recursion that only computes still has to say what the propositions mean. -/
 abbrev Tm.trivialOk {C : Tm → Sort u} : (t : Tm) → C t → Ok t → Prop := fun _ _ _ => True
@@ -347,6 +256,7 @@ example (f a : Tm) (hf : Ok f) (ha : Ok a) :
 
 /-! ## The `Prop` member may come first -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ok3 : Vec3 → Prop where
   | nil : Ok3 .nil
@@ -355,21 +265,8 @@ inductive Vec3 : Type where
   | cons : (v : Vec3) → Ok3 v → Vec3
 end
 
-/-- info: Vec3.cons : (v : Vec3) → Ok3 v → Vec3 -/
-#guard_msgs in
-#check @Vec3.cons
-
 -- the motives come in block order, so `Ok3`'s is second even though `Ok3` is
 -- written first: a predicate's motive has to follow the data motive it mentions
-/--
-info: @Vec3.rec : {motive_1 : Vec3 → Sort u_1} →
-  {motive_2 : (a : Vec3) → motive_1 a → Ok3 a → Prop} →
-    (nil : motive_1 Vec3.nil) →
-      ((v : Vec3) → (a : Ok3 v) → (v_ih : motive_1 v) → motive_2 v v_ih a → motive_1 (v.cons a)) →
-        motive_2 Vec3.nil nil Ok3.nil → (t : Vec3) → motive_1 t
--/
-#guard_msgs in
-#check @Vec3.rec
 
 def Vec3.size (v : Vec3) : Nat :=
   Vec3.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => True)
@@ -387,6 +284,7 @@ Both members are indexed, and the `Prop` member is indexed by the data member at
 one of its own indices.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive IVec : Nat → Type where
   | nil : IVec 0
@@ -396,36 +294,6 @@ inductive IFresh : Nat → (n : Nat) → IVec n → Prop where
   | cons : (x y n : Nat) → (v : IVec n) → (h : IFresh y n v) → x ≠ y → IFresh x n v →
       IFresh x (n + 1) (.cons n v y h)
 end
-
-/-- info: IVec.cons : (n : Nat) → (v : IVec n) → (x : Nat) → IFresh x n v → IVec (n + 1) -/
-#guard_msgs in
-#check @IVec.cons
-
-/--
-info: IFresh.cons : ∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v),
-  x ≠ y → IFresh x n v → IFresh x (n + 1) (IVec.cons n v y h)
--/
-#guard_msgs in
-#check @IFresh.cons
-
-/--
-info: @IVec.rec : {motive_1 : (a : Nat) → IVec a → Sort u_1} →
-  {motive_2 : (a n : Nat) → (a_1 : IVec n) → motive_1 n a_1 → IFresh a n a_1 → Prop} →
-    (nil : motive_1 0 IVec.nil) →
-      (cons :
-          (n : Nat) →
-            (v : IVec n) →
-              (x : Nat) →
-                (a : IFresh x n v) →
-                  (v_ih : motive_1 n v) → motive_2 x n v v_ih a → motive_1 (n + 1) (IVec.cons n v x a)) →
-        (∀ (x : Nat), motive_2 x 0 IVec.nil nil ⋯) →
-          (∀ (x y n : Nat) (v : IVec n) (h : IFresh y n v) (a : x ≠ y) (a_1 : IFresh x n v) (v_ih : motive_1 n v)
-              (h_ih : motive_2 y n v v_ih h),
-              motive_2 x n v v_ih a_1 → motive_2 x (n + 1) (IVec.cons n v y h) (cons n v y h v_ih h_ih) ⋯) →
-            {a : Nat} → (t : IVec a) → motive_1 a t
--/
-#guard_msgs in
-#check @IVec.rec
 
 /-- `IFresh`'s own index `x` leads the list, then `IVec`'s. -/
 abbrev IVec.trivialFresh {C : (n : Nat) → IVec n → Sort u} :
@@ -463,9 +331,6 @@ example (n : Nat) (v : IVec n) (x : Nat) (h : IFresh x n v) :
 end
 
 -- indexed, so the recursor carries `propext` and everything built from it does too
-/-- info: 'IVec.rec' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms IVec.rec
 
 /-- info: 'IVec.sum' depends on axioms: [propext] -/
 #guard_msgs in
@@ -497,6 +362,7 @@ already in hand.  Written that way `Tm.bump` needs no axioms at all.
 
 namespace Bump
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Tm : Type where
   | var : Nat → Tm
@@ -507,25 +373,6 @@ inductive Closed : Nat → Tm → Prop where
   | app : (k : Nat) → (s t : Tm) → Closed k s → Closed k t → Closed k (.app s t)
   | lam : (k : Nat) → (t : Tm) → Closed (k + 1) t → Closed k (.lam t)
 end
-
-/--
-info: @Tm.rec : {motive : Tm → Sort u_1} →
-  ((a : Nat) → motive (Tm.var a)) →
-    ((a a_1 : Tm) → motive a → motive a_1 → motive (a.app a_1)) →
-      ((a : Tm) → motive a → motive a.lam) → (t : Tm) → motive t
--/
-#guard_msgs in
-#check @Tm.rec
-
-/--
-info: @Closed.rec : ∀ {motive : (a : Nat) → (a_1 : Tm) → Closed a a_1 → Prop},
-  (∀ (n k : Nat) (a : n < k), motive k (Tm.var n) ⋯) →
-    (∀ (k : Nat) (s t : Tm) (a : Closed k s) (a_1 : Closed k t), motive k s a → motive k t a_1 → motive k (s.app t) ⋯) →
-      (∀ (k : Nat) (t : Tm) (a : Closed (k + 1) t), motive (k + 1) t a → motive k t.lam ⋯) →
-        ∀ {a : Nat} {a_1 : Tm} (t : Closed a a_1), motive a a_1 t
--/
-#guard_msgs in
-#check @Closed.rec
 
 /-- Add one to every variable. -/
 def Tm.bump : Tm → Tm
@@ -562,6 +409,7 @@ no bundle to build and `C` keeps a recursor with a single motive, the one Lean
 would have given it had the universes lined up.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive SortC (α : Sort u) : Sort (max 1 u) where
   | nil
@@ -569,27 +417,6 @@ inductive SortC (α : Sort u) : Sort (max 1 u) where
 inductive SortP (α : Sort u) : Prop where
   | mk
 end
-
-/-- info: SortC : Sort u_1 → Sort (max 1 u_1) -/
-#guard_msgs in
-#check @SortC
-
-/-- info: SortP : Sort u_1 → Prop -/
-#guard_msgs in
-#check @SortP
-
-/-- info: @SortC.ext : {α : Sort u_1} → SortC α → α → SortP α → SortC α -/
-#guard_msgs in
-#check @SortC.ext
-
-/--
-info: @SortC.rec : {α : Sort u_2} →
-  {motive : SortC α → Sort u_1} →
-    motive SortC.nil →
-      ((a : SortC α) → (a_1 : α) → (a_2 : SortP α) → motive a → motive (a.ext a_1 a_2)) → (t : SortC α) → motive t
--/
-#guard_msgs in
-#check @SortC.rec
 
 -- `α` may be a proposition, and then so is every field of `ext` but the first
 example (p : Prop) (h : p) : SortC p := .ext .nil h .mk
@@ -608,6 +435,7 @@ that `Wf.rec` is then free to eliminate into `Sort u`, which a joint recursor
 could not offer.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx2 : Type where
   | nil : Ctx2
@@ -618,26 +446,6 @@ inductive Ty : Type where
 inductive Wf : Ctx2 → Ty → Prop where
   | base : (Γ : Ctx2) → Wf Γ .base
 end
-
-/--
-info: @Ctx2.rec : {motive_1 : Ctx2 → Sort u_1} →
-  {motive_2 : Ty → Sort u_1} →
-    motive_1 Ctx2.nil →
-      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → motive_1 Γ → motive_2 t → motive_1 (Γ.snoc t a)) →
-        motive_2 Ty.base → ((a b : Ty) → motive_2 a → motive_2 b → motive_2 (a.arr b)) → (t : Ctx2) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx2.rec
-
-/--
-info: @Ty.rec : {motive_1 : Ctx2 → Sort u_1} →
-  {motive_2 : Ty → Sort u_1} →
-    motive_1 Ctx2.nil →
-      ((Γ : Ctx2) → (t : Ty) → (a : Wf Γ t) → motive_1 Γ → motive_2 t → motive_1 (Γ.snoc t a)) →
-        motive_2 Ty.base → ((a b : Ty) → motive_2 a → motive_2 b → motive_2 (a.arr b)) → (t : Ty) → motive_2 t
--/
-#guard_msgs in
-#check @Ty.rec
 
 def Ctx2.length (Γ : Ctx2) : Nat :=
   Ctx2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
@@ -676,6 +484,7 @@ to know anything about the other's problem.
 sits at `Type 1` beside `HCtx` at `Type`, so it is heterogeneous as well.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive HCtx : Type where
   | nil : HCtx
@@ -688,36 +497,8 @@ inductive HFresh : String → HCtx → Prop where
   | snoc : HFresh x Γ → x ≠ y → (h : HFresh y Γ) → HFresh x (.snoc Γ y h)
 end
 
-/-- info: HCtx.snoc : (Γ : HCtx) → (x : String) → HFresh x Γ → HCtx -/
-#guard_msgs in
-#check @HCtx.snoc
-
-/-- info: HBig.ctx : HCtx → HBig -/
-#guard_msgs in
-#check @HBig.ctx
-
 /-! Still one recursion over the whole block: the two data motives at a common
 eliminated universe, and the `Prop` one where it belongs. -/
-
-/--
-info: @HCtx.rec : {motive_1 : HCtx → Sort u_1} →
-  {motive_2 : HBig → Sort u_1} →
-    {motive_3 : (a : String) → (a_1 : HCtx) → motive_1 a_1 → HFresh a a_1 → Prop} →
-      (nil : motive_1 HCtx.nil) →
-        (snoc :
-            (Γ : HCtx) →
-              (x : String) → (a : HFresh x Γ) → (Γ_ih : motive_1 Γ) → motive_3 x Γ Γ_ih a → motive_1 (Γ.snoc x a)) →
-          ((a : Type) → motive_2 (HBig.of a)) →
-            ((a : HCtx) → motive_1 a → motive_2 (HBig.ctx a)) →
-              (∀ {x : String}, motive_3 x HCtx.nil nil ⋯) →
-                (∀ {x : String} {Γ : HCtx} {y : String} (a : HFresh x Γ) (a_1 : x ≠ y) (h : HFresh y Γ)
-                    (Γ_ih : motive_1 Γ),
-                    motive_3 x Γ Γ_ih a →
-                      ∀ (h_ih : motive_3 y Γ Γ_ih h), motive_3 x (Γ.snoc y h) (snoc Γ y h Γ_ih h_ih) ⋯) →
-                  (t : HCtx) → motive_1 t
--/
-#guard_msgs in
-#check @HCtx.rec
 
 /-! And it computes.  `X._wf` recurses with the lowered pre-block's `mutualRec`,
 which is a definition rather than a recursor the kernel knows; it unfolds where
@@ -756,6 +537,7 @@ Nothing about the composition counts to two: the lowering emits one ordinary
 block per component of the pre-block, in topological order, however many that
 comes to. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U3a : Type where
   | nil : U3a
@@ -770,14 +552,6 @@ inductive U3ok : U3a → Prop where
   | nil : U3ok .nil
 end
 
-/-- info: U3a.snoc : (Γ : U3a) → U3ok Γ → U3a -/
-#guard_msgs in
-#check @U3a.snoc
-
-/-- info: U3c.c : U3b → U3c -/
-#guard_msgs in
-#check @U3c.c
-
 /-! ### With a parameter, and universe-polymorphic
 
 `UPBig` is one universe above `UPCtx` whatever `v` turns out to be, so the two
@@ -786,6 +560,7 @@ disagree symbolically rather than at a literal. -/
 section
 universe v
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UPCtx (α : Type v) : Type v where
   | nil : UPCtx α
@@ -798,14 +573,6 @@ inductive UPFresh (α : Type v) : α → UPCtx α → Prop where
 end
 end
 
-/-- info: @UPCtx.snoc : {α : Type u_1} → (Γ : UPCtx α) → (a : α) → UPFresh α a Γ → UPCtx α -/
-#guard_msgs in
-#check @UPCtx.snoc
-
-/-- info: @UPBig.c : {α : Type u_1} → UPCtx α → UPBig α -/
-#guard_msgs in
-#check @UPBig.c
-
 def UPCtx.len {α : Type} (Γ : UPCtx α) : Nat :=
   UPCtx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     (motive_3 := fun _ _ _ _ => True)
@@ -817,6 +584,7 @@ example : (UPCtx.snoc (UPCtx.nil (α := Nat)) 3 .nil).len = 1 := rfl
 
 /-! ### Indices on the data members, and a proposition over the bigger one -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UIVec : Nat → Type where
   | nil : UIVec 0
@@ -828,10 +596,7 @@ inductive UIok : (n : Nat) → UIVec n → Prop where
   | nil : UIok 0 .nil
 end
 
-/-- info: UIVec.cons : (n : Nat) → (v : UIVec n) → UIok n v → UIVec (n + 1) -/
-#guard_msgs in
-#check @UIVec.cons
-
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UBSmall : Type 2 where
   | nil : UBSmall
@@ -842,19 +607,17 @@ inductive UBok : UBBig → Prop where
   | of : UBok (.of α)
 end
 
-/-- info: UBSmall.wrap : (b : UBBig) → UBok b → UBSmall -/
-#guard_msgs in
-#check @UBSmall.wrap
-
 /-! ### A nesting as well
 
 All three restrictions at once: the arity dependency erasure lifts, the
 universe difference the lowering lifts, and a `Wrap UNCtx` the kernel would
 have had to denest.  The constructor still reads the way it was written. -/
 
+mumi_spec
 inductive UWrap (α : Type u) : Type u where
   | mk : α → UWrap α
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UNCtx : Type where
   | nil : UNCtx
@@ -866,12 +629,9 @@ inductive UNok : UNCtx → Prop where
   | nil : UNok .nil
 end
 
-/-- info: UNCtx.snoc : UWrap UNCtx → (Γ : UNCtx) → UNok Γ → UNCtx -/
-#guard_msgs in
-#check @UNCtx.snoc
-
 /-! ### `deriving`, on top of all that -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UDCtx : Type where
   | nil : UDCtx
@@ -932,6 +692,7 @@ which is why `UDDCtx.rec` below has the one motive. -/
 section
 universe v
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UDDCtx : Type where
   | nil : UDDCtx
@@ -941,10 +702,6 @@ inductive UDDTy : UDDCtx → Type (v + 1) where
   | of : Type v → UDDTy Γ
 end
 end
-
-/-- info: @UDDTy.of : {Γ : UDDCtx} → Type u_1 → UDDTy Γ -/
-#guard_msgs in
-#check @UDDTy.of
 
 /--
 info: @UDDCtx.rec : {motive : UDDCtx → Sort u_1} →
@@ -988,6 +745,7 @@ end
 to carry its motive and the block keeps the split recursors.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Tree : Type where
   | leaf : Tree
@@ -995,18 +753,6 @@ inductive Tree : Type where
 inductive Good : (Nat → Tree) → Prop where
   | leaf : Good (fun _ => .leaf)
 end
-
-/-- info: Tree.node : (f : Nat → Tree) → Good f → Tree -/
-#guard_msgs in
-#check @Tree.node
-
-/--
-info: @Tree.rec : {motive : Tree → Sort u_1} →
-  motive Tree.leaf →
-    ((f : Nat → Tree) → (a : Good f) → ((a : Nat) → motive (f a)) → motive (Tree.node f a)) → (t : Tree) → motive t
--/
-#guard_msgs in
-#check @Tree.rec
 
 def Tree.depthAt (t : Tree) (k : Nat) : Nat :=
   Tree.rec (motive := fun _ => Nat → Nat) (fun _ => 0)
@@ -1029,6 +775,7 @@ data recursion computes at `Skel.fan f`, eta-expanded, which is the only term
 that could stand there.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive Skel : Type where
   | tip
@@ -1038,20 +785,6 @@ inductive Sound : Skel → Prop where
   | tip : Sound .tip
   | fan : (f : Nat → Skel) → ((n : Nat) → Sound (f n)) → Sound (.fan f)
 end
-
-/--
-info: @Skel.rec : {motive_1 : Skel → Sort u_1} →
-  {motive_2 : (a : Skel) → motive_1 a → Sound a → Prop} →
-    (tip : motive_1 Skel.tip) →
-      (fan : (a : Nat → Skel) → ((a_1 : Nat) → motive_1 (a a_1)) → motive_1 (Skel.fan a)) →
-        ((s : Skel) → (a : Sound s) → (s_ih : motive_1 s) → motive_2 s s_ih a → motive_1 (s.ok a)) →
-          motive_2 Skel.tip tip Sound.tip →
-            (∀ (f : Nat → Skel) (a : ∀ (n : Nat), Sound (f n)) (f_ih : (a : Nat) → motive_1 (f a)),
-                (∀ (n : Nat), motive_2 (f n) (f_ih n) ⋯) → motive_2 (Skel.fan f) (fan f fun a => f_ih a) ⋯) →
-              (t : Skel) → motive_1 t
--/
-#guard_msgs in
-#check @Skel.rec
 
 -- the hypothesis under the binder is dropped along with the rest
 /--
@@ -1082,6 +815,7 @@ inductive".  Declared apart they are not mutually inductive, and `cases`,
 `induction`, `injection` and `deriving` all work with no help from us.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Val : Type where
   | unit
@@ -1095,23 +829,6 @@ inductive Matches : Pat → Val → Prop where
       Matches (.both p q) (.pair u v)
 end
 
-/--
-info: @Val.rec : {motive : Val → Sort u_1} →
-  motive Val.unit → ((a a_1 : Val) → motive a → motive a_1 → motive (a.pair a_1)) → (t : Val) → motive t
--/
-#guard_msgs in
-#check @Val.rec
-
-/--
-info: @Matches.rec : ∀ {motive : (a : Pat) → (a_1 : Val) → Matches a a_1 → Prop},
-  (∀ (v : Val), motive Pat.any v ⋯) →
-    (∀ (p q : Pat) (u v : Val) (a : Matches p u) (a_1 : Matches q v),
-        motive p u a → motive q v a_1 → motive (p.both q) (u.pair v) ⋯) →
-      ∀ {a : Pat} {a_1 : Val} (t : Matches a a_1), motive a a_1 t
--/
-#guard_msgs in
-#check @Matches.rec
-
 example {p : Pat} {v : Val} (h : Matches p v) : True := by
   cases h with
   | any u => trivial
@@ -1124,32 +841,12 @@ ordinary `inductive`.  Both keep Lean's own `casesOn` and `rec`, with the one
 motive, and `cases` and `induction` name the constructors that were written.
 -/
 
-/--
-info: @Val.casesOn : {motive : Val → Sort u_1} →
-  (t : Val) → motive Val.unit → ((a a_1 : Val) → motive (a.pair a_1)) → motive t
--/
-#guard_msgs in
-#check @Val.casesOn
-
-/--
-info: @Pat.casesOn : {motive : Pat → Sort u_1} → (t : Pat) → motive Pat.any → ((a a_1 : Pat) → motive (a.both a_1)) → motive t
--/
-#guard_msgs in
-#check @Pat.casesOn
-
 example (v : Val) : v = v := by
   cases v with
   | unit => rfl
   | pair a b => rfl
 
 /-! `Val.rec` is Lean's, with the one motive, and `induction` takes it. -/
-
-/--
-info: @Val.rec : {motive : Val → Sort u_1} →
-  motive Val.unit → ((a a_1 : Val) → motive a → motive a_1 → motive (a.pair a_1)) → (t : Val) → motive t
--/
-#guard_msgs in
-#check @Val.rec
 
 example (v : Val) : v = v := by
   induction v with
@@ -1170,6 +867,7 @@ and the universe parameter are shared exactly as they are written, so nothing
 about the block as stated is lost by taking it apart.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive TmU (α : Type u) : Type u where
   | var : α → TmU α
@@ -1181,22 +879,6 @@ inductive WfU (α : Type u) : TmU α → Prop where
   | var : (a : α) → WfU α (.var a)
   | app : (t : TmU α) → (s : TyU α) → WfU α t → WfU α (.app t s)
 end
-
-/--
-info: @TmU.casesOn : {α : Type u_2} →
-  {motive : TmU α → Sort u_1} →
-    (t : TmU α) → ((a : α) → motive (TmU.var a)) → ((a : TmU α) → (a_1 : TyU α) → motive (a.app a_1)) → motive t
--/
-#guard_msgs in
-#check @TmU.casesOn
-
-/--
-info: @WfU.rec : ∀ {α : Type u_1} {motive : (a : TmU α) → WfU α a → Prop},
-  (∀ (a : α), motive (TmU.var a) ⋯) →
-    (∀ (t : TmU α) (s : TyU α) (a : WfU α t), motive t a → motive (t.app s) ⋯) → ∀ {a : TmU α} (t : WfU α a), motive a t
--/
-#guard_msgs in
-#check @WfU.rec
 
 example {α : Type u} (t : TmU α) : True := by
   cases t with
@@ -1243,6 +925,7 @@ block, as they are for a Lean `mutual`.
 split recursors.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Bag (α : Type u) (β : Type v) : Nat → Type (max u v) where
   | nil : Bag α β 0
@@ -1252,40 +935,6 @@ inductive Tag2 (α : Type u) (β : Type v) : Type (max u v) where
 inductive OkB (α : Type u) (β : Type v) : (n : Nat) → Bag α β n → Tag2 α β → Prop where
   | nil : (t : Tag2 α β) → OkB α β 0 .nil t
 end
-
-/-- info: Bag : Type u_1 → Type u_2 → Nat → Type (max u_1 u_2) -/
-#guard_msgs in
-#check @Bag
-
-/-- info: OkB : (α : Type u_1) → (β : Type u_2) → (n : Nat) → Bag α β n → Tag2 α β → Prop -/
-#guard_msgs in
-#check @OkB
-
-/--
-info: @Bag.cons : {α : Type u_1} →
-  {β : Type u_2} → (n : Nat) → (b : Bag α β n) → (t : Tag2 α β) → OkB α β n b t → Bag α β (n + 1)
--/
-#guard_msgs in
-#check @Bag.cons
-
-/-- info: @OkB.nil : ∀ {α : Type u_1} {β : Type u_2} (t : Tag2 α β), OkB α β 0 Bag.nil t -/
-#guard_msgs in
-#check @OkB.nil
-
-/--
-info: @Bag.rec : {α : Type u_2} →
-  {β : Type u_3} →
-    {motive_1 : (a : Nat) → Bag α β a → Sort u_1} →
-      {motive_2 : Tag2 α β → Sort u_1} →
-        motive_1 0 Bag.nil →
-          ((n : Nat) →
-              (b : Bag α β n) →
-                (t : Tag2 α β) →
-                  (a : OkB α β n b t) → motive_1 n b → motive_2 t → motive_1 (n + 1) (Bag.cons n b t a)) →
-            ((a : α) → (a_1 : β) → motive_2 (Tag2.mk a a_1)) → {a : Nat} → (t : Bag α β a) → motive_1 a t
--/
-#guard_msgs in
-#check @Bag.rec
 
 def Bag.count {α : Type u} {β : Type v} : (n : Nat) → Bag α β n → Nat :=
   fun _ b => Bag.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ => Nat)
@@ -1321,6 +970,7 @@ list is known; without it neither block typechecks.
 section
 universe u₀ v₀ w₀
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UCtx : Type where
   | nil : UCtx
@@ -1331,20 +981,13 @@ inductive UFresh : String → UCtx → Prop where
     UFresh x (.snoc Γ y h)
 end
 
-/-- info: UCtx : Type -/
-#guard_msgs in
-#check @UCtx
-
-/-- info: UFresh : String → UCtx → Prop -/
-#guard_msgs in
-#check @UFresh
-
 example : UCtx := .snoc .nil "x" (.nil "x")
 
 end
 
 -- `u` is auto-bound by a field of `VOk`'s second constructor, long after `VBag`
 -- was stubbed over the empty list; the block's own list is `[u]`
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive VBag : Type where
   | nil : VBag
@@ -1358,10 +1001,6 @@ end
 #guard_msgs in
 set_option pp.universes true in
 #check @VBag
-
-/-- info: VOk.cons : ∀ (Γ : VBag) (h : VOk Γ) (α : Type u_1) (a : α), VOk (Γ.cons h) -/
-#guard_msgs in
-#check @VOk.cons
 
 example : VBag := .cons (.cons .nil .nil) (.cons .nil .nil Nat 3)
 
@@ -1378,6 +1017,7 @@ is that none of them mentions a name the user did not write: no `_pre`, no
 `_wf`, no `nested_` copy.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive TreeNested where
   | empty
@@ -1396,111 +1036,9 @@ inductive RecWFTree where
   | mk (x : WFTreeNested)
 end
 
-/-- info: TreeNested : Type -/
-#guard_msgs in
-#check @TreeNested
-
-/-- info: TreeNested.node : Nat → RecWFTree → TreeNested → TreeNested → TreeNested -/
-#guard_msgs in
-#check @TreeNested.node
-
 /-- info: TreeNested.WFWith : TreeNested → List Nat → Prop -/
 #guard_msgs in
 #check @TreeNested.WFWith
-
-/-- info: WFTreeNested.mk : (x : TreeNested) → x.WF → WFTreeNested -/
-#guard_msgs in
-#check @WFTreeNested.mk
-
-/--
-info: @TreeNested.rec : {motive_1 : TreeNested → Sort u_1} →
-  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop} →
-    {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} →
-      {motive_4 : WFTreeNested → Sort u_1} →
-        {motive_5 : RecWFTree → Sort u_1} →
-          (empty : motive_1 TreeNested.empty) →
-            (node :
-                (key : Nat) →
-                  (value : RecWFTree) →
-                    (l r : TreeNested) →
-                      motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r)) →
-              motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty →
-                (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
-                    (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key)
-                    (hr' : ∀ (a : Nat), a ∈ rlist → key < a) (value_ih : motive_5 value) (l_ih : motive_1 l)
-                    (r_ih : motive_1 r),
-                    motive_2 l llist l_ih hl →
-                      motive_2 r rlist r_ih hr →
-                        motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist)
-                          (node key value l r value_ih l_ih r_ih) ⋯) →
-                  (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
-                      motive_2 t l t_ih h → motive_3 t t_ih ⋯) →
-                    ((x : TreeNested) →
-                        (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h)) →
-                      ((x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) → (t : TreeNested) → motive_1 t
--/
-#guard_msgs in
-#check @TreeNested.rec
-
-/--
-info: @WFTreeNested.rec : {motive_1 : TreeNested → Sort u_1} →
-  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop} →
-    {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} →
-      {motive_4 : WFTreeNested → Sort u_1} →
-        {motive_5 : RecWFTree → Sort u_1} →
-          (empty : motive_1 TreeNested.empty) →
-            (node :
-                (key : Nat) →
-                  (value : RecWFTree) →
-                    (l r : TreeNested) →
-                      motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r)) →
-              motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty →
-                (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
-                    (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key)
-                    (hr' : ∀ (a : Nat), a ∈ rlist → key < a) (value_ih : motive_5 value) (l_ih : motive_1 l)
-                    (r_ih : motive_1 r),
-                    motive_2 l llist l_ih hl →
-                      motive_2 r rlist r_ih hr →
-                        motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist)
-                          (node key value l r value_ih l_ih r_ih) ⋯) →
-                  (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
-                      motive_2 t l t_ih h → motive_3 t t_ih ⋯) →
-                    ((x : TreeNested) →
-                        (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h)) →
-                      ((x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) → (t : WFTreeNested) → motive_4 t
--/
-#guard_msgs in
-#check @WFTreeNested.rec
-
-/--
-info: @RecWFTree.rec : {motive_1 : TreeNested → Sort u_1} →
-  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop} →
-    {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} →
-      {motive_4 : WFTreeNested → Sort u_1} →
-        {motive_5 : RecWFTree → Sort u_1} →
-          (empty : motive_1 TreeNested.empty) →
-            (node :
-                (key : Nat) →
-                  (value : RecWFTree) →
-                    (l r : TreeNested) →
-                      motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r)) →
-              motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty →
-                (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
-                    (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key)
-                    (hr' : ∀ (a : Nat), a ∈ rlist → key < a) (value_ih : motive_5 value) (l_ih : motive_1 l)
-                    (r_ih : motive_1 r),
-                    motive_2 l llist l_ih hl →
-                      motive_2 r rlist r_ih hr →
-                        motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist)
-                          (node key value l r value_ih l_ih r_ih) ⋯) →
-                  (∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
-                      motive_2 t l t_ih h → motive_3 t t_ih ⋯) →
-                    ((x : TreeNested) →
-                        (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h)) →
-                      ((x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) → (t : RecWFTree) → motive_5 t
--/
-#guard_msgs in
-#check @RecWFTree.rec
 
 -- the minors of a `Prop` recursor conclude at a constructor application, which
 -- is what this test is about; without `pp.proofs` they all print as `⋯`
@@ -1673,6 +1211,7 @@ universes it never uses.
 Nothing notices until a second member names the constructor -- which is what a
 proposition indexed by `.nil` does. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive NoResTy (α : Type u) : Type u where
   | nil
@@ -1680,30 +1219,6 @@ inductive NoResTy (α : Type u) : Type u where
 inductive NoResOk (α : Type u) : NoResTy α → Prop where
   | nil : NoResOk α .nil
 end
-
-/-- info: NoResTy : Type u_1 → Type u_1 -/
-#guard_msgs in
-#check @NoResTy
-
-/-- info: @NoResTy.nil : {α : Type u_1} → NoResTy α -/
-#guard_msgs in
-#check @NoResTy.nil
-
-/-- info: @NoResOk.nil : ∀ {α : Type u_1}, NoResOk α NoResTy.nil -/
-#guard_msgs in
-#check @NoResOk.nil
-
-/--
-info: @NoResTy.rec : {α : Type u_2} →
-  {motive_1 : NoResTy α → Sort u_1} →
-    {motive_2 : (a : NoResTy α) → motive_1 a → NoResOk α a → Prop} →
-      (nil : motive_1 NoResTy.nil) →
-        ((Γ : NoResTy α) →
-            (a : α) → (a_1 : NoResOk α Γ) → (Γ_ih : motive_1 Γ) → motive_2 Γ Γ_ih a_1 → motive_1 (Γ.ext a a_1)) →
-          motive_2 NoResTy.nil nil ⋯ → (t : NoResTy α) → motive_1 t
--/
-#guard_msgs in
-#check @NoResTy.rec
 
 def NoResTy.len {α : Type u} (Γ : NoResTy α) : Nat :=
   NoResTy.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => True)
@@ -1717,9 +1232,6 @@ example : (NoResTy.nil (α := Nat)).len = 0 := rfl
 
 -- and the block really is polymorphic in `u` alone: no universe the file
 -- happens to have in scope came along for the ride
-/-- info: 'NoResTy' does not depend on any axioms -/
-#guard_msgs in
-#print axioms NoResTy
 
 /-! ## A block we must not claim
 
@@ -1734,6 +1246,7 @@ def Tag : Type := Nat
 
 namespace Inner
 
+mumi_spec
 mutual
 inductive Tag : Type where
   | mk : Tag
@@ -1742,18 +1255,8 @@ inductive Uses : Tag → Type where
 end
 
 -- the arity resolved to the global, exactly as it does without `Mumi` imported
-/-- info: Uses : _root_.Tag → Type -/
-#guard_msgs in
-#check @Uses
 
 -- and Lean's own elaborator ran: a genuine mutual recursor, with two motives
-/--
-info: @Uses.rec : {motive_1 : Tag → Sort u_1} →
-  {motive_2 : (a : _root_.Tag) → Uses a → Sort u_1} →
-    motive_1 Tag.mk → ((n : Nat) → motive_2 n (Uses.mk n)) → {a : _root_.Tag} → (t : Uses a) → motive_2 a t
--/
-#guard_msgs in
-#check @Uses.rec
 
 -- real constructors, so `match` works -- which is what our lowering gives up
 example : (match Uses.mk 3 with | .mk n => n) = 3 := rfl
@@ -1778,6 +1281,7 @@ are no equations anywhere in it, which is the reason to do it this way at all.
 
 namespace DataOnData
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1831,33 +1335,6 @@ fun a t =>
 #print Ty._wf
 
 -- what the writer sees is the block they wrote, at one recursion over both
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-            (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-            {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 def Ctx.len : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -1895,6 +1372,7 @@ it in the block.
 
 namespace DataOnDataTm
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1927,28 +1405,6 @@ Tm._ind
 -- and the recursor is the block's all the same, motives and all.  That is what
 -- Lean does for a `mutual` block that is not really mutual, and a member that
 -- can be lifted out is exactly that case
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                ((Γ : Ctx) →
-                    (A : Ty Γ) →
-                      (B : Ty (Γ.snoc A)) →
-                        (a : Tm (Γ.snoc A) B) →
-                          motive_1 Γ →
-                            motive_2 Γ A →
-                              motive_2 (Γ.snoc A) B → motive_3 (Γ.snoc A) B a → motive_3 Γ A (Tm.body Γ A B a)) →
-                  {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 -- and here is what the move buys.  `Tm.var` and `Tm.body` are constructors of a
 -- real inductive, so they are patterns, and the equation compiler will recurse
@@ -2020,6 +1476,7 @@ it in the position the writer put it in rather than after the one that left.
 namespace DataOnDataMixed
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2046,18 +1503,6 @@ fun a a_1 t => Ty._pre.rec True (fun a ih => ih) (fun n Γ => True) (fun n a ih 
 #guard_msgs in
 #print Ty._wf
 
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Nat) → (a_1 : Ctx) → Ty a a_1 → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((a : Ctx) → motive_1 a → motive_1 a.snoc) →
-        ((n : Nat) → (Γ : Ctx) → motive_1 Γ → motive_2 n Γ (Ty.base n Γ)) →
-          ((n : Nat) → (Γ : Ctx) → (a : Ty n Γ) → motive_1 Γ → motive_2 n Γ a → motive_2 (n + 1) Γ (Ty.up n Γ a)) →
-            {a : Nat} → {a_1 : Ctx} → (t : Ty a a_1) → motive_2 a a_1 t
--/
-#guard_msgs in
-#check @Ty.rec
-
 end DataOnDataMixed
 
 /-! ### A kept index the deleted one is stated at
@@ -2078,6 +1523,7 @@ constructor's conclusion.
 
 namespace DataOnDataLength
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2116,23 +1562,6 @@ fun n a t =>
 #guard_msgs in
 #print Ty._wf
 
-/--
-info: @Ctx.rec : {motive_1 : (a : Nat) → Ctx a → Sort u_1} →
-  {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1} →
-    motive_1 0 Ctx.nil →
-      ((n : Nat) → (Γ : Ctx n) → (a : Ty n Γ) → motive_1 n Γ → motive_2 n Γ a → motive_1 (n + 1) (Ctx.snoc n Γ a)) →
-        ((n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) →
-          ((n : Nat) →
-              (Γ : Ctx n) →
-                (A : Ty n Γ) →
-                  (a : Ty (n + 1) (Ctx.snoc n Γ A)) →
-                    motive_1 n Γ →
-                      motive_2 n Γ A → motive_2 (n + 1) (Ctx.snoc n Γ A) a → motive_2 n Γ (Ty.pi n Γ A a)) →
-            {a : Nat} → (t : Ctx a) → motive_1 a t
--/
-#guard_msgs in
-#check @Ctx.rec
-
 -- and it computes: the length of the context, read off the recursion rather
 -- than off the index
 def size : {n : Nat} → Ctx n → Nat :=
@@ -2159,6 +1588,7 @@ constructor's own conclusion gives them.
 
 namespace DataOnDataLengthTm
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2171,35 +1601,6 @@ inductive Tm : (n : Nat) → (Γ : Ctx n) → Ty n Γ → Type where
   | lam : (n : Nat) → (Γ : Ctx n) → (A : Ty n Γ) → (B : Ty (n + 1) (Ctx.snoc n Γ A)) →
       Tm (n + 1) (Ctx.snoc n Γ A) B → Tm n Γ (Ty.pi n Γ A B)
 end
-
-/--
-info: @Tm.rec : {motive_1 : (a : Nat) → Ctx a → Sort u_1} →
-  {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1} →
-    {motive_3 : (n : Nat) → (Γ : Ctx n) → (a : Ty n Γ) → Tm n Γ a → Sort u_1} →
-      motive_1 0 Ctx.nil →
-        ((n : Nat) → (Γ : Ctx n) → (a : Ty n Γ) → motive_1 n Γ → motive_2 n Γ a → motive_1 (n + 1) (Ctx.snoc n Γ a)) →
-          ((n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) →
-            ((n : Nat) →
-                (Γ : Ctx n) →
-                  (A : Ty n Γ) →
-                    (a : Ty (n + 1) (Ctx.snoc n Γ A)) →
-                      motive_1 n Γ →
-                        motive_2 n Γ A → motive_2 (n + 1) (Ctx.snoc n Γ A) a → motive_2 n Γ (Ty.pi n Γ A a)) →
-              ((n : Nat) → (Γ : Ctx n) → (A : Ty n Γ) → motive_1 n Γ → motive_2 n Γ A → motive_3 n Γ A (Tm.var n Γ A)) →
-                ((n : Nat) →
-                    (Γ : Ctx n) →
-                      (A : Ty n Γ) →
-                        (B : Ty (n + 1) (Ctx.snoc n Γ A)) →
-                          (a : Tm (n + 1) (Ctx.snoc n Γ A) B) →
-                            motive_1 n Γ →
-                              motive_2 n Γ A →
-                                motive_2 (n + 1) (Ctx.snoc n Γ A) B →
-                                  motive_3 (n + 1) (Ctx.snoc n Γ A) B a →
-                                    motive_3 n Γ (Ty.pi n Γ A B) (Tm.lam n Γ A B a)) →
-                  {n : Nat} → {Γ : Ctx n} → {a : Ty n Γ} → (t : Tm n Γ a) → motive_3 n Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 def size : {n : Nat} → {Γ : Ctx n} → {A : Ty n Γ} → Tm n Γ A → Nat :=
   fun {_} {_} {_} t => Tm.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ _ _ => Nat)
@@ -2228,6 +1629,7 @@ namespace DataOnDataLengthUniv
 
 universe u
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx (α : Type u) : Nat → Type u where
   | nil  : Ctx α 0
@@ -2235,20 +1637,6 @@ inductive Ctx (α : Type u) : Nat → Type u where
 inductive Ty (α : Type u) : (n : Nat) → Ctx α n → Type u where
   | base : (n : Nat) → (Γ : Ctx α n) → Ty α n Γ
 end
-
-/--
-info: @Ty.rec : {α : Type u_2} →
-  {motive_1 : (a : Nat) → Ctx α a → Sort u_1} →
-    {motive_2 : (n : Nat) → (a : Ctx α n) → Ty α n a → Sort u_1} →
-      motive_1 0 Ctx.nil →
-        ((n : Nat) →
-            (Γ : Ctx α n) →
-              (a : α) → (a_1 : Ty α n Γ) → motive_1 n Γ → motive_2 n Γ a_1 → motive_1 (n + 1) (Ctx.snoc n Γ a a_1)) →
-          ((n : Nat) → (Γ : Ctx α n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) →
-            {n : Nat} → {a : Ctx α n} → (t : Ty α n a) → motive_2 n a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 end DataOnDataLengthUniv
 
@@ -2261,6 +1649,7 @@ recursion the length along with the context.
 
 namespace DataOnDataLengthProp
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2271,36 +1660,6 @@ inductive Ok : (n : Nat) → Ctx n → Prop where
   | nil  : Ok 0 Ctx.nil
   | snoc : (n : Nat) → (Γ : Ctx n) → (A : Ty n Γ) → Ok n Γ → Ok (n + 1) (Ctx.snoc n Γ A)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : (a : Nat) → Ctx a → Sort u_1} {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1}
-  {motive_3 : (n : Nat) → (a : Ctx n) → motive_1 n a → Ok n a → Prop} (nil : motive_1 0 Ctx.nil)
-  (snoc : (n : Nat) → (Γ : Ctx n) → (a : Ty n Γ) → motive_1 n Γ → motive_2 n Γ a → motive_1 (n + 1) (Ctx.snoc n Γ a))
-  (base : (n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) (nil_1 : motive_3 0 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (n : Nat) (Γ : Ctx n) (A : Ty n Γ) (a : Ok n Γ) (Γ_ih : motive_1 n Γ) (A_ih : motive_2 n Γ A),
-      motive_3 n Γ Γ_ih a → motive_3 (n + 1) (Ctx.snoc n Γ A) (snoc n Γ A Γ_ih A_ih) ⋯)
-  {n : Nat} {a : Ctx n} (h : Ok n a), motive_3 n a (Ctx.rec nil snoc base nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
-
-/--
-info: @Ctx.rec : {motive_1 : (a : Nat) → Ctx a → Sort u_1} →
-  {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1} →
-    {motive_3 : (n : Nat) → (a : Ctx n) → motive_1 n a → Ok n a → Prop} →
-      (nil : motive_1 0 Ctx.nil) →
-        (snoc :
-            (n : Nat) →
-              (Γ : Ctx n) → (a : Ty n Γ) → motive_1 n Γ → motive_2 n Γ a → motive_1 (n + 1) (Ctx.snoc n Γ a)) →
-          ((n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) →
-            motive_3 0 Ctx.nil nil Ok.nil →
-              (∀ (n : Nat) (Γ : Ctx n) (A : Ty n Γ) (a : Ok n Γ) (Γ_ih : motive_1 n Γ) (A_ih : motive_2 n Γ A),
-                  motive_3 n Γ Γ_ih a → motive_3 (n + 1) (Ctx.snoc n Γ A) (snoc n Γ A Γ_ih A_ih) ⋯) →
-                {a : Nat} → (t : Ctx a) → motive_1 a t
--/
-#guard_msgs in
-#check @Ctx.rec
 
 -- every context is well-formed, which is the induction the block was written
 -- for.  The recursion runs over the data and the proposition at once, so the
@@ -2317,6 +1676,7 @@ end DataOnDataLengthProp
 
 namespace DataOnDataLengthTwo
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Bool → Type where
   | nil  : (b : Bool) → Ctx 0 b
@@ -2324,20 +1684,6 @@ inductive Ctx : Nat → Bool → Type where
 inductive Ty : (n : Nat) → (b : Bool) → Ctx n b → Type where
   | base : (n : Nat) → (b : Bool) → (Γ : Ctx n b) → Ty n b Γ
 end
-
-/--
-info: @Ty.rec : {motive_1 : (a : Nat) → (a_1 : Bool) → Ctx a a_1 → Sort u_1} →
-  {motive_2 : (n : Nat) → (b : Bool) → (a : Ctx n b) → Ty n b a → Sort u_1} →
-    ((b : Bool) → motive_1 0 b (Ctx.nil b)) →
-      ((n : Nat) →
-          (b : Bool) →
-            (Γ : Ctx n b) →
-              (a : Ty n b Γ) → motive_1 n b Γ → motive_2 n b Γ a → motive_1 (n + 1) b (Ctx.snoc n b Γ a)) →
-        ((n : Nat) → (b : Bool) → (Γ : Ctx n b) → motive_1 n b Γ → motive_2 n b Γ (Ty.base n b Γ)) →
-          {n : Nat} → {b : Bool} → {a : Ctx n b} → (t : Ty n b a) → motive_2 n b a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 end DataOnDataLengthTwo
 
@@ -2352,6 +1698,7 @@ length-indexed index.
 
 namespace DataOnDataLengthNest
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2362,29 +1709,12 @@ end
 
 -- the denested copy gets a motive of its own, stated over `List` at the kept
 -- index as well as the deleted one
-/--
-info: @Ctx.rec : {motive_1 : (a : Nat) → Ctx a → Sort u_1} →
-  {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1} →
-    {motive_3 : (n : Nat) → (Γ : Ctx n) → List (Ty n Γ) → Sort u_1} →
-      motive_1 0 Ctx.nil →
-        ((n : Nat) →
-            (Γ : Ctx n) → (a : List (Ty n Γ)) → motive_1 n Γ → motive_3 n Γ a → motive_1 (n + 1) (Ctx.snoc n Γ a)) →
-          ((n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) →
-            ((n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_3 n Γ []) →
-              ((n : Nat) →
-                  (Γ : Ctx n) →
-                    (head : Ty n Γ) →
-                      (tail : List (Ty n Γ)) →
-                        motive_1 n Γ → motive_2 n Γ head → motive_3 n Γ tail → motive_3 n Γ (head :: tail)) →
-                {a : Nat} → (t : Ctx a) → motive_1 a t
--/
-#guard_msgs in
-#check @Ctx.rec
 
 end DataOnDataLengthNest
 
 namespace DataOnDataLengthSum
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2394,23 +1724,12 @@ inductive Ty : (n : Nat) → Ctx n → Type where
 end
 
 -- two recursive fields at two different lengths, and a conclusion at a third
-/--
-info: @Ctx.rec : {motive_1 : (a : Nat) → Ctx a → Sort u_1} →
-  {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1} →
-    motive_1 0 Ctx.nil →
-      ((n m : Nat) →
-          (Γ : Ctx n) →
-            (Δ : Ctx m) →
-              (a : Ty n Γ) → motive_1 n Γ → motive_1 m Δ → motive_2 n Γ a → motive_1 (n + m) (Ctx.join n m Γ Δ a)) →
-        ((n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ)) → {a : Nat} → (t : Ctx a) → motive_1 a t
--/
-#guard_msgs in
-#check @Ctx.rec
 
 end DataOnDataLengthSum
 
 namespace DataOnDataLengthAfter
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2420,21 +1739,12 @@ inductive Ty : Ctx → Nat → Type where
 end
 
 -- the kept index is the second one, and `snoc` reads its field at a literal
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → (a_1 : Nat) → Ty a a_1 → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ 0) → motive_1 Γ → motive_2 Γ 0 a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → (n : Nat) → motive_1 Γ → motive_2 Γ n (Ty.base Γ n)) →
-          {a : Ctx} → {a_1 : Nat} → (t : Ty a a_1) → motive_2 a a_1 t
--/
-#guard_msgs in
-#check @Ty.rec
 
 end DataOnDataLengthAfter
 
 namespace DataOnDataLengthOk
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2447,29 +1757,6 @@ inductive Ok : (n : Nat) → (Γ : Ctx n) → Ty n Γ → Prop where
   | pi   : (n : Nat) → (Γ : Ctx n) → (A : Ty n Γ) → (B : Ty (n + 1) (Ctx.snoc n Γ A)) →
       Ok n Γ A → Ok (n + 1) (Ctx.snoc n Γ A) B → Ok n Γ (Ty.pi n Γ A B)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : (a : Nat) → Ctx a → Sort u_1} {motive_2 : (n : Nat) → (a : Ctx n) → Ty n a → Sort u_1}
-  {motive_3 : (n : Nat) → (Γ : Ctx n) → (a : Ty n Γ) → motive_2 n Γ a → Ok n Γ a → Prop} (nil : motive_1 0 Ctx.nil)
-  (snoc : (n : Nat) → (Γ : Ctx n) → (a : Ty n Γ) → motive_1 n Γ → motive_2 n Γ a → motive_1 (n + 1) (Ctx.snoc n Γ a))
-  (base : (n : Nat) → (Γ : Ctx n) → motive_1 n Γ → motive_2 n Γ (Ty.base n Γ))
-  (pi :
-    (n : Nat) →
-      (Γ : Ctx n) →
-        (A : Ty n Γ) →
-          (a : Ty (n + 1) (Ctx.snoc n Γ A)) →
-            motive_1 n Γ → motive_2 n Γ A → motive_2 (n + 1) (Ctx.snoc n Γ A) a → motive_2 n Γ (Ty.pi n Γ A a))
-  (base_1 : ∀ (n : Nat) (Γ : Ctx n) (Γ_ih : motive_1 n Γ), motive_3 n Γ (Ty.base n Γ) (base n Γ Γ_ih) ⋯)
-  (pi_1 :
-    ∀ (n : Nat) (Γ : Ctx n) (A : Ty n Γ) (B : Ty (n + 1) (Ctx.snoc n Γ A)) (a : Ok n Γ A)
-      (a_1 : Ok (n + 1) (Ctx.snoc n Γ A) B) (Γ_ih : motive_1 n Γ) (A_ih : motive_2 n Γ A)
-      (B_ih : motive_2 (n + 1) (Ctx.snoc n Γ A) B),
-      motive_3 n Γ A A_ih a →
-        motive_3 (n + 1) (Ctx.snoc n Γ A) B B_ih a_1 → motive_3 n Γ (Ty.pi n Γ A B) (pi n Γ A B Γ_ih A_ih B_ih) ⋯)
-  {n : Nat} {Γ : Ctx n} {a : Ty n Γ} (h : Ok n Γ a), motive_3 n Γ a (Ty.rec nil snoc base pi base_1 pi_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 -- and the proposition really is provable of everything, which is the recursion
 -- the block was written to have
@@ -2494,6 +1781,7 @@ hypothesis at the *built* index `Ctx.snoc n Γ A`.
 
 namespace DataOnDataLengthTac
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2564,6 +1852,7 @@ namespace DataOnDataUniv
 
 universe u
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2582,23 +1871,6 @@ fun α t =>
 #guard_msgs in
 #print Ctx._wf
 
-/--
-info: @Ctx.rec : {α : Type u_2} →
-  {motive_1 : Ctx α → Sort u_1} →
-    {motive_2 : (a : Ctx α) → Ty α a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx α) → (a : α) → (a_1 : Ty α Γ) → motive_1 Γ → motive_2 Γ a_1 → motive_1 (Γ.snoc a a_1)) →
-          ((Γ : Ctx α) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx α) →
-                (a : α) →
-                  (A : Ty α Γ) →
-                    (a_1 : Ty α (Γ.snoc a A)) →
-                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc a A) a_1 → motive_2 Γ (Ty.pi Γ a A a_1)) →
-              (t : Ctx α) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
-
 def Ctx.len {α : Type u} : Ctx α → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
     0 (fun _ _ _ n _ => n + 1) (fun _ _ => 0) (fun _ _ _ _ _ _ _ => 0)
@@ -2613,6 +1885,7 @@ end DataOnDataUniv
 
 namespace DataOnDataBig
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type 1 where
   | nil  : Ctx
@@ -2630,20 +1903,6 @@ fun t =>
 -/
 #guard_msgs in
 #print Ctx._wf
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → (α : Type) → motive_1 Γ → motive_2 Γ (Ty.base Γ α)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-            {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 end DataOnDataBig
 
@@ -2664,6 +1923,7 @@ nothing the recursion recursed at to have one about.
 
 namespace DataOnDataProp
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2675,41 +1935,6 @@ inductive Ok : Ctx → Prop where
   | nil  : Ok Ctx.nil
   | snoc : (Γ : Ctx) → (A : Ty Γ) → Ok Γ → Ok (Ctx.snoc Γ A)
 end
-
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (a : Ctx) → motive_1 a → Ok a → Prop} →
-      (nil : motive_1 Ctx.nil) →
-        (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-              motive_3 Ctx.nil nil Ok.nil →
-                (∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-                    motive_3 Γ Γ_ih a → motive_3 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯) →
-                  (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
-
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (a : Ctx) → motive_1 a → Ok a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (pi :
-    (Γ : Ctx) →
-      (A : Ty Γ) → (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a))
-  (nil_1 : motive_3 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih a → motive_3 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  {a : Ctx} (h : Ok a), motive_3 a (Ctx.rec nil snoc base pi nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 example : Ok (Ctx.snoc Ctx.nil (Ty.base Ctx.nil)) := Ok.snoc _ _ Ok.nil
 
@@ -2771,6 +1996,7 @@ on it, which is the only way to say anything about the function itself.
 
 namespace DataOnDataTwo
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2780,17 +2006,6 @@ inductive Ty : Ctx → Type where
 inductive Ok : (Γ : Ctx) → Ty Γ → Prop where
   | base : (Γ : Ctx) → Ok Γ (Ty.base Γ)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (Γ : Ctx) → (a : Ty Γ) → motive_2 Γ a → Ok Γ a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (base_1 : ∀ (Γ : Ctx) (Γ_ih : motive_1 Γ), motive_3 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯) {Γ : Ctx} {a : Ty Γ} (h : Ok Γ a),
-  motive_3 Γ a (Ty.rec nil snoc base base_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 /--
 info: @Ok.casesP : ∀ {motive : (Γ : Ctx) → (a : Ty Γ) → Ok Γ a → Prop},
@@ -2837,6 +2052,7 @@ not about the other two.
 
 namespace DataOnDataJudge
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2851,28 +2067,6 @@ inductive Good : (Γ : Ctx) → (A : Ty Γ) → Tm Γ A → Prop where
   | wk  : (Γ : Ctx) → (A : Ty Γ) → (B : Ty Γ) → (t : Tm Γ A) →
       Good Γ A t → Good Γ B (Tm.wk Γ A B t)
 end
-
-/--
-info: @Good.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1}
-  {motive_4 : (Γ : Ctx) → (A : Ty Γ) → (a : Tm Γ A) → motive_3 Γ A a → Good Γ A a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (var : (Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A))
-  (wk :
-    (Γ : Ctx) →
-      (A B : Ty Γ) →
-        (a : Tm Γ A) → motive_1 Γ → motive_2 Γ A → motive_2 Γ B → motive_3 Γ A a → motive_3 Γ B (Tm.wk Γ A B a))
-  (var_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A), motive_4 Γ A (Tm.var Γ A) (var Γ A Γ_ih A_ih) ⋯)
-  (wk_1 :
-    ∀ (Γ : Ctx) (A B : Ty Γ) (t : Tm Γ A) (a : Good Γ A t) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A)
-      (B_ih : motive_2 Γ B) (t_ih : motive_3 Γ A t),
-      motive_4 Γ A t t_ih a → motive_4 Γ B (Tm.wk Γ A B t) (wk Γ A B t Γ_ih A_ih B_ih t_ih) ⋯)
-  {Γ : Ctx} {A : Ty Γ} {a : Tm Γ A} (h : Good Γ A a), motive_4 Γ A a (Tm.rec nil snoc base var wk var_1 wk_1 a) h
--/
-#guard_msgs in
-#check @Good.rec
 
 /--
 info: @Good.casesP : ∀ {motive : (Γ : Ctx) → (A : Ty Γ) → (a : Tm Γ A) → Good Γ A a → Prop},
@@ -2921,6 +2115,7 @@ functions and the two propositions about them, off one set of minors.
 
 namespace DataOnDataTwoProps
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2933,34 +2128,6 @@ inductive Ok : Ctx → Prop where
 inductive Wf : (Γ : Ctx) → Ty Γ → Prop where
   | base : (Γ : Ctx) → Wf Γ (Ty.base Γ)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (a : Ctx) → motive_1 a → Ok a → Prop} {motive_4 : (Γ : Ctx) → (a : Ty Γ) → motive_2 Γ a → Wf Γ a → Prop}
-  (nil : motive_1 Ctx.nil) (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) (nil_1 : motive_3 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih a → motive_3 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  (base_1 : ∀ (Γ : Ctx) (Γ_ih : motive_1 Γ), motive_4 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯) {a : Ctx} (h : Ok a),
-  motive_3 a (Ctx.rec nil snoc base nil_1 snoc_1 base_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
-
-/--
-info: @Wf.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (a : Ctx) → motive_1 a → Ok a → Prop} {motive_4 : (Γ : Ctx) → (a : Ty Γ) → motive_2 Γ a → Wf Γ a → Prop}
-  (nil : motive_1 Ctx.nil) (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) (nil_1 : motive_3 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih a → motive_3 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  (base_1 : ∀ (Γ : Ctx) (Γ_ih : motive_1 Γ), motive_4 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯) {Γ : Ctx} {a : Ty Γ} (h : Wf Γ a),
-  motive_4 Γ a (Ty.rec nil snoc base nil_1 snoc_1 base_1 a) h
--/
-#guard_msgs in
-#check @Wf.rec
 
 def Ctx.size : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -3019,6 +2186,7 @@ bundle in sight.
 
 namespace DataOnDataPropOnProp
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3031,20 +2199,6 @@ inductive Ok : Ctx → Prop where
 inductive Wf : (Γ : Ctx) → Ty Γ → Prop where
   | base : (Γ : Ctx) → Ok Γ → Wf Γ (Ty.base Γ)
 end
-
-/--
-info: @Wf.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (a : Ctx) → motive_1 a → Ok a → Prop} {motive_4 : (Γ : Ctx) → (a : Ty Γ) → motive_2 Γ a → Wf Γ a → Prop}
-  (nil : motive_1 Ctx.nil) (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) (nil_1 : motive_3 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih a → motive_3 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  (base_1 : ∀ (Γ : Ctx) (a : Ok Γ) (Γ_ih : motive_1 Γ), motive_3 Γ Γ_ih a → motive_4 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯)
-  {Γ : Ctx} {a : Ty Γ} (h : Wf Γ a), motive_4 Γ a (Ty.rec nil snoc base nil_1 snoc_1 base_1 a) h
--/
-#guard_msgs in
-#check @Wf.rec
 
 -- the inversion lemma, which is what the new hypothesis is for: the `Ok` of
 -- `Wf.base` is about a `Γ` no data field of `Ty.base` mentions, so without an
@@ -3093,6 +2247,7 @@ type's context carries, and neither step is a separate induction.
 
 namespace DataOnDataStack
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3109,28 +2264,6 @@ inductive Wf : (Γ : Ctx) → Ty Γ → Prop where
 inductive Good : (Γ : Ctx) → (A : Ty Γ) → Tm Γ A → Prop where
   | var : (Γ : Ctx) → (A : Ty Γ) → Wf Γ A → Good Γ A (Tm.var Γ A)
 end
-
-/--
-info: @Good.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} {motive_4 : (a : Ctx) → motive_1 a → Ok a → Prop}
-  {motive_5 : (Γ : Ctx) → (a : Ty Γ) → motive_2 Γ a → Wf Γ a → Prop}
-  {motive_6 : (Γ : Ctx) → (A : Ty Γ) → (a : Tm Γ A) → motive_3 Γ A a → Good Γ A a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (var : (Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A))
-  (nil_1 : motive_4 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_4 Γ Γ_ih a → motive_4 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  (base_1 : ∀ (Γ : Ctx) (a : Ok Γ) (Γ_ih : motive_1 Γ), motive_4 Γ Γ_ih a → motive_5 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯)
-  (var_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Wf Γ A) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_5 Γ A A_ih a → motive_6 Γ A (Tm.var Γ A) (var Γ A Γ_ih A_ih) ⋯)
-  {Γ : Ctx} {A : Ty Γ} {a : Tm Γ A} (h : Good Γ A a),
-  motive_6 Γ A a (Tm.rec nil snoc base var nil_1 snoc_1 base_1 var_1 a) h
--/
-#guard_msgs in
-#check @Good.rec
 
 def Tm.size : {Γ : Ctx} → {A : Ty Γ} → Tm Γ A → Nat :=
   fun {_} {_} t =>
@@ -3175,6 +2308,7 @@ namespace DataOnDataPropOnPropUniv
 
 universe u
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -3187,21 +2321,6 @@ inductive Ok (α : Type u) : Ctx α → Prop where
 inductive Wf (α : Type u) : (Γ : Ctx α) → Ty α Γ → Prop where
   | base : (Γ : Ctx α) → Ok α Γ → Wf α Γ (Ty.base Γ)
 end
-
-/--
-info: @Wf.rec : ∀ {α : Type u_2} {motive_1 : Ctx α → Sort u_1} {motive_2 : (a : Ctx α) → Ty α a → Sort u_1}
-  {motive_3 : (a : Ctx α) → motive_1 a → Ok α a → Prop}
-  {motive_4 : (Γ : Ctx α) → (a : Ty α Γ) → motive_2 Γ a → Wf α Γ a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx α) → (a : α) → (a_1 : Ty α Γ) → motive_1 Γ → motive_2 Γ a_1 → motive_1 (Γ.snoc a a_1))
-  (base : (Γ : Ctx α) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) (nil_1 : motive_3 Ctx.nil nil ⋯)
-  (snoc_1 :
-    ∀ (Γ : Ctx α) (a : α) (A : Ty α Γ) (a_1 : Ok α Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih a_1 → motive_3 (Γ.snoc a A) (snoc Γ a A Γ_ih A_ih) ⋯)
-  (base_1 : ∀ (Γ : Ctx α) (a : Ok α Γ) (Γ_ih : motive_1 Γ), motive_3 Γ Γ_ih a → motive_4 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯)
-  {Γ : Ctx α} {a : Ty α Γ} (h : Wf α Γ a), motive_4 Γ a (Ty.rec nil snoc base nil_1 snoc_1 base_1 a) h
--/
-#guard_msgs in
-#check @Wf.rec
 
 end DataOnDataPropOnPropUniv
 
@@ -3223,6 +2342,7 @@ that is not available.  The data recursors are untouched.
 
 namespace DataOnDataPropSibling
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3234,26 +2354,6 @@ inductive Wf : (Γ : Ctx) → Ty Γ → Prop where
   | base : (Γ : Ctx) → Wf Γ (Ty.base Γ)
   | unit : (Γ : Ctx) → Wf Γ (Ty.base Γ) → Wf Γ (Ty.unit Γ)
 end
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.unit Γ)) → {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
-
-/--
-info: @Wf.rec : ∀ {motive : (Γ : Ctx) → (a : Ty Γ) → Wf Γ a → Prop},
-  (∀ (Γ : Ctx), motive Γ (Ty.base Γ) ⋯) →
-    (∀ (Γ : Ctx) (a : Wf Γ (Ty.base Γ)), motive Γ (Ty.base Γ) a → motive Γ (Ty.unit Γ) ⋯) →
-      ∀ {Γ : Ctx} {a : Ty Γ} (h : Wf Γ a), motive Γ a h
--/
-#guard_msgs in
-#check @Wf.rec
 
 end DataOnDataPropSibling
 
@@ -3269,6 +2369,7 @@ the visible declaration is which minors are short of an induction hypothesis.
 
 namespace DataOnDataPropTm
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3281,38 +2382,6 @@ inductive Ok : Ctx → Prop where
   | nil  : Ok Ctx.nil
   | snoc : (Γ : Ctx) → (A : Ty Γ) → Ok Γ → Ok (Ctx.snoc Γ A)
 end
-
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : (a : Ctx) → motive_1 a → Ok a → Prop} →
-        (nil : motive_1 Ctx.nil) →
-          (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                motive_4 Ctx.nil nil Ok.nil →
-                  (∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-                      motive_4 Γ Γ_ih a → motive_4 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯) →
-                    {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
-
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} {motive_4 : (a : Ctx) → motive_1 a → Ok a → Prop}
-  (nil : motive_1 Ctx.nil) (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (var : (Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A))
-  (nil_1 : motive_4 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_4 Γ Γ_ih a → motive_4 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  {a : Ctx} (h : Ok a), motive_4 a (Ctx.rec nil snoc base var nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 def Ctx.len : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -3344,6 +2413,7 @@ namespace DataOnDataPropUniv
 
 universe u
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -3354,19 +2424,6 @@ inductive Ok (α : Type u) : Ctx α → Prop where
   | nil  : Ok α Ctx.nil
   | snoc : (Γ : Ctx α) → (a : α) → (A : Ty α Γ) → Ok α Γ → Ok α (Ctx.snoc Γ a A)
 end
-
-/--
-info: @Ok.rec : ∀ {α : Type u_2} {motive_1 : Ctx α → Sort u_1} {motive_2 : (a : Ctx α) → Ty α a → Sort u_1}
-  {motive_3 : (a : Ctx α) → motive_1 a → Ok α a → Prop} (nil : motive_1 Ctx.nil)
-  (snoc : (Γ : Ctx α) → (a : α) → (a_1 : Ty α Γ) → motive_1 Γ → motive_2 Γ a_1 → motive_1 (Γ.snoc a a_1))
-  (base : (Γ : Ctx α) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) (nil_1 : motive_3 Ctx.nil nil ⋯)
-  (snoc_1 :
-    ∀ (Γ : Ctx α) (a : α) (A : Ty α Γ) (a_1 : Ok α Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_3 Γ Γ_ih a_1 → motive_3 (Γ.snoc a A) (snoc Γ a A Γ_ih A_ih) ⋯)
-  {a : Ctx α} (h : Ok α a), motive_3 a (Ctx.rec nil snoc base nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 def Ctx.len {α : Type u} : Ctx α → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -3395,6 +2452,7 @@ are all globals of this file already.
 
 namespace Shadowed
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3402,11 +2460,6 @@ inductive Ctx : Type where
 inductive Ty : Ctx → Type where
   | base : (Γ : Ctx) → Ty Γ
 end
-
-set_option pp.fullNames true in
-/-- info: Shadowed.Ty : Shadowed.Ctx → Type -/
-#guard_msgs in
-#check @Ty
 
 end Shadowed
 
@@ -3419,17 +2472,13 @@ offered the block and Lean's own elaborator keeps it.
 
 namespace Rooted
 
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
 inductive Ty : _root_.Ctx → Type where
   | base : (Γ : _root_.Ctx) → Ty Γ
 end
-
-set_option pp.fullNames true in
-/-- info: Rooted.Ty : _root_.Ctx → Type -/
-#guard_msgs in
-#check @Ty
 
 -- and it is an ordinary inductive, with no pre-type standing behind it
 /-- error: Unknown constant `Rooted.Ty._pre` -/
@@ -3458,6 +2507,7 @@ miss.
 
 namespace DataOnDataBuilt
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3487,63 +2537,12 @@ Tm._ind
 -- definition stand in for an inductive's own occurrences in its constructors,
 -- so this one place prints the name the type moved to.  Everywhere else -- the
 -- recursors, the eliminators, the goals `induction` leaves -- reads `Tm`
-/--
-info: Tm.lam : (Γ : Ctx) → (A : Ty Γ) → (B : Ty (Γ.snoc A)) → Tm._ind (Γ.snoc A) B → Tm._ind Γ (Ty.pi Γ A B)
--/
-#guard_msgs in
-#check @Tm.lam
 
 -- one recursion over the three members, and the `lam` minor premise is the one
 -- a well-typed-syntax development would write by hand
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                ((Γ : Ctx) →
-                    (A : Ty Γ) →
-                      (B : Ty (Γ.snoc A)) →
-                        (a : Tm (Γ.snoc A) B) →
-                          motive_1 Γ →
-                            motive_2 Γ A →
-                              motive_2 (Γ.snoc A) B →
-                                motive_3 (Γ.snoc A) B a → motive_3 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a)) →
-                  (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
 
 -- `Tm.rec` is the same recursion, ending at the third motive instead of the
 -- first, so the minor premises are shared
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                ((Γ : Ctx) →
-                    (A : Ty Γ) →
-                      (B : Ty (Γ.snoc A)) →
-                        (a : Tm (Γ.snoc A) B) →
-                          motive_1 Γ →
-                            motive_2 Γ A →
-                              motive_2 (Γ.snoc A) B →
-                                motive_3 (Γ.snoc A) B a → motive_3 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a)) →
-                  {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 -- one set of six alternatives, read off at each of the three members in turn
 def csize : Ctx → Nat :=
@@ -3624,6 +2623,7 @@ away before the alternative is ever applied.
 
 namespace DataOnDataBuiltKept
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3670,37 +2670,6 @@ fun Γ a t =>
 
 -- four members, four motives, and the `lam` minor premise still ends at the
 -- type the constructor built
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : (Γ : Ctx) → (a : Ty Γ) → Sp Γ a → Sort u_1} →
-        motive_1 Ctx.nil →
-          ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) →
-                  (A : Ty Γ) →
-                    (a : Ty (Γ.snoc A)) →
-                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-                ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                  ((Γ : Ctx) →
-                      (A : Ty Γ) →
-                        (B : Ty (Γ.snoc A)) →
-                          (a : Tm (Γ.snoc A) B) →
-                            motive_1 Γ →
-                              motive_2 Γ A →
-                                motive_2 (Γ.snoc A) B →
-                                  motive_3 (Γ.snoc A) B a → motive_3 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a)) →
-                    ((Γ : Ctx) →
-                        (A : Ty Γ) →
-                          (a : Sp Γ A) → motive_1 Γ → motive_2 Γ A → motive_4 Γ A a → motive_3 Γ A (Tm.ofSp Γ A a)) →
-                      ((Γ : Ctx) →
-                          (A : Ty Γ) →
-                            (a : Tm Γ A) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A a → motive_4 Γ A (Sp.mk Γ A a)) →
-                        {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 -- one set of eight alternatives, read off at each of the four members in turn
 def tsize : {Γ : Ctx} → Ty Γ → Nat := fun {_} A =>
@@ -3756,6 +2725,7 @@ rejections until the well-formedness learned to carry an equation.
 
 namespace BuiltSmall
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Vec4 : Type where
   | nil : Vec4
@@ -3764,16 +2734,6 @@ inductive Len : Vec4 → Type where
   | nil : Len .nil
 end
 
-/--
-info: @Len.rec : {motive_1 : Vec4 → Sort u_1} →
-  {motive_2 : (a : Vec4) → Len a → Sort u_1} →
-    motive_1 Vec4.nil →
-      ((v : Vec4) → (n : Len v) → motive_1 v → motive_2 v n → motive_1 (v.cons n)) →
-        motive_2 Vec4.nil Len.nil → {a : Vec4} → (t : Len a) → motive_2 a t
--/
-#guard_msgs in
-#check @Len.rec
-
 def Vec4.len : Vec4 → Nat :=
   Vec4.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Unit)
     0 (fun _ _ n _ => n + 1) ()
@@ -3781,6 +2741,7 @@ def Vec4.len : Vec4 → Nat :=
 example : Vec4.len Vec4.nil = 0 := rfl
 example (v : Vec4) (n : Len v) : Vec4.len (Vec4.cons v n) = Vec4.len v + 1 := rfl
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx7 : Type where
   | nil  : Ctx7
@@ -3790,19 +2751,6 @@ inductive Ty7 : Ctx7 → Type where
 inductive Tm7 : (Γ : Ctx7) → Ty7 Γ → Type where
   | mk : (Γ : Ctx7) → Tm7 Γ (Ty7.base Γ)
 end
-
-/--
-info: @Tm7.rec : {motive_1 : Ctx7 → Sort u_1} →
-  {motive_2 : (a : Ctx7) → Ty7 a → Sort u_1} →
-    {motive_3 : (Γ : Ctx7) → (a : Ty7 Γ) → Tm7 Γ a → Sort u_1} →
-      motive_1 Ctx7.nil →
-        ((Γ : Ctx7) → (a : Ty7 Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx7) → motive_1 Γ → motive_2 Γ (Ty7.base Γ)) →
-            ((Γ : Ctx7) → motive_1 Γ → motive_3 Γ (Ty7.base Γ) (Tm7.mk Γ)) →
-              {Γ : Ctx7} → {a : Ty7 Γ} → (t : Tm7 Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm7.rec
 
 end BuiltSmall
 
@@ -3829,6 +2777,7 @@ namespace BuiltTwo
 -- on it
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3838,19 +2787,6 @@ inductive Ty : Ctx → Type where
 inductive Pair : (Γ : Ctx) → Ty Γ → Ty Γ → Type where
   | mk : (Γ : Ctx) → Pair Γ (Ty.base Γ) (Ty.base Γ)
 end
-
-/--
-info: @Pair.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a a_1 : Ty Γ) → Pair Γ a a_1 → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_3 Γ (Ty.base Γ) (Ty.base Γ) (Pair.mk Γ)) →
-              {Γ : Ctx} → {a a_1 : Ty Γ} → (t : Pair Γ a a_1) → motive_3 Γ a a_1 t
--/
-#guard_msgs in
-#check @Pair.rec
 
 def psize : {Γ : Ctx} → {A B : Ty Γ} → Pair Γ A B → Nat := fun p =>
   Pair.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -3862,6 +2798,7 @@ example (Γ : Ctx) : psize (Pair.mk Γ) = 7 := rfl
 -- both built out of fields rather than out of the one index that was kept, and
 -- both at the same member, so the two transports are along equations about the
 -- same pre-type
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Cx : Type where
   | nil  : Cx
@@ -3871,26 +2808,6 @@ inductive Tp : Cx → Type where
 inductive Sub : Cx → Cx → Type where
   | ext : (Γ Δ : Cx) → (A : Tp Γ) → (B : Tp Δ) → Sub Γ Δ → Sub (Cx.snoc Γ A) (Cx.snoc Δ B)
 end
-
-/--
-info: @Sub.rec : {motive_1 : Cx → Sort u_1} →
-  {motive_2 : (a : Cx) → Tp a → Sort u_1} →
-    {motive_3 : (a a_1 : Cx) → Sub a a_1 → Sort u_1} →
-      motive_1 Cx.nil →
-        ((Γ : Cx) → (a : Tp Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Cx) → motive_1 Γ → motive_2 Γ (Tp.base Γ)) →
-            ((Γ Δ : Cx) →
-                (A : Tp Γ) →
-                  (B : Tp Δ) →
-                    (a : Sub Γ Δ) →
-                      motive_1 Γ →
-                        motive_1 Δ →
-                          motive_2 Γ A →
-                            motive_2 Δ B → motive_3 Γ Δ a → motive_3 (Γ.snoc A) (Δ.snoc B) (Sub.ext Γ Δ A B a)) →
-              {a a_1 : Cx} → (t : Sub a a_1) → motive_3 a a_1 t
--/
-#guard_msgs in
-#check @Sub.rec
 
 def depth : {Γ Δ : Cx} → Sub Γ Δ → Nat := fun s =>
   Sub.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
@@ -3907,6 +2824,7 @@ example (Γ Δ : Cx) (A : Tp Γ) (B : Tp Δ) (s : Sub Γ Δ) :
 
 -- and with a proposition in the block, so what the transports move is the
 -- bundle of the data value with the proof, whose type names the well-formedness
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T where
   | tip
@@ -3917,16 +2835,6 @@ inductive Ok : T → Prop where
   | tip : Ok .tip
   | node (t : T) : Ok t → Ok (.node t)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a a_1 : T) → P a a_1 → Sort u_1}
-  {motive_3 : (a : T) → motive_1 a → Ok a → Prop} (tip : motive_1 T.tip) (node : (t : T) → motive_1 t → motive_1 t.node)
-  (mk : (a b : T) → motive_1 a → motive_1 b → motive_2 a.node b.node (P.mk a b)) (tip_1 : motive_3 T.tip tip Ok.tip)
-  (node_1 : ∀ (t : T) (a : Ok t) (t_ih : motive_1 t), motive_3 t t_ih a → motive_3 t.node (node t t_ih) ⋯) {a : T}
-  (h : Ok a), motive_3 a (T.rec tip node mk tip_1 node_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 def size : T → Nat :=
   T.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => Nat)
@@ -3970,6 +2878,7 @@ and the block is refused only when two of them are.
 namespace RepeatedIdx
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3980,27 +2889,6 @@ inductive Sub : Ctx → Ctx → Type where
   | id  : (Γ : Ctx) → Sub Γ Γ
   | ext : (Γ Δ : Ctx) → (A : Ty Γ) → (B : Ty Δ) → Sub Γ Δ → Sub (Ctx.snoc Γ A) (Ctx.snoc Δ B)
 end
-
-/--
-info: @Sub.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (a a_1 : Ctx) → Sub a a_1 → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_3 Γ Γ (Sub.id Γ)) →
-              ((Γ Δ : Ctx) →
-                  (A : Ty Γ) →
-                    (B : Ty Δ) →
-                      (a : Sub Γ Δ) →
-                        motive_1 Γ →
-                          motive_1 Δ →
-                            motive_2 Γ A →
-                              motive_2 Δ B → motive_3 Γ Δ a → motive_3 (Γ.snoc A) (Δ.snoc B) (Sub.ext Γ Δ A B a)) →
-                {a a_1 : Ctx} → (t : Sub a a_1) → motive_3 a a_1 t
--/
-#guard_msgs in
-#check @Sub.rec
 
 def depth : {Γ Δ : Ctx} → Sub Γ Δ → Nat := fun s =>
   Sub.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
@@ -4018,6 +2906,7 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (s : Sub Γ Δ) :
 
 -- three readings of the one field, so two of them are carried
 namespace Three
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4028,23 +2917,11 @@ inductive Tri : Ctx → Ctx → Ctx → Type where
   | all : (Γ : Ctx) → Tri Γ Γ Γ
 end
 
-/--
-info: @Tri.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (a a_1 a_2 : Ctx) → Tri a a_1 a_2 → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_3 Γ Γ Γ (Tri.all Γ)) →
-              {a a_1 a_2 : Ctx} → (t : Tri a a_1 a_2) → motive_3 a a_1 a_2 t
--/
-#guard_msgs in
-#check @Tri.rec
-
 end Three
 
 -- a repeat and a genuinely built index in the same constructor
 namespace Mixed
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4055,23 +2932,11 @@ inductive J : Ctx → Ctx → Ctx → Type where
   | mk : (Γ : Ctx) → (A : Ty Γ) → J Γ Γ (Ctx.snoc Γ A)
 end
 
-/--
-info: @J.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (a a_1 a_2 : Ctx) → J a a_1 a_2 → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ Γ (Γ.snoc A) (J.mk Γ A)) →
-              {a a_1 a_2 : Ctx} → (t : J a a_1 a_2) → motive_3 a a_1 a_2 t
--/
-#guard_msgs in
-#check @J.rec
-
 end Mixed
 
 -- and the case where only the second reading can be the field
 namespace Choice
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4081,19 +2946,6 @@ inductive Ty : Ctx → Type where
 inductive Q : (Γ Δ : Ctx) → Ty Δ → Type where
   | mk : (Γ : Ctx) → (A : Ty Γ) → Q Γ Γ A
 end
-
-/--
-info: @Q.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ Δ : Ctx) → (a : Ty Δ) → Q Γ Δ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ Γ A (Q.mk Γ A)) →
-              {Γ Δ : Ctx} → {a : Ty Δ} → (t : Q Γ Δ a) → motive_3 Γ Δ a t
--/
-#guard_msgs in
-#check @Q.rec
 
 def qsize : {Γ Δ : Ctx} → {A : Ty Δ} → Q Γ Δ A → Nat := fun t =>
   Q.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
@@ -4105,6 +2957,7 @@ end Choice
 
 -- and one in a block a proposition is part of, where the transport moves the
 -- bundle rather than the value
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T where
   | tip
@@ -4115,16 +2968,6 @@ inductive Ok : T → Prop where
   | tip : Ok .tip
   | node (t : T) : Ok t → Ok (.node t)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a a_1 : T) → P a a_1 → Sort u_1}
-  {motive_3 : (a : T) → motive_1 a → Ok a → Prop} (tip : motive_1 T.tip) (node : (t : T) → motive_1 t → motive_1 t.node)
-  (dup : (a : T) → motive_1 a → motive_2 a a (P.dup a)) (tip_1 : motive_3 T.tip tip Ok.tip)
-  (node_1 : ∀ (t : T) (a : Ok t) (t_ih : motive_1 t), motive_3 t t_ih a → motive_3 t.node (node t t_ih) ⋯) {a : T}
-  (h : Ok a), motive_3 a (T.rec tip node dup tip_1 node_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 def size : T → Nat :=
   T.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => Nat) (motive_3 := fun _ n _ => 0 < n)
@@ -4162,6 +3005,7 @@ with, and terms compute.
 
 namespace Tower
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4176,41 +3020,6 @@ inductive Tm : (Γ : Ctx) → Ty Γ → Type where
   | app : (Γ : Ctx) → (A : Ty Γ) → (B : Ty (Ctx.snoc Γ A)) →
       Tm Γ (Ty.pi Γ A B) → Tm Γ A → Tm Γ (Ty.base Γ)
 end
-
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-              ((Γ : Ctx) →
-                  (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 (Γ.snoc A) (Ty.base (Γ.snoc A)) (Tm.var Γ A)) →
-                ((Γ : Ctx) →
-                    (A : Ty Γ) →
-                      (B : Ty (Γ.snoc A)) →
-                        (a : Tm (Γ.snoc A) B) →
-                          motive_1 Γ →
-                            motive_2 Γ A →
-                              motive_2 (Γ.snoc A) B →
-                                motive_3 (Γ.snoc A) B a → motive_3 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a)) →
-                  ((Γ : Ctx) →
-                      (A : Ty Γ) →
-                        (B : Ty (Γ.snoc A)) →
-                          (a : Tm Γ (Ty.pi Γ A B)) →
-                            (a_1 : Tm Γ A) →
-                              motive_1 Γ →
-                                motive_2 Γ A →
-                                  motive_2 (Γ.snoc A) B →
-                                    motive_3 Γ (Ty.pi Γ A B) a →
-                                      motive_3 Γ A a_1 → motive_3 Γ (Ty.base Γ) (Tm.app Γ A B a a_1)) →
-                    {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 def tmSize : {Γ : Ctx} → {A : Ty Γ} → Tm Γ A → Nat := fun t =>
   Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
@@ -4233,6 +3042,7 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A))
 
 -- two built indices reading a third, rather than one reading one
 namespace Chain
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4244,27 +3054,13 @@ inductive Three : (Γ : Ctx) → Ty Γ → Ty Γ → Type where
       Three (Ctx.snoc Γ A) (Ty.base (Ctx.snoc Γ A)) (Ty.base (Ctx.snoc Γ A))
 end
 
-/--
-info: @Three.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a a_1 : Ty Γ) → Three Γ a a_1 → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  motive_1 Γ →
-                    motive_2 Γ A → motive_3 (Γ.snoc A) (Ty.base (Γ.snoc A)) (Ty.base (Γ.snoc A)) (Three.mk Γ A)) →
-              {Γ : Ctx} → {a a_1 : Ty Γ} → (t : Three Γ a a_1) → motive_3 Γ a a_1 t
--/
-#guard_msgs in
-#check @Three.rec
 end Chain
 
 -- the context the type is read in is itself two extensions deep, so what the
 -- transport substitutes is a term the earlier transport built and not a binder
 -- the constructor was handed
 namespace FromField
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4276,29 +3072,12 @@ inductive Tm : (Γ : Ctx) → Ty Γ → Type where
       Tm (Ctx.snoc (Ctx.snoc Γ A) B) (Ty.base (Ctx.snoc (Ctx.snoc Γ A) B))
 end
 
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (B : Ty (Γ.snoc A)) →
-                    motive_1 Γ →
-                      motive_2 Γ A →
-                        motive_2 (Γ.snoc A) B →
-                          motive_3 ((Γ.snoc A).snoc B) (Ty.base ((Γ.snoc A).snoc B)) (Tm.mk Γ A B)) →
-              {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 end FromField
 
 -- and with a proposition in the block, so the transports carry the bundle the
 -- joint recursion runs on rather than a bare value
 namespace WithProp
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4311,21 +3090,6 @@ inductive Ok : Ctx → Prop where
   | nil : Ok Ctx.nil
   | snoc : (Γ : Ctx) → (A : Ty Γ) → Ok Γ → Ok (Ctx.snoc Γ A)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} {motive_4 : (a : Ctx) → motive_1 a → Ok a → Prop}
-  (nil : motive_1 Ctx.nil) (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (var : (Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 (Γ.snoc A) (Ty.base (Γ.snoc A)) (Tm.var Γ A))
-  (nil_1 : motive_4 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_4 Γ Γ_ih a → motive_4 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  {a : Ctx} (h : Ok a), motive_4 a (Ctx.rec nil snoc base var nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 def csize : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Unit)
@@ -4373,6 +3137,7 @@ turned away any more.
 namespace Promoted
 
 namespace AtBuilt
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4382,22 +3147,6 @@ inductive Ty : Ctx → Type where
 inductive Tm : (Γ : Ctx) → Ty Γ → Type where
   | mk : (Γ : Ctx) → (B : Ty Γ) → (A : Ty (Ctx.snoc Γ B)) → Tm (Ctx.snoc Γ B) A
 end
-
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (B : Ty Γ) →
-                  (A : Ty (Γ.snoc B)) →
-                    motive_1 Γ → motive_2 Γ B → motive_2 (Γ.snoc B) A → motive_3 (Γ.snoc B) A (Tm.mk Γ B A)) →
-              {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 def tsize : {Γ : Ctx} → {A : Ty Γ} → Tm Γ A → Nat := fun t =>
   Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
@@ -4415,6 +3164,7 @@ end AtBuilt
 -- a field given as two indices, with a type at each of them.  Whichever reading
 -- stays the field, the other's type is promoted rather than stranded
 namespace BothRead
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4425,22 +3175,11 @@ inductive R : (Γ Δ : Ctx) → Ty Γ → Ty Δ → Type where
   | mk : (Γ : Ctx) → (A B : Ty Γ) → R Γ Γ A B
 end
 
-/--
-info: @R.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ Δ : Ctx) → (a : Ty Γ) → (a_1 : Ty Δ) → R Γ Δ a a_1 → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → (A B : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_2 Γ B → motive_3 Γ Γ A B (R.mk Γ A B)) →
-              {Γ Δ : Ctx} → {a : Ty Γ} → {a_1 : Ty Δ} → (t : R Γ Δ a a_1) → motive_3 Γ Δ a a_1 t
--/
-#guard_msgs in
-#check @R.rec
 end BothRead
 
 -- two fields promoted at once, at a member with three indices
 namespace Three
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4454,27 +3193,6 @@ inductive Pf : (Γ : Ctx) → (A : Ty Γ) → Tm Γ A → Type where
       (t : Tm (Ctx.snoc Γ A) B) → Pf (Ctx.snoc Γ A) B t
 end
 
-/--
-info: @Pf.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : (Γ : Ctx) → (A : Ty Γ) → (a : Tm Γ A) → Pf Γ A a → Sort u_1} →
-        motive_1 Ctx.nil →
-          ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.lam Γ A)) →
-                ((Γ : Ctx) →
-                    (A : Ty Γ) →
-                      (B : Ty (Γ.snoc A)) →
-                        (t : Tm (Γ.snoc A) B) →
-                          motive_1 Γ →
-                            motive_2 Γ A →
-                              motive_2 (Γ.snoc A) B →
-                                motive_3 (Γ.snoc A) B t → motive_4 (Γ.snoc A) B t (Pf.mk Γ A B t)) →
-                  {Γ : Ctx} → {A : Ty Γ} → {a : Tm Γ A} → (t : Pf Γ A a) → motive_4 Γ A a t
--/
-#guard_msgs in
-#check @Pf.rec
 end Three
 
 end Promoted
@@ -4498,6 +3216,7 @@ out of it: `motive_4` reads the `Nat` that `motive_1` computed.
 
 namespace BuiltBesideProp
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4516,62 +3235,9 @@ end
 
 -- all four motives, and `motive_4` reads the value `motive_1` returned: the
 -- proposition is being proved *about* the function, in the one recursion
-/--
-info: @Ok.rec : ∀ {motive_1 : Ctx → Sort u_1} {motive_2 : (a : Ctx) → Ty a → Sort u_1}
-  {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} {motive_4 : (a : Ctx) → motive_1 a → Ok a → Prop}
-  (nil : motive_1 Ctx.nil) (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a))
-  (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ))
-  (pi :
-    (Γ : Ctx) →
-      (A : Ty Γ) → (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a))
-  (var : (Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A))
-  (lam :
-    (Γ : Ctx) →
-      (A : Ty Γ) →
-        (B : Ty (Γ.snoc A)) →
-          (a : Tm (Γ.snoc A) B) →
-            motive_1 Γ →
-              motive_2 Γ A →
-                motive_2 (Γ.snoc A) B → motive_3 (Γ.snoc A) B a → motive_3 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a))
-  (nil_1 : motive_4 Ctx.nil nil Ok.nil)
-  (snoc_1 :
-    ∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-      motive_4 Γ Γ_ih a → motive_4 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯)
-  {a : Ctx} (h : Ok a), motive_4 a (Ctx.rec nil snoc base pi var lam nil_1 snoc_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 -- the same eight alternatives seen from the data side, and `lam` still builds
 -- its index: the constructor written is the constructor that came out
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : (a : Ctx) → motive_1 a → Ok a → Prop} →
-        (nil : motive_1 Ctx.nil) →
-          (snoc : (Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) →
-                  (A : Ty Γ) →
-                    (a : Ty (Γ.snoc A)) →
-                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-                ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                  ((Γ : Ctx) →
-                      (A : Ty Γ) →
-                        (B : Ty (Γ.snoc A)) →
-                          (a : Tm (Γ.snoc A) B) →
-                            motive_1 Γ →
-                              motive_2 Γ A →
-                                motive_2 (Γ.snoc A) B →
-                                  motive_3 (Γ.snoc A) B a → motive_3 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a)) →
-                    motive_4 Ctx.nil nil Ok.nil →
-                      (∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (Γ_ih : motive_1 Γ) (A_ih : motive_2 Γ A),
-                          motive_4 Γ Γ_ih a → motive_4 (Γ.snoc A) (snoc Γ A Γ_ih A_ih) ⋯) →
-                        {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 -- a context weighs one for itself plus its types, a `pi` one for itself plus
 -- its two halves, and `lam` recurses through the term the builder built
@@ -4614,6 +3280,7 @@ the recursion as an ordinary hypothesis.
 namespace BuiltAtThePropIndex
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T where
   | tip
@@ -4625,22 +3292,6 @@ inductive Ok : T → Prop where
   | tip : Ok .tip
   | node (n : Nat) (t : T) : Ok t → Ok (.node n t)
 end
-
-/-- info: U.mk : (n : Nat) → (t : T) → U (T.node n t) -/
-#guard_msgs in
-#check @U.mk
-
-/--
-info: @Ok.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → U a → Sort u_1}
-  {motive_3 : (a : T) → motive_1 a → Ok a → Prop} (tip : motive_1 T.tip)
-  (node : (n : Nat) → (t : T) → motive_1 t → motive_1 (T.node n t)) (tip_1 : motive_2 T.tip U.tip)
-  (mk : (n : Nat) → (t : T) → motive_1 t → motive_2 (T.node n t) (U.mk n t)) (tip_2 : motive_3 T.tip tip Ok.tip)
-  (node_1 :
-    ∀ (n : Nat) (t : T) (a : Ok t) (t_ih : motive_1 t), motive_3 t t_ih a → motive_3 (T.node n t) (node n t t_ih) ⋯)
-  {a : T} (h : Ok a), motive_3 a (T.rec tip node tip_1 mk tip_2 node_1 a) h
--/
-#guard_msgs in
-#check @Ok.rec
 
 def size : T → Nat :=
   T.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -4677,6 +3328,7 @@ so the recursion never has to descend into it, and the block goes through with
 
 namespace BuiltWithALiteral
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -4685,12 +3337,6 @@ inductive Ty : (n : Nat) → Ctx n → Type where
   | base : (n : Nat) → (Γ : Ctx n) → Ty n Γ
   | pi   : (n : Nat) → (Γ : Ctx n) → (A : Ty n Γ) → Ty (n + 1) (Ctx.snoc n Γ true A) → Ty n Γ
 end
-
-/--
-info: Ty.pi : (n : Nat) → (Γ : Ctx n) → (A : Ty n Γ) → Ty (n + 1) (Ctx.snoc n Γ true A) → Ty n Γ
--/
-#guard_msgs in
-#check @Ty.pi
 
 -- and the recursion over the whole block computes at it
 def depth : {n : Nat} → {Γ : Ctx n} → Ty n Γ → Nat :=
@@ -4724,9 +3370,11 @@ conclusion, rather than being the ordinary induction principle on the proof.
 namespace BuiltIndexUnderDenesting
 set_option mumi.separate false
 
+mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T where
   | tip
@@ -4738,37 +3386,6 @@ inductive Ok : T → Prop where
   | tip : Ok .tip
   | node (n : Nat) (v : List (Wrap T n)) : 0 < n → Ok (.node n v)
 end
-
-/-- info: T.node : (n : Nat) → List (Wrap T n) → T -/
-#guard_msgs in
-#check @T.node
-
-/-- info: U.mk : (n : Nat) → (v : List (Wrap T n)) → U (T.node n v) -/
-#guard_msgs in
-#check @U.mk
-
-/-- info: Ok.node : ∀ (n : Nat) (v : List (Wrap T n)), 0 < n → Ok (T.node n v) -/
-#guard_msgs in
-#check @Ok.node
-
-/--
-info: @Ok.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → U a → Sort u_1}
-  {motive_3 : (a : T) → motive_1 a → Ok a → Prop} {motive_4 : (n : Nat) → List (Wrap T n) → Sort u_1}
-  {motive_5 : (n : Nat) → Wrap T n → Sort u_1} (tip : motive_1 T.tip)
-  (node : (n : Nat) → (v : List (Wrap T n)) → motive_4 n v → motive_1 (T.node n v)) (tip_1 : motive_2 T.tip U.tip)
-  (mk : (n : Nat) → (v : List (Wrap T n)) → motive_4 n v → motive_2 (T.node n v) (U.mk n v))
-  (tip_2 : motive_3 T.tip tip Ok.tip)
-  (node_1 :
-    ∀ (n : Nat) (v : List (Wrap T n)) (a : 0 < n) (v_ih : motive_4 n v), motive_3 (T.node n v) (node n v v_ih) ⋯)
-  (nil : (n : Nat) → motive_4 n [])
-  (cons :
-    (n : Nat) →
-      (head : Wrap T n) → (tail : List (Wrap T n)) → motive_5 n head → motive_4 n tail → motive_4 n (head :: tail))
-  (mk_1 : (n : Nat) → (a : T) → motive_1 a → motive_5 n (Wrap.mk a)) {a : T} (t : Ok a),
-  motive_3 a (T.rec tip node tip_1 mk tip_2 node_1 nil cons mk_1 a) t
--/
-#guard_msgs in
-#check @Ok.rec
 
 def size : T → Nat :=
   T.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -4822,6 +3439,7 @@ reading the value the data motive computed.
 
 namespace PropInBuiltCtx
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4837,27 +3455,6 @@ end
 
 -- `motive_3` takes the value `motive_2` computed, which is what lets a
 -- proposition say something about a function defined in the same recursion
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → motive_2 Γ a → Wf Γ a → Prop} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          (base : (Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            (pi :
-                (Γ : Ctx) →
-                  (A : Ty Γ) →
-                    (a : Ty (Γ.snoc A)) →
-                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-              (∀ (Γ : Ctx) (Γ_ih : motive_1 Γ), motive_3 Γ (Ty.base Γ) (base Γ Γ_ih) ⋯) →
-                (∀ (Γ : Ctx) (A : Ty Γ) (B : Ty (Γ.snoc A)) (a : Wf Γ A) (a_1 : Wf (Γ.snoc A) B) (Γ_ih : motive_1 Γ)
-                    (A_ih : motive_2 Γ A) (B_ih : motive_2 (Γ.snoc A) B),
-                    motive_3 Γ A A_ih a →
-                      motive_3 (Γ.snoc A) B B_ih a_1 → motive_3 Γ (Ty.pi Γ A B) (pi Γ A B Γ_ih A_ih B_ih) ⋯) →
-                  {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 def size : {Γ : Ctx} → Ty Γ → Nat := fun {_} A =>
   Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -4894,6 +3491,7 @@ is not available here -- it would have to recurse on a `Subtype`, which has no
 
 namespace OkAndWf
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4909,44 +3507,6 @@ inductive Wf : (Γ : Ctx) → Ty Γ → Prop where
   | pi   : (Γ : Ctx) → (A : Ty Γ) → (B : Ty (Ctx.snoc Γ A)) →
       Wf Γ A → Wf (Ctx.snoc Γ A) B → Wf Γ (Ty.pi Γ A B)
 end
-
-/--
-info: @Ok.rec : ∀ {motive_1 : (a : Ctx) → Ok a → Prop} {motive_2 : (Γ : Ctx) → (a : Ty Γ) → Wf Γ a → Prop},
-  motive_1 Ctx.nil Ok.nil →
-    (∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (a_1 : Wf Γ A), motive_1 Γ a → motive_2 Γ A a_1 → motive_1 (Γ.snoc A) ⋯) →
-      (∀ (Γ : Ctx) (a : Ok Γ), motive_1 Γ a → motive_2 Γ (Ty.base Γ) ⋯) →
-        (∀ (Γ : Ctx) (A : Ty Γ) (B : Ty (Γ.snoc A)) (a : Wf Γ A) (a_1 : Wf (Γ.snoc A) B),
-            motive_2 Γ A a → motive_2 (Γ.snoc A) B a_1 → motive_2 Γ (Ty.pi Γ A B) ⋯) →
-          ∀ {a : Ctx} (h : Ok a), motive_1 a h
--/
-#guard_msgs in
-#check @Ok.rec
-
-/--
-info: @Wf.rec : ∀ {motive_1 : (a : Ctx) → Ok a → Prop} {motive_2 : (Γ : Ctx) → (a : Ty Γ) → Wf Γ a → Prop},
-  motive_1 Ctx.nil Ok.nil →
-    (∀ (Γ : Ctx) (A : Ty Γ) (a : Ok Γ) (a_1 : Wf Γ A), motive_1 Γ a → motive_2 Γ A a_1 → motive_1 (Γ.snoc A) ⋯) →
-      (∀ (Γ : Ctx) (a : Ok Γ), motive_1 Γ a → motive_2 Γ (Ty.base Γ) ⋯) →
-        (∀ (Γ : Ctx) (A : Ty Γ) (B : Ty (Γ.snoc A)) (a : Wf Γ A) (a_1 : Wf (Γ.snoc A) B),
-            motive_2 Γ A a → motive_2 (Γ.snoc A) B a_1 → motive_2 Γ (Ty.pi Γ A B) ⋯) →
-          ∀ {Γ : Ctx} {a : Ty Γ} (h : Wf Γ a), motive_2 Γ a h
--/
-#guard_msgs in
-#check @Wf.rec
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-          ((Γ : Ctx) →
-              (A : Ty Γ) →
-                (a : Ty (Γ.snoc A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-            {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 -- the data half is a recursion between `Ctx` and `Ty`, and it computes: `Ty.pi`
 -- is the constructor that recurses in a context it built, so the equation at it
@@ -4991,6 +3551,7 @@ family of variables, whose constructors give their deleted index as a value of a
 
 namespace CwF
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Con : Type where
   | nil  : Con
@@ -5009,33 +3570,6 @@ end
 
 -- four members, one motive each, and `Sub`'s two indices are two deleted
 -- values of the same member
-/--
-info: @Tm.rec : {motive_1 : Con → Sort u_1} →
-  {motive_2 : (a : Con) → Ty a → Sort u_1} →
-    {motive_3 : (a a_1 : Con) → Sub a a_1 → Sort u_1} →
-      {motive_4 : (Γ : Con) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-        motive_1 Con.nil →
-          ((Γ : Con) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.ext a)) →
-            ((Γ : Con) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Con) →
-                  (A : Ty Γ) →
-                    (a : Ty (Γ.ext A)) → motive_1 Γ → motive_2 Γ A → motive_2 (Γ.ext A) a → motive_2 Γ (Ty.pi Γ A a)) →
-                ((Γ : Con) → motive_1 Γ → motive_3 Γ Γ (Sub.id Γ)) →
-                  ((Γ : Con) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 (Γ.ext A) Γ (Sub.wk Γ A)) →
-                    ((Γ : Con) →
-                        (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_4 (Γ.ext A) (Ty.base (Γ.ext A)) (Tm.var Γ A)) →
-                      ((Γ : Con) →
-                          (A : Ty Γ) →
-                            (B : Ty (Γ.ext A)) →
-                              (a : Tm (Γ.ext A) B) →
-                                motive_1 Γ →
-                                  motive_2 Γ A →
-                                    motive_2 (Γ.ext A) B →
-                                      motive_4 (Γ.ext A) B a → motive_4 Γ (Ty.pi Γ A B) (Tm.lam Γ A B a)) →
-                        {Γ : Con} → {a : Ty Γ} → (t : Tm Γ a) → motive_4 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
 
 -- and the recursion computes over all four at once
 def size : {Γ : Con} → {A : Ty Γ} → Tm Γ A → Nat := fun {_} {_} t =>
@@ -5057,6 +3591,7 @@ end CwF
 
 namespace Vars
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5071,25 +3606,6 @@ end
 
 -- both of `Var`'s indices are built rather than given: the context out of
 -- `Ctx.snoc` and the type out of `Ty.wk`, and neither is a field
-/--
-info: @Var.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Var Γ a → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → (A a : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_2 Γ a → motive_2 (Γ.snoc A) (Ty.wk Γ A a)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 (Γ.snoc A) (Ty.wk Γ A A) (Var.zero Γ A)) →
-                ((Γ : Ctx) →
-                    (A B : Ty Γ) →
-                      (a : Var Γ B) →
-                        motive_1 Γ →
-                          motive_2 Γ A →
-                            motive_2 Γ B → motive_3 Γ B a → motive_3 (Γ.snoc A) (Ty.wk Γ A B) (Var.succ Γ A B a)) →
-                  {Γ : Ctx} → {a : Ty Γ} → (t : Var Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Var.rec
 
 def depth : {Γ : Ctx} → {A : Ty Γ} → Var Γ A → Nat := fun {_} {_} v =>
   Var.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat) (motive_3 := fun _ _ _ => Nat)
@@ -5123,6 +3639,7 @@ rather than the inductive one name over.
 
 namespace TwoLeave
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5155,33 +3672,6 @@ Sub._ind
 -- of its recursive fields: the one at `Sub`, which the kernel's own recursor
 -- over `Sub._ind` supplies, and the one at `Tm`, which this recursor works out
 -- for itself by calling the widened `Tm.rec` on the same motives and minors
-/--
-info: @Sub.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : (a a_1 : Ctx) → Sub a a_1 → Sort u_1} →
-        motive_1 Ctx.nil →
-          ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) →
-                  (A : Ty Γ) →
-                    (a : Ty (Γ.snoc A)) →
-                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-                ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                  ((Γ : Ctx) → motive_1 Γ → motive_4 Γ Γ (Sub.id Γ)) →
-                    ((Γ Δ : Ctx) →
-                        (A : Ty Δ) →
-                          (a : Sub Γ Δ) →
-                            (a_1 : Tm Γ (Ty.base Γ)) →
-                              motive_1 Γ →
-                                motive_1 Δ →
-                                  motive_2 Δ A →
-                                    motive_4 Γ Δ a →
-                                      motive_3 Γ (Ty.base Γ) a_1 → motive_4 Γ (Δ.snoc A) (Sub.ext Γ Δ A a a_1)) →
-                      {a a_1 : Ctx} → (t : Sub a a_1) → motive_4 a a_1 t
--/
-#guard_msgs in
-#check @Sub.rec
 
 -- and a `match` over each of them, one calling the other
 def tsize : {Γ : Ctx} → {A : Ty Γ} → Tm Γ A → Nat
@@ -5221,6 +3711,7 @@ into the block ought to give and what no erasure of `F13` could have produced.
 
 namespace FnIndex
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx13 : Type where
   | nil  : Ctx13
@@ -5238,32 +3729,8 @@ F13._ind
 #guard_msgs in
 #print F13
 
-/--
-info: @F13.rec : {motive_1 : Ctx13 → Sort u_1} →
-  {motive_2 : (a : Ctx13) → Ty13 a → Sort u_1} →
-    {motive_3 : (a : Nat → Ctx13) → F13 a → Sort u_1} →
-      motive_1 Ctx13.nil →
-        ((Γ : Ctx13) → (a : Ty13 Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx13) → motive_1 Γ → motive_2 Γ (Ty13.base Γ)) →
-            ((f : Nat → Ctx13) → ((a : Nat) → motive_1 (f a)) → motive_3 f (F13.mk f)) →
-              {a : Nat → Ctx13} → (t : F13 a) → motive_3 a t
--/
-#guard_msgs in
-#check @F13.rec
-
 -- the block's recursion is unchanged by the member that left: `Ctx13.rec` takes
 -- the same three motives and the same four alternatives
-/--
-info: @Ctx13.rec : {motive_1 : Ctx13 → Sort u_1} →
-  {motive_2 : (a : Ctx13) → Ty13 a → Sort u_1} →
-    {motive_3 : (a : Nat → Ctx13) → F13 a → Sort u_1} →
-      motive_1 Ctx13.nil →
-        ((Γ : Ctx13) → (a : Ty13 Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx13) → motive_1 Γ → motive_2 Γ (Ty13.base Γ)) →
-            ((f : Nat → Ctx13) → ((a : Nat) → motive_1 (f a)) → motive_3 f (F13.mk f)) → (t : Ctx13) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx13.rec
 
 -- and the index is reachable by `match`, which is what makes the acceptance
 -- worth anything
@@ -5298,6 +3765,7 @@ hypothesis it arrived with.  What the block may not do is *build* one, and the
 
 namespace PropIndex
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx15 : Type where
   | nil  : Ctx15
@@ -5318,43 +3786,9 @@ fun Γ a => Tm15._sub Γ.val a
 #print Tm15
 
 -- the constructor says what the user wrote, proof index and all
-/-- info: Tm15.var : (Γ : Ctx15) → (h : Ok15 Γ) → Tm15 Γ h -/
-#guard_msgs in
-#check @Tm15.var
-
-/--
-info: @Tm15.rec : {motive_1 : Ctx15 → Sort u_1} →
-  {motive_2 : (Γ : Ctx15) → (a : Ok15 Γ) → Tm15 Γ a → Sort u_1} →
-    motive_1 Ctx15.nil →
-      ((Γ : Ctx15) → (a : Ok15 Γ) → motive_1 Γ → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx15) → (h : Ok15 Γ) → motive_1 Γ → motive_2 Γ h (Tm15.var Γ h)) →
-          ((Γ : Ctx15) → (h : Ok15 Γ) → (a : Tm15 Γ h) → motive_1 Γ → motive_2 Γ h a → motive_2 Γ h (Tm15.wk Γ h a)) →
-            {Γ : Ctx15} → {a : Ok15 Γ} → (t : Tm15 Γ a) → motive_2 Γ a t
--/
-#guard_msgs in
-#check @Tm15.rec
-
-/--
-info: @Ctx15.rec : {motive_1 : Ctx15 → Sort u_1} →
-  {motive_2 : (Γ : Ctx15) → (a : Ok15 Γ) → Tm15 Γ a → Sort u_1} →
-    motive_1 Ctx15.nil →
-      ((Γ : Ctx15) → (a : Ok15 Γ) → motive_1 Γ → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx15) → (h : Ok15 Γ) → motive_1 Γ → motive_2 Γ h (Tm15.var Γ h)) →
-          ((Γ : Ctx15) → (h : Ok15 Γ) → (a : Tm15 Γ h) → motive_1 Γ → motive_2 Γ h a → motive_2 Γ h (Tm15.wk Γ h a)) →
-            (t : Ctx15) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx15.rec
 
 -- the proposition keeps its own recursion, small-eliminating as a two
 -- constructor `Prop` must be
-/--
-info: @Ok15.rec : ∀ {motive : (a : Ctx15) → Ok15 a → Prop},
-  motive Ctx15.nil Ok15.nil →
-    (∀ (Γ : Ctx15) (h : Ok15 Γ), motive Γ h → motive (Γ.snoc h) ⋯) → ∀ {a : Ctx15} (h : Ok15 a), motive a h
--/
-#guard_msgs in
-#check @Ok15.rec
 
 -- the index says nothing, and the erasure is what makes that hold definitionally
 example (Γ : Ctx15) (h h' : Ok15 Γ) : Tm15 Γ h = Tm15 Γ h' := rfl
@@ -5384,6 +3818,7 @@ as any other.
 
 namespace WitnessIndex
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx10 : Type where
   | nil  : Ctx10
@@ -5396,24 +3831,6 @@ inductive Ok10 : Ctx10 → Prop where
 inductive Tm10 : (Γ : Ctx10) → Ty10 Γ → Type where
   | mk : (Γ : Ctx10) → (h : Ok10 Γ) → Tm10 Γ (Ty10.wit Γ h)
 end
-
-/-- info: Tm10.mk : (Γ : Ctx10) → (h : Ok10 Γ) → Tm10 Γ (Ty10.wit Γ h) -/
-#guard_msgs in
-#check @Tm10.mk
-
-/--
-info: @Tm10.rec : {motive_1 : Ctx10 → Sort u_1} →
-  {motive_2 : (a : Ctx10) → Ty10 a → Sort u_1} →
-    {motive_3 : (Γ : Ctx10) → (a : Ty10 Γ) → Tm10 Γ a → Sort u_1} →
-      motive_1 Ctx10.nil →
-        ((Γ : Ctx10) → (a : Ty10 Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx10) → motive_1 Γ → motive_2 Γ (Ty10.base Γ)) →
-            ((Γ : Ctx10) → (a : Ok10 Γ) → motive_1 Γ → motive_2 Γ (Ty10.wit Γ a)) →
-              ((Γ : Ctx10) → (h : Ok10 Γ) → motive_1 Γ → motive_3 Γ (Ty10.wit Γ h) (Tm10.mk Γ h)) →
-                {Γ : Ctx10} → {a : Ty10 Γ} → (t : Tm10 Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm10.rec
 
 -- and the proof the type was built from is not one of the things that tell two
 -- of them apart
@@ -5428,16 +3845,13 @@ state it at, and denesting would hand back a `Ty14` indexed by a name nobody
 wrote.  Neither has to happen.  `Ctx14` does not mention `Ty14`, so the block
 separates and Lean reads the two declarations in turn. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx14 : Type where
   | nil : Ctx14
 inductive Ty14 : List Ctx14 → Type where
   | base : (Γs : List Ctx14) → Ty14 Γs
 end
-
-/-- info: Ty14.base : (Γs : List Ctx14) → Ty14 Γs -/
-#guard_msgs in
-#check @Ty14.base
 
 example (Γs : List Ctx14) (t : Ty14 Γs) : True := by
   cases t with
@@ -5479,6 +3893,7 @@ end
 -- data.  `Ctx6.dep` is what keeps `Sub6` in the block at all: without it
 -- nothing else is stated with `Sub6` and it would be peeled, which is the
 -- `PeelPropOnProp` case below.
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx6 : Type where
   | nil : Ctx6
@@ -5495,12 +3910,6 @@ end
 -- earlier one: `A` is a field of another inductive as far as `Sub6._pre.rec` is
 -- concerned, and Lean's own recursor for a pair of inductives declared one
 -- after the other says no more
-/--
-info: @Sub6.rec : {motive : (Γ : Ctx6) → (a : Ty6 Γ) → Sub6 Γ a → Sort u_1} →
-  ({Γ : Ctx6} → {A : Ty6 Γ} → motive Γ A ⋯) → {Γ : Ctx6} → {a : Ty6 Γ} → (h : Sub6 Γ a) → motive Γ a h
--/
-#guard_msgs in
-#check @Sub6.rec
 
 -- and the index says nothing, `Prop` being proof-irrelevant: two readings of
 -- `Sub6` at the same context are the same type, definitionally
@@ -5649,9 +4058,11 @@ Every copy stays hidden.  `motive_3` and `motive_4` below are over the originals
 `List (LocalWrap Cx n)` and `LocalWrap Cx n`, with the `n` in front.
 -/
 
+mumi_spec
 inductive LocalWrap (α : Type) (n : Nat) : Type where
   | mk (a : α) : LocalWrap α n
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Cx : Type where
   | nil
@@ -5659,34 +4070,6 @@ inductive Cx : Type where
 inductive CxOk : Cx → Prop where
   | nil : CxOk .nil
 end
-
-/-- info: Cx.snoc : (n : Nat) → List (LocalWrap Cx n) → (Γ : Cx) → CxOk Γ → Cx -/
-#guard_msgs in
-#check @Cx.snoc
-
-/-- info: CxOk.nil : CxOk Cx.nil -/
-#guard_msgs in
-#check @CxOk.nil
-
-/--
-info: @Cx.rec : {motive_1 : Cx → Sort u_1} →
-  {motive_2 : (a : Cx) → motive_1 a → CxOk a → Prop} →
-    {motive_3 : (n : Nat) → List (LocalWrap Cx n) → Sort u_1} →
-      {motive_4 : (n : Nat) → LocalWrap Cx n → Sort u_1} →
-        (nil : motive_1 Cx.nil) →
-          ((n : Nat) →
-              (v : List (LocalWrap Cx n)) →
-                (Γ : Cx) →
-                  (h : CxOk Γ) → motive_3 n v → (Γ_ih : motive_1 Γ) → motive_2 Γ Γ_ih h → motive_1 (Cx.snoc n v Γ h)) →
-            motive_2 Cx.nil nil CxOk.nil →
-              ((n : Nat) → motive_3 n []) →
-                ((n : Nat) →
-                    (head : LocalWrap Cx n) →
-                      (tail : List (LocalWrap Cx n)) → motive_4 n head → motive_3 n tail → motive_3 n (head :: tail)) →
-                  ((n : Nat) → (a : Cx) → motive_1 a → motive_4 n (LocalWrap.mk a)) → (t : Cx) → motive_1 t
--/
-#guard_msgs in
-#check @Cx.rec
 
 /-- info: @Cx.nested_List_1.ofOrig : {n : Nat} → List (LocalWrap Cx n) → Cx.nested_List_1 n -/
 #guard_msgs in
@@ -5738,6 +4121,7 @@ wrote.
 
 namespace NestAtMember
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5747,29 +4131,8 @@ inductive Ty : Ctx → Type where
   | tup  : (Γ : Ctx) → List (Ty Γ) → Ty Γ
 end
 
-/-- info: Ty.tup : (Γ : Ctx) → List (Ty Γ) → Ty Γ -/
-#guard_msgs in
-#check @Ty.tup
-
 -- the copy is hidden: `motive_3` is over `List (Ty Γ)` itself, with the `Γ` the
 -- nesting was found at in front, and the minors are `List`'s own constructors
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → List (Ty Γ) → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) → (a : List (Ty Γ)) → motive_1 Γ → motive_3 Γ a → motive_2 Γ (Ty.tup Γ a)) →
-              ((Γ : Ctx) → motive_1 Γ → motive_3 Γ []) →
-                ((Γ : Ctx) →
-                    (head : Ty Γ) →
-                      (tail : List (Ty Γ)) →
-                        motive_1 Γ → motive_2 Γ head → motive_3 Γ tail → motive_3 Γ (head :: tail)) →
-                  {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 def tsize : {Γ : Ctx} → Ty Γ → Nat := fun {_} A =>
   Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -5800,6 +4163,7 @@ namespace SubAtProp
 -- the subtype's binder `m` is unused on purpose: the point is the `Ok2 v`
 set_option linter.unusedVariables false
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Vec2 : Type where
   | nil : Vec2
@@ -5807,21 +4171,6 @@ inductive Vec2 : Type where
 inductive Ok2 : Vec2 → Prop where
   | nil : Ok2 .nil
 end
-
-/-- info: Vec2.cons : (v : Vec2) → { m // Ok2 v } → Vec2 -/
-#guard_msgs in
-#check @Vec2.cons
-
-/--
-info: @Vec2.rec : {motive_1 : Vec2 → Sort u_1} →
-  {motive_2 : (v : Vec2) → { m // Ok2 v } → Sort u_1} →
-    motive_1 Vec2.nil →
-      ((v : Vec2) → (n : { m // Ok2 v }) → motive_1 v → motive_2 v n → motive_1 (v.cons n)) →
-        ((v : Vec2) → (val : Nat) → (property : Ok2 v) → motive_1 v → motive_2 v ⟨val, property⟩) →
-          (t : Vec2) → motive_1 t
--/
-#guard_msgs in
-#check @Vec2.rec
 
 def vlen : Vec2 → Nat :=
   Vec2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -5845,6 +4194,7 @@ end SubAtProp
 -- is over `C1` alone, and the field is still the equation that was written
 namespace EqAtData
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive C1 : Type where
   | nil : C1
@@ -5852,18 +4202,6 @@ inductive C1 : Type where
 inductive P1 : C1 → Prop where
   | nil : P1 .nil
 end
-
-/-- info: C1.snoc : (a b : C1) → a = b → P1 a → C1 -/
-#guard_msgs in
-#check @C1.snoc
-
-/--
-info: @C1.rec : {motive : C1 → Sort u_1} →
-  motive C1.nil →
-    ((a b : C1) → (h : a = b) → (a_1 : P1 a) → motive a → motive b → motive (a.snoc b h a_1)) → (t : C1) → motive t
--/
-#guard_msgs in
-#check @C1.rec
 
 def csize : C1 → Nat := C1.rec 0 (fun _ _ _ _ x y => x + y + 1)
 
@@ -5888,6 +4226,7 @@ index in the copy's constructors exactly as it does in the block's own.
 
 namespace BuiltUnderNesting
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5897,33 +4236,8 @@ inductive Ty : Ctx → Type where
   | pi   : (Γ : Ctx) → (A : Ty Γ) → List (Ty (Ctx.snoc Γ A)) → Ty Γ
 end
 
-/-- info: Ty.pi : (Γ : Ctx) → (A : Ty Γ) → List (Ty (Γ.snoc A)) → Ty Γ -/
-#guard_msgs in
-#check @Ty.pi
-
 -- `motive_3` carries both locals, and the `cons` minor recurses at the built
 -- context -- `motive_2 (Γ.snoc A) head`, not `motive_2 Γ head`
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (A : Ty Γ) → List (Ty (Γ.snoc A)) → Sort u_1} →
-      motive_1 Ctx.nil →
-        ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-          ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-            ((Γ : Ctx) →
-                (A : Ty Γ) →
-                  (a : List (Ty (Γ.snoc A))) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A a → motive_2 Γ (Ty.pi Γ A a)) →
-              ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A []) →
-                ((Γ : Ctx) →
-                    (A : Ty Γ) →
-                      (head : Ty (Γ.snoc A)) →
-                        (tail : List (Ty (Γ.snoc A))) →
-                          motive_1 Γ →
-                            motive_2 Γ A → motive_2 (Γ.snoc A) head → motive_3 Γ A tail → motive_3 Γ A (head :: tail)) →
-                  {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 def tsize : {Γ : Ctx} → Ty Γ → Nat := fun {_} A =>
   Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -5953,6 +4267,7 @@ other, and each copy picks up the same locals.  Both come back as themselves.
 
 namespace FamilyAtMember
 
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive RoseA (α : Type) : Type where
   | node : α → RoseB α → RoseA α
@@ -5961,6 +4276,7 @@ inductive RoseB (α : Type) : Type where
   | cons : RoseA α → RoseB α → RoseB α
 end
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5969,33 +4285,6 @@ inductive Ty : Ctx → Type where
   | base : (Γ : Ctx) → Ty Γ
   | rose : (Γ : Ctx) → RoseA (Ty Γ) → Ty Γ
 end
-
-/-- info: Ty.rose : (Γ : Ctx) → RoseA (Ty Γ) → Ty Γ -/
-#guard_msgs in
-#check @Ty.rose
-
-/--
-info: @Ty.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → RoseA (Ty Γ) → Sort u_1} →
-      {motive_4 : (Γ : Ctx) → RoseB (Ty Γ) → Sort u_1} →
-        motive_1 Ctx.nil →
-          ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) → (a : RoseA (Ty Γ)) → motive_1 Γ → motive_3 Γ a → motive_2 Γ (Ty.rose Γ a)) →
-                ((Γ : Ctx) →
-                    (a : Ty Γ) →
-                      (a_1 : RoseB (Ty Γ)) →
-                        motive_1 Γ → motive_2 Γ a → motive_4 Γ a_1 → motive_3 Γ (RoseA.node a a_1)) →
-                  ((Γ : Ctx) → motive_1 Γ → motive_4 Γ RoseB.nil) →
-                    ((Γ : Ctx) →
-                        (a : RoseA (Ty Γ)) →
-                          (a_1 : RoseB (Ty Γ)) →
-                            motive_1 Γ → motive_3 Γ a → motive_4 Γ a_1 → motive_4 Γ (RoseB.cons a a_1)) →
-                      {a : Ctx} → (t : Ty a) → motive_2 a t
--/
-#guard_msgs in
-#check @Ty.rec
 
 end FamilyAtMember
 
@@ -6008,6 +4297,7 @@ the block, a universe parameter, and a container nested inside a container.
 
 namespace NestVariations
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive PCtx (α : Type) : Type where
   | nil  : PCtx α
@@ -6017,10 +4307,7 @@ inductive PTy (α : Type) : PCtx α → Type where
   | tup  : (Γ : PCtx α) → List (PTy α Γ) → PTy α Γ
 end
 
-/-- info: @PTy.tup : {α : Type} → (Γ : PCtx α) → List (PTy α Γ) → PTy α Γ -/
-#guard_msgs in
-#check @PTy.tup
-
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UCtx : Type u where
   | nil  : UCtx
@@ -6030,15 +4317,12 @@ inductive UTy : UCtx.{u} → Type u where
   | tup  : (Γ : UCtx) → List (UTy Γ) → UTy Γ
 end
 
-/-- info: UTy.tup : (Γ : UCtx) → List (UTy Γ) → UTy Γ -/
-#guard_msgs in
-#check @UTy.tup
-
 -- the level really is a parameter, not one that quietly collapsed
 /-- info: UCtx : Type 5 -/
 #guard_msgs in
 #check UCtx.{5}
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -6047,10 +4331,6 @@ inductive DTy : DCtx → Type where
   | base : (Γ : DCtx) → DTy Γ
   | tup  : (Γ : DCtx) → List (List (DTy Γ)) → DTy Γ
 end
-
-/-- info: DTy.tup : (Γ : DCtx) → List (List (DTy Γ)) → DTy Γ -/
-#guard_msgs in
-#check @DTy.tup
 
 def dsize : {Γ : DCtx} → DTy Γ → Nat := fun {_} A =>
   DTy.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -6086,6 +4366,7 @@ where that stops being true.
 namespace PropThroughCopy
 set_option mumi.separate false
 
+mumi_spec
 inductive PL (α : Sort u) (n : Nat) : Prop where
   | nil
   | cons (a : α) (r : PL α n)
@@ -6104,10 +4385,6 @@ inductive Ok : T → Prop where
   | node (t : T) (h : PL (Ok t) 0) : Ok (.node t)
 end
 
-/-- info: Ok.node : ∀ (t : T), PL (Ok t) 0 → Ok t.node -/
-#guard_msgs in
-#check @Ok.node
-
 -- the copy is nowhere in it: the second motive is over `PL`, and the third and
 -- fourth minors are `PL.nil` and `PL.cons`
 /--
@@ -6123,9 +4400,6 @@ set_option pp.proofs true in
 #check @Ok.rec
 
 -- the data recursor is untouched, and `Ok` is still provable by recursing on it
-/-- info: @T.rec : {motive : T → Sort u_1} → motive T.tip → ((t : T) → motive t → motive t.node) → (t : T) → motive t -/
-#guard_msgs in
-#check @T.rec
 
 theorem all_ok : ∀ t : T, Ok t := by
   intro t
@@ -6165,9 +4439,11 @@ applied to it, and every argument standing on the index rides across with it.
 namespace PropIndexFromCopy
 set_option mumi.separate false
 
+mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T where
   | tip
@@ -6176,14 +4452,6 @@ inductive Ok : T → Prop where
   | tip : Ok .tip
   | node (n : Nat) (v : List (Wrap T n)) : Ok (.node n v)
 end
-
-/-- info: T.node : (n : Nat) → List (Wrap T n) → T -/
-#guard_msgs in
-#check @T.node
-
-/-- info: Ok.node : ∀ (n : Nat) (v : List (Wrap T n)), Ok (T.node n v) -/
-#guard_msgs in
-#check @Ok.node
 
 -- the proposition's own recursor says `Ok (T.node n v)`, not the raw index, and
 -- it is the recursion over the whole block seen from the proposition's side:
@@ -6275,9 +4543,11 @@ closes the whole conclusion.
 namespace DataIndexFromCopy
 set_option mumi.separate false
 
+mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T where
   | tip
@@ -6287,50 +4557,7 @@ inductive U : T → Type where
   | mk (n : Nat) (v : List (Wrap T n)) : U (.node n v)
 end
 
-/-- info: T.node : (n : Nat) → List (Wrap T n) → T -/
-#guard_msgs in
-#check @T.node
-
-/-- info: U.mk : (n : Nat) → (v : List (Wrap T n)) → U (T.node n v) -/
-#guard_msgs in
-#check @U.mk
-
 -- the minor for `U.mk` concludes at both written constructors at once
-/--
-info: @U.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : (a : T) → U a → Sort u_1} →
-    {motive_3 : (n : Nat) → List (Wrap T n) → Sort u_1} →
-      {motive_4 : (n : Nat) → Wrap T n → Sort u_1} →
-        motive_1 T.tip →
-          ((n : Nat) → (v : List (Wrap T n)) → motive_3 n v → motive_1 (T.node n v)) →
-            motive_2 T.tip U.tip →
-              ((n : Nat) → (v : List (Wrap T n)) → motive_3 n v → motive_2 (T.node n v) (U.mk n v)) →
-                ((n : Nat) → motive_3 n []) →
-                  ((n : Nat) →
-                      (head : Wrap T n) →
-                        (tail : List (Wrap T n)) → motive_4 n head → motive_3 n tail → motive_3 n (head :: tail)) →
-                    ((n : Nat) → (a : T) → motive_1 a → motive_4 n (Wrap.mk a)) → {a : T} → (t : U a) → motive_2 a t
--/
-#guard_msgs in
-#check @U.rec
-
-/--
-info: @T.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : (a : T) → U a → Sort u_1} →
-    {motive_3 : (n : Nat) → List (Wrap T n) → Sort u_1} →
-      {motive_4 : (n : Nat) → Wrap T n → Sort u_1} →
-        motive_1 T.tip →
-          ((n : Nat) → (v : List (Wrap T n)) → motive_3 n v → motive_1 (T.node n v)) →
-            motive_2 T.tip U.tip →
-              ((n : Nat) → (v : List (Wrap T n)) → motive_3 n v → motive_2 (T.node n v) (U.mk n v)) →
-                ((n : Nat) → motive_3 n []) →
-                  ((n : Nat) →
-                      (head : Wrap T n) →
-                        (tail : List (Wrap T n)) → motive_4 n head → motive_3 n tail → motive_3 n (head :: tail)) →
-                    ((n : Nat) → (a : T) → motive_1 a → motive_4 n (Wrap.mk a)) → (t : T) → motive_1 t
--/
-#guard_msgs in
-#check @T.rec
 
 -- and both recursors still compute: the bridge is a transport along an equation
 -- that is reflexivity on a constructor, so it disappears when one is supplied
@@ -6375,9 +4602,11 @@ Four motives, and the copy's minor is the one that carries it. -/
 
 namespace DepPairNest
 
+mumi_spec
 inductive DepPair (α : Type) (β : α → Type) where
   | mk (a : α) (b : β a) : DepPair α β
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive DPCtx : Type where
   | nil
@@ -6385,10 +4614,6 @@ inductive DPCtx : Type where
 inductive DPTy : DPCtx → Type where
   | base (Γ : DPCtx) : DPTy Γ
 end
-
-/-- info: DPCtx.ext : List (DepPair DPCtx DPTy) → DPCtx -/
-#guard_msgs in
-#check @DPCtx.ext
 
 /--
 info: @DPCtx.rec : {motive_1 : DPCtx → Sort u_1} →
@@ -6428,10 +4653,6 @@ info: DPCtx.ext.injEq : ∀ (d d_1 : List (DepPair DPCtx DPTy)), (DPCtx.ext d = 
 #guard_msgs(whitespace := lax) in
 #check @DPCtx.ext.injEq
 
-/-- info: 'DepPairNest.DPCtx.ext.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms DPCtx.ext.injEq
-
 end DepPairNest
 
 /-! ## Section variables
@@ -6448,6 +4669,7 @@ namespace SectionVars
 
 section
 variable (α : Type) [Inhabited α] (unusedβ : Type)
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive C : Type where
   | nil  : C
@@ -6458,25 +4680,6 @@ end
 end
 
 -- `unusedβ` is nowhere; `[Inhabited α]` came along because `α` did
-/-- info: C : (α : Type) → [Inhabited α] → Type -/
-#guard_msgs in
-#check @C
-
-/-- info: @C.snoc : {α : Type} → [inst : Inhabited α] → (Γ : C α) → T α Γ → C α -/
-#guard_msgs in
-#check @C.snoc
-
-/--
-info: @T.rec : {α : Type} →
-  [inst : Inhabited α] →
-    {motive_1 : C α → Sort u_1} →
-      {motive_2 : (a : C α) → T α a → Sort u_1} →
-        motive_1 C.nil →
-          ((Γ : C α) → (a : T α Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : C α) → (a : α) → motive_1 Γ → motive_2 Γ (T.base Γ a)) → {a : C α} → (t : T α a) → motive_2 a t
--/
-#guard_msgs in
-#check @T.rec
 
 def csize {α : Type} [Inhabited α] : C α → Nat :=
   C.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
@@ -6498,6 +4701,7 @@ example (α : Type) [Inhabited α] (Γ : C α) (x : α) :
 -- use is declared before it
 section
 variable (α : Type) (a₀ : α)
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive C3 : Type where
   | nil  : C3
@@ -6507,13 +4711,10 @@ inductive T3 : C3 → Type where
 end
 end
 
-/-- info: C3 : Type → Type -/
-#guard_msgs in
-#check @C3
-
 -- and they compose with a nesting at a member
 section
 variable (α : Type)
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive C4 : Type where
   | nil  : C4
@@ -6524,10 +4725,6 @@ inductive T4 : C4 → Type where
 end
 end
 
-/-- info: @T4.tup : {α : Type} → (Γ : C4 α) → List (T4 α Γ) → T4 α Γ -/
-#guard_msgs in
-#check @T4.tup
-
 end SectionVars
 
 /-! ## `deriving` on one of these
@@ -6537,6 +4734,7 @@ that wants constructors has nothing to look at, and the class has to arrive by
 `Subtype`.  So the pre-type is derived for first, quietly, and the member is
 then delta derived onto it. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive DVec : Type where
   | nil : DVec
@@ -6565,6 +4763,7 @@ proof field is gone and the constructors are the pre-type's. -/
 that works and one at a time where it does not, since the data pre-types and
 the `Prop` pre-types are two separate blocks. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive EVec : Type where
   | nil : EVec
@@ -6584,6 +4783,7 @@ reach it -- and does not have to.  A member's visible constructors are ordinary
 functions into it, so the instance is written from whichever of them can be
 applied, which is the instance the writer would have written by hand. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive FVec : Type where
   | nil : FVec
@@ -6592,14 +4792,6 @@ inductive FVec : Type where
 inductive FOk : FVec → Prop where
   | nil : FOk .nil
 end
-
-/-- info: FVec.cons : (v : FVec) → FOk v → FVec -/
-#guard_msgs in
-#check @FVec.cons
-
-/-- info: FOk.nil : FOk FVec.nil -/
-#guard_msgs in
-#check @FOk.nil
 
 /-- info: FVec.instInhabited : Inhabited FVec -/
 #guard_msgs in
@@ -6612,6 +4804,7 @@ constructor with fields serves as well as a nullary one, and a parameter that is
 a type gets a hypothesis apiece -- the same instance Lean's own handler states
 for an ordinary inductive. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive F2Vec (β : Type) : Type where
   | tip (b : β) (n : Nat) : F2Vec β
@@ -6660,9 +4853,11 @@ end
 so it has a pre-type of its own, and the class reaches it along with the rest
 of the pre-block. -/
 
+mumi_spec
 inductive GWrap (α : Type) : Type where
   | mk : α → GWrap α
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive GVec : Type where
   | nil : GVec
@@ -6672,32 +4867,10 @@ inductive GOk : GWrap GVec → Prop where
   | nil : GOk (.mk .nil)
 end
 
-/-- info: GVec.cons : (v : GWrap GVec) → GOk v → GVec -/
-#guard_msgs in
-#check @GVec.cons
-
 /-! The proposition is indexed by the nesting, so it too is emitted over the copy
 and restated afterwards -- `GOk` under the plain name is the hidden one at the
 copy-world image of its index, and the constructor typechecks against that
 because the image of a written constructor reduces to the copy's. -/
-
-/-- info: GOk : GWrap GVec → Prop -/
-#guard_msgs in
-#check @GOk
-
-/-- info: GOk.nil : GOk (GWrap.mk GVec.nil) -/
-#guard_msgs in
-#check @GOk.nil
-
-/--
-info: @GVec.rec : {motive_1 : GVec → Sort u_1} →
-  {motive_2 : GWrap GVec → Sort u_1} →
-    motive_1 GVec.nil →
-      ((v : GWrap GVec) → (a : GOk v) → motive_2 v → motive_1 (GVec.cons v a)) →
-        ((a : GVec) → motive_1 a → motive_2 (GWrap.mk a)) → (t : GVec) → motive_1 t
--/
-#guard_msgs in
-#check @GVec.rec
 
 /-- info: true -/
 #guard_msgs in
@@ -6717,6 +4890,7 @@ recurses along with it, and its constructor's index is built out of the copy's
 own constructor rather than being pinned to a closed term.  Everything the writer
 named still comes out over `List LTree`. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive LTree : Type where
   | node : (cs : List LTree) → LOk cs → LTree
@@ -6725,18 +4899,6 @@ inductive LOk : List LTree → Prop where
   | cons : (t : LTree) → (ts : List LTree) → LOk ts → LOk (t :: ts)
 end
 
-/-- info: LTree.node : (cs : List LTree) → LOk cs → LTree -/
-#guard_msgs in
-#check @LTree.node
-
-/-- info: LOk : List LTree → Prop -/
-#guard_msgs in
-#check @LOk
-
-/-- info: LOk.cons : ∀ (t : LTree) (ts : List LTree), LOk ts → LOk (t :: ts) -/
-#guard_msgs in
-#check @LOk.cons
-
 /-! The recursion over the whole block goes across as well, and it is the whole
 block: the proposition gets a motive of its own, and that motive is stated over
 the value the recursion returned at the index it is about -- `motive_3 : (a :
@@ -6744,34 +4906,10 @@ List LTree) → motive_2 a → LOk a → Prop`.  Its second minor is the shape a
 this was for, the proof of `LOk (t :: ts)` coming with the value the `cons` minor
 built out of the two below it. -/
 
-/--
-info: @LTree.rec : {motive_1 : LTree → Sort u_1} →
-  {motive_2 : List LTree → Sort u_1} →
-    {motive_3 : (a : List LTree) → motive_2 a → LOk a → Prop} →
-      ((cs : List LTree) → (a : LOk cs) → (cs_ih : motive_2 cs) → motive_3 cs cs_ih a → motive_1 (LTree.node cs a)) →
-        (nil : motive_2 []) →
-          (cons : (head : LTree) → (tail : List LTree) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-            motive_3 [] nil LOk.nil →
-              (∀ (t : LTree) (ts : List LTree) (a : LOk ts) (t_ih : motive_1 t) (ts_ih : motive_2 ts),
-                  motive_3 ts ts_ih a → motive_3 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                (t : LTree) → motive_1 t
--/
-#guard_msgs in
-#check @LTree.rec
-
 /-! The proposition's own recursor is stated over the originals too.  It is the
 raw one at the copy-world images of the indices, and what that gives back is the
 motive at the images read out again, so the value is carried onto the writer's
 indices by the round trip the other way. -/
-
-/--
-info: @LOk.rec : ∀ {motive : (a : List LTree) → LOk a → Prop},
-  motive [] LOk.nil →
-    (∀ (t : LTree) (ts : List LTree) (a : LOk ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List LTree} (h : LOk a), motive a h
--/
-#guard_msgs in
-#check @LOk.rec
 
 /-- The recursion over the block computes, one layer of the nesting at a time.
 Nothing here needs the proposition, so its motive is `True`. -/
@@ -6810,6 +4948,7 @@ them as parameters of its own, and the proposition's arity comes back reading
 `List (PTree α)` at the parameter the writer gave it rather than at whatever the
 copy was made to take. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive PTree (α : Type u) : Type u where
   | node : (cs : List (PTree α)) → POk α cs → PTree α
@@ -6817,47 +4956,6 @@ inductive POk (α : Type u) : List (PTree α) → Prop where
   | nil  : POk α []
   | cons : (t : PTree α) → (ts : List (PTree α)) → POk α ts → POk α (t :: ts)
 end
-
-/-- info: @PTree.node : {α : Type u_1} → (cs : List (PTree α)) → POk α cs → PTree α -/
-#guard_msgs in
-#check @PTree.node
-
-/-- info: POk : (α : Type u_1) → List (PTree α) → Prop -/
-#guard_msgs in
-#check @POk
-
-/--
-info: @POk.cons : ∀ {α : Type u_1} (t : PTree α) (ts : List (PTree α)), POk α ts → POk α (t :: ts)
--/
-#guard_msgs in
-#check @POk.cons
-
-/--
-info: @PTree.rec : {α : Type u_2} →
-  {motive_1 : PTree α → Sort u_1} →
-    {motive_2 : List (PTree α) → Sort u_1} →
-      {motive_3 : (a : List (PTree α)) → motive_2 a → POk α a → Prop} →
-        ((cs : List (PTree α)) →
-            (a : POk α cs) → (cs_ih : motive_2 cs) → motive_3 cs cs_ih a → motive_1 (PTree.node cs a)) →
-          (nil : motive_2 []) →
-            (cons :
-                (head : PTree α) → (tail : List (PTree α)) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-              motive_3 [] nil ⋯ →
-                (∀ (t : PTree α) (ts : List (PTree α)) (a : POk α ts) (t_ih : motive_1 t) (ts_ih : motive_2 ts),
-                    motive_3 ts ts_ih a → motive_3 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                  (t : PTree α) → motive_1 t
--/
-#guard_msgs in
-#check @PTree.rec
-
-/--
-info: @POk.rec : ∀ {α : Type u_1} {motive : (a : List (PTree α)) → POk α a → Prop},
-  motive [] ⋯ →
-    (∀ (t : PTree α) (ts : List (PTree α)) (a : POk α ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List (PTree α)} (h : POk α a), motive a h
--/
-#guard_msgs in
-#check @POk.rec
 
 /-- The recursion computes at the parameters too, one layer of the nesting at a
 time.  Nothing here needs the proposition, so its motive is `True`. -/
@@ -6880,6 +4978,7 @@ to be stated over.  Their own recursors come out as the pair they are: either
 name asks for both motives and both sets of minors, and hands back the one it is
 named for. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive QTree : Type where
   | node : (cs : List QTree) → QA cs → QB cs → QTree
@@ -6890,55 +4989,6 @@ inductive QB : List QTree → Prop where
   | any : (cs : List QTree) → QB cs
 end
 
-/-- info: QTree.node : (cs : List QTree) → QA cs → QB cs → QTree -/
-#guard_msgs in
-#check @QTree.node
-
-/-- info: QA : List QTree → Prop -/
-#guard_msgs in
-#check @QA
-
-/-- info: QB : List QTree → Prop -/
-#guard_msgs in
-#check @QB
-
-/--
-info: @QTree.rec : {motive_1 : QTree → Sort u_1} →
-  {motive_2 : List QTree → Sort u_1} →
-    {motive_3 : (a : List QTree) → motive_2 a → QA a → Prop} →
-      {motive_4 : (a : List QTree) → motive_2 a → QB a → Prop} →
-        ((cs : List QTree) →
-            (a : QA cs) →
-              (a_1 : QB cs) →
-                (cs_ih : motive_2 cs) → motive_3 cs cs_ih a → motive_4 cs cs_ih a_1 → motive_1 (QTree.node cs a a_1)) →
-          (nil : motive_2 []) →
-            (cons : (head : QTree) → (tail : List QTree) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-              motive_3 [] nil QA.nil →
-                (∀ (t : QTree) (ts : List QTree) (a : QA ts) (t_ih : motive_1 t) (ts_ih : motive_2 ts),
-                    motive_3 ts ts_ih a → motive_3 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                  (∀ (cs : List QTree) (cs_ih : motive_2 cs), motive_4 cs cs_ih ⋯) → (t : QTree) → motive_1 t
--/
-#guard_msgs in
-#check @QTree.rec
-
-/--
-info: @QA.rec : ∀ {motive_1 : (a : List QTree) → QA a → Prop} {motive_2 : (a : List QTree) → QB a → Prop},
-  motive_1 [] QA.nil →
-    (∀ (t : QTree) (ts : List QTree) (a : QA ts), motive_1 ts a → motive_1 (t :: ts) ⋯) →
-      (∀ (cs : List QTree), motive_2 cs ⋯) → ∀ {a : List QTree} (h : QA a), motive_1 a h
--/
-#guard_msgs in
-#check @QA.rec
-
-/--
-info: @QB.rec : ∀ {motive_1 : (a : List QTree) → QA a → Prop} {motive_2 : (a : List QTree) → QB a → Prop},
-  motive_1 [] QA.nil →
-    (∀ (t : QTree) (ts : List QTree) (a : QA ts), motive_1 ts a → motive_1 (t :: ts) ⋯) →
-      (∀ (cs : List QTree), motive_2 cs ⋯) → ∀ {a : List QTree} (h : QB a), motive_2 a h
--/
-#guard_msgs in
-#check @QB.rec
-
 end TwoOverOne
 
 namespace NestedNested
@@ -6948,6 +4998,7 @@ grows two members rather than one, and the recursion gets a motive and a pair of
 minors for each -- `motive_2` at `List (List ATree)` and `motive_3` at
 `List ATree`.  The proposition is indexed by the outer one. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive ATree : Type where
   | node : (cs : List (List ATree)) → AOk cs → ATree
@@ -6955,48 +5006,6 @@ inductive AOk : List (List ATree) → Prop where
   | nil  : AOk []
   | cons : (t : List ATree) → (ts : List (List ATree)) → AOk ts → AOk (t :: ts)
 end
-
-/-- info: ATree.node : (cs : List (List ATree)) → AOk cs → ATree -/
-#guard_msgs in
-#check @ATree.node
-
-/-- info: AOk : List (List ATree) → Prop -/
-#guard_msgs in
-#check @AOk
-
-/-- info: AOk.cons : ∀ (t : List ATree) (ts : List (List ATree)), AOk ts → AOk (t :: ts) -/
-#guard_msgs in
-#check @AOk.cons
-
-/--
-info: @ATree.rec : {motive_1 : ATree → Sort u_1} →
-  {motive_2 : List (List ATree) → Sort u_1} →
-    {motive_3 : List ATree → Sort u_1} →
-      {motive_4 : (a : List (List ATree)) → motive_2 a → AOk a → Prop} →
-        ((cs : List (List ATree)) →
-            (a : AOk cs) → (cs_ih : motive_2 cs) → motive_4 cs cs_ih a → motive_1 (ATree.node cs a)) →
-          (nil : motive_2 []) →
-            (cons :
-                (head : List ATree) →
-                  (tail : List (List ATree)) → motive_3 head → motive_2 tail → motive_2 (head :: tail)) →
-              motive_3 [] →
-                ((head : ATree) → (tail : List ATree) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
-                  motive_4 [] nil AOk.nil →
-                    (∀ (t : List ATree) (ts : List (List ATree)) (a : AOk ts) (t_ih : motive_3 t) (ts_ih : motive_2 ts),
-                        motive_4 ts ts_ih a → motive_4 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                      (t : ATree) → motive_1 t
--/
-#guard_msgs in
-#check @ATree.rec
-
-/--
-info: @AOk.rec : ∀ {motive : (a : List (List ATree)) → AOk a → Prop},
-  motive [] AOk.nil →
-    (∀ (t : List ATree) (ts : List (List ATree)) (a : AOk ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List (List ATree)} (h : AOk a), motive a h
--/
-#guard_msgs in
-#check @AOk.rec
 
 /-- Both layers compute. -/
 def ATree.size (t : ATree) : Nat :=
@@ -7019,6 +5028,7 @@ put beside it.  `DTy` is indexed by `DCtx`, which is the rule the erasure lifts;
 is the case worth having, and the two data members each get the recursion over
 the whole block. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -7030,69 +5040,6 @@ inductive DOk : List DCtx → Prop where
   | nil  : DOk []
   | cons : (Γ : DCtx) → (Γs : List DCtx) → DOk Γs → DOk (Γ :: Γs)
 end
-
-/-- info: DTy.pack : (Γ : DCtx) → (ts : List DCtx) → DOk ts → DTy Γ -/
-#guard_msgs in
-#check @DTy.pack
-
-/-- info: DOk : List DCtx → Prop -/
-#guard_msgs in
-#check @DOk
-
-/--
-info: @DCtx.rec : {motive_1 : DCtx → Sort u_1} →
-  {motive_2 : (a : DCtx) → DTy a → Sort u_1} →
-    {motive_3 : List DCtx → Sort u_1} →
-      {motive_4 : (a : List DCtx) → motive_3 a → DOk a → Prop} →
-        motive_1 DCtx.nil →
-          ((Γ : DCtx) → (a : DTy Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : DCtx) → motive_1 Γ → motive_2 Γ (DTy.base Γ)) →
-              ((Γ : DCtx) →
-                  (ts : List DCtx) →
-                    (a : DOk ts) →
-                      motive_1 Γ → (ts_ih : motive_3 ts) → motive_4 ts ts_ih a → motive_2 Γ (DTy.pack Γ ts a)) →
-                (nil_1 : motive_3 []) →
-                  (cons :
-                      (head : DCtx) → (tail : List DCtx) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
-                    motive_4 [] nil_1 DOk.nil →
-                      (∀ (Γ : DCtx) (Γs : List DCtx) (a : DOk Γs) (Γ_ih : motive_1 Γ) (Γs_ih : motive_3 Γs),
-                          motive_4 Γs Γs_ih a → motive_4 (Γ :: Γs) (cons Γ Γs Γ_ih Γs_ih) ⋯) →
-                        (t : DCtx) → motive_1 t
--/
-#guard_msgs in
-#check @DCtx.rec
-
-/--
-info: @DTy.rec : {motive_1 : DCtx → Sort u_1} →
-  {motive_2 : (a : DCtx) → DTy a → Sort u_1} →
-    {motive_3 : List DCtx → Sort u_1} →
-      {motive_4 : (a : List DCtx) → motive_3 a → DOk a → Prop} →
-        motive_1 DCtx.nil →
-          ((Γ : DCtx) → (a : DTy Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : DCtx) → motive_1 Γ → motive_2 Γ (DTy.base Γ)) →
-              ((Γ : DCtx) →
-                  (ts : List DCtx) →
-                    (a : DOk ts) →
-                      motive_1 Γ → (ts_ih : motive_3 ts) → motive_4 ts ts_ih a → motive_2 Γ (DTy.pack Γ ts a)) →
-                (nil_1 : motive_3 []) →
-                  (cons :
-                      (head : DCtx) → (tail : List DCtx) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
-                    motive_4 [] nil_1 DOk.nil →
-                      (∀ (Γ : DCtx) (Γs : List DCtx) (a : DOk Γs) (Γ_ih : motive_1 Γ) (Γs_ih : motive_3 Γs),
-                          motive_4 Γs Γs_ih a → motive_4 (Γ :: Γs) (cons Γ Γs Γ_ih Γs_ih) ⋯) →
-                        {a : DCtx} → (t : DTy a) → motive_2 a t
--/
-#guard_msgs in
-#check @DTy.rec
-
-/--
-info: @DOk.rec : ∀ {motive : (a : List DCtx) → DOk a → Prop},
-  motive [] DOk.nil →
-    (∀ (Γ : DCtx) (Γs : List DCtx) (a : DOk Γs), motive Γs a → motive (Γ :: Γs) ⋯) →
-      ∀ {a : List DCtx} (h : DOk a), motive a h
--/
-#guard_msgs in
-#check @DOk.rec
 
 /-- A recursion that runs through all three members at once. -/
 def DCtx.len (Γ : DCtx) : Nat :=
@@ -7122,6 +5069,7 @@ index.  The copy is indexed by that index as well -- `List (EVec n)` is a family
 in `n` -- so the recursion carries it through both the copy's motive and the
 proposition's. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive EVec : Nat → Type where
   | nil  : EVec 0
@@ -7130,49 +5078,6 @@ inductive EOk : (n : Nat) → List (EVec n) → Prop where
   | nil  : (n : Nat) → EOk n []
   | cons : (n : Nat) → (t : EVec n) → (ts : List (EVec n)) → EOk n ts → EOk n (t :: ts)
 end
-
-/-- info: EVec.cons : (n : Nat) → (cs : List (EVec n)) → EOk n cs → EVec (n + 1) -/
-#guard_msgs in
-#check @EVec.cons
-
-/-- info: EOk : (n : Nat) → List (EVec n) → Prop -/
-#guard_msgs in
-#check @EOk
-
-/-- info: EOk.cons : ∀ (n : Nat) (t : EVec n) (ts : List (EVec n)), EOk n ts → EOk n (t :: ts) -/
-#guard_msgs in
-#check @EOk.cons
-
-/--
-info: @EVec.rec : {motive_1 : (a : Nat) → EVec a → Sort u_1} →
-  {motive_2 : (n : Nat) → List (EVec n) → Sort u_1} →
-    {motive_3 : (n : Nat) → (a : List (EVec n)) → motive_2 n a → EOk n a → Prop} →
-      motive_1 0 EVec.nil →
-        ((n : Nat) →
-            (cs : List (EVec n)) →
-              (a : EOk n cs) → (cs_ih : motive_2 n cs) → motive_3 n cs cs_ih a → motive_1 (n + 1) (EVec.cons n cs a)) →
-          (nil_1 : (n : Nat) → motive_2 n []) →
-            (cons_1 :
-                (n : Nat) →
-                  (head : EVec n) →
-                    (tail : List (EVec n)) → motive_1 n head → motive_2 n tail → motive_2 n (head :: tail)) →
-              (∀ (n : Nat), motive_3 n [] (nil_1 n) ⋯) →
-                (∀ (n : Nat) (t : EVec n) (ts : List (EVec n)) (a : EOk n ts) (t_ih : motive_1 n t)
-                    (ts_ih : motive_2 n ts),
-                    motive_3 n ts ts_ih a → motive_3 n (t :: ts) (cons_1 n t ts t_ih ts_ih) ⋯) →
-                  {a : Nat} → (t : EVec a) → motive_1 a t
--/
-#guard_msgs in
-#check @EVec.rec
-
-/--
-info: @EOk.rec : ∀ {motive : (n : Nat) → (a : List (EVec n)) → EOk n a → Prop},
-  (∀ (n : Nat), motive n [] ⋯) →
-    (∀ (n : Nat) (t : EVec n) (ts : List (EVec n)) (a : EOk n ts), motive n ts a → motive n (t :: ts) ⋯) →
-      ∀ {n : Nat} {a : List (EVec n)} (h : EOk n a), motive n a h
--/
-#guard_msgs in
-#check @EOk.rec
 
 example {p : (n : Nat) → (a : List (EVec n)) → EOk n a → Prop} (hn : ∀ n, p n [] (EOk.nil n))
     (hc : ∀ n t ts h, p n ts h → p n (t :: ts) (EOk.cons n t ts h)) (n : Nat) :
@@ -7192,6 +5097,7 @@ namespace HeteroNested
 nesting and the proposition.  `FBig` holds a `Type` and so lives in `Type 1`;
 `FOk` is a proposition; the copy follows `FBig`. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive FBig : Type 1 where
   | ty   : Type → FBig
@@ -7200,39 +5106,6 @@ inductive FOk : List FBig → Prop where
   | nil  : FOk []
   | cons : (t : FBig) → (ts : List FBig) → FOk ts → FOk (t :: ts)
 end
-
-/-- info: FBig.node : (cs : List FBig) → FOk cs → FBig -/
-#guard_msgs in
-#check @FBig.node
-
-/-- info: FOk : List FBig → Prop -/
-#guard_msgs in
-#check @FOk
-
-/--
-info: @FBig.rec : {motive_1 : FBig → Sort u_1} →
-  {motive_2 : List FBig → Sort u_1} →
-    {motive_3 : (a : List FBig) → motive_2 a → FOk a → Prop} →
-      ((a : Type) → motive_1 (FBig.ty a)) →
-        ((cs : List FBig) → (a : FOk cs) → (cs_ih : motive_2 cs) → motive_3 cs cs_ih a → motive_1 (FBig.node cs a)) →
-          (nil : motive_2 []) →
-            (cons : (head : FBig) → (tail : List FBig) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-              motive_3 [] nil FOk.nil →
-                (∀ (t : FBig) (ts : List FBig) (a : FOk ts) (t_ih : motive_1 t) (ts_ih : motive_2 ts),
-                    motive_3 ts ts_ih a → motive_3 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                  (t : FBig) → motive_1 t
--/
-#guard_msgs in
-#check @FBig.rec
-
-/--
-info: @FOk.rec : ∀ {motive : (a : List FBig) → FOk a → Prop},
-  motive [] FOk.nil →
-    (∀ (t : FBig) (ts : List FBig) (a : FOk ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List FBig} (h : FOk a), motive a h
--/
-#guard_msgs in
-#check @FOk.rec
 
 end HeteroNested
 
@@ -7255,6 +5128,7 @@ always had. -/
 namespace ByMember
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive NTm : Type where
   | app : (ts : List NTm) → NTm
@@ -7263,40 +5137,6 @@ inductive NOk : NTm → Prop where
   | var : NOk .var
   | app : (ts : List NTm) → NOk (.app ts)
 end
-
-/-- info: NTm.app : List NTm → NTm -/
-#guard_msgs in
-#check @NTm.app
-
-/-- info: NOk : NTm → Prop -/
-#guard_msgs in
-#check @NOk
-
-/--
-info: @NTm.rec : {motive_1 : NTm → Sort u_1} →
-  {motive_2 : (a : NTm) → motive_1 a → NOk a → Prop} →
-    {motive_3 : List NTm → Sort u_1} →
-      (app : (ts : List NTm) → motive_3 ts → motive_1 (NTm.app ts)) →
-        (var : motive_1 NTm.var) →
-          motive_2 NTm.var var NOk.var →
-            (∀ (ts : List NTm) (ts_ih : motive_3 ts), motive_2 (NTm.app ts) (app ts ts_ih) ⋯) →
-              motive_3 [] →
-                ((head : NTm) → (tail : List NTm) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
-                  (t : NTm) → motive_1 t
--/
-#guard_msgs in
-#check @NTm.rec
-
-/--
-info: @NOk.rec : ∀ {motive_1 : NTm → Sort u_1} {motive_2 : (a : NTm) → motive_1 a → NOk a → Prop}
-  {motive_3 : List NTm → Sort u_1} (app : (ts : List NTm) → motive_3 ts → motive_1 (NTm.app ts))
-  (var : motive_1 NTm.var) (var_1 : motive_2 NTm.var var NOk.var)
-  (app_1 : ∀ (ts : List NTm) (ts_ih : motive_3 ts), motive_2 (NTm.app ts) (app ts ts_ih) ⋯) (nil : motive_3 [])
-  (cons : (head : NTm) → (tail : List NTm) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) {a : NTm}
-  (t : NOk a), motive_2 a (NTm.rec app var var_1 app_1 nil cons a) t
--/
-#guard_msgs in
-#check @NOk.rec
 
 /-- It computes, and at a motive that mentions the data recursion. -/
 example {motive_1 : NTm → Sort u} {motive_2 : (a : NTm) → motive_1 a → NOk a → Prop}
@@ -7323,10 +5163,12 @@ namespace BagNest
 by name -- a copy is made of whatever the member is nested through, and `Bag`'s
 constructors come back as minors the same way `List`'s do. -/
 
+mumi_spec
 inductive Bag (α : Type u) : Type u where
   | none : Bag α
   | two  : α → α → Bag α
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive UTree : Type where
   | node : (cs : Bag UTree) → UOk cs → UTree
@@ -7334,35 +5176,6 @@ inductive UOk : Bag UTree → Prop where
   | none : UOk .none
   | two  : (a b : UTree) → UOk (.two a b)
 end
-
-/-- info: UTree.node : (cs : Bag UTree) → UOk cs → UTree -/
-#guard_msgs in
-#check @UTree.node
-
-/-- info: UOk : Bag UTree → Prop -/
-#guard_msgs in
-#check @UOk
-
-/--
-info: @UTree.rec : {motive_1 : UTree → Sort u_1} →
-  {motive_2 : Bag UTree → Sort u_1} →
-    {motive_3 : (a : Bag UTree) → motive_2 a → UOk a → Prop} →
-      ((cs : Bag UTree) → (a : UOk cs) → (cs_ih : motive_2 cs) → motive_3 cs cs_ih a → motive_1 (UTree.node cs a)) →
-        (none : motive_2 Bag.none) →
-          (two : (a a_1 : UTree) → motive_1 a → motive_1 a_1 → motive_2 (Bag.two a a_1)) →
-            motive_3 Bag.none none UOk.none →
-              (∀ (a b : UTree) (a_ih : motive_1 a) (b_ih : motive_1 b), motive_3 (Bag.two a b) (two a b a_ih b_ih) ⋯) →
-                (t : UTree) → motive_1 t
--/
-#guard_msgs in
-#check @UTree.rec
-
-/--
-info: @UOk.rec : ∀ {motive : (a : Bag UTree) → UOk a → Prop},
-  motive Bag.none UOk.none → (∀ (a b : UTree), motive (Bag.two a b) ⋯) → ∀ {a : Bag UTree} (h : UOk a), motive a h
--/
-#guard_msgs in
-#check @UOk.rec
 
 end BagNest
 
@@ -7373,6 +5186,7 @@ of its own, and the proposition is over only the first of them -- which is what
 makes this worth pinning, since the recursion has to know which copy the
 proposition's motive stands on. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive VTree : Type where
   | node : (cs : List VTree) → (o : Option VTree) → VOk cs → VTree
@@ -7380,39 +5194,6 @@ inductive VOk : List VTree → Prop where
   | nil  : VOk []
   | cons : (t : VTree) → (ts : List VTree) → VOk ts → VOk (t :: ts)
 end
-
-/-- info: VTree.node : (cs : List VTree) → Option VTree → VOk cs → VTree -/
-#guard_msgs in
-#check @VTree.node
-
-/--
-info: @VTree.rec : {motive_1 : VTree → Sort u_1} →
-  {motive_2 : List VTree → Sort u_1} →
-    {motive_3 : Option VTree → Sort u_1} →
-      {motive_4 : (a : List VTree) → motive_2 a → VOk a → Prop} →
-        ((cs : List VTree) →
-            (o : Option VTree) →
-              (a : VOk cs) → (cs_ih : motive_2 cs) → motive_3 o → motive_4 cs cs_ih a → motive_1 (VTree.node cs o a)) →
-          (nil : motive_2 []) →
-            (cons : (head : VTree) → (tail : List VTree) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-              motive_3 none →
-                ((val : VTree) → motive_1 val → motive_3 (some val)) →
-                  motive_4 [] nil VOk.nil →
-                    (∀ (t : VTree) (ts : List VTree) (a : VOk ts) (t_ih : motive_1 t) (ts_ih : motive_2 ts),
-                        motive_4 ts ts_ih a → motive_4 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                      (t : VTree) → motive_1 t
--/
-#guard_msgs in
-#check @VTree.rec
-
-/--
-info: @VOk.rec : ∀ {motive : (a : List VTree) → VOk a → Prop},
-  motive [] VOk.nil →
-    (∀ (t : VTree) (ts : List VTree) (a : VOk ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List VTree} (h : VOk a), motive a h
--/
-#guard_msgs in
-#check @VOk.rec
 
 end TwoNestings
 
@@ -7429,6 +5210,7 @@ copy, and the recursion filling in the `List` copy's step has a call at its own
 fields and none at what is inside them.  So `XTree.rec` recurses over the data
 and `XOk.rec` is the split one. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive XTree : Type where
   | node : (cs : List (XTree × Nat)) → XOk cs → XTree
@@ -7436,32 +5218,6 @@ inductive XOk : List (XTree × Nat) → Prop where
   | nil  : XOk []
   | cons : (t : XTree) → (n : Nat) → (ts : List (XTree × Nat)) → XOk ts → XOk ((t, n) :: ts)
 end
-
-/-- info: XTree.node : (cs : List (XTree × Nat)) → XOk cs → XTree -/
-#guard_msgs in
-#check @XTree.node
-
-/--
-info: @XTree.rec : {motive_1 : XTree → Sort u_1} →
-  {motive_2 : List (XTree × Nat) → Sort u_1} →
-    {motive_3 : XTree × Nat → Sort u_1} →
-      ((cs : List (XTree × Nat)) → (a : XOk cs) → motive_2 cs → motive_1 (XTree.node cs a)) →
-        motive_2 [] →
-          ((head : XTree × Nat) →
-              (tail : List (XTree × Nat)) → motive_3 head → motive_2 tail → motive_2 (head :: tail)) →
-            ((fst : XTree) → (snd : Nat) → motive_1 fst → motive_3 (fst, snd)) → (t : XTree) → motive_1 t
--/
-#guard_msgs in
-#check @XTree.rec
-
-/--
-info: @XOk.rec : ∀ {motive : (a : List (XTree × Nat)) → XOk a → Prop},
-  motive [] XOk.nil →
-    (∀ (t : XTree) (n : Nat) (ts : List (XTree × Nat)) (a : XOk ts), motive ts a → motive ((t, n) :: ts) ⋯) →
-      ∀ {a : List (XTree × Nat)} (h : XOk a), motive a h
--/
-#guard_msgs in
-#check @XOk.rec
 
 end PairNest
 
@@ -7472,6 +5228,7 @@ split recursor; `YGood` is over a member and gets the recursion over the whole
 block, concluding at the motive taken at what the data recursion returned.  The
 two sit side by side without either one deciding for the other. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive YTm : Type where
   | app : (ts : List YTm) → YOk ts → YTm
@@ -7482,48 +5239,6 @@ inductive YOk : List YTm → Prop where
 inductive YGood : YTm → Prop where
   | var : YGood .var
 end
-
-/--
-info: @YTm.rec : {motive_1 : YTm → Sort u_1} →
-  {motive_2 : (a : YTm) → motive_1 a → YGood a → Prop} →
-    {motive_3 : List YTm → Sort u_1} →
-      {motive_4 : (a : List YTm) → motive_3 a → YOk a → Prop} →
-        ((ts : List YTm) → (a : YOk ts) → (ts_ih : motive_3 ts) → motive_4 ts ts_ih a → motive_1 (YTm.app ts a)) →
-          (var : motive_1 YTm.var) →
-            motive_2 YTm.var var YGood.var →
-              (nil : motive_3 []) →
-                (cons : (head : YTm) → (tail : List YTm) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
-                  motive_4 [] nil YOk.nil →
-                    (∀ (t : YTm) (ts : List YTm) (a : YOk ts) (t_ih : motive_1 t) (ts_ih : motive_3 ts),
-                        motive_4 ts ts_ih a → motive_4 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                      (t : YTm) → motive_1 t
--/
-#guard_msgs in
-#check @YTm.rec
-
-/--
-info: @YOk.rec : ∀ {motive_1 : (a : List YTm) → YOk a → Prop} {motive_2 : (a : YTm) → YGood a → Prop},
-  motive_1 [] YOk.nil →
-    (∀ (t : YTm) (ts : List YTm) (a : YOk ts), motive_1 ts a → motive_1 (t :: ts) ⋯) →
-      motive_2 YTm.var YGood.var → ∀ {a : List YTm} (h : YOk a), motive_1 a h
--/
-#guard_msgs in
-#check @YOk.rec
-
-/--
-info: @YGood.rec : ∀ {motive_1 : YTm → Sort u_1} {motive_2 : (a : YTm) → motive_1 a → YGood a → Prop}
-  {motive_3 : List YTm → Sort u_1} {motive_4 : (a : List YTm) → motive_3 a → YOk a → Prop}
-  (app : (ts : List YTm) → (a : YOk ts) → (ts_ih : motive_3 ts) → motive_4 ts ts_ih a → motive_1 (YTm.app ts a))
-  (var : motive_1 YTm.var) (var_1 : motive_2 YTm.var var YGood.var) (nil : motive_3 [])
-  (cons : (head : YTm) → (tail : List YTm) → motive_1 head → motive_3 tail → motive_3 (head :: tail))
-  (nil_1 : motive_4 [] nil YOk.nil)
-  (cons_1 :
-    ∀ (t : YTm) (ts : List YTm) (a : YOk ts) (t_ih : motive_1 t) (ts_ih : motive_3 ts),
-      motive_4 ts ts_ih a → motive_4 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
-  {a : YTm} (t : YGood a), motive_2 a (YTm.rec app var var_1 nil cons nil_1 cons_1 a) t
--/
-#guard_msgs in
-#check @YGood.rec
 
 end BothKinds
 
@@ -7539,6 +5254,7 @@ bridge with it, so these are pinned as much as a regression as for the shape. -/
 
 namespace TwoIndices
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (a b : List T) → Ok a b → T
@@ -7547,34 +5263,6 @@ inductive Ok : List T → List T → Prop where
   | consL : (t : T) → (a b : List T) → Ok a b → Ok (t :: a) b
   | consR : (t : T) → (a b : List T) → Ok a b → Ok a (t :: b)
 end
-
-/-- info: T.node : (a b : List T) → Ok a b → T -/
-#guard_msgs in
-#check @T.node
-
-/-- info: Ok.consL : ∀ (t : T) (a b : List T), Ok a b → Ok (t :: a) b -/
-#guard_msgs in
-#check @Ok.consL
-
-/--
-info: @T.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : List T → Sort u_1} →
-    ((a b : List T) → (a_1 : Ok a b) → motive_2 a → motive_2 b → motive_1 (T.node a b a_1)) →
-      motive_2 [] →
-        ((head : T) → (tail : List T) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) → (t : T) → motive_1 t
--/
-#guard_msgs in
-#check @T.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (a a_1 : List T) → Ok a a_1 → Prop},
-  motive [] [] Ok.nil →
-    (∀ (t : T) (a b : List T) (a_1 : Ok a b), motive a b a_1 → motive (t :: a) b ⋯) →
-      (∀ (t : T) (a b : List T) (a_1 : Ok a b), motive a b a_1 → motive a (t :: b) ⋯) →
-        ∀ {a a_1 : List T} (h : Ok a a_1), motive a a_1 h
--/
-#guard_msgs in
-#check @Ok.rec
 
 /-- The iota rule holds on the constructor that steps in the second index, which
 is the one that had to be carried furthest. -/
@@ -7591,6 +5279,7 @@ namespace MixedIndices
 
 /-! Three indices, at two nesting types, one of them a nesting of a nesting. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | node : (a : List U) → (b : List (List U)) → (c : Option U) → Ok a b c → U
@@ -7599,36 +5288,6 @@ inductive Ok : List U → List (List U) → Option U → Prop where
   | cons : (t : List U) → (a : List U) → (b : List (List U)) → (c : Option U) →
       Ok a b c → Ok a (t :: b) c
 end
-
-/-- info: U.node : (a : List U) → (b : List (List U)) → (c : Option U) → Ok a b c → U -/
-#guard_msgs in
-#check @U.node
-
-/--
-info: @U.rec : {motive_1 : U → Sort u_1} →
-  {motive_2 : List U → Sort u_1} →
-    {motive_3 : List (List U) → Sort u_1} →
-      {motive_4 : Option U → Sort u_1} →
-        ((a : List U) →
-            (b : List (List U)) →
-              (c : Option U) → (a_1 : Ok a b c) → motive_2 a → motive_3 b → motive_4 c → motive_1 (U.node a b c a_1)) →
-          motive_2 [] →
-            ((head : U) → (tail : List U) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-              motive_3 [] →
-                ((head : List U) → (tail : List (List U)) → motive_2 head → motive_3 tail → motive_3 (head :: tail)) →
-                  motive_4 none → ((val : U) → motive_1 val → motive_4 (some val)) → (t : U) → motive_1 t
--/
-#guard_msgs in
-#check @U.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (a : List U) → (a_1 : List (List U)) → (a_2 : Option U) → Ok a a_1 a_2 → Prop},
-  motive [] [] none Ok.nil →
-    (∀ (t a : List U) (b : List (List U)) (c : Option U) (a_1 : Ok a b c), motive a b c a_1 → motive a (t :: b) c ⋯) →
-      ∀ {a : List U} {a_1 : List (List U)} {a_2 : Option U} (h : Ok a a_1 a_2), motive a a_1 a_2 h
--/
-#guard_msgs in
-#check @Ok.rec
 
 example {p : (a : List U) → (b : List (List U)) → (c : Option U) → Ok a b c → Prop}
     (hn : p [] [] none Ok.nil)
@@ -7645,17 +5304,15 @@ one nests at a local, so both routes can take it: the induction-inductive one
 states the field as it was written and lowering does not, so it is tried first
 and, `DecidableEq` being a class the subtype lifts, it takes. -/
 
+mumi_spec
 inductive HWrap (α : Type) (n : Nat) where
   | mk (a : α) : HWrap α n
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 inductive HVec where
   | tip
   | mk (n : Nat) (v : List (HWrap HVec n)) : HVec
   deriving DecidableEq
-
-/-- info: HVec.mk : (n : Nat) → List (HWrap HVec n) → HVec -/
-#guard_msgs in
-#check @HVec.mk
 
 /-- info: false -/
 #guard_msgs in
@@ -7667,14 +5324,11 @@ declines, and the block came back with `JVec.nested_List_1` visible in the
 constructor it had been written with `List (HWrap JVec n)` in.  Deriving the
 class from a constructor settles it on the route that keeps the written type. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 inductive JVec where
   | tip
   | mk (n : Nat) (v : List (HWrap JVec n)) : JVec
   deriving Inhabited
-
-/-- info: JVec.mk : (n : Nat) → List (HWrap JVec n) → JVec -/
-#guard_msgs in
-#check @JVec.mk
 
 example : (default : JVec) = JVec.tip := rfl
 
@@ -7682,14 +5336,11 @@ example : (default : JVec) = JVec.tip := rfl
 not tread on each other: `Inhabited` is taken off the list before the rest of it
 is delta derived. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 inductive KVec where
   | tip
   | mk (n : Nat) (v : List (HWrap KVec n)) : KVec
   deriving Inhabited, DecidableEq
-
-/-- info: KVec.mk : (n : Nat) → List (HWrap KVec n) → KVec -/
-#guard_msgs in
-#check @KVec.mk
 
 /-- info: false -/
 #guard_msgs in
@@ -7716,7 +5367,6 @@ inductive LVec where
 #guard_msgs in
 #check @LVec.mk
 
-
 /-! ## Universes the block does not share, and nestings that are not inductive
 
 A member's result universe reaches the nesting: `List (T α β)` with
@@ -7736,6 +5386,7 @@ that is itself indexed. -/
 
 namespace MaxUniverse
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T (α : Type u) (β : Type v) : Type (max u v) where
   | node : (a : α) → (b : β) → (cs : List (T α β)) → Ok α β cs → T α β
@@ -7743,46 +5394,6 @@ inductive Ok (α : Type u) (β : Type v) : List (T α β) → Prop where
   | nil  : Ok α β []
   | cons : (t : T α β) → (ts : List (T α β)) → Ok α β ts → Ok α β (t :: ts)
 end
-
-/--
-info: @T.node : {α : Type u_1} → {β : Type u_2} → α → β → (cs : List (T α β)) → Ok α β cs → T α β
--/
-#guard_msgs in
-#check @T.node
-
-/-- info: Ok : (α : Type u_1) → (β : Type u_2) → List (T α β) → Prop -/
-#guard_msgs in
-#check @Ok
-
-/--
-info: @T.rec : {α : Type u_2} →
-  {β : Type u_3} →
-    {motive_1 : T α β → Sort u_1} →
-      {motive_2 : List (T α β) → Sort u_1} →
-        {motive_3 : (a : List (T α β)) → motive_2 a → Ok α β a → Prop} →
-          ((a : α) →
-              (b : β) →
-                (cs : List (T α β)) →
-                  (a_1 : Ok α β cs) → (cs_ih : motive_2 cs) → motive_3 cs cs_ih a_1 → motive_1 (T.node a b cs a_1)) →
-            (nil : motive_2 []) →
-              (cons :
-                  (head : T α β) → (tail : List (T α β)) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-                motive_3 [] nil ⋯ →
-                  (∀ (t : T α β) (ts : List (T α β)) (a : Ok α β ts) (t_ih : motive_1 t) (ts_ih : motive_2 ts),
-                      motive_3 ts ts_ih a → motive_3 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                    (t : T α β) → motive_1 t
--/
-#guard_msgs in
-#check @T.rec
-
-/--
-info: @Ok.rec : ∀ {α : Type u_1} {β : Type u_2} {motive : (a : List (T α β)) → Ok α β a → Prop},
-  motive [] ⋯ →
-    (∀ (t : T α β) (ts : List (T α β)) (a : Ok α β ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List (T α β)} (h : Ok α β a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 example {α : Type u} {β : Type v} {p : (ts : List (T α β)) → Ok α β ts → Prop}
     (hn : p [] Ok.nil) (hc : ∀ t ts h, p ts h → p (t :: ts) (Ok.cons t ts h))
@@ -7798,6 +5409,7 @@ namespace PhantomUniverse
 there only in the result, so every occurrence of the block carries it explicitly
 and there is no second way to arrive at it. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T (α : Type u) : Type (max u v) where
   | node : (a : α) → (cs : List (T.{u, v} α)) → Ok.{u, v} α cs → T α
@@ -7806,19 +5418,6 @@ inductive Ok (α : Type u) : List (T.{u, v} α) → Prop where
   | cons : (t : T.{u, v} α) → (ts : List (T.{u, v} α)) → Ok.{u, v} α ts →
       Ok.{u, v} α (t :: ts)
 end
-
-/-- info: @T.node : {α : Type u_1} → α → (cs : List (T α)) → Ok α cs → T α -/
-#guard_msgs in
-#check @T.node
-
-/--
-info: @Ok.rec : ∀ {α : Type u_1} {motive : (a : List (T α)) → Ok α a → Prop},
-  motive [] ⋯ →
-    (∀ (t : T α) (ts : List (T α)) (a : Ok α ts), motive ts a → motive (t :: ts) ⋯) →
-      ∀ {a : List (T α)} (h : Ok α a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 end PhantomUniverse
 
@@ -7830,6 +5429,7 @@ kernel refuses either -- so the proposition keeps `Nat → T` as its index and
 nothing is added to the block.  What the data recursion gains is the hypothesis
 at every argument the function could be applied to. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive T : Type where
   | node : (f : Nat → T) → Ok f → T
@@ -7837,24 +5437,6 @@ inductive T : Type where
 inductive Ok : (Nat → T) → Prop where
   | mk : (f : Nat → T) → Ok f
 end
-
-/-- info: T.node : (f : Nat → T) → Ok f → T -/
-#guard_msgs in
-#check @T.node
-
-/--
-info: @T.rec : {motive : T → Sort u_1} →
-  ((f : Nat → T) → (a : Ok f) → ((a : Nat) → motive (f a)) → motive (T.node f a)) → motive T.leaf → (t : T) → motive t
--/
-#guard_msgs in
-#check @T.rec
-
-/--
-info: @Ok.rec : {motive : (a : Nat → T) → Ok a → Sort u_1} →
-  ((f : Nat → T) → motive f ⋯) → {a : Nat → T} → (h : Ok a) → motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 end ArrowIndex
 
@@ -7865,6 +5447,7 @@ whole of it.  Both get copies, so the block gains two members the writer did not
 write, and the proposition's `cons` indexes at a pair rather than at a bare
 member. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List ((_ : Nat) × T)) → Ok cs → T
@@ -7873,40 +5456,6 @@ inductive Ok : List ((_ : Nat) × T) → Prop where
   | nil  : Ok []
   | cons : (c : (_ : Nat) × T) → (cs : List ((_ : Nat) × T)) → Ok cs → Ok (c :: cs)
 end
-
-/-- info: T.node : (cs : List ((_ : Nat) × T)) → Ok cs → T -/
-#guard_msgs in
-#check @T.node
-
-/--
-info: @T.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : List ((_ : Nat) × T) → Sort u_1} →
-    {motive_3 : (_ : Nat) × T → Sort u_1} →
-      {motive_4 : (a : List ((_ : Nat) × T)) → motive_2 a → Ok a → Prop} →
-        ((cs : List ((_ : Nat) × T)) →
-            (a : Ok cs) → (cs_ih : motive_2 cs) → motive_4 cs cs_ih a → motive_1 (T.node cs a)) →
-          motive_1 T.leaf →
-            (nil : motive_2 []) →
-              (cons :
-                  (head : (_ : Nat) × T) →
-                    (tail : List ((_ : Nat) × T)) → motive_3 head → motive_2 tail → motive_2 (head :: tail)) →
-                ((fst : Nat) → (snd : T) → motive_1 snd → motive_3 ⟨fst, snd⟩) →
-                  motive_4 [] nil Ok.nil →
-                    (∀ (c : (_ : Nat) × T) (cs : List ((_ : Nat) × T)) (a : Ok cs) (c_ih : motive_3 c)
-                        (cs_ih : motive_2 cs), motive_4 cs cs_ih a → motive_4 (c :: cs) (cons c cs c_ih cs_ih) ⋯) →
-                      (t : T) → motive_1 t
--/
-#guard_msgs in
-#check @T.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (a : List ((_ : Nat) × T)) → Ok a → Prop},
-  motive [] Ok.nil →
-    (∀ (c : (_ : Nat) × T) (cs : List ((_ : Nat) × T)) (a : Ok cs), motive cs a → motive (c :: cs) ⋯) →
-      ∀ {a : List ((_ : Nat) × T)} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 example {p : (cs : List ((_ : Nat) × T)) → Ok cs → Prop} (hn : p [] Ok.nil)
     (hc : ∀ c cs h, p cs h → p (c :: cs) (Ok.cons c cs h))
@@ -7923,6 +5472,7 @@ being one of them: `V.cons` at `n` lands in `V (n + n)`.  The nesting is indexed
 as well -- `List (V n)` is a copy carrying an `n` of its own -- so the copy, the
 proposition and the constructor all have to be standing at the same one. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive V : Nat → Type where
   | nil  : V 0
@@ -7931,39 +5481,6 @@ inductive Ok : (n : Nat) → List (V n) → Prop where
   | nil  : (n : Nat) → Ok n []
   | cons : (n : Nat) → (t : V n) → (ts : List (V n)) → Ok n ts → Ok n (t :: ts)
 end
-
-/-- info: V.cons : (n : Nat) → (cs : List (V n)) → Ok n cs → V (n + n) -/
-#guard_msgs in
-#check @V.cons
-
-/--
-info: @V.rec : {motive_1 : (a : Nat) → V a → Sort u_1} →
-  {motive_2 : (n : Nat) → List (V n) → Sort u_1} →
-    {motive_3 : (n : Nat) → (a : List (V n)) → motive_2 n a → Ok n a → Prop} →
-      motive_1 0 V.nil →
-        ((n : Nat) →
-            (cs : List (V n)) →
-              (a : Ok n cs) → (cs_ih : motive_2 n cs) → motive_3 n cs cs_ih a → motive_1 (n + n) (V.cons n cs a)) →
-          (nil_1 : (n : Nat) → motive_2 n []) →
-            (cons_1 :
-                (n : Nat) →
-                  (head : V n) → (tail : List (V n)) → motive_1 n head → motive_2 n tail → motive_2 n (head :: tail)) →
-              (∀ (n : Nat), motive_3 n [] (nil_1 n) ⋯) →
-                (∀ (n : Nat) (t : V n) (ts : List (V n)) (a : Ok n ts) (t_ih : motive_1 n t) (ts_ih : motive_2 n ts),
-                    motive_3 n ts ts_ih a → motive_3 n (t :: ts) (cons_1 n t ts t_ih ts_ih) ⋯) →
-                  {a : Nat} → (t : V a) → motive_1 a t
--/
-#guard_msgs in
-#check @V.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (n : Nat) → (a : List (V n)) → Ok n a → Prop},
-  (∀ (n : Nat), motive n [] ⋯) →
-    (∀ (n : Nat) (t : V n) (ts : List (V n)) (a : Ok n ts), motive n ts a → motive n (t :: ts) ⋯) →
-      ∀ {n : Nat} {a : List (V n)} (h : Ok n a), motive n a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 example {p : (n : Nat) → (ts : List (V n)) → Ok n ts → Prop}
     (hn : ∀ n, p n [] (Ok.nil n))
@@ -7982,6 +5499,7 @@ the whole block read at a different conclusion, so the proposition's minors
 appear in `Ctx.rec` and `Tm.rec` alike -- and `Ok.rec`, which is over the
 nesting rather than over a member, stays the split one the writer can state. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -7995,75 +5513,6 @@ inductive Ok : List Ctx → Prop where
   | nil  : Ok []
   | cons : (Γ : Ctx) → (Γs : List Ctx) → Ok Γs → Ok (Γ :: Γs)
 end
-
-/-- info: Tm.pack : (Γ : Ctx) → (A : Ty Γ) → (cs : List Ctx) → Ok cs → Tm Γ A -/
-#guard_msgs in
-#check @Tm.pack
-
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : List Ctx → Sort u_1} →
-        {motive_5 : (a : List Ctx) → motive_4 a → Ok a → Prop} →
-          motive_1 Ctx.nil →
-            ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-              ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-                ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                  ((Γ : Ctx) →
-                      (A : Ty Γ) →
-                        (cs : List Ctx) →
-                          (a : Ok cs) →
-                            motive_1 Γ →
-                              motive_2 Γ A →
-                                (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_3 Γ A (Tm.pack Γ A cs a)) →
-                    (nil_1 : motive_4 []) →
-                      (cons :
-                          (head : Ctx) → (tail : List Ctx) → motive_1 head → motive_4 tail → motive_4 (head :: tail)) →
-                        motive_5 [] nil_1 Ok.nil →
-                          (∀ (Γ : Ctx) (Γs : List Ctx) (a : Ok Γs) (Γ_ih : motive_1 Γ) (Γs_ih : motive_4 Γs),
-                              motive_5 Γs Γs_ih a → motive_5 (Γ :: Γs) (cons Γ Γs Γ_ih Γs_ih) ⋯) →
-                            (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
-
-/--
-info: @Tm.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {motive_3 : (Γ : Ctx) → (a : Ty Γ) → Tm Γ a → Sort u_1} →
-      {motive_4 : List Ctx → Sort u_1} →
-        {motive_5 : (a : List Ctx) → motive_4 a → Ok a → Prop} →
-          motive_1 Ctx.nil →
-            ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-              ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-                ((Γ : Ctx) → (A : Ty Γ) → motive_1 Γ → motive_2 Γ A → motive_3 Γ A (Tm.var Γ A)) →
-                  ((Γ : Ctx) →
-                      (A : Ty Γ) →
-                        (cs : List Ctx) →
-                          (a : Ok cs) →
-                            motive_1 Γ →
-                              motive_2 Γ A →
-                                (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_3 Γ A (Tm.pack Γ A cs a)) →
-                    (nil_1 : motive_4 []) →
-                      (cons :
-                          (head : Ctx) → (tail : List Ctx) → motive_1 head → motive_4 tail → motive_4 (head :: tail)) →
-                        motive_5 [] nil_1 Ok.nil →
-                          (∀ (Γ : Ctx) (Γs : List Ctx) (a : Ok Γs) (Γ_ih : motive_1 Γ) (Γs_ih : motive_4 Γs),
-                              motive_5 Γs Γs_ih a → motive_5 (Γ :: Γs) (cons Γ Γs Γ_ih Γs_ih) ⋯) →
-                            {Γ : Ctx} → {a : Ty Γ} → (t : Tm Γ a) → motive_3 Γ a t
--/
-#guard_msgs in
-#check @Tm.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (a : List Ctx) → Ok a → Prop},
-  motive [] Ok.nil →
-    (∀ (Γ : Ctx) (Γs : List Ctx) (a : Ok Γs), motive Γs a → motive (Γ :: Γs) ⋯) →
-      ∀ {a : List Ctx} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 /-- The length of a context.  It looks at one member of five, but the recursion
 is over the whole block, so all five motives have to be given something -- the
@@ -8106,6 +5555,7 @@ goes through the ordinary handlers rather than through the subtype. -/
 
 namespace PeelUnpinned
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -8122,25 +5572,6 @@ end
 /-! `hs` is a field of `Big.node` that `Big (.node cs h)` says nothing about, so
 `Big` leaves the block.  `T` and `Ok` are unaffected: the block that stays is the
 one the erasure was for, and `Ok.rec` is the split recursor it always was. -/
-
-/-- info: Big.node : ∀ (cs hs : List T) (h : Ok cs), Big (T.node cs h) -/
-#guard_msgs in
-#check @Big.node
-
-/--
-info: @Big.rec : ∀ {motive : (a : T) → Big a → Prop},
-  (∀ (cs hs : List T) (h : Ok cs), motive (T.node cs h) ⋯) → motive T.leaf Big.leaf → ∀ {a : T} (t : Big a), motive a t
--/
-#guard_msgs in
-#check @Big.rec
-
-/--
-info: @Ok.rec : ∀ {motive : (a : List T) → Ok a → Prop},
-  motive [] Ok.nil →
-    (∀ (t : T) (ts : List T) (a : Ok ts), motive ts a → motive (t :: ts) ⋯) → ∀ {a : List T} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
 
 /--
 info: inductive PeelUnpinned.Big : T → Prop
@@ -8178,6 +5609,7 @@ the block like any other, and `Ok` above is indexed by it and comes back fine --
 so what peels `Long` is `extra` again.  Once it is out, its index really is a
 `List T`, since a peeled member is not denested and has nothing rewritten. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -8188,17 +5620,6 @@ inductive Ok : List T → Prop where
 inductive Long : List T → Prop where
   | mk : (cs : List T) → (extra : T) → Long cs
 end
-
-/-- info: Long : List T → Prop -/
-#guard_msgs in
-#check @Long
-
-/--
-info: @Long.rec : ∀ {motive : (a : List T) → Long a → Prop},
-  (∀ (cs : List T) (extra : T), motive cs ⋯) → ∀ {a : List T} (t : Long a), motive a t
--/
-#guard_msgs in
-#check @Long.rec
 
 end PeelNestIndexed
 
@@ -8211,6 +5632,7 @@ at all.  `Inhab` is the shape that made this worth doing -- a witness that
 some type over `Γ` exists is the natural thing to write, and `A` is exactly the
 field the conclusion cannot mention. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -8221,27 +5643,6 @@ inductive Inhab : Ctx → Prop where
   | mk : (Γ : Ctx) → (A : Ty Γ) → Inhab Γ
 end
 
-/-- info: Inhab.mk : ∀ (Γ : Ctx) (A : Ty Γ), Inhab Γ -/
-#guard_msgs in
-#check @Inhab.mk
-
-/--
-info: @Inhab.rec : ∀ {motive : (a : Ctx) → Inhab a → Prop},
-  (∀ (Γ : Ctx) (A : Ty Γ), motive Γ ⋯) → ∀ {a : Ctx} (t : Inhab a), motive a t
--/
-#guard_msgs in
-#check @Inhab.rec
-
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-        ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) → (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
-
 end PeelWholeProp
 
 namespace PeelMutual
@@ -8250,6 +5651,7 @@ namespace PeelMutual
 and each is named by the other, so the peel keeps them as the one mutual group
 they were written as and their recursors share both motives. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -8263,22 +5665,6 @@ inductive B : T → Prop where
   | mk : (t : T) → (u : T) → A u → B t
 end
 
-/--
-info: @A.rec : ∀ {motive_1 : (a : T) → A a → Prop} {motive_2 : (a : T) → B a → Prop},
-  (∀ (t u : T) (a : B u), motive_2 u a → motive_1 t ⋯) →
-    (∀ (t u : T) (a : A u), motive_1 u a → motive_2 t ⋯) → ∀ {a : T} (t : A a), motive_1 a t
--/
-#guard_msgs in
-#check @A.rec
-
-/--
-info: @B.rec : ∀ {motive_1 : (a : T) → A a → Prop} {motive_2 : (a : T) → B a → Prop},
-  (∀ (t u : T) (a : B u), motive_2 u a → motive_1 t ⋯) →
-    (∀ (t u : T) (a : A u), motive_1 u a → motive_2 t ⋯) → ∀ {a : T} (t : B a), motive_2 a t
--/
-#guard_msgs in
-#check @B.rec
-
 end PeelMutual
 
 namespace PeelNotForProofs
@@ -8289,6 +5675,7 @@ it -- so `h : t = t` is no reason to take `Same` out of the block, and `Same`
 keeps the recursion over the whole of it.  `Eq` is a nesting here, so the
 recursor carries its motive too. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -8299,17 +5686,6 @@ inductive Ok : List T → Prop where
 inductive Same : T → Prop where
   | mk : (t : T) → (h : t = t) → Same t
 end
-
-/--
-info: @Same.rec : ∀ {motive_1 : (a : List T) → Ok a → Prop} {motive_2 : (a : T) → Same a → Prop}
-  {motive_3 : (t a : T) → t = a → Prop},
-  motive_1 [] Ok.nil →
-    (∀ (t : T) (ts : List T) (a : Ok ts), motive_1 ts a → motive_1 (t :: ts) ⋯) →
-      (∀ (t : T) (h : t = t), motive_3 t t h → motive_2 t ⋯) →
-        (∀ (t : T), motive_3 t t ⋯) → ∀ {a : T} (h : Same a), motive_2 a h
--/
-#guard_msgs in
-#check @Same.rec
 
 end PeelNotForProofs
 
@@ -8326,9 +5702,11 @@ it, and comes out with every member present under the name it was written with.
 does not reach -- but that is `Deep`'s own loss.  `Ok` does not recurse into it,
 so `Ok` is asked again on its own and keeps the recursor it can have. -/
 
+mumi_spec
 inductive Wrap (p : Prop) : Prop where
   | mk : p → Wrap p
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -8339,26 +5717,6 @@ inductive Ok : List T → Prop where
 inductive Deep : T → Prop where
   | mk : (t : T) → (u : T) → Wrap (Deep u) → Deep t
 end
-
-/-- info: Deep.mk : ∀ (t u : T), Wrap (Deep u) → Deep t -/
-#guard_msgs in
-#check @Deep.mk
-
-/-- info: T.node : (cs : List T) → Ok cs → T -/
-#guard_msgs in
-#check @T.node
-
-/--
-info: @Ok.rec : ∀ {motive : (a : List T) → Ok a → Prop},
-  motive [] Ok.nil →
-    (∀ (t : T) (ts : List T) (a : Ok ts), motive ts a → motive (t :: ts) ⋯) → ∀ {a : List T} (h : Ok a), motive a h
--/
-#guard_msgs in
-#check @Ok.rec
-
-/-- error: Unknown constant `PeelDeclined.Deep.rec` -/
-#guard_msgs in
-#check PeelDeclined.Deep.rec
 
 end PeelDeclined
 
@@ -8372,6 +5730,7 @@ any content, and no such proposition remains.  So both halves go back to Lean --
 the core first, since what left the block is stated over it -- and come out as
 Lean's own inductives, with everything that implies. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Tm : Type where
   | var : Nat → Tm
@@ -8389,19 +5748,6 @@ PeelLeavesLean.Tm.app : Tm → Tm → Tm
 -/
 #guard_msgs in
 #print Tm
-
-/--
-info: @Tm.rec : {motive : Tm → Sort u_1} →
-  ((a : Nat) → motive (Tm.var a)) → ((a a_1 : Tm) → motive a → motive a_1 → motive (a.app a_1)) → (t : Tm) → motive t
--/
-#guard_msgs in
-#check @Tm.rec
-
-/--
-info: @Big.rec : ∀ {a : Tm} {motive : Big a → Prop}, (∀ (extra : Tm), motive ⋯) → ∀ (t : Big a), motive t
--/
-#guard_msgs in
-#check @Big.rec
 
 /-! `Tm` is an inductive and not a subtype, so it computes by `match` and the
 value of a closed term is the value it should be. -/
@@ -8425,6 +5771,7 @@ namespace PeelLeavesNested
 denests it: the recursor is stated over `List T` with a motive for the list, and
 no copy of the list is made under a name of ours. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : List T → T
@@ -8432,24 +5779,6 @@ inductive T : Type where
 inductive Ok : T → Prop where
   | mk : (t : T) → (u : T) → Ok t
 end
-
-/--
-info: @T.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : List T → Sort u_1} →
-    ((a : List T) → motive_2 a → motive_1 (T.node a)) →
-      motive_1 T.leaf →
-        motive_2 [] →
-          ((head : T) → (tail : List T) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-            (t : T) → motive_1 t
--/
-#guard_msgs in
-#check @T.rec
-
-/--
-info: @Ok.rec : ∀ {a : T} {motive : Ok a → Prop}, (∀ (u : T), motive ⋯) → ∀ (t : Ok a), motive t
--/
-#guard_msgs in
-#check @Ok.rec
 
 /--
 info: inductive PeelLeavesNested.T : Type
@@ -8475,6 +5804,7 @@ any other to be indexed by.
 
 What stays is the entangled pair, with the recursion over both of them intact. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -8493,23 +5823,6 @@ PeelPropOnProp.Sub.id : ∀ {Γ : Ctx} {A : Ty Γ}, Sub Γ A
 -/
 #guard_msgs in
 #print Sub
-
-/--
-info: @Sub.rec : {motive : (Γ : Ctx) → (a : Ty Γ) → Sub Γ a → Sort u_1} →
-  ({Γ : Ctx} → {A : Ty Γ} → motive Γ A ⋯) → {Γ : Ctx} → {a : Ty Γ} → (t : Sub Γ a) → motive Γ a t
--/
-#guard_msgs in
-#check @Sub.rec
-
-/--
-info: @Ctx.rec : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → motive_1 a → Ty a → Prop} →
-    motive_1 Ctx.nil →
-      ((Γ : Ctx) → (a : Ty Γ) → (Γ_ih : motive_1 Γ) → motive_2 Γ Γ_ih a → motive_1 (Γ.ext a)) →
-        (∀ {Γ : Ctx} (Γ_ih : motive_1 Γ), motive_2 Γ Γ_ih ⋯) → (t : Ctx) → motive_1 t
--/
-#guard_msgs in
-#check @Ctx.rec
 
 /-! `Sub` is indexed by a member that came back from the erasure as a subtype
 and by one that stayed a proposition, and it is an inductive over both.  Its
@@ -8537,6 +5850,7 @@ indexed by a proposition and so leaves on the rule above.  What is left is a
 single ordinary `Prop`, which is Lean's to read, and the peeled members follow
 it one group at a time. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive P : Prop where
   | mk : P
@@ -8554,16 +5868,6 @@ PeelAllProps.P.mk : P
 -/
 #guard_msgs in
 #print P
-
-/-- info: R : (h : P) → Q h → Prop -/
-#guard_msgs in
-#check @R
-
-/--
-info: @R.rec : {h : P} → {a : Q h} → {motive : R h a → Sort u_1} → motive ⋯ → (t : R h a) → motive t
--/
-#guard_msgs in
-#check @R.rec
 
 /-! Every one of them is an inductive, so `Q` and `R` recurse over their own
 constructors and not over anything the others contributed. -/
@@ -8598,6 +5902,7 @@ None of the three leaves the block the way a peeled proposition does -- `Watch`
 names `Big`, so they are still what the block is stated with, and they share the
 one erased recursion. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -8612,96 +5917,12 @@ inductive Watch : T → Prop where
   | mk : (t : T) → (h : Big t) → Watch t
 end
 
-/--
-info: @Ok.rec : ∀ {motive_1 : (a : List T) → Ok a → Prop} {motive_2 : (a : T) → Big a → Prop}
-  {motive_3 : (a : T) → Watch a → Prop},
-  motive_1 [] Ok.nil →
-    (∀ (t : T) (ts : List T) (a : Ok ts), motive_1 ts a → motive_1 (t :: ts) ⋯) →
-      (∀ (cs hs : List T) (h : Ok cs), motive_1 cs h → motive_2 (T.node cs h) ⋯) →
-        motive_2 T.leaf Big.leaf →
-          (∀ (t : T) (h : Big t), motive_2 t h → motive_3 t ⋯) → ∀ {a : List T} (h : Ok a), motive_1 a h
--/
-#guard_msgs in
-#check @Ok.rec
-
 /-! `Big` and `Watch` get the recursor over the whole block, the one whose `Prop`
 motives can mention the value the recursion produced at the data member.  Its
 minor for `Big.node` binds `hs` and offers no `hs_ih`: that is the one thing the
 forgotten field costs. -/
 
-/--
-info: @Big.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Big a → Prop}
-  {motive_3 : (a : T) → motive_1 a → Watch a → Prop} {motive_4 : List T → Sort u_1}
-  {motive_5 : (a : List T) → motive_4 a → Ok a → Prop}
-  (node : (cs : List T) → (a : Ok cs) → (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_1 (T.node cs a))
-  (leaf : motive_1 T.leaf)
-  (node_1 :
-    ∀ (cs hs : List T) (h : Ok cs) (cs_ih : motive_4 cs) (h_ih : motive_5 cs cs_ih h),
-      motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯)
-  (leaf_1 : motive_2 T.leaf leaf Big.leaf)
-  (mk : ∀ (t : T) (h : Big t) (t_ih : motive_1 t), motive_2 t t_ih h → motive_3 t t_ih ⋯) (nil : motive_4 [])
-  (cons : (head : T) → (tail : List T) → motive_1 head → motive_4 tail → motive_4 (head :: tail))
-  (nil_1 : motive_5 [] nil Ok.nil)
-  (cons_1 :
-    ∀ (t : T) (ts : List T) (a : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_4 ts),
-      motive_5 ts ts_ih a → motive_5 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
-  {a : T} (t : Big a), motive_2 a (T.rec node leaf node_1 leaf_1 mk nil cons nil_1 cons_1 a) t
--/
-#guard_msgs in
-#check @Big.rec
-
-/--
-info: @Watch.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Big a → Prop}
-  {motive_3 : (a : T) → motive_1 a → Watch a → Prop} {motive_4 : List T → Sort u_1}
-  {motive_5 : (a : List T) → motive_4 a → Ok a → Prop}
-  (node : (cs : List T) → (a : Ok cs) → (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_1 (T.node cs a))
-  (leaf : motive_1 T.leaf)
-  (node_1 :
-    ∀ (cs hs : List T) (h : Ok cs) (cs_ih : motive_4 cs) (h_ih : motive_5 cs cs_ih h),
-      motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯)
-  (leaf_1 : motive_2 T.leaf leaf Big.leaf)
-  (mk : ∀ (t : T) (h : Big t) (t_ih : motive_1 t), motive_2 t t_ih h → motive_3 t t_ih ⋯) (nil : motive_4 [])
-  (cons : (head : T) → (tail : List T) → motive_1 head → motive_4 tail → motive_4 (head :: tail))
-  (nil_1 : motive_5 [] nil Ok.nil)
-  (cons_1 :
-    ∀ (t : T) (ts : List T) (a : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_4 ts),
-      motive_5 ts ts_ih a → motive_5 (t :: ts) (cons t ts t_ih ts_ih) ⋯)
-  {a : T} (t : Watch a), motive_3 a (T.rec node leaf node_1 leaf_1 mk nil cons nil_1 cons_1 a) t
--/
-#guard_msgs in
-#check @Watch.rec
-
 /-! The data member and the constructors are untouched by any of this. -/
-
-/--
-info: @T.rec : {motive_1 : T → Sort u_1} →
-  {motive_2 : (a : T) → motive_1 a → Big a → Prop} →
-    {motive_3 : (a : T) → motive_1 a → Watch a → Prop} →
-      {motive_4 : List T → Sort u_1} →
-        {motive_5 : (a : List T) → motive_4 a → Ok a → Prop} →
-          (node : (cs : List T) → (a : Ok cs) → (cs_ih : motive_4 cs) → motive_5 cs cs_ih a → motive_1 (T.node cs a)) →
-            (leaf : motive_1 T.leaf) →
-              (∀ (cs hs : List T) (h : Ok cs) (cs_ih : motive_4 cs) (h_ih : motive_5 cs cs_ih h),
-                  motive_2 (T.node cs h) (node cs h cs_ih h_ih) ⋯) →
-                motive_2 T.leaf leaf Big.leaf →
-                  (∀ (t : T) (h : Big t) (t_ih : motive_1 t), motive_2 t t_ih h → motive_3 t t_ih ⋯) →
-                    (nil : motive_4 []) →
-                      (cons : (head : T) → (tail : List T) → motive_1 head → motive_4 tail → motive_4 (head :: tail)) →
-                        motive_5 [] nil Ok.nil →
-                          (∀ (t : T) (ts : List T) (a : Ok ts) (t_ih : motive_1 t) (ts_ih : motive_4 ts),
-                              motive_5 ts ts_ih a → motive_5 (t :: ts) (cons t ts t_ih ts_ih) ⋯) →
-                            (t : T) → motive_1 t
--/
-#guard_msgs in
-#check @T.rec
-
-/-- info: Big.node : ∀ (cs hs : List T) (h : Ok cs), Big (T.node cs h) -/
-#guard_msgs in
-#check @Big.node
-
-/-- info: Watch.mk : ∀ (t : T), Big t → Watch t -/
-#guard_msgs in
-#check @Watch.mk
 
 /-! The recursors are the ones the tactics reach for, so `induction` and `cases`
 work on the member with the forgotten field.  Both bind it -- it is a field like
@@ -8743,6 +5964,7 @@ left out, and a field whose type moved with an earlier one is compared with
 
 namespace Inj
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -8752,27 +5974,7 @@ inductive Ty : Ctx → Type where
   | pi   : (Γ : Ctx) → (A : Ty Γ) → Ty (Ctx.snoc Γ A) → Ty Γ
 end
 
-/--
-info: Ctx.snoc.injEq : ∀ (Γ : Ctx) (a : Ty Γ) (Γ_1 : Ctx) (a_1 : Ty Γ_1), (Γ.snoc a = Γ_1.snoc a_1) = (Γ = Γ_1 ∧ a ≍ a_1)
--/
-#guard_msgs in
-#check @Ctx.snoc.injEq
-
 -- `Γ` is `Ty.pi`'s conclusion index, so it is shared and only `A` is compared
-/--
-info: Ty.pi.injEq : ∀ (Γ : Ctx) (A : Ty Γ) (a : Ty (Γ.snoc A)) (A_1 : Ty Γ) (a_1 : Ty (Γ.snoc A_1)),
-  (Ty.pi Γ A a = Ty.pi Γ A_1 a_1) = (A = A_1 ∧ a ≍ a_1)
--/
-#guard_msgs in
-#check @Ty.pi.injEq
-
-/-- info: @Ctx.snoc.inj : ∀ {Γ : Ctx} {a : Ty Γ} {Γ_1 : Ctx} {a_1 : Ty Γ_1}, Γ.snoc a = Γ_1.snoc a_1 → Γ = Γ_1 ∧ a ≍ a_1 -/
-#guard_msgs in
-#check @Ctx.snoc.inj
-
-/-- info: 'Inj.Ctx.snoc.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms Ctx.snoc.injEq
 
 -- `injEq` is a `simp` lemma, so this is what it is for
 example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ := by
@@ -8797,6 +5999,7 @@ constructor whose last field sits at an index built out of two earlier ones. -/
 
 namespace InjIndexed
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -8809,30 +6012,9 @@ end
 
 -- `n` is pinned by the conclusion `Ctx (n + 1)`, so it is shared; `tag` is an
 -- ordinary field and gets an ordinary equation
-/--
-info: Ctx.snoc.injEq : ∀ (n : Nat) (Γ : Ctx n) (tag : Bool) (a : Ty n Γ) (Γ_1 : Ctx n) (tag_1 : Bool) (a_1 : Ty n Γ_1),
-  (Ctx.snoc n Γ tag a = Ctx.snoc n Γ_1 tag_1 a_1) = (Γ = Γ_1 ∧ tag = tag_1 ∧ a ≍ a_1)
--/
-#guard_msgs in
-#check @Ctx.snoc.injEq
-
-/-- info: 'InjIndexed.Ctx.snoc.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms Ctx.snoc.injEq
 
 -- `b` and `A` are what the last field's index is built out of, so both are
 -- compared and the field itself only heterogeneously
-/--
-info: Ty.pi.injEq : ∀ (n : Nat) (Γ : Ctx n) (b : Bool) (A : Ty n Γ) (a : Ty (n + 1) (Ctx.snoc n Γ b A)) (b_1 : Bool)
-  (A_1 : Ty n Γ) (a_1 : Ty (n + 1) (Ctx.snoc n Γ b_1 A_1)),
-  (Ty.pi n Γ b A a = Ty.pi n Γ b_1 A_1 a_1) = (b = b_1 ∧ A = A_1 ∧ a ≍ a_1)
--/
-#guard_msgs in
-#check @Ty.pi.injEq
-
-/-- info: 'InjIndexed.Ty.pi.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms Ty.pi.injEq
 
 example (n : Nat) (Γ : Ctx n) (A B : Ty n Γ) (h : Ctx.snoc n Γ true A = Ctx.snoc n Γ false B) :
     False := by
@@ -8846,6 +6028,7 @@ mention of the proof at all. -/
 
 namespace InjProp
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -8853,16 +6036,6 @@ inductive Ctx : Type where
 inductive Ok : Ctx → Prop where
   | nil : Ok .nil
 end
-
-/--
-info: Ctx.snoc.injEq : ∀ (Γ : Ctx) (h : Ok Γ) (Γ_1 : Ctx) (h_1 : Ok Γ_1), (Γ.snoc h = Γ_1.snoc h_1) = (Γ = Γ_1)
--/
-#guard_msgs in
-#check @Ctx.snoc.injEq
-
-/-- info: 'InjProp.Ctx.snoc.injEq' depends on axioms: [propext] -/
-#guard_msgs in
-#print axioms Ctx.snoc.injEq
 
 end InjProp
 
@@ -8911,9 +6084,11 @@ example (n : Nat) (v w : List (HWrap InjNested.RVec n)) (h : InjNested.RVec.mk n
 declared ever asks for, and so is closed over.  An infinitary field wants
 `funext` besides, and that is where `Quot.sound` comes in. -/
 
+mumi_spec
 inductive InjNested.Pair (α β : Type) where
   | mk (a : α) (b : β)
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 inductive InjNested.PVec where
   | mk (n : Nat) (v : List (InjNested.Pair (HWrap InjNested.PVec n) (HWrap InjNested.PVec n)))
 
@@ -8921,10 +6096,12 @@ example (n : Nat) (v w : List (InjNested.Pair (HWrap InjNested.PVec n) (HWrap In
     (h : InjNested.PVec.mk n v = .mk n w) : v = w := by
   simp at h; exact h
 
+mumi_spec
 inductive InjNested.FTree (α : Type) where
   | leaf
   | node (f : Nat → InjNested.FTree α) (a : α)
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 inductive InjNested.FVec where
   | mk (n : Nat) (v : InjNested.FTree (HWrap InjNested.FVec n))
 
@@ -8949,6 +6126,7 @@ example (n : Nat) (v : List (HWrap InjNested.RVec n)) :
 
 namespace Disjoint
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -8982,6 +6160,7 @@ indices too. -/
 
 namespace DisjointIndexed
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -9014,6 +6193,7 @@ that were written. -/
 
 namespace StdNames
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -9023,41 +6203,8 @@ inductive Ty : Ctx → Type where
   | pi   : (Γ : Ctx) → (A : Ty Γ) → Ty (Ctx.snoc Γ A) → Ty Γ
 end
 
-/-- info:
-@Ctx.casesOn : {motive : Ctx → Sort u_1} →
-  (t : Ctx) → motive Ctx.nil → ((Γ : Ctx) → (a : Ty Γ) → motive (Γ.snoc a)) → motive t
--/
-#guard_msgs in
-#check @Ctx.casesOn
-
-/-- info:
-@Ty.casesOn : {motive : (a : Ctx) → Ty a → Sort u_1} →
-  {a : Ctx} →
-    (t : Ty a) →
-      ((Γ : Ctx) → motive Γ (Ty.base Γ)) →
-        ((Γ : Ctx) → (A : Ty Γ) → (a : Ty (Γ.snoc A)) → motive Γ (Ty.pi Γ A a)) → motive a t
--/
-#guard_msgs in
-#check @Ty.casesOn
-
 -- `X.recOn` is the joint recursor with the major premise in front of the minors,
 -- so it still asks for a motive at every member
-/-- info:
-@Ty.recOn : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → Ty a → Sort u_1} →
-    {a : Ctx} →
-      (t : Ty a) →
-        motive_1 Ctx.nil →
-          ((Γ : Ctx) → (a : Ty Γ) → motive_1 Γ → motive_2 Γ a → motive_1 (Γ.snoc a)) →
-            ((Γ : Ctx) → motive_1 Γ → motive_2 Γ (Ty.base Γ)) →
-              ((Γ : Ctx) →
-                  (A : Ty Γ) →
-                    (a : Ty (Γ.snoc A)) →
-                      motive_1 Γ → motive_2 Γ A → motive_2 (Γ.snoc A) a → motive_2 Γ (Ty.pi Γ A a)) →
-                motive_2 a t
--/
-#guard_msgs in
-#check @Ty.recOn
 
 -- both iota rules of `casesOn` hold by `rfl`
 example : Ctx.casesOn (motive := fun _ => Nat) Ctx.nil 0 (fun _ _ => 1) = 0 := rfl
@@ -9116,6 +6263,7 @@ end StdNames
 
 namespace StdNamesProp
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -9127,28 +6275,9 @@ end
 
 -- the major premise goes in front of the minors and behind *all* the motives,
 -- the `Prop` member's included
-/-- info:
-@Ctx.recOn : {motive_1 : Ctx → Sort u_1} →
-  {motive_2 : (a : Ctx) → motive_1 a → Ok a → Prop} →
-    (t : Ctx) →
-      (nil : motive_1 Ctx.nil) →
-        (snoc : (Γ : Ctx) → (a : Ok Γ) → (Γ_ih : motive_1 Γ) → motive_2 Γ Γ_ih a → motive_1 (Γ.snoc a)) →
-          motive_2 Ctx.nil nil Ok.nil →
-            (∀ (Γ : Ctx) (h : Ok Γ) (Γ_ih : motive_1 Γ) (h_ih : motive_2 Γ Γ_ih h),
-                motive_2 (Γ.snoc h) (snoc Γ h Γ_ih h_ih) ⋯) →
-              motive_1 t
--/
-#guard_msgs in
-#check @Ctx.recOn
 
 -- a `Prop` member has no view, and gets the two eliminators anyway.  Its
 -- `casesOn` eliminates into `Prop` alone, which is all it can do
-/-- info:
-@Ok.casesOn : ∀ {motive : (a : Ctx) → Ok a → Prop} {a : Ctx} (h : Ok a),
-  motive Ctx.nil Ok.nil → (∀ (Γ : Ctx) (h : Ok Γ), motive (Γ.snoc h) ⋯) → motive a h
--/
-#guard_msgs in
-#check @Ok.casesOn
 
 example (Γ : Ctx) (h : Ok Γ) : True := by
   induction h using Ok.casesOn with

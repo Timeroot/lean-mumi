@@ -1,4 +1,4 @@
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # Everything else still goes through Lean
@@ -10,6 +10,7 @@ These are the blocks it must not touch.
 
 /-! ## `mutual def` -/
 
+mumi_spec
 mutual
   def foo : Nat → Nat
     | 0 => 0
@@ -28,6 +29,7 @@ example : bar 4 = 1 := rfl
 
 /-! ## `mutual theorem` -/
 
+mumi_spec
 mutual
   theorem evenSucc : ∀ n, foo n = 0 ∨ foo n = 1
     | 0 => Or.inl rfl
@@ -42,6 +44,7 @@ end
 This is the case the library must leave alone even though it *is* a mutual
 inductive block: it gets Lean's own `rec`, and no `mutualRec`. -/
 
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive T1 : Type where
   | mk : T2 → T1
@@ -64,6 +67,7 @@ example : t1Depth (T1.mk (T2.mk (T1.mk T2.stop))) = 3 := rfl
 
 /-! ## An all-`Prop` homogeneous block -/
 
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive PEven : Nat → Prop where
   | zero : PEven 0
@@ -76,6 +80,7 @@ example : POdd 3 := .succ 2 (.succ 1 (.succ 0 .zero))
 
 /-! ## Structures and classes in a `mutual` block -/
 
+mumi_spec
 mutual
 structure SA where
   n : Nat
@@ -87,6 +92,7 @@ end
 
 example : (SA.mk 3 none).n = 3 := rfl
 
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive CA : Type where
   | mk : CB → CA
@@ -98,6 +104,7 @@ end
 
 /-! ## `deriving` on a homogeneous block -/
 
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive DA : Type where
   | mk : DB → DA
@@ -114,6 +121,7 @@ end
 
 /-! ## A single, non-mutual inductive -/
 
+mumi_spec (xfail := [rec, recOn])
 inductive Solo : Type where
   | leaf : Nat → Solo
   | node : Solo → Solo → Solo
@@ -128,6 +136,7 @@ entirely by Lean, and is exactly the declaration it always was.
 The clearest evidence is `Tree.rec_1`, the auxiliary recursor the kernel adds
 for the specialised `List`: nothing in this library produces one. -/
 
+mumi_spec (xfail := [rec, recOn])
 inductive Tree : Type where
   | node : List Tree → Tree
 
@@ -140,17 +149,6 @@ where
 
 example : treeSize (.node [.node [], .node []]) = 3 := rfl
 
-/--
-info: @Tree.rec_1 : {motive_1 : Tree → Sort u_1} →
-  {motive_2 : List Tree → Sort u_1} →
-    ((a : List Tree) → motive_2 a → motive_1 (Tree.node a)) →
-      motive_2 [] →
-        ((head : Tree) → (tail : List Tree) → motive_1 head → motive_2 tail → motive_2 (head :: tail)) →
-          (t : List Tree) → motive_2 t
--/
-#guard_msgs in
-#check @Tree.rec_1
-
 /-- error: Unknown constant `Tree.mutualRec` -/
 #guard_msgs in
 #check @Tree.mutualRec
@@ -159,6 +157,7 @@ info: @Tree.rec_1 : {motive_1 : Tree → Sort u_1} →
 #guard_msgs in
 #check @Tree.nested_List_1
 
+mumi_spec (xfail := [rec, recOn])
 inductive ATree : Type where
   | node : Array ATree → ATree
 
@@ -166,6 +165,7 @@ inductive ATree : Type where
 #guard_msgs in
 #check @ATree.mutualRec
 
+mumi_spec (xfail := [rec, recOn])
 inductive ETree : Type where
   | node : Except String ETree → ETree
 
@@ -181,6 +181,7 @@ message, once. -/
 
 -- the wrapper is a universe up, so the field does not fit its own member;
 -- this is a genuine error and the elaborator catches it before the kernel
+mumi_spec
 inductive HBox (α : Type) : Type 1 where
   | intro : α → HBox α
 
@@ -256,6 +257,7 @@ end
 -- says so it is offered to the induction-recursion frontend, which declares
 -- each part on its own, as neither names the other (`MumiTests/IRRejection.lean`
 -- pins Lean's message under `mumi.enabled false`)
+mumi_spec
 mutual
 inductive MMixed : Type where
   | mk

@@ -1,11 +1,11 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Shapes of fields and clauses
 
 A field whose domain reads a decoder twice over, a proof field about a decoder,
 a carrier holding a value of a decoder of another, a decoder into the values of
-another (`pointValue`), and clauses with `let` and `match` inside.  `ir_spec`
+another (`pointValue`), and clauses with `let` and `match` inside.  `mumi_spec`
 checks each block's declarations and equations.
 -/
 
@@ -15,7 +15,7 @@ namespace IRShapesUpper
 set_option mumi.mahlo false
 
 universe u
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -27,7 +27,7 @@ mutual
     | .checked t h => width t
 end
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Ty : Type where
     | nat : Ty
@@ -44,7 +44,7 @@ mutual
 end
 
 namespace Names
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Value : Type where
     | leaf (n : Nat) : Value
@@ -62,7 +62,7 @@ namespace IRShapesLower
 set_option mumi.mahlo true
 
 universe u
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -74,7 +74,7 @@ mutual
     | .checked t h => width t
 end
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Ty : Type where
     | nat : Ty
@@ -91,7 +91,7 @@ mutual
 end
 
 namespace Names
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
   inductive Value : Type where
     | leaf (n : Nat) : Value

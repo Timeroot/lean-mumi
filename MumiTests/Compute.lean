@@ -3,7 +3,7 @@ Copyright (c) 2026 Alex Meiburg. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Alex Meiburg
 -/
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # What a function over a member computes
@@ -42,6 +42,7 @@ namespace MumiTests.Compute
 `up` crosses the index: its second field is stated one context along from the
 one the constructor concludes at. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -150,6 +151,7 @@ no erased block in sight. -/
 
 namespace Stock
 
+mumi_spec (xfail := [rec, recOn])
 inductive P (n : Nat) : Type where
   | mk : P n
   | wrap : P n → P n
@@ -239,9 +241,11 @@ needs a measure.  `sizeOf` is that measure: the block emits a `SizeOf` instance
 for every member and a `sizeOf_spec` for every constructor, in the form Lean's
 termination tactic expects. -/
 
+mumi_spec
 inductive Wrap (α : Type) where
   | mk : α → Wrap α
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive WT : Type where
   | leaf : WT
@@ -271,6 +275,7 @@ copies: the two agree on a constructor by computation apart from the recursive
 positions.  The block closes that gap with a `sizeOf_ofOrig` lemma per copy, and
 proves the constructor's `sizeOf_spec` by rewriting with it. -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive LstT : Type where
   | node (cs : List LstT) (h : LOk cs) : LstT
@@ -300,6 +305,7 @@ axioms here are the ones the idiom costs anywhere. -/
 
 namespace Stock
 
+mumi_spec (xfail := [rec, recOn])
 inductive LT : Type where
   | node : List LT → LT
 

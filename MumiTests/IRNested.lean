@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Nested occurrences in an IR block
@@ -13,7 +13,7 @@ Underneath, the kernel sees a copy of `List` specialised to `U`, as it does for
 any nested inductive.  A value stores the copy, so the recursor's rule at the
 nested constructor itself, `U.rec … (U.tuple fs)`, holds as the equation
 `U.rec_tuple`, and by `rfl` once `fs` is closed; every other rule, and every
-decoder equation, is `rfl`.  `ir_spec` checks all of it, the nested rules
+decoder equation, is `rfl`.  `mumi_spec` checks all of it, the nested rules
 named; what follows each block is what that leaves out.
 -/
 
@@ -22,7 +22,7 @@ set_option autoImplicit false
 namespace Codes
 set_option mumi.mahlo false
 
-ir_spec (simp := [U.rec_tuple, U.rec_opt])
+mumi_spec (simp := [U.rec_tuple, U.rec_opt]) (xfail := [recOn, casesOn, injEq, axioms])
 mutual
 inductive U : Type where
   | nat : U
@@ -75,7 +75,7 @@ namespace CodesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec (simp := [U.rec_tuple, U.rec_opt])
+mumi_spec (simp := [U.rec_tuple, U.rec_opt]) (xfail := [recOn, casesOn, injEq, axioms])
 mutual
 inductive U : Type where
   | nat : U
@@ -122,7 +122,7 @@ set_option mumi.mahlo false
 
 -- one motive per nested application, in the order they are met: the inner
 -- `Option (U α)` last
-ir_spec (simp := [U.rec_tuple])
+mumi_spec (simp := [U.rec_tuple]) (xfail := [recOn, casesOn, injEq, axioms])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -158,7 +158,7 @@ namespace ShapesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-ir_spec (simp := [U.rec_tuple])
+mumi_spec (simp := [U.rec_tuple]) (xfail := [recOn, casesOn, injEq, axioms])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α

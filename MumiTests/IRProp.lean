@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # A `Prop` in the block
@@ -10,7 +10,7 @@ indexed by `U` and reads `El` and `Inh`, and `Fine` is mutual with it.  Such a
 member is not part of the induction-recursion -- nothing is defined by
 recursion on a proof -- so it is declared right after the block it refers to,
 in both modes; one the block's carriers or decoders mention is part of the
-induction-recursion, which `IRPropSCC.lean` covers.  `ir_spec` checks each
+induction-recursion, which `IRPropSCC.lean` covers.  `mumi_spec` checks each
 block, the `Prop` members' joint recursor included; what follows is what that
 leaves out.
 -/
@@ -20,7 +20,7 @@ set_option autoImplicit false
 namespace PropUpper
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive U : Type where
   | base : U
@@ -63,7 +63,7 @@ end PropUpper
 namespace PropLower
 set_option mumi.mahlo true
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive U : Type where
   | base : U

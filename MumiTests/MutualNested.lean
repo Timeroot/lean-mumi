@@ -3,7 +3,7 @@ Copyright (c) 2026 Alex Meiburg. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Alex Meiburg
 -/
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # A `mutual` block whose members nest into each other
@@ -27,15 +27,18 @@ the copy of `Tree`.
 
 namespace Lib
 
+mumi_spec
 inductive Tree (α : Type u) : Type u where
   | empty
   | node (a : α) (l r : Tree α)
 
+mumi_spec
 inductive Tree.WF (α : Type u) : Tree α → Prop where
   | empty : Tree.WF α .empty
   | node (a : α) (l r : Tree α) (hl : Tree.WF α l) (hr : Tree.WF α r) :
       Tree.WF α (.node a l r)
 
+mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
@@ -53,6 +56,7 @@ motives, and every one of them is spelled in the writer's own names --
 
 namespace Twin
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -62,105 +66,7 @@ inductive B : Type where
   | mk (x : WFTree A)
 end
 
-/--
-info: A.mk : WFTree B → A
--/
-#guard_msgs in
-#check @A.mk
-
-/--
-info: B.mk : WFTree A → B
--/
-#guard_msgs in
-#check @B.mk
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          {motive_6 : WFTree A → Sort u_1} →
-            {motive_7 : Tree A → Sort u_1} →
-              {motive_8 : (a : Tree A) → motive_7 a → Tree.WF A a → Prop} →
-                motive_1 A.tip →
-                  ((x : WFTree B) → motive_3 x → motive_1 (A.mk x)) →
-                    motive_2 B.tip →
-                      ((x : WFTree A) → motive_6 x → motive_2 (B.mk x)) →
-                        ((x : Tree B) →
-                            (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                          (empty : motive_4 Tree.empty) →
-                            (node :
-                                (a : B) →
-                                  (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                              motive_5 Tree.empty empty ⋯ →
-                                (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                                    (l_ih : motive_4 l) (r_ih : motive_4 r),
-                                    motive_5 l l_ih hl →
-                                      motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                                  ((x : Tree A) →
-                                      (h : Tree.WF A x) →
-                                        (x_ih : motive_7 x) → motive_8 x x_ih h → motive_6 (WFTree.mk x h)) →
-                                    (empty_2 : motive_7 Tree.empty) →
-                                      (node_2 :
-                                          (a : A) →
-                                            (l r : Tree A) →
-                                              motive_1 a → motive_7 l → motive_7 r → motive_7 (Tree.node a l r)) →
-                                        motive_8 Tree.empty empty_2 ⋯ →
-                                          (∀ (a : A) (l r : Tree A) (hl : Tree.WF A l) (hr : Tree.WF A r)
-                                              (a_ih : motive_1 a) (l_ih : motive_7 l) (r_ih : motive_7 r),
-                                              motive_8 l l_ih hl →
-                                                motive_8 r r_ih hr →
-                                                  motive_8 (Tree.node a l r) (node_2 a l r a_ih l_ih r_ih) ⋯) →
-                                            (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
-
 /-! The two recursors differ only in which motive the major premise concludes at. -/
-
-/--
-info: @B.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          {motive_6 : WFTree A → Sort u_1} →
-            {motive_7 : Tree A → Sort u_1} →
-              {motive_8 : (a : Tree A) → motive_7 a → Tree.WF A a → Prop} →
-                motive_1 A.tip →
-                  ((x : WFTree B) → motive_3 x → motive_1 (A.mk x)) →
-                    motive_2 B.tip →
-                      ((x : WFTree A) → motive_6 x → motive_2 (B.mk x)) →
-                        ((x : Tree B) →
-                            (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                          (empty : motive_4 Tree.empty) →
-                            (node :
-                                (a : B) →
-                                  (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                              motive_5 Tree.empty empty ⋯ →
-                                (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                                    (l_ih : motive_4 l) (r_ih : motive_4 r),
-                                    motive_5 l l_ih hl →
-                                      motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                                  ((x : Tree A) →
-                                      (h : Tree.WF A x) →
-                                        (x_ih : motive_7 x) → motive_8 x x_ih h → motive_6 (WFTree.mk x h)) →
-                                    (empty_2 : motive_7 Tree.empty) →
-                                      (node_2 :
-                                          (a : A) →
-                                            (l r : Tree A) →
-                                              motive_1 a → motive_7 l → motive_7 r → motive_7 (Tree.node a l r)) →
-                                        motive_8 Tree.empty empty_2 ⋯ →
-                                          (∀ (a : A) (l r : Tree A) (hl : Tree.WF A l) (hr : Tree.WF A r)
-                                              (a_ih : motive_1 a) (l_ih : motive_7 l) (r_ih : motive_7 r),
-                                              motive_8 l l_ih hl →
-                                                motive_8 r r_ih hr →
-                                                  motive_8 (Tree.node a l r) (node_2 a l r a_ih l_ih r_ih) ⋯) →
-                                            (t : B) → motive_2 t
--/
-#guard_msgs in
-#check @B.rec
 
 /-! The recursion computes, and the members' recursions really do cross. -/
 
@@ -209,6 +115,7 @@ nesting type is made at it.
 
 namespace Self
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -216,30 +123,6 @@ inductive A : Type where
 inductive B : Type where
   | mk (a : A)
 end
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree A → Sort u_1} →
-      {motive_4 : Tree A → Sort u_1} →
-        {motive_5 : (a : Tree A) → motive_4 a → Tree.WF A a → Prop} →
-          motive_1 A.tip →
-            ((x : WFTree A) → motive_3 x → motive_1 (A.mk x)) →
-              ((a : A) → motive_1 a → motive_2 (B.mk a)) →
-                ((x : Tree A) →
-                    (h : Tree.WF A x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                  (empty : motive_4 Tree.empty) →
-                    (node :
-                        (a : A) → (l r : Tree A) → motive_1 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                      motive_5 Tree.empty empty ⋯ →
-                        (∀ (a : A) (l r : Tree A) (hl : Tree.WF A l) (hr : Tree.WF A r) (a_ih : motive_1 a)
-                            (l_ih : motive_4 l) (r_ih : motive_4 r),
-                            motive_5 l l_ih hl →
-                              motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                          (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 end Self
 
@@ -251,6 +134,7 @@ stays `WFTree (B α)` and the recursor leads with `{α : Type}`.
 
 namespace Param
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A (α : Type) : Type where
   | tip (a : α)
@@ -259,39 +143,6 @@ inductive B (α : Type) : Type where
   | tip
   | up (a : A α)
 end
-
-/--
-info: @A.mk : {α : Type} → WFTree (B α) → A α
--/
-#guard_msgs in
-#check @A.mk
-
-/--
-info: @A.rec : {α : Type} →
-  {motive_1 : A α → Sort u_1} →
-    {motive_2 : B α → Sort u_1} →
-      {motive_3 : WFTree (B α) → Sort u_1} →
-        {motive_4 : Tree (B α) → Sort u_1} →
-          {motive_5 : (a : Tree (B α)) → motive_4 a → Tree.WF (B α) a → Prop} →
-            ((a : α) → motive_1 (A.tip a)) →
-              ((x : WFTree (B α)) → motive_3 x → motive_1 (A.mk x)) →
-                motive_2 B.tip →
-                  ((a : A α) → motive_1 a → motive_2 (B.up a)) →
-                    ((x : Tree (B α)) →
-                        (h : Tree.WF (B α) x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                      (empty : motive_4 Tree.empty) →
-                        (node :
-                            (a : B α) →
-                              (l r : Tree (B α)) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                          motive_5 Tree.empty empty ⋯ →
-                            (∀ (a : B α) (l r : Tree (B α)) (hl : Tree.WF (B α) l) (hr : Tree.WF (B α) r)
-                                (a_ih : motive_2 a) (l_ih : motive_4 l) (r_ih : motive_4 r),
-                                motive_5 l l_ih hl →
-                                  motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                              (t : A α) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 end Param
 
@@ -303,6 +154,7 @@ of `WFTree` at `B`, and both layers show up as motives of their own.
 
 namespace Deep
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -310,52 +162,6 @@ inductive A : Type where
 inductive B : Type where
   | tip
 end
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree (WFTree B) → Sort u_1} →
-      {motive_4 : Tree (WFTree B) → Sort u_1} →
-        {motive_5 : WFTree B → Sort u_1} →
-          {motive_6 : Tree B → Sort u_1} →
-            {motive_7 : (a : Tree B) → motive_6 a → Tree.WF B a → Prop} →
-              {motive_8 : (a : Tree (WFTree B)) → motive_4 a → Tree.WF (WFTree B) a → Prop} →
-                motive_1 A.tip →
-                  ((x : WFTree (WFTree B)) → motive_3 x → motive_1 (A.mk x)) →
-                    motive_2 B.tip →
-                      ((x : Tree (WFTree B)) →
-                          (h : Tree.WF (WFTree B) x) →
-                            (x_ih : motive_4 x) → motive_8 x x_ih h → motive_3 (WFTree.mk x h)) →
-                        (empty : motive_4 Tree.empty) →
-                          (node :
-                              (a : WFTree B) →
-                                (l r : Tree (WFTree B)) →
-                                  motive_5 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                            ((x : Tree B) →
-                                (h : Tree.WF B x) →
-                                  (x_ih : motive_6 x) → motive_7 x x_ih h → motive_5 (WFTree.mk x h)) →
-                              (empty_1 : motive_6 Tree.empty) →
-                                (node_1 :
-                                    (a : B) →
-                                      (l r : Tree B) →
-                                        motive_2 a → motive_6 l → motive_6 r → motive_6 (Tree.node a l r)) →
-                                  motive_7 Tree.empty empty_1 ⋯ →
-                                    (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                                        (l_ih : motive_6 l) (r_ih : motive_6 r),
-                                        motive_7 l l_ih hl →
-                                          motive_7 r r_ih hr →
-                                            motive_7 (Tree.node a l r) (node_1 a l r a_ih l_ih r_ih) ⋯) →
-                                      motive_8 Tree.empty empty ⋯ →
-                                        (∀ (a : WFTree B) (l r : Tree (WFTree B)) (hl : Tree.WF (WFTree B) l)
-                                            (hr : Tree.WF (WFTree B) r) (a_ih : motive_5 a) (l_ih : motive_4 l)
-                                            (r_ih : motive_4 r),
-                                            motive_8 l l_ih hl →
-                                              motive_8 r r_ih hr →
-                                                motive_8 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                                          (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 end Deep
 
@@ -369,6 +175,7 @@ like any other.
 
 namespace Mixed
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -376,40 +183,6 @@ inductive A : Type where
 inductive B : Type where
   | tip
 end
-
-/--
-info: A.mk : WFTree B → List B → A
--/
-#guard_msgs in
-#check @A.mk
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          {motive_6 : List B → Sort u_1} →
-            motive_1 A.tip →
-              ((x : WFTree B) → (l : List B) → motive_3 x → motive_6 l → motive_1 (A.mk x l)) →
-                motive_2 B.tip →
-                  ((x : Tree B) →
-                      (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                    (empty : motive_4 Tree.empty) →
-                      (node :
-                          (a : B) →
-                            (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                        motive_5 Tree.empty empty ⋯ →
-                          (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                              (l_ih : motive_4 l) (r_ih : motive_4 r),
-                              motive_5 l l_ih hl →
-                                motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                            motive_6 [] →
-                              ((head : B) → (tail : List B) → motive_2 head → motive_6 tail → motive_6 (head :: tail)) →
-                                (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 end Mixed
 
@@ -421,6 +194,7 @@ induction hypothesis for each side.
 
 namespace Pair
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -428,33 +202,6 @@ inductive A : Type where
 inductive B : Type where
   | tip
 end
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree (A × B) → Sort u_1} →
-      {motive_4 : Tree (A × B) → Sort u_1} →
-        {motive_5 : A × B → Sort u_1} →
-          {motive_6 : (a : Tree (A × B)) → motive_4 a → Tree.WF (A × B) a → Prop} →
-            motive_1 A.tip →
-              ((x : WFTree (A × B)) → motive_3 x → motive_1 (A.mk x)) →
-                motive_2 B.tip →
-                  ((x : Tree (A × B)) →
-                      (h : Tree.WF (A × B) x) → (x_ih : motive_4 x) → motive_6 x x_ih h → motive_3 (WFTree.mk x h)) →
-                    (empty : motive_4 Tree.empty) →
-                      (node :
-                          (a : A × B) →
-                            (l r : Tree (A × B)) → motive_5 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                        ((fst : A) → (snd : B) → motive_1 fst → motive_2 snd → motive_5 (fst, snd)) →
-                          motive_6 Tree.empty empty ⋯ →
-                            (∀ (a : A × B) (l r : Tree (A × B)) (hl : Tree.WF (A × B) l) (hr : Tree.WF (A × B) r)
-                                (a_ih : motive_5 a) (l_ih : motive_4 l) (r_ih : motive_4 r),
-                                motive_6 l l_ih hl →
-                                  motive_6 r r_ih hr → motive_6 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                              (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 end Pair
 
@@ -466,6 +213,7 @@ implicitly in the major premise.
 
 namespace Indexed
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Nat → Type where
   | tip : A 0
@@ -474,44 +222,6 @@ inductive B : Type where
   | tip
   | up (n : Nat) (a : A n)
 end
-
-/--
-info: A.mk : (n : Nat) → WFTree B → A (n + 1)
--/
-#guard_msgs in
-#check @A.mk
-
-/--
-info: B.up : (n : Nat) → A n → B
--/
-#guard_msgs in
-#check @B.up
-
-/--
-info: @A.rec : {motive_1 : (a : Nat) → A a → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          motive_1 0 A.tip →
-            ((n : Nat) → (x : WFTree B) → motive_3 x → motive_1 (n + 1) (A.mk n x)) →
-              motive_2 B.tip →
-                ((n : Nat) → (a : A n) → motive_1 n a → motive_2 (B.up n a)) →
-                  ((x : Tree B) →
-                      (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                    (empty : motive_4 Tree.empty) →
-                      (node :
-                          (a : B) →
-                            (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                        motive_5 Tree.empty empty ⋯ →
-                          (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                              (l_ih : motive_4 l) (r_ih : motive_4 r),
-                              motive_5 l l_ih hl →
-                                motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                            {a : Nat} → (t : A a) → motive_1 a t
--/
-#guard_msgs in
-#check @A.rec
 
 end Indexed
 
@@ -530,6 +240,7 @@ are what make it one worth taking.
 
 namespace Modifiers
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 /-- The one with the nesting. -/
 inductive A : Type where
@@ -582,6 +293,7 @@ namespace FreeProp
 -- one declaration at a time
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -592,37 +304,6 @@ inductive P : Nat → Prop where
   | z : P 0
   | s (n : Nat) : P n → P (n + 1)
 end
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          motive_1 A.tip →
-            ((x : WFTree B) → motive_3 x → motive_1 (A.mk x)) →
-              motive_2 B.tip →
-                ((x : Tree B) →
-                    (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                  (empty : motive_4 Tree.empty) →
-                    (node :
-                        (a : B) → (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                      motive_5 Tree.empty empty ⋯ →
-                        (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                            (l_ih : motive_4 l) (r_ih : motive_4 r),
-                            motive_5 l l_ih hl →
-                              motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                          (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
-
-/--
-info: @P.rec : ∀ {motive : (a : Nat) → P a → Prop},
-  motive 0 P.z → (∀ (n : Nat) (a : P n), motive n a → motive (n + 1) ⋯) → ∀ {a : Nat} (h : P a), motive a h
--/
-#guard_msgs in
-#check @P.rec
 
 theorem P.pos : ∀ {n}, P n → 0 ≤ n := by
   intro n h
@@ -645,6 +326,7 @@ the routing. -/
 namespace FreePropField
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type where
   | tip
@@ -654,36 +336,6 @@ inductive B : Type where
 inductive P : Nat → Prop where
   | z (a : A) : P 0
 end
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          motive_1 A.tip →
-            ((x : WFTree B) → motive_3 x → motive_1 (A.mk x)) →
-              motive_2 B.tip →
-                ((x : Tree B) →
-                    (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                  (empty : motive_4 Tree.empty) →
-                    (node :
-                        (a : B) → (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                      motive_5 Tree.empty empty ⋯ →
-                        (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                            (l_ih : motive_4 l) (r_ih : motive_4 r),
-                            motive_5 l l_ih hl →
-                              motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                          (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
-
-/--
-info: P.z : ∀ (a : A), P 0
--/
-#guard_msgs in
-#check @P.z
 
 end FreePropField
 
@@ -708,6 +360,7 @@ stated over the originals.
 namespace BigSmall
 set_option mumi.separate false
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive A : Type 1 where
   | tip
@@ -715,34 +368,6 @@ inductive A : Type 1 where
 inductive B : Type where
   | tip
 end
-
-/-- info: A.mk : WFTree B → A -/
-#guard_msgs in
-#check @A.mk
-
-/--
-info: @A.rec : {motive_1 : A → Sort u_1} →
-  {motive_2 : B → Sort u_1} →
-    {motive_3 : WFTree B → Sort u_1} →
-      {motive_4 : Tree B → Sort u_1} →
-        {motive_5 : (a : Tree B) → motive_4 a → Tree.WF B a → Prop} →
-          motive_1 A.tip →
-            ((x : WFTree B) → motive_3 x → motive_1 (A.mk x)) →
-              motive_2 B.tip →
-                ((x : Tree B) →
-                    (h : Tree.WF B x) → (x_ih : motive_4 x) → motive_5 x x_ih h → motive_3 (WFTree.mk x h)) →
-                  (empty : motive_4 Tree.empty) →
-                    (node :
-                        (a : B) → (l r : Tree B) → motive_2 a → motive_4 l → motive_4 r → motive_4 (Tree.node a l r)) →
-                      motive_5 Tree.empty empty ⋯ →
-                        (∀ (a : B) (l r : Tree B) (hl : Tree.WF B l) (hr : Tree.WF B r) (a_ih : motive_2 a)
-                            (l_ih : motive_4 l) (r_ih : motive_4 r),
-                            motive_5 l l_ih hl →
-                              motive_5 r r_ih hr → motive_5 (Tree.node a l r) (node a l r a_ih l_ih r_ih) ⋯) →
-                          (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.rec
 
 end BigSmall
 
@@ -757,6 +382,7 @@ nor lowering runs.
 
 namespace Separates
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type 1 where
   | tip
@@ -765,18 +391,8 @@ inductive B : Type where
   | tip
 end
 
-/-- info: A.mk : WFTree B → A -/
-#guard_msgs in
-#check @A.mk
-
 -- the real `WFTree`, not a copy displayed as one
 example (x : WFTree B) : A := .mk x
-
-/--
-info: @A.rec : {motive : A → Sort u_1} → motive A.tip → ((x : WFTree B) → motive (A.mk x)) → (t : A) → motive t
--/
-#guard_msgs in
-#check @A.rec
 
 example (a : A) : a = a := by
   induction a with
@@ -810,6 +426,7 @@ into the nesting and back is then one mutual recursion, which is what makes
 
 namespace LowerNest
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive S : Type where
   | nil
@@ -818,14 +435,6 @@ inductive Big : Type 1 where
   | of : Type → Big
   | c : S → Big
 end
-
-/-- info: S.t : Tree S → S -/
-#guard_msgs in
-#check @S.t
-
-/-- info: Big.c : S → Big -/
-#guard_msgs in
-#check @Big.c
 
 /-! The nesting is the third motive, and the two `Tree` constructors are the
 last two minors -- extras go at the end of their kind, so a block with nothing
@@ -913,6 +522,7 @@ nesting needs a companion at the nested type, and that companion is written at
 subterm and the measure decreases.  The pair is one mutual structural
 recursion, and it compiles and computes. -/
 
+mumi_spec
 mutual
 def sz : S → Nat
   | .nil => 1
@@ -948,6 +558,7 @@ because that is the recursor the written block asks for.
 
 namespace ListBig
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type 1 where
   | tip
@@ -955,12 +566,6 @@ inductive A : Type 1 where
 inductive B : Type where
   | tip
 end
-
-/--
-info: @A.rec : {motive : A → Sort u_1} → motive A.tip → ((x : List B) → motive (A.mk x)) → (t : A) → motive t
--/
-#guard_msgs in
-#check @A.rec
 
 /--
 info: @A.mutualRec : {motive_1 : A → Sort u_2} →

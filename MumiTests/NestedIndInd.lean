@@ -3,7 +3,7 @@ Copyright (c) 2026 Alex Meiburg. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Alex Meiburg
 -/
-import Mumi
+import MumiTests.Spec.Harness
 
 /-!
 # Nested inductives whose denesting is induction-inductive
@@ -21,10 +21,12 @@ predicate is indexed by the tree, so specialising all four types at `RecWFTree`
 gives a block in which `Tree.WF`'s copy is indexed by `Tree`'s copy.
 -/
 
+mumi_spec
 inductive Tree (α : Type u) where
   | empty
   | node (key : Nat) (value : α) (l r : Tree α)
 
+mumi_spec
 inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where
   | empty : Tree.WFWith α .empty []
   | node {llist rlist} (key : Nat) (value : α) (l r : Tree α)
@@ -32,24 +34,20 @@ inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where
       (hl' : ∀ a ∈ llist, a < key) (hr' : ∀ a ∈ rlist, key < a) :
       Tree.WFWith α (.node key value l r) (llist ++ key :: rlist)
 
+mumi_spec
 inductive Tree.WF (α : Type u) : Tree α → Prop where
   | intro (l : List Nat) (t : Tree α) (h : Tree.WFWith α t l) : Tree.WF α t
 
+mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 
-/-- info: RecWFTree : Type -/
-#guard_msgs in
-#check @RecWFTree
-
 -- the constructor has the type it was declared with; the copy is in the
 -- kernel-facing one, under a name nobody has to reach for
-/-- info: RecWFTree.mk : WFTree RecWFTree → RecWFTree -/
-#guard_msgs in
-#check @RecWFTree.mk
 
 /-- info: RecWFTree._nested_mk : RecWFTree.nested_WFTree_1 → RecWFTree -/
 #guard_msgs in
@@ -123,36 +121,6 @@ info: @RecWFTree.nested_WFWith_4.node : ∀ {llist rlist : List Nat} (key : Nat)
 -- conclude at.  A `Prop` motive takes the value the recursion produced at the
 -- data member it is indexed by, which is what lets a recursion rebuild the tree
 -- and carry its well-formedness along with it
-/--
-info: @RecWFTree.rec : {motive_1 : RecWFTree → Sort u_1} →
-  {motive_2 : WFTree RecWFTree → Sort u_1} →
-    {motive_3 : Tree RecWFTree → Sort u_1} →
-      {motive_4 : (a : Tree RecWFTree) → motive_3 a → Tree.WF RecWFTree a → Prop} →
-        {motive_5 : (a : Tree RecWFTree) → (a_1 : List Nat) → motive_3 a → Tree.WFWith RecWFTree a a_1 → Prop} →
-          ((x : WFTree RecWFTree) → motive_2 x → motive_1 (RecWFTree.mk x)) →
-            ((x : Tree RecWFTree) →
-                (h : Tree.WF RecWFTree x) → (x_ih : motive_3 x) → motive_4 x x_ih h → motive_2 (WFTree.mk x h)) →
-              (empty : motive_3 Tree.empty) →
-                (node :
-                    (key : Nat) →
-                      (value : RecWFTree) →
-                        (l r : Tree RecWFTree) →
-                          motive_1 value → motive_3 l → motive_3 r → motive_3 (Tree.node key value l r)) →
-                  (∀ (l : List Nat) (t : Tree RecWFTree) (h : Tree.WFWith RecWFTree t l) (t_ih : motive_3 t),
-                      motive_5 t l t_ih h → motive_4 t t_ih ⋯) →
-                    motive_5 Tree.empty [] empty ⋯ →
-                      (∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : Tree RecWFTree)
-                          (hl : Tree.WFWith RecWFTree l llist) (hr : Tree.WFWith RecWFTree r rlist)
-                          (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a)
-                          (value_ih : motive_1 value) (l_ih : motive_3 l) (r_ih : motive_3 r),
-                          motive_5 l llist l_ih hl →
-                            motive_5 r rlist r_ih hr →
-                              motive_5 (Tree.node key value l r) (llist ++ key :: rlist)
-                                (node key value l r value_ih l_ih r_ih) ⋯) →
-                        (t : RecWFTree) → motive_1 t
--/
-#guard_msgs in
-#check @RecWFTree.rec
 
 -- the kernel-facing one is still there, over the copies, under a hidden name
 /--
@@ -245,10 +213,6 @@ example : depth (rebuild (wrap (wrap bottom))) = 3 := rfl
 /-- info: 3 -/
 #guard_msgs in
 #eval depth (wrap (wrap bottom))
-
-/-- info: 'RecWFTree' does not depend on any axioms -/
-#guard_msgs in
-#print axioms RecWFTree
 
 /-- info: 'RecWFTree.depth' does not depend on any axioms -/
 #guard_msgs in
@@ -402,26 +366,22 @@ end RecWFTree
 
 /-! ## Parameters, carried into every copy -/
 
+mumi_spec
 inductive Bag (α : Type) where
   | mk : List α → Bag α
 
+mumi_spec
 inductive BagOk (α : Type) : Bag α → Prop where
   | mk : (l : List α) → BagOk α (.mk l)
 
+mumi_spec
 inductive OkBag (α : Type) where
   | mk (b : Bag α) (h : BagOk α b)
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 inductive Rec2 (β : Type) where
   | leaf (b : β)
   | mk (x : OkBag (Rec2 β))
-
-/-- info: Rec2 : Type → Type -/
-#guard_msgs in
-#check @Rec2
-
-/-- info: @Rec2.mk : {β : Type} → OkBag (Rec2 β) → Rec2 β -/
-#guard_msgs in
-#check @Rec2.mk
 
 /-- info: Rec2.nested_BagOk_4 : (β : Type) → Rec2.nested_Bag_2 β → Prop -/
 #guard_msgs in
@@ -435,46 +395,26 @@ info: @Rec2.nested_List_3.cons : {β : Type} → Rec2 β → Rec2.nested_List_3 
 #check @Rec2.nested_List_3.cons
 
 -- and the recursor is over `OkBag`, `Bag` and `List`, the parameter carried through
-/--
-info: @Rec2.rec : {β : Type} →
-  {motive_1 : Rec2 β → Sort u_1} →
-    {motive_2 : OkBag (Rec2 β) → Sort u_1} →
-      {motive_3 : Bag (Rec2 β) → Sort u_1} →
-        {motive_4 : List (Rec2 β) → Sort u_1} →
-          {motive_5 : (a : Bag (Rec2 β)) → motive_3 a → BagOk (Rec2 β) a → Prop} →
-            ((b : β) → motive_1 (Rec2.leaf b)) →
-              ((x : OkBag (Rec2 β)) → motive_2 x → motive_1 (Rec2.mk x)) →
-                ((b : Bag (Rec2 β)) →
-                    (h : BagOk (Rec2 β) b) → (b_ih : motive_3 b) → motive_5 b b_ih h → motive_2 (OkBag.mk b h)) →
-                  (mk_2 : (a : List (Rec2 β)) → motive_4 a → motive_3 (Bag.mk a)) →
-                    motive_4 [] →
-                      ((head : Rec2 β) →
-                          (tail : List (Rec2 β)) → motive_1 head → motive_4 tail → motive_4 (head :: tail)) →
-                        (∀ (l : List (Rec2 β)) (l_ih : motive_4 l), motive_5 (Bag.mk l) (mk_2 l l_ih) ⋯) →
-                          (t : Rec2 β) → motive_1 t
--/
-#guard_msgs in
-#check @Rec2.rec
 
 /-! ## Indices, on both the data copy and the proof copy -/
 
+mumi_spec (xfail := [rec, recOn])
 inductive Vec (α : Type) : Nat → Type where
   | nil : Vec α 0
   | cons : α → {n : Nat} → Vec α n → Vec α (n + 1)
 
+mumi_spec (xfail := [rec, recOn])
 inductive VecOk (α : Type) : {n : Nat} → Vec α n → Prop where
   | nil : VecOk α .nil
   | cons (a : α) {n} (v : Vec α n) : VecOk α v → VecOk α (.cons a v)
 
+mumi_spec
 inductive OkVec (α : Type) where
   | mk {n : Nat} (v : Vec α n) (h : VecOk α v)
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 inductive Rec3 where
   | mk (x : OkVec Rec3)
-
-/-- info: Rec3.mk : OkVec Rec3 → Rec3 -/
-#guard_msgs in
-#check @Rec3.mk
 
 /-- info: Rec3.nested_Vec_2 : Nat → Type -/
 #guard_msgs in
@@ -486,26 +426,6 @@ inductive Rec3 where
 
 -- the index survives the trip out: the motive for the copy of `Vec` is a motive
 -- for `Vec`, at the index the copy was carrying
-/--
-info: @Rec3.rec : {motive_1 : Rec3 → Sort u_1} →
-  {motive_2 : OkVec Rec3 → Sort u_1} →
-    {motive_3 : (a : Nat) → Vec Rec3 a → Sort u_1} →
-      {motive_4 : {n : Nat} → (a : Vec Rec3 n) → motive_3 n a → VecOk Rec3 a → Prop} →
-        ((x : OkVec Rec3) → motive_2 x → motive_1 (Rec3.mk x)) →
-          ({n : Nat} →
-              (v : Vec Rec3 n) →
-                (h : VecOk Rec3 v) → (v_ih : motive_3 n v) → motive_4 v v_ih h → motive_2 (OkVec.mk v h)) →
-            (nil : motive_3 0 Vec.nil) →
-              (cons :
-                  (a : Rec3) →
-                    {n : Nat} → (a_1 : Vec Rec3 n) → motive_1 a → motive_3 n a_1 → motive_3 (n + 1) (Vec.cons a a_1)) →
-                motive_4 Vec.nil nil ⋯ →
-                  (∀ (a : Rec3) {n : Nat} (v : Vec Rec3 n) (a_1 : VecOk Rec3 v) (a_ih : motive_1 a)
-                      (v_ih : motive_3 n v), motive_4 v v_ih a_1 → motive_4 (Vec.cons a v) (cons a v a_ih v_ih) ⋯) →
-                    (t : Rec3) → motive_1 t
--/
-#guard_msgs in
-#check @Rec3.rec
 
 namespace Rec3
 
@@ -544,9 +464,11 @@ be built first; they come back as one group and are compiled together, as one
 structural recursion over the outer original's recursor.
 -/
 
+mumi_spec
 inductive Rose (α : Type) : Type where
   | node (a : α) (cs : List (Rose α))
 
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive RT : Type where
   | tip
@@ -555,29 +477,8 @@ inductive RP : RT → Prop where
   | tip : RP .tip
 end
 
-/-- info: RT.mk : Rose RT → (t : RT) → RP t → RT -/
-#guard_msgs in
-#check @RT.mk
-
 -- `List` is nowhere in the block and still gets a motive, because `Rose`'s own
 -- field is one
-/--
-info: @RT.rec : {motive_1 : RT → Sort u_1} →
-  {motive_2 : (a : RT) → motive_1 a → RP a → Prop} →
-    {motive_3 : Rose RT → Sort u_1} →
-      {motive_4 : List (Rose RT) → Sort u_1} →
-        (tip : motive_1 RT.tip) →
-          ((r : Rose RT) →
-              (t : RT) → (h : RP t) → motive_3 r → (t_ih : motive_1 t) → motive_2 t t_ih h → motive_1 (RT.mk r t h)) →
-            motive_2 RT.tip tip RP.tip →
-              ((a : RT) → (cs : List (Rose RT)) → motive_1 a → motive_4 cs → motive_3 (Rose.node a cs)) →
-                motive_4 [] →
-                  ((head : Rose RT) →
-                      (tail : List (Rose RT)) → motive_3 head → motive_4 tail → motive_4 (head :: tail)) →
-                    (t : RT) → motive_1 t
--/
-#guard_msgs in
-#check @RT.rec
 
 -- both directions, for both copies
 /-- info: RT.nested_Rose_1.ofOrig : Rose RT → RT.nested_Rose_1 -/
@@ -616,6 +517,7 @@ alone would be useless: the whole family is specialised at the block, and the
 two copies are compiled as one group the same way.
 -/
 
+mumi_spec
 mutual
 inductive Fo (α : Type) : Type where
   | mk (a : α) (b : Ba α)
@@ -624,6 +526,7 @@ inductive Ba (α : Type) : Type where
   | cons (f : Fo α) (b : Ba α)
 end
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive MT : Type where
   | tip
@@ -631,26 +534,6 @@ inductive MT : Type where
 inductive MP : MT → Prop where
   | tip : MP .tip
 end
-
-/-- info: MT.mk : Fo MT → (t : MT) → MP t → MT -/
-#guard_msgs in
-#check @MT.mk
-
-/--
-info: @MT.rec : {motive_1 : MT → Sort u_1} →
-  {motive_2 : (a : MT) → motive_1 a → MP a → Prop} →
-    {motive_3 : Fo MT → Sort u_1} →
-      {motive_4 : Ba MT → Sort u_1} →
-        (tip : motive_1 MT.tip) →
-          ((x : Fo MT) →
-              (t : MT) → (h : MP t) → motive_3 x → (t_ih : motive_1 t) → motive_2 t t_ih h → motive_1 (MT.mk x t h)) →
-            motive_2 MT.tip tip MP.tip →
-              ((a : MT) → (b : Ba MT) → motive_1 a → motive_4 b → motive_3 (Fo.mk a b)) →
-                motive_4 Ba.nil →
-                  ((f : Fo MT) → (b : Ba MT) → motive_3 f → motive_4 b → motive_4 (Ba.cons f b)) → (t : MT) → motive_1 t
--/
-#guard_msgs in
-#check @MT.rec
 
 /-- info: MT.nested_Ba_2.ofOrig : Ba MT → MT.nested_Ba_2 -/
 #guard_msgs in
@@ -695,39 +578,22 @@ copies whose parameters actually mention `n` gain the index: `Fam BadLocals` and
 that carries the `n` there.
 -/
 
+mumi_spec
 inductive Fam (α : Type) : Nat → Type where
   | mk : α → Fam α n
 
+mumi_spec
 inductive FamOk (α : Type) : {n : Nat} → Fam α n → Prop where
   | mk {n : Nat} (a : α) : FamOk α (.mk (n := n) a)
 
+mumi_spec
 inductive OkFam (α : Type) (n : Nat) where
   | mk (v : Fam α n) (h : FamOk α v)
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 inductive BadLocals where
   | tip
   | mk (n : Nat) (x : OkFam BadLocals n)
-
-/-- info: BadLocals.mk : (n : Nat) → OkFam BadLocals n → BadLocals -/
-#guard_msgs in
-#check @BadLocals.mk
-
-/--
-info: @BadLocals.rec : {motive_1 : BadLocals → Sort u_1} →
-  {motive_2 : (n : Nat) → OkFam BadLocals n → Sort u_1} →
-    {motive_3 : (n : Nat) → Fam BadLocals n → Sort u_1} →
-      {motive_4 : (n : Nat) → (a : Fam BadLocals n) → motive_3 n a → FamOk BadLocals a → Prop} →
-        motive_1 BadLocals.tip →
-          ((n : Nat) → (x : OkFam BadLocals n) → motive_2 n x → motive_1 (BadLocals.mk n x)) →
-            ((n : Nat) →
-                (v : Fam BadLocals n) →
-                  (h : FamOk BadLocals v) → (v_ih : motive_3 n v) → motive_4 n v v_ih h → motive_2 n (OkFam.mk v h)) →
-              (mk_2 : (n : Nat) → (a : BadLocals) → motive_1 a → motive_3 n (Fam.mk a)) →
-                (∀ (n : Nat) (a : BadLocals) (a_ih : motive_1 a), motive_4 n (Fam.mk a) (mk_2 n a a_ih) ⋯) →
-                  (t : BadLocals) → motive_1 t
--/
-#guard_msgs in
-#check @BadLocals.rec
 
 /--
 info: @BadLocals.nested_OkFam_1.ofOrig : {n : Nat} → OkFam BadLocals n → BadLocals.nested_OkFam_1 n
@@ -772,6 +638,7 @@ any other, and the erasure carries the `n` through the pre-world without ever
 seeing that it began as a field.
 -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive LocalsII : Type where
   | tip
@@ -779,27 +646,6 @@ inductive LocalsII : Type where
 inductive LocalsII.Ok : (n : Nat) → OkFam LocalsII n → Prop where
   | mk : (n : Nat) → (x : OkFam LocalsII n) → LocalsII.Ok n x
 end
-
-/--
-info: @LocalsII.rec : {motive_1 : LocalsII → Sort u_1} →
-  {motive_2 : (n : Nat) → OkFam LocalsII n → Sort u_1} →
-    {motive_3 : (n : Nat) → Fam LocalsII n → Sort u_1} →
-      {motive_4 : (n : Nat) → (a : Fam LocalsII n) → motive_3 n a → FamOk LocalsII a → Prop} →
-        {motive_5 : (n : Nat) → (a : OkFam LocalsII n) → motive_2 n a → LocalsII.Ok n a → Prop} →
-          motive_1 LocalsII.tip →
-            ((n : Nat) →
-                (x : OkFam LocalsII n) →
-                  (a : LocalsII.Ok n x) → (x_ih : motive_2 n x) → motive_5 n x x_ih a → motive_1 (LocalsII.mk n x a)) →
-              ((n : Nat) →
-                  (v : Fam LocalsII n) →
-                    (h : FamOk LocalsII v) → (v_ih : motive_3 n v) → motive_4 n v v_ih h → motive_2 n (OkFam.mk v h)) →
-                (mk_2 : (n : Nat) → (a : LocalsII) → motive_1 a → motive_3 n (Fam.mk a)) →
-                  (∀ (n : Nat) (a : LocalsII) (a_ih : motive_1 a), motive_4 n (Fam.mk a) (mk_2 n a a_ih) ⋯) →
-                    (∀ (n : Nat) (x : OkFam LocalsII n) (x_ih : motive_2 n x), motive_5 n x x_ih ⋯) →
-                      (t : LocalsII) → motive_1 t
--/
-#guard_msgs in
-#check @LocalsII.rec
 
 /--
 info: @LocalsII.Ok.rec : ∀ {motive_1 : LocalsII → Sort u_1} {motive_2 : (n : Nat) → OkFam LocalsII n → Sort u_1}

@@ -3,7 +3,7 @@ Copyright (c) 2026 Alex Meiburg. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Alex Meiburg
 -/
-import Mumi
+import MumiTests.Spec.Harness
 import MumiTests.NestedIndInd
 
 /-!
@@ -36,6 +36,7 @@ namespace MumiTests.Roundtrip
 
 /-! ## An induction-inductive block, and a renaming of it -/
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil
@@ -46,6 +47,7 @@ inductive Fresh : String → Ctx → Prop where
       Fresh x (.snoc Γ y h)
 end
 
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx' : Type where
   | nil
@@ -317,10 +319,12 @@ definition that cannot be written when the recursor stops at the data members.
 
 namespace Copy
 
+mumi_spec
 inductive Tree (α : Type u) where
   | empty
   | node (key : Nat) (value : α) (l r : Tree α)
 
+mumi_spec
 inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where
   | empty : Tree.WFWith α .empty []
   | node {llist rlist} (key : Nat) (value : α) (l r : Tree α)
@@ -328,12 +332,15 @@ inductive Tree.WFWith (α : Type u) : Tree α → List Nat → Prop where
       (hl' : ∀ a ∈ llist, a < key) (hr' : ∀ a ∈ rlist, key < a) :
       Tree.WFWith α (.node key value l r) (llist ++ key :: rlist)
 
+mumi_spec
 inductive Tree.WF (α : Type u) : Tree α → Prop where
   | intro (l : List Nat) (t : Tree α) (h : Tree.WFWith α t l) : Tree.WF α t
 
+mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 

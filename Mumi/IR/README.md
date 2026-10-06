@@ -236,8 +236,7 @@ Its restrictions, beyond the general ones below:
 A block is split only where it has to be.  Its strongly connected components,
 dependencies first, are regrouped as far as a group can be one block --
 carriers in one universe with their decoders -- so that a block in one
-universe stays one block with one joint recursion, as a `mutual` has -- and
-blocks in different universes have one each, in both modes.  A group
+universe stays one block with one joint recursion, as a `mutual` has.  A group
 of carriers and decoders is an induction-recursion of its own; one of
 definitions alone, or of `Prop` inductives, is Lean's.  So the members may sit
 in different universes as long as no component mixes them -- and without a
@@ -254,9 +253,8 @@ universe, `A`'s first, `B`'s reading `A`'s raw terms and decoder as values of
 a type already there -- a plain field, with its certificate demanded by `B`'s
 -- and the certificates of all of them in one `mutual` after every engine.
 `B.rec` is then the recursion of `B`'s engine, with no hypothesis at its
-`A`, as one universe up, where the graphs' joint recursion, which spans the
-universes, is split to match: each universe's recursor is the graphs' at
-`PUnit` for the members of the others.
+`A`, as one universe up.  (A `mutual` is owed one recursion over all of it;
+`mumi_spec` marks where the split falls short.)
 
 ## A `Prop` in the block
 
@@ -482,22 +480,14 @@ automatically generated constructor `injEq` lemmas can use `propext`.
 
 Run `lake test`, or `lake build Mumi MumiTests`.
 
-Most blocks are tested by specification: `ir_spec mutual … end`
-([MumiTests/IRSpec/Harness.lean](../../MumiTests/IRSpec/Harness.lean))
-elaborates the block, then computes from the block as written what Lean's own
-rules say it should declare -- type formers, constructors, each recursor with
-its motives, minor premises and hypotheses, the `Prop` members' recursor into
-`Prop` or any sort -- and checks each declaration against it: up to
-definitional equality, with binder names, binder annotations and universes
-exactly, and no internal name where a reader would see it.  Then each rule --
-a recursor's at each constructor, a decoder's at each clause -- has to hold by
-`rfl` in the kernel, or, where the test lists it `(simp := [...])`, only by
-`simp` with its lemma, or, listed `(unproven := [...])`, neither.  The one thing
-the specification takes from the mode is the universe of an upper-mode
-carrier.  What a test file states beside it is what the specification leaves
-out: values computed and run, functions defined through the recursors,
-tactics, axioms, rejections.  `MumiTests/IRUpper.lean` and
-`MumiTests/IRLower.lean` are written out by hand, as a reader's first stop.
+Most blocks are tested by specification with `mumi_spec`, as the main README's
+"Testing against a specification" describes; for an induction-recursion the
+one thing the specification takes from the mode is the universe of an
+upper-mode carrier.  What the IR frontend does not yet give -- `inj`/`injEq`,
+the joint recursor over a block's `Prop` members and across universes,
+`casesOn` named as Lean names it -- is marked at each block with `xfail`.
+`MumiTests/IRUpper.lean` and `MumiTests/IRLower.lean` are written out by hand,
+as a reader's first stop.
 
 `MumiTests/IRFamily.lean` and `MumiTests/IRTangle.lean` cover the indexed and
 induction-inductive blocks of the section above one universe up, what they

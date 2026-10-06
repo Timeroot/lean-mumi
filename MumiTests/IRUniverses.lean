@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Members in different universes
@@ -10,7 +10,7 @@ mixes them -- and without a `Prop` to run the dependency through, none can: a
 component, `B` and `G`, which read them, another.  One universe up each lands
 one above where it was written; at the written universe, where it was written.
 Each component in its universe has its own recursion, as a `mutual` would;
-`ir_spec` checks all of it.
+`mumi_spec` checks all of it.
 -/
 
 set_option autoImplicit false
@@ -18,7 +18,7 @@ set_option autoImplicit false
 namespace UnivUpper
 set_option mumi.mahlo false
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -56,7 +56,7 @@ end UnivUpper
 namespace UnivLower
 set_option mumi.mahlo true
 
-ir_spec
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -92,7 +92,7 @@ end UnivLower
 
 namespace Split
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive U : Type where
   | base : U

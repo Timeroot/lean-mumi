@@ -47,3 +47,10 @@ register_option mumi.mahlo : Bool := {
   defValue := false
   descr := "lower experimental induction-recursion blocks using IR.mahlo; when false, use an axiom-free graph one universe up"
 }
+
+register_option mumi.partialRecursors : Bool := {
+  defValue := false
+  descr := "declare a block whose recursor cannot state every inductive hypothesis -- a proof \
+    field whose index the recursion cannot follow, as `Ok (f Γ)` for a function `f` from \
+    outside the block -- with those hypotheses left out, instead of rejecting it"
+}

@@ -785,6 +785,49 @@ members really are simultaneous is unaffected either way.
   (some gain a `(kernel)` prefix). This affects declarations the library never
   touches, and `set_option mumi.enabled false` does not suppress it.
 
+## Testing against a specification
+
+Most blocks in `MumiTests/` are tested by specification: `mumi_spec` before a
+`mutual` (or an `inductive`) elaborates it, then computes from the block as
+written what Lean's own rules say it should declare, and checks every
+declaration against that
+([MumiTests/Spec/Harness.lean](MumiTests/Spec/Harness.lean)).  For a block Lean
+takes, that is what Lean does; for one it refuses, what Lean would do were the
+restriction lifted:
+
+- the type formers and constructors, binder for binder;
+- one recursion over the whole block, as a `mutual` has: a motive per data
+  member, per nested occurrence (abstracted over the fields it names, as
+  `fun Γ => List (Ty Γ)`), and per `Prop` member, whose motive is *displayed* --
+  it takes the value the data recursion produced at each of its indices of data
+  type -- and minor premises named by their constructors with a hypothesis
+  `f_ih` at every field of the block, proofs included;
+- `X.recOn`, `X.casesOn`, `X.c.inj` and `X.c.injEq` as Lean derives them;
+- `cases` on every member, and `induction` on a lone one;
+- each rule -- a recursor's and a `casesOn`'s at each constructor, a decoder's at
+  each clause -- by `rfl` in the kernel;
+- no axiom anywhere but `propext` in an `injEq`, and `IR.mahlo` under
+  `mumi.mahlo`.
+
+Binder names, binder annotations and universes have to agree exactly, and no
+internal name may show where a reader would see it.  What a frontend does not
+yet do is marked at the block: `(xfail := [rec, injEq, …])` the kinds of claim
+it fails, `(simp := [X.rec_c])` a rule that holds only by `simp`,
+`(unproven := [d_c])` one that holds neither way -- and a marked kind that
+starts to hold is reported, so the marks are a list of what to work on next
+(`set_option mumi.spec.showXFail true` shows the failures behind them).
+
+A recursor that cannot be stated in full -- a proof field whose index the
+recursion cannot follow, as `Ok (Γs.headD .nil)` -- is a *gap*: the block is to
+be rejected, or, under `set_option mumi.partialRecursors true`, declared
+without those hypotheses.  `mumi_spec (rejects)` pins a rejection.
+
+What a test file states beside a `mumi_spec` is what the specification leaves
+out: values computed and run, functions defined through the recursors, the
+extra eliminators (`mutualRec`, `recD`, views), tactics, rejections.
+`MumiTests/IRUpper.lean` and `MumiTests/IRLower.lean` are written out by hand,
+as a reader's first stop.
+
 ## Status
 
 This started as an in-tree Lean elaborator under a separate

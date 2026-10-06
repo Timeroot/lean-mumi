@@ -1,4 +1,4 @@
-import MumiTests.IRSpec.Harness
+import MumiTests.Spec.Harness
 
 /-!
 # Induction-induction and induction-recursion in one block
@@ -6,7 +6,7 @@ import MumiTests.IRSpec.Harness
 The `Family` path of the IR frontend: carriers indexed by other carriers and by
 decoder values, decoders over indexed carriers, and the equations each of them
 comes with.  Everything here is one universe up, and every equation is `rfl`:
-`ir_spec` checks each block's declarations and rules against what Lean's own
+`mumi_spec` checks each block's declarations and rules against what Lean's own
 rules say they should be; what follows each block is what that leaves out --
 values computed, functions through the recursors, tactics, axioms.
 -/
@@ -22,7 +22,7 @@ field out of a constructor. -/
 
 namespace CtxTy
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -90,7 +90,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValue
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Code : Type where
   | one : Code
@@ -120,7 +120,7 @@ end ByValue
 namespace Poly
 universe u
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx (X : Type u) : Type u where
   | nil : Ctx X
@@ -143,7 +143,7 @@ end Poly
 
 namespace Dotted
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -172,7 +172,7 @@ through it are `noncomputable`. -/
 
 namespace Plain
 
-ir_spec
+mumi_spec (xfail := [casesOn, injEq])
 mutual
 inductive Vec : Nat → Type where
   | nil : Vec 0
