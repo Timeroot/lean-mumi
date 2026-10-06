@@ -46,14 +46,17 @@ namespace MumiTests.Demo
 
 A `Prop` and a `Type` in one `mutual`.  The kernel refuses this outright --
 *mutually inductive types must live in the same universe* -- and the library
-lowers the block into declarations it does accept.  What comes back is genuine
-inductives, so everything Lean does to an inductive it does to these.
+lowers the block into declarations it does accept.  What comes back reads as
+the block written: the data member is a genuine inductive behind its name, so
+`match`, `cases` and the code generator work on it as on any other, and every
+member's `rec` is the block's, one motive per member, as Lean's own `mutual`
+would have it.
 
 *Verdict: works.* -/
 
 namespace Hetero
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 /-- A tree, in `Type`, with one field at the proposition beside it. -/
 inductive Tree : Type where
@@ -65,7 +68,7 @@ inductive Hidden : Prop where
   | mk (t : Tree) : Hidden
 end
 
-/-! Both members really are inductives, and so are their constructors. -/
+/-! Both members print as the inductives they were written as. -/
 
 /--
 info: inductive MumiTests.Demo.Hetero.Tree : Type
@@ -78,8 +81,8 @@ MumiTests.Demo.Hetero.Tree.wrap : Hidden → Tree
 #guard_msgs in
 #print Tree
 
-/-! `Tree.rec` is what it would have been with no proposition beside it: one
-motive, one minor premise per constructor. -/
+/-! `Tree.rec` is the block's: a motive for the tree and one for the proposition,
+and a minor premise for every constructor of either. -/
 
 /-! `match` and `cases` work, because there is nothing in the way of them.  A
 `wrap` gives back nothing: its field is a proof and the result is data. -/
@@ -126,7 +129,7 @@ other, so a cycle makes them equal and nothing can lift that.
 
 namespace TwoUniverses
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Small : Type where
   | z : Small
@@ -763,7 +766,7 @@ what the refusal reads like.
 
 namespace PropElim
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Prop where
   | mk (b : B) : A
@@ -798,10 +801,11 @@ theorem a_holds (a : A) : A := A.rec (motive_2 := fun _ => True)
 #print axioms a_holds
 
 /-! The data member's recursion is a genuine large elimination, and it reduces.
-`B.rec` is the one-motive one, so the field at the proposition carries no
-hypothesis: there is no motive over `A` for it to be at. -/
+`B.rec` is the block's, as Lean's would be for a `mutual` block: a motive at
+each member, so the field at the proposition carries a hypothesis too. -/
 
-example : B.rec (motive := fun _ => Nat) (fun n => n) (fun _ => 0) (.leaf 7) = 7 := rfl
+example : B.rec (motive_1 := fun _ => True) (motive_2 := fun _ => Nat)
+    (fun _ _ => trivial) (fun n => n) (fun _ _ => 0) (.leaf 7) = 7 := rfl
 
 /-! Written as the `match` a writer would write, it compiles and runs. -/
 
@@ -836,8 +840,8 @@ inductive T : Type where
   | mk1 : T
   | mkT (h : Nonempty T) : T
 
-/-! The constructor really is a constructor here: the rescue went through the
-lowering, not through the erasure, so `T` is an inductive. -/
+/-! The constructor prints as one: the rescue went through the lowering, not
+through the erasure, so behind `T` is an inductive. -/
 /-- info: constructor MumiTests.Demo.NestProp.T.mkT : Nonempty T → T -/
 #guard_msgs in
 #print T.mkT
@@ -873,7 +877,7 @@ directions compile, and nothing costs an axiom.
 
 namespace NestData
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Box (α : Type u) : Type u where
   | mk (a : α) (p : BoxP α) : Box α

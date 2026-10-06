@@ -12,7 +12,7 @@ universe u v w
 
 /-! ## Three universes at once -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive PA : Prop where
   | fromB : PB → PA
@@ -84,7 +84,7 @@ A dependent function `(a : α) → P a` lives at `Sort (imax (u+1) v)`, which is
 `Prop` when `v` is.  That is fine here: it is the *member's* universe that has
 to be decidably `Prop`-or-not, and `IB` is declared at `Type (max u v)`. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive IA (α : Type u) (P : α → Sort v) : Prop where
   | mk : IB α P → IA α P
@@ -119,7 +119,7 @@ the data-only dependency graph, which is what lets them sit at different
 universes.  Note that a field of type `Type v` needs the member at `v + 1`. -/
 
 -- all three appear only inside the `max`, which is exactly what is being tested
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 set_option linter.checkUnivs false in
 mutual
 inductive MA : Prop where
@@ -147,7 +147,7 @@ def mTag : MC.{u, v, w} → Nat :=
 `KB` and `KC` hold each other, so each one's universe has to be at least the
 other's -- they have to be equal.  That still leaves them polymorphic. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive KA : Prop where
   | mk : KB → KA
@@ -172,7 +172,7 @@ def kTag : KB.{u} → Nat :=
 
 Not syntactically `Type _`, but never `Prop` either, so it is a data member. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive SA : Prop where
   | mk : SB → SA
@@ -191,7 +191,7 @@ def sbTag : SB.{u} → Nat :=
 
 /-! ## Indices and universe polymorphism together -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive XEv : Nat → Prop where
   | zero : XEv 0

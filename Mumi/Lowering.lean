@@ -50,8 +50,9 @@ inductive type, definition or theorem, so it asks nothing new of the kernel.
    is `imax l' 0 ≤ 0`, which is vacuous, so the fields can be copied verbatim
    with member occurrences redirected to the shadow.
 
-2.  The **data** members, declared under the users' own names, against the
-   shadow.  They are grouped into strongly connected components of the data-only
+2.  The **data** members, declared as `X._ind` against the shadow, with the
+   users' own names given to reducible definitions unfolding to them (see
+   below).  They are grouped into strongly connected components of the data-only
    dependency graph and emitted in topological order.  Each SCC is
    universe-homogeneous -- an edge `i → j` forces `l_j ≤ l_i`, so a cycle forces
    equality -- hence each is an ordinary mutual block.
@@ -77,9 +78,20 @@ denests what it can, adding a type for the occurrence and an extra recursor
 too and the constructor keeps the type the writer wrote; see the section on what
 the kernel denested.
 
-Only the `Prop` members are mangled.  Data members are ordinary inductive types
-under the names the user wrote, so `match`, `induction`, `cases`, `injection`,
-`noConfusion`, `deriving`, `sizeOf` and the code generator work on them as usual.
+A data member is an ordinary inductive type, declared as `X._ind`; `X` and its
+constructors `X.c` are reducible definitions unfolding to `X._ind` and
+`X._ind.c`, the constructors at the types the writer wrote and tagged
+`@[match_pattern]`.  The kernel names a recursor after the inductive it is
+handed, and `X.rec` is owed to the recursion over the whole block -- a motive
+per member, as a `mutual` block's has -- which the kernel's recursor over one
+component is not.  Everything else works as on any inductive: a pattern
+elaborates against `X.c` and unfolds to the constructor, so `match` is Lean's
+own, nested patterns and all, and binds variables at the types the writer
+reads; `cases`, `injection`, `noConfusion`, `sizeOf` and the code generator
+reach `X._ind` through the unfolding.  `Mumi.Public` restates what Lean built
+for `X._ind` under the names it would have built it under for `X`, and
+`Mumi.AliasDelab` displays the internal names as the writer's.
+
 A `Prop` member's constructors must be re-derived, because their fields have the
 wrong types in the shadow: `A.fromB` must take a real `B`, not a `B._shadow`.
 
@@ -119,6 +131,13 @@ def shadowName (n : Name) : Name := n ++ `_shadow
 
 /-- `X._squash : X → X._shadow`, the map that forgets a data member's data. -/
 def squashName (n : Name) : Name := n ++ `_squash
+
+/--
+`X._ind`, the inductive a data member is declared as when `X.rec` is owed to a
+recursion over more than the inductive's own block.  The writer's `X` and `X.c`
+are reducible definitions unfolding to it and to its constructors; see
+`addAliasedInds`. -/
+def aliasIndName (n : Name) : Name := n ++ `_ind
 
 /-- Re-root a constructor name `X.c` at `newRoot`, giving `newRoot.c`. -/
 def reroot (memberName newRoot ctorName : Name) : Name :=
@@ -186,6 +205,9 @@ structure Input where
   isClass     : Bool := false
   /-- Set by `denest` when a copy takes a constructor-local as an index of its own. -/
   localIndices : Bool := false
+  /-- How many of the members, from the first, the writer wrote; the rest are
+  copies `denest` added.  `0` when it added none. -/
+  numWritten  : Nat := 0
   /-- Set by `denest` for a copy that is to exist in the shadow only; `none` at
   every member the writer declared.  Empty when there is nothing to say. -/
   memberGhost : Array (Option GhostInfo) := #[]
@@ -250,6 +272,12 @@ structure Block where
   for a ghost, `fun params => I p₁ … p_k`, the type it stands for with the other
   members substituted.  Read by `Block.realTypeAt`. -/
   userTargets : Array Expr
+  /-- Whether the data members are declared as `X._ind`, behind definitions
+  under the writer's names: everywhere but a homogeneous block, whose kernel
+  recursors are already the block's. -/
+  aliased     : Bool := false
+  /-- How many of the members, from the first, the writer wrote; `0` for all. -/
+  numWritten  : Nat := 0
   deriving Inhabited
 
 def Block.size (b : Block) : Nat := b.members.size
@@ -258,6 +286,41 @@ def Block.size (b : Block) : Nat := b.members.size
 def Block.realName (b : Block) (i : Nat) : Name :=
   let m := b.members[i]!
   if m.isProp then shadowName m.name else m.name
+
+/-- Whether member `i` is one the writer wrote, rather than a copy `denest` added. -/
+def Block.isWritten (b : Block) (i : Nat) : Bool := b.numWritten == 0 || i < b.numWritten
+
+/-- Whether member `i` is declared as `X._ind`: a data member the writer wrote,
+in a block whose recursion is more than the kernel's. -/
+def Block.isAliased (b : Block) (i : Nat) : Bool :=
+  b.aliased && !b.members[i]!.isProp && b.isWritten i
+
+/-- The inductive a data member is declared as: its own name, or `X._ind`. -/
+def Block.kernelName (b : Block) (i : Nat) : Name :=
+  let m := b.members[i]!
+  if b.isAliased i then aliasIndName m.name else m.name
+
+/-- The writer's name for a constant of an aliased data member: `X` for
+`X._ind`, `X.c` for `X._ind.c`. -/
+def Block.publicOf? (b : Block) (n : Name) : Option Name :=
+  if !b.aliased then none else
+  (Array.range b.size).findSome? fun i =>
+    let m := b.members[i]!
+    if !b.isAliased i then none
+    else if n == aliasIndName m.name then some m.name
+    else if n.getPrefix == aliasIndName m.name then
+      match n with
+      | .str _ c => some (.str m.name c)
+      | _ => none
+    else none
+
+/-- `e` as the writer reads it: an aliased member's inductive and constructors
+under the writer's names, which they unfold from. -/
+def Block.toPublic (b : Block) (e : Expr) : Expr :=
+  if !b.aliased then e else
+  e.replace fun
+    | .const n us => (b.publicOf? n).map (.const · us)
+    | _ => none
 
 /-- Does this member exist in the shadow only?  See `GhostInfo`. -/
 def Block.isGhost (b : Block) (i : Nat) : Bool := b.members[i]!.ghost?.isSome
@@ -306,7 +369,7 @@ instantiated at, and the parameters it takes. -/
 def Block.memberRecOf (b : Block) (i : Nat) (params : Array Expr) :
     Name × List Level × Array Expr :=
   match b.members[i]!.ghost? with
-  | none   => (b.members[i]!.name ++ `rec, b.ownLevels, params)
+  | none   => (b.kernelName i ++ `rec, b.ownLevels, params)
   | some { nativeRec? := some r, .. } => (r, b.ownLevels, params)
   | some g => (g.head ++ `rec, g.levels, (b.realTypeAt i params #[]).getAppArgs)
 
@@ -314,7 +377,7 @@ def Block.memberRecOf (b : Block) (i : Nat) (params : Array Expr) :
 def Block.memberCasesOf (b : Block) (i : Nat) (params : Array Expr) :
     Name × List Level × Array Expr :=
   match b.members[i]!.ghost? with
-  | none   => (b.members[i]!.name ++ `casesOn, b.ownLevels, params)
+  | none   => (b.kernelName i ++ `casesOn, b.ownLevels, params)
   | some g => (g.head ++ `casesOn, g.levels, (b.realTypeAt i params #[]).getAppArgs)
 
 /-- Every generated recursor carries one extra universe parameter per data SCC,
@@ -525,6 +588,44 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
     IndPredBelow.mkBelow names[0]!
     for n in names do
       mkInjectiveTheorems n
+
+/--
+Declare `indTypes` as one inductive block under internal names -- `X._ind`, with
+constructors `X._ind.c` -- and give the writer's names to reducible definitions
+unfolding to them: `X`, and `X.c` at the type the writer wrote, as a
+`@[match_pattern]`.  A pattern elaborates against the writer's names and unfolds
+to the constructor, so `match` is Lean's own, nested patterns and all, and the
+variables it binds have the types the writer reads; `X.rec` is left free for a
+recursion over more than this block. -/
+def addAliasedInds (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
+    (isClass : Bool := false) (aliasOf : Name → Bool := fun _ => true) : MetaM Unit := do
+  -- a member not to alias keeps its name, and its constructors theirs
+  let names := (indTypes.map (·.name)).filter aliasOf
+  let us := levelParams.map Level.param
+  -- the kernel wants the inductive itself wherever the block names one of its own
+  let toKernel (e : Expr) : Expr := e.replace fun
+    | .const n ls => if names.contains n then some (.const (aliasIndName n) ls) else none
+    | _ => none
+  addInd levelParams numParams (indTypes.map fun t =>
+    if !names.contains t.name then
+      { t with type := toKernel t.type, ctors := t.ctors.map fun c => { c with type := toKernel c.type } }
+    else
+    { name := aliasIndName t.name, type := toKernel t.type
+      ctors := t.ctors.map fun c =>
+        { name := reroot t.name (aliasIndName t.name) c.name, type := toKernel c.type } })
+    isClass
+  let indTypes := indTypes.filter (names.contains ·.name)
+  let matchPattern ← ofExcept <| getAttributeImpl (← getEnv) `match_pattern
+  -- every type before any constructor, whose type may name a sibling
+  for t in indTypes do
+    addDef t.name levelParams t.type (mkConst (aliasIndName t.name) us) .abbrev
+    setReducibleAttribute t.name
+  for t in indTypes do
+    for c in t.ctors do
+      addDef c.name levelParams c.type
+        (mkConst (reroot t.name (aliasIndName t.name) c.name) us) .abbrev
+      setReducibleAttribute c.name
+      matchPattern.add c.name .missing .global
 
 /-! ## An eliminator with one motive -/
 
@@ -897,7 +998,7 @@ def analyze (inp : Input) : MetaM Block := do
     { levelParams := inp.levelParams, numVars := inp.numVars, numParams := inp.numParams,
       memberFVars := inp.memberFVars, members, allCtors,
       sccs, sccOf, sccLevel, hasProp := isProp.any id, isClass := inp.isClass,
-      userTargets := #[] }
+      userTargets := #[], numWritten := inp.numWritten }
   return { b with userTargets := ← b.computeUserTargets }
 
 /-- Is every member at the same universe?  If so the block is an ordinary
@@ -912,12 +1013,13 @@ Emission order; each step only mentions constants emitted by earlier steps.
 0. if the block is homogeneous, emit it natively and stop;
 1.  `X_i._shadow`   -- the all-`Prop` shadow of the whole block;
 2.  `X_i` for `Prop` members -- reducible abbreviations for their shadows;
-3.  `X_i` for data members   -- honest inductives, one SCC at a time, in
-                              topological order;
+3.  `X_i` for data members   -- honest inductives `X_i._ind`, one SCC at a
+                              time, in topological order;
 4.  `X_i._squash`   -- `X_i → X_i._shadow`, one SCC at a time;
 5.  `X_i.c` for `Prop` members -- the user-facing constructors;
 6.  `X_i.mutualRec` for `Prop` members -- from the shadow recursor;
-7.  `X_i.mutualRec` for data members, in SCC order -- from the native recursors.
+7.  `X_i.mutualRec` for data members, in SCC order -- from the native recursors;
+8.  `X_i.rec` for every member -- `X_i.mutualRec` at one elimination universe.
 
 Step 6 only mentions data *constructors*, never data recursors, so 6 and 7 do
 not form a cycle.
@@ -970,7 +1072,11 @@ private def emitUserGroup (b : Block) (which : Array Nat) (skipGhosts : Bool) : 
       return ({ name := c.name, type := ← b.toUser c.type } : Constructor)
     indTypes := indTypes.push { name := m.name, type := m.type, ctors := ctors.toList }
   if indTypes.isEmpty then return
-  addInd b.levelParams b.numParams indTypes b.isClass
+  if b.aliased then
+    let aliased := which.filterMap fun i => if b.isAliased i then some b.members[i]!.name else none
+    addAliasedInds b.levelParams b.numParams indTypes b.isClass (aliased.contains ·)
+  else
+    addInd b.levelParams b.numParams indTypes b.isClass
 
 /-- A homogeneous block is an ordinary `mutual` block; emit it unchanged, so this
 library's `mutual` is a strict superset of Lean's. -/
@@ -1178,7 +1284,7 @@ private def mkNests (b : Block) : MetaM (Block × Nests) := do
   let mut nMin := 0
   for s in *...b.sccs.size do
     let i := b.sccs[s]![0]!
-    let name := b.members[i]!.name
+    let name := b.kernelName i
     -- a component of ghosts never reached the kernel, so it has nothing to
     -- report; the kernel already knows the type a ghost stands for
     if b.isGhost i then
@@ -1237,7 +1343,8 @@ private def mkNests (b : Block) : MetaM (Block × Nests) := do
         discard <| getConstInfoRec nativeRec
         specs := specs.push
           { head := heads[k]!, motive := b.size + nMot, firstMinor := b.allCtors.size + nMin,
-            numMinors, nativeRec, recName := name ++ `mutualRec |>.appendIndexAfter (k + 1) }
+            numMinors, nativeRec,
+            recName := b.members[i]!.name ++ `mutualRec |>.appendIndexAfter (k + 1) }
         nMot := nMot + 1
         nMin := nMin + numMinors
     unless info.numMinors == (sccCtorIndices b s).size + specs.foldl (· + ·.numMinors) 0 do
@@ -1294,7 +1401,7 @@ private def nestIHs (b : Block) (ns : Nests) (params motives : Array Expr) (c : 
         let some k := which
           | throwError "(internal) multiuniverse lowering: an induction hypothesis of \
               `{c.name}` is about none of its fields"
-        if c.fields[k]!.isNone then out := out.push (k, t.abstract fields)
+        if c.fields[k]!.isNone then out := out.push (k, (b.toPublic t).abstract fields)
       return out
 
 /-- The one of `nestIHs`' hypotheses that is about field `k`, restated at
@@ -1340,13 +1447,15 @@ private def mkMinorType (b : Block) (ns : Nests) (params motives : Array Expr) (
     let mut concl := mkAppN motives[c.owner]! (idxs ++ #[ctorApp])
     let mut ihs : Array (Name × Expr) := #[]
     for k in *...c.numFields do
+      -- `f_ih` after the field, as Lean names it, inaccessible where the field is
+      let ihName := (← fields[k]!.fvarId!.getUserName).appendAfter "_ih"
       if let some rf := c.fields[k]! then
         let ih ← forallTelescope (← inferType fields[k]!) fun ys fbody => do
           let fidxs := b.memberIdxs rf.member fbody
           mkForallFVars ys (mkAppN motives[rf.member]! (fidxs ++ #[mkAppN fields[k]! ys]))
-        ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
+        ihs := ihs.push (ihName, ih)
       else if let some ih := nestIH? nested k fields then
-        ihs := ihs.push (Name.mkSimple s!"ih_{k + 1}", ih)
+        ihs := ihs.push (ihName, ih)
     -- no induction hypothesis is referred to, so plain `forallE` is safe
     for (nm, t) in ihs.reverse do
       concl := .forallE nm t concl .default
@@ -1374,7 +1483,7 @@ private def withRecFront {α} [Inhabited α] (b : Block) (ns : Nests) (params : 
       withLocalDeclD `t (b.realTypeAt j params jidxs)
         fun tv => mkForallFVars (jidxs ++ #[tv]) (mkSort (b.motiveLevel j))
   for s in *...b.sccs.size do
-    motiveTys := motiveTys ++ (← nestMotiveTypes b ns s params)
+    motiveTys := motiveTys ++ (← nestMotiveTypes b ns s params).map b.toPublic
   let mnames := motiveNames motiveTys.size
   let mut motiveDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
   for j in *...motiveTys.size do
@@ -1384,11 +1493,19 @@ private def withRecFront {α} [Inhabited α] (b : Block) (ns : Nests) (params : 
     for q in *...b.allCtors.size do
       minorTys := minorTys.push (← mkMinorType b ns params motives b.allCtors[q]!)
     for s in *...b.sccs.size do
-      minorTys := minorTys ++ (← nestMinorTypes b ns s params motives)
+      minorTys := minorTys ++ (← nestMinorTypes b ns s params motives).map b.toPublic
+    -- each minor premise after its constructor, as in a native recursor: the
+    -- block's own, then those of what the kernel denested
+    let mut minorNames : Array Name := b.allCtors.map fun c => Name.mkSimple c.name.getString!
+    for s in *...b.sccs.size do
+      for sp in ns.forScc s do
+        for c in (← getConstInfoInduct sp.head).ctors do
+          minorNames := minorNames.push (Name.mkSimple c.getString!)
     let mut minorDecls : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) := #[]
     for q in *...minorTys.size do
       minorDecls := minorDecls.push
-        (Name.mkSimple s!"case_{q + 1}", .default, fun _ => pure minorTys[q]!)
+        (minorNames[q]?.getD (Name.mkSimple s!"case_{q + 1}"), .default,
+          fun _ => pure minorTys[q]!)
     withLocalDecls minorDecls fun minors => k motives minors
 
 /-- Build the whole telescope of `X_i.mutualRec` and pass the pieces to the body
@@ -1581,13 +1698,9 @@ private def emitRec (b : Block) (ns : Nests) (i : Nat) : MetaM Unit := do
   -- application, so compiling it here would fail and mark it `noncomputable`
   addDef (b.recName i) b.recLevelParams ty val (compile := m.isProp)
   markElabAsElim (b.recName i)
-  -- a `Prop` member has no native recursor under its user-facing name, so the
-  -- block-wide one also answers to `X.rec`
   if m.isProp then
-    addDef (m.name ++ `rec) b.recLevelParams ty val
-    markElabAsElim (m.name ++ `rec)
-    -- neither of those is a shape `induction` can drive: both ask for a motive
-    -- at every data member of the block, and the goal determines none of them
+    -- not a shape `induction` can drive: it asks for a motive at every data
+    -- member of the block, and the goal determines none of them
     discard <| attempt? `Mumi m!"no one-motive recursor for `{m.name}`" <|
       addSoloElim b.numParams b.sccLevel true (b.recName i) (m.name ++ `recP)
         (forCases := false)
@@ -1929,13 +2042,53 @@ private def emitNativeImpls (b : Block) : TermElabM Unit := do
   for s in *...b.sccs.size do
     emitImplGroup b (Nests.empty b.sccs.size) b.sccs[s]! (Array.range b.size)
 
-/-- Lower an elaborated multiuniverse block to ordinary declarations. -/
-def lower (inp : Input) : TermElabM Unit := do
+/--
+The universe a recursor eliminates into, named as the kernel names it: `u`, or
+the first of `u_1`, `u_2`, .. that the block's own parameters leave free. -/
+def elimLevelName (levelParams : List Name) : Name := Id.run do
+  let mut n := `u
+  let mut k := 1
+  while levelParams.contains n do
+    n := Name.mkSimple s!"u_{k}"
+    k := k + 1
+  return n
+
+/--
+The recursors under the names a `mutual` block's have: `X.rec` for every member,
+and for each type the kernel denested `X.rec_k` under the block's first member,
+numbered through the block.  Each is the block-wide recursor at one elimination
+universe, which is the shape Lean's have: one motive per member and per nesting,
+one minor premise per constructor. -/
+private def emitPublicRecs (b : Block) (ns : Nests) : MetaM Unit := do
+  let u := elimLevelName b.levelParams
+  let lvls := b.sccLevel.toList.map (fun _ => Level.param u) ++ b.ownLevels
+  let publish (src dst : Name) : MetaM Unit := do
+    let info ← getConstInfo src
+    addDef dst (u :: b.levelParams) (info.instantiateTypeLevelParams lvls) (mkConst src lvls)
+    markElabAsElim dst
+  for i in *...b.size do
+    -- a copy keeps the kernel's recursor if it has one, or the block's if it
+    -- is a `Prop` copy, which has none of its own
+    unless b.isGhost i || (!b.isWritten i && !b.members[i]!.isProp) do
+      publish (b.recName i) (b.members[i]!.name ++ `rec)
+  let mut k := 1
+  for s in *...b.sccs.size do
+    for sp in ns.forScc s do
+      publish sp.recName (b.members[0]!.name ++ `rec |>.appendIndexAfter k)
+      k := k + 1
+
+/--
+Lower an elaborated multiuniverse block to ordinary declarations.  A block the
+writer wrote has its data members aliased, so that `X.rec` can be the recursion
+over all of it; one built for internal use (`alias := false`) keeps them under
+their own names. -/
+def lower (inp : Input) (alias := true) : TermElabM Unit := do
   let b ← analyze inp
   if b.isHomogeneous then
     emitNative b
     emitNativeImpls b
     return
+  let b := { b with aliased := alias }
   if b.hasProp then
     emitShadow b
     emitPropAliases b
@@ -1961,5 +2114,16 @@ def lower (inp : Input) : TermElabM Unit := do
     -- mutual recursion, so their implementations are defined together
     let group := b.sccs[s]! ++ (ns.forScc s).map (·.motive)
     emitImplGroup b ns group group
+  if alias then emitPublicRecs b ns
+  else
+    -- the `Prop` members still answer to `X.rec`, having no kernel recursor
+    -- under their own names
+    for i in *...b.size do
+      let m := b.members[i]!
+      if m.isProp then
+        let info ← getConstInfo (b.recName i)
+        addDef (m.name ++ `rec) b.recLevelParams info.type
+          (mkConst (b.recName i) (b.recLevelParams.map .param))
+        markElabAsElim (m.name ++ `rec)
 
 end Lean.Elab.MultiuniverseInductive

@@ -407,7 +407,7 @@ no bundle to build and `C` keeps a recursor with a single motive, the one Lean
 would have given it had the universes lined up.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive SortC (α : Sort u) : Sort (max 1 u) where
   | nil
@@ -1389,8 +1389,11 @@ end
 -- `X.rec` for whatever it is handed as an inductive `X`, and `Tm.rec` is wanted
 -- for the recursion over the whole block
 /--
-info: def DataOnDataTm.Tm : (Γ : Ctx) → Ty Γ → Type :=
-Tm._ind
+info: inductive DataOnDataTm.Tm : (Γ : Ctx) → Ty Γ → Type
+number of parameters: 0
+constructors:
+DataOnDataTm.Tm.var : (Γ : Ctx) → (A : Ty Γ) → Tm Γ A
+DataOnDataTm.Tm.body : (Γ : Ctx) → (A : Ty Γ) → (B : Ty (Γ.snoc A)) → Tm (Γ.snoc A) B → Tm Γ A
 -/
 #guard_msgs in
 #print Tm
@@ -2520,8 +2523,11 @@ inductive Tm : (Γ : Ctx) → Ty Γ → Type where
 end
 
 /--
-info: def DataOnDataBuilt.Tm : (Γ : Ctx) → Ty Γ → Type :=
-Tm._ind
+info: inductive DataOnDataBuilt.Tm : (Γ : Ctx) → Ty Γ → Type
+number of parameters: 0
+constructors:
+DataOnDataBuilt.Tm.var : (Γ : Ctx) → (A : Ty Γ) → Tm Γ A
+DataOnDataBuilt.Tm.lam : (Γ : Ctx) → (A : Ty Γ) → (B : Ty (Γ.snoc A)) → Tm (Γ.snoc A) B → Tm Γ (Ty.pi Γ A B)
 -/
 #guard_msgs in
 #print Tm
@@ -3653,15 +3659,20 @@ inductive Sub : Ctx → Ctx → Type where
 end
 
 /--
-info: def TwoLeave.Tm : (Γ : Ctx) → Ty Γ → Type :=
-Tm._ind
+info: inductive TwoLeave.Tm : (Γ : Ctx) → Ty Γ → Type
+number of parameters: 0
+constructors:
+TwoLeave.Tm.var : (Γ : Ctx) → (A : Ty Γ) → Tm Γ A
 -/
 #guard_msgs in
 #print Tm
 
 /--
-info: def TwoLeave.Sub : Ctx → Ctx → Type :=
-Sub._ind
+info: inductive TwoLeave.Sub : Ctx → Ctx → Type
+number of parameters: 0
+constructors:
+TwoLeave.Sub.id : (Γ : Ctx) → Sub Γ Γ
+TwoLeave.Sub.ext : (Γ Δ : Ctx) → (A : Ty Δ) → Sub Γ Δ → Tm Γ (Ty.base Γ) → Sub Γ (Δ.snoc A)
 -/
 #guard_msgs in
 #print Sub
@@ -3721,8 +3732,10 @@ inductive F13 : (Nat → Ctx13) → Type where
 end
 
 /--
-info: def FnIndex.F13 : (Nat → Ctx13) → Type :=
-F13._ind
+info: inductive FnIndex.F13 : (Nat → Ctx13) → Type
+number of parameters: 0
+constructors:
+FnIndex.F13.mk : (f : Nat → Ctx13) → F13 f
 -/
 #guard_msgs in
 #print F13

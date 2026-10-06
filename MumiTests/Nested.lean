@@ -45,7 +45,7 @@ info: @T.mutualRec : {motive_1 : T → Sort u_1} →
   {motive_2 : Nonempty T → Prop} →
     motive_1 T.mk1 →
       ((a : Nonempty T) → motive_2 a → motive_1 (T.mkT a)) →
-        (∀ (val : T) (ih_1 : motive_1 val), motive_2 ⋯) → (t : T) → motive_1 t
+        (∀ (val : T) (val_ih : motive_1 val), motive_2 ⋯) → (t : T) → motive_1 t
 -/
 #guard_msgs in
 #check @T.mutualRec
@@ -361,7 +361,7 @@ Lean writes for a `mutual` that nests -- constructors at `List D5B`, a native
 recursor with a motive for it, and a `D5B.mutualRec_1` beside `D5B.mutualRec`.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive D5A : Prop where
   | mk : D5B → D5A
@@ -379,7 +379,7 @@ end
 info: @D5B.mutualRec_1 : {motive_1 : D5A → Prop} →
   {motive_2 : D5B → Sort u_1} →
     {motive_3 : List D5B → Sort u_1} →
-      (∀ (a : D5B) (ih_1 : motive_2 a), motive_1 ⋯) →
+      (∀ (a : D5B) (a_ih : motive_2 a), motive_1 ⋯) →
         ((a : Nat) → motive_2 (D5B.leaf a)) →
           ((a : List D5B) → motive_3 a → motive_2 (D5B.node a)) →
             ((a : D5A) → motive_1 a → motive_2 (D5B.back a)) →
@@ -426,7 +426,7 @@ any other, so each of the ways one can be written has to survive the round trip.
 
 /-! Under the block's own parameters. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive D6A (α : Type) : Prop where
   | mk : D6B α → D6A α
@@ -453,7 +453,7 @@ mumi_spec
 inductive D7Rose (α : Type) : Type where
   | mk : α → List α → D7Rose α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive D7A : Prop where
   | mk : D7B → D7A
@@ -486,7 +486,7 @@ inductive D8Vek (α : Type) : Nat → Type where
   | nil : D8Vek α 0
   | cons : α → D8Vek α n → D8Vek α (n + 1)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive D8A : Prop where
   | mk : D8B → D8A
@@ -500,7 +500,7 @@ end
 info: @D8B.mutualRec_1 : {motive_1 : D8A → Prop} →
   {motive_2 : D8B → Sort u_1} →
     {motive_3 : (a : Nat) → D8Vek D8B a → Sort u_1} →
-      (∀ (a : D8B) (ih_1 : motive_2 a), motive_1 ⋯) →
+      (∀ (a : D8B) (a_ih : motive_2 a), motive_1 ⋯) →
         ((a : Nat) → motive_2 (D8B.leaf a)) →
           ((n : Nat) → (a : D8Vek D8B n) → motive_3 n a → motive_2 (D8B.node n a)) →
             ((a : D8A) → motive_1 a → motive_2 (D8B.back a)) →
@@ -516,7 +516,7 @@ info: @D8B.mutualRec_1 : {motive_1 : D8A → Prop} →
 /-! One inside another, where the two copies share a head and are told apart by
 the whole type they stand for. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive D9A : Prop where
   | mk : D9B → D9A
@@ -597,7 +597,7 @@ info: @N.mutualRec : {motive_1 : N → Sort u_1} →
     {motive_3 : List N → Sort u_2} →
       motive_1 N.mk0 →
         ((a : Nonempty (List N)) → motive_2 a → motive_1 (N.mkL a)) →
-          (∀ (val : List N) (ih_1 : motive_3 val), motive_2 ⋯) →
+          (∀ (val : List N) (val_ih : motive_3 val), motive_2 ⋯) →
             motive_3 [] →
               ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
                 (t : N) → motive_1 t
@@ -611,7 +611,7 @@ info: @N.mutualRec_1 : {motive_1 : N → Sort u_1} →
     {motive_3 : List N → Sort u_2} →
       motive_1 N.mk0 →
         ((a : Nonempty (List N)) → motive_2 a → motive_1 (N.mkL a)) →
-          (∀ (val : List N) (ih_1 : motive_3 val), motive_2 ⋯) →
+          (∀ (val : List N) (val_ih : motive_3 val), motive_2 ⋯) →
             motive_3 [] →
               ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
                 (t : List N) → motive_3 t
@@ -677,7 +677,7 @@ head in the chain is data, so the kernel denests the lot when the widened block
 is handed to it, and the constructor and the recursion are stated in the
 writer's own types all the way down. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T3 : Type 1 where
   | tip : T3
@@ -722,7 +722,7 @@ info: V3.nested_Nonempty_1.eq_orig : Nonempty (Nonempty (List V3)) = Nonempty (N
 appear, and the inner one is what the outer one recurses through, so the two
 end up as one denested family rather than two. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive C3 : Type 1 where
   | tip : C3
@@ -771,7 +771,7 @@ info: @A3.mutualRec_1 : {motive_1 : A3 → Sort u_1} →
         motive_1 A3.tip →
           ((n : Nat) → (a : Nonempty (Vek3 B3 n)) → motive_3 n a → motive_1 (A3.mk n a)) →
             motive_2 B3.tip →
-              (∀ (n : Nat) (val : Vek3 B3 n) (ih_2 : motive_4 n val), motive_3 n ⋯) →
+              (∀ (n : Nat) (val : Vek3 B3 n) (val_ih : motive_4 n val), motive_3 n ⋯) →
                 motive_4 0 Vek3.nil →
                   ((n : Nat) →
                       (a : B3) →
@@ -816,7 +816,7 @@ def FamForest.size {α} : FamForest α → Nat
   | .cons r f => FamRose.size r + FamForest.size f
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Mu1A : Type 1 where
   | tip : Mu1A
@@ -888,7 +888,7 @@ inductive FamT3 (α : Type u) : Type u where
   | c0 : FamT3 α
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Mu3A : Type 1 where
   | tip : Mu3A
@@ -909,7 +909,7 @@ inductive FamS2 (α : Type u) : Type u where
   | t : FamS2 α
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Mu4A : Type 1 where
   | tip : Mu4A
@@ -929,7 +929,7 @@ inductive FamIB (α : Type u) : Nat → Type u where
   | mk : (n : Nat) → FamIA α n → FamIB α n
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Mu5A : Type 1 where
   | tip : Mu5A
@@ -941,7 +941,7 @@ end
 /-! One family at two different parameters is two denestings, not one: what
 they share is the whole nested application, not just its head. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Mu6A : Type 1 where
   | tip : Mu6A
@@ -968,7 +968,7 @@ def Mu6A.count : Mu6A → Nat
 denestings of two members each, the outer one over the types the inner one
 introduced. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Mu7A : Type 1 where
   | tip : Mu7A
@@ -1001,7 +1001,7 @@ inductive BunVek (α : Type u) : Nat → Type u where
   | nil : BunVek α 0
   | cons : α → BunVek α n → BunVek α (n + 1)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Bn1 : Type 1 where
   | tip : Bn1
@@ -1055,7 +1055,7 @@ where go : List (RL α) → Nat
   | [] => 0
   | r :: rs => r.size + go rs
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Nn1 : Type 1 where
   | tip : Nn1
@@ -1091,7 +1091,7 @@ mumi_spec
 inductive LL (α : Type u) : Type u where
   | mk : α → List (List (LL α)) → LL α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Nn3 : Type 1 where
   | tip : Nn3
@@ -1134,7 +1134,7 @@ inductive MB (α : Type u) : Type u where
   | b0 : MB α
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Nn5 : Type 1 where
   | tip : Nn5
@@ -1184,7 +1184,7 @@ where go : List (Xrose α) → Nat
   | [] => 0
   | r :: rs => r.size f + go rs
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Xn1 : Type 1 where
   | tip : Xn1
@@ -1214,7 +1214,7 @@ nesting brings in with it. -/
 section
 variable (σ : Type)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Xv1 : Type 1 where
   | tip : σ → Xv1
@@ -1257,7 +1257,7 @@ end
 /-! `PProd` and `PSum` carry their components in `Sort`, so nesting through them
 lands the copy wherever the block's member is. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Xp1 : Type 1 where
   | tip : Xp1
@@ -1339,7 +1339,7 @@ example : St1 := St1.mk (Sp.nil : Sp St1)
 /-! A data member of a lowered block is only isomorphic to its copy, as any data
 type is, but it is the member's own name the copy is isomorphic *to*. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wrap (α : Type u) : Type u where
   | mk : α → WrapP α → Wrap α
@@ -1381,7 +1381,7 @@ should say so here rather than downstream.
 Several nestings in one member, at different heads, are several denestings,
 each stated at what was written. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wa1 : Type 1 where
   | tip : Wa1
@@ -1399,7 +1399,7 @@ structure WHolder (α : Type 1) where
   val : α
   ok  : True
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wb1 : Type 1 where
   | tip : Wb1
@@ -1411,7 +1411,7 @@ end
 /-! `Thunk` holds its contents behind a function, so the nesting is under a
 binder rather than at the head of the field. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wc1 : Type 1 where
   | tip : Wc1
@@ -1423,7 +1423,7 @@ end
 /-! Every member of a block may nest, at three universes, and each member's
 nesting is denested at that member. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wd1 : Type 2 where
   | tip : Wd1
@@ -1444,7 +1444,7 @@ inductive WVek (α : Type 1) : Nat → Type 1 where
   | nil : WVek α 0
   | cons : α → WVek α n → WVek α (n + 1)
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive We1 : Type 1 where
   | tip : We1
@@ -1460,7 +1460,7 @@ mumi_spec
 inductive WIdx : Type 1 → Type 1 where
   | mk : {β : Type 1} → β → WIdx β
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wf1 : Type 1 where
   | tip : Wf1
@@ -1476,7 +1476,7 @@ Lean before this elaborator is reached. -/
 
 universe u
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wg1 : Type (u + 1) where
   | tip : Wg1

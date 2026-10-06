@@ -5596,7 +5596,7 @@ private def emitPreData (p : Plan) : TermElabM Nat := do
         e.replace fun
           | .const n _ => (names.findIdx? (· == n)).map (fvars[·]!)
           | _          => none
-      MultiuniverseInductive.lower
+      MultiuniverseInductive.lower (alias := false)
         { levelParams := b.us
           numVars     := 0
           numParams   := b.numParams

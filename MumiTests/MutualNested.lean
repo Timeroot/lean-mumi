@@ -426,7 +426,7 @@ into the nesting and back is then one mutual recursion, which is what makes
 
 namespace LowerNest
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive S : Type where
   | nil
@@ -558,7 +558,7 @@ because that is the recursor the written block asks for.
 
 namespace ListBig
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive A : Type 1 where
   | tip

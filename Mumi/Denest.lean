@@ -873,6 +873,10 @@ private def mkBridges (inp : Input) (ps : Array Expr) (ctorNames : Array (Array 
                   unless c.isSort do return none
                   let some last := ys.back? | return none
                   let some hd := (← inferType last).getAppFn.constName? | return none
+                  -- a member the lowering aliased is the kernel's `X._ind`
+                  let hd := match hd with
+                    | .str p "_ind" => if memberNames.contains p then p else hd
+                    | _ => hd
                   return memberNames.idxOf? hd
                 let some k := k? | break
                 out := out.push k
@@ -1149,7 +1153,9 @@ def denest {α : Type} [Inhabited α] (inp : Input) (k : Input → TermElabM α)
         memberGhost := memberGhost.push ghost?
       let out ← k { inp with memberNames, memberTypes, memberFVars, ctorNames, ctorTypes,
                              memberGhost,
-                             localIndices := specs.any (!·.extras.isEmpty) }
+                             localIndices := specs.any (!·.extras.isEmpty)
+                             numWritten := if inp.numWritten == 0 then inp.memberNames.size
+                               else inp.numWritten }
       -- the members exist now, so the copies can be identified with the originals
       let ownLevels := inp.levelParams.map Level.param
       let vars := ps.extract 0 inp.numVars

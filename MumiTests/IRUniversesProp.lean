@@ -41,10 +41,14 @@ end
 example : F A.a0 = Type := rfl
 example (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) (hx : P x) : P (A.a1 x f h) := P.one x f h b k hx
 
-/-- `A` and `B` are each their own recursion, as `B` reads `A` but not back:
-`A.rec` has one motive, and `B.rec` one, with no hypothesis at its `A`. -/
-def depth : A → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
-def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => depth x + ih + 1)
+/-- `A.rec` and `B.rec` are one recursion over the carriers, with a motive at
+each, as a `mutual` block's are; the motive a function does not need is
+discharged at `Unit`. -/
+def depth : A → Nat :=
+  A.rec (motive_2 := fun _ => Unit) 0 (fun _ _ _ ih _ => ih + 1) () (fun _ _ _ _ _ _ _ => ())
+def sizeB : B → Nat :=
+  B.rec (motive_1 := fun _ => Unit) () (fun _ _ _ _ _ => ()) 0
+    (fun x _ _ _ _ ih _ => depth x + ih + 1)
 
 example (x : A) (f : F x → A) (h : P x) : depth (A.a1 x f h) = depth x + 1 := rfl
 example (x : A) (v : F x) (b : B) (g : G b → B) : sizeB (B.b1 x v b g) = depth x + sizeB b + 1 := rfl
@@ -280,8 +284,11 @@ def G : B → Type (u+1)
   | .b1 x b g => F x × ((z : G b) → G (g z))
 end
 
-def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
-def sizeB : B.{u} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+def depth : A.{u} → Nat :=
+  A.rec (motive_2 := fun _ => Unit) 0 (fun _ _ _ ih _ => ih + 1) () (fun _ _ _ _ _ _ => ())
+def sizeB : B.{u} → Nat :=
+  B.rec (motive_1 := fun _ => Unit) () (fun _ _ _ _ _ => ()) 0
+    (fun x _ _ _ ih _ => depth x + ih + 1)
 example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
 theorem P.t (a : A.{u}) (h : P a) : a = A.a0 ∨ 0 < depth a := by
   induction h with
@@ -358,8 +365,11 @@ def G : B → Type (max u v + 1)
   | .b1 x b g => F x × ((z : G b) → G (g z))
 end
 
-def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
-def sizeB : B.{u, v} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+def depth : A.{u} → Nat :=
+  A.rec (motive_2 := fun _ => Unit) 0 (fun _ _ _ ih _ => ih + 1) () (fun _ _ _ _ _ _ => ())
+def sizeB : B.{u, v} → Nat :=
+  B.rec (motive_1 := fun _ => Unit) () (fun _ _ _ _ _ => ()) 0
+    (fun x _ _ _ ih _ => depth x + ih + 1)
 example (x : A.{u}) (b : B.{u, v}) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
 
 end TwoParams

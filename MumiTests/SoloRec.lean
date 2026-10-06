@@ -203,7 +203,7 @@ is.
 
 namespace Lowered
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive D : Type where
   | tip
@@ -223,9 +223,9 @@ info: @R.recP : ∀ {motive : R → Prop}, motive R.tip → (∀ (d : D), motive
 `mk` case does get the induction hypothesis at `D` that `recP`'s cannot. -/
 
 /--
-info: @R.mutualRec : ∀ {motive_1 : D → Sort u_1} {motive_2 : R → Prop} (case_1 : motive_1 D.tip)
-  (case_2 : (h : R) → motive_2 h → motive_1 (D.mk h)),
-  motive_2 R.tip → (∀ (d : D) (ih_1 : motive_1 d), motive_2 ⋯) → ∀ (t : R), motive_2 t
+info: @R.mutualRec : ∀ {motive_1 : D → Sort u_1} {motive_2 : R → Prop} (tip : motive_1 D.tip)
+  (mk : (h : R) → motive_2 h → motive_1 (D.mk h)),
+  motive_2 R.tip → (∀ (d : D) (d_ih : motive_1 d), motive_2 ⋯) → ∀ (t : R), motive_2 t
 -/
 #guard_msgs in
 #check @R.mutualRec
@@ -249,7 +249,7 @@ end Lowered
 
 namespace LoweredIndexed
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive D : Type 1 where
   | tip
@@ -279,7 +279,7 @@ carries two elimination levels; both are pinned, and neither survives into
 
 namespace LoweredTwoSCC
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type where
   | tip
@@ -319,7 +319,7 @@ nothing anywhere else: discharging the other's motive drops a hypothesis. -/
 
 namespace LoweredTwoProps
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive D : Type where
   | tip

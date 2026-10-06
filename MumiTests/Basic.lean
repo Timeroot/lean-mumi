@@ -10,7 +10,7 @@ that `@[csimp]` redirects to.
 
 /-! ## A `Prop` and a `Type` -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Prop where
   | mk : B → A
@@ -46,7 +46,7 @@ member gets one too. -/
 
 /-! ## Three members, three universes -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive P3 : Prop where
   | fromQ : Q3 → P3
@@ -79,7 +79,7 @@ example : r3Depth (R3.pair (Q3.wrap (Q3.leaf 4)) (R3.fromP (P3.fromQ (Q3.leaf 3)
 
 /-! ## Indices, with the data member carrying data -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ev : Nat → Prop where
   | zero : Ev 0
@@ -104,7 +104,7 @@ example : odSum 5 od5 = 10 := rfl
 
 /-! ## Parameters -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Wrap (α : Type) : Prop where
   | mk : Box α → Wrap α
@@ -129,7 +129,7 @@ example : boxTag (Box.back (Wrap.mk (Box.val (3 : Nat) Nat))) = 1 := rfl
 An infinitary field forces the `Prop` member's recursor through `Classical.choice`;
 the data member's recursor stays clean, and so does anything defined from it. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (xfail := [axioms])
 mutual
 inductive Total : Prop where
   | mk : Stream' → Total
@@ -196,7 +196,7 @@ axiom-free too, because there was no shadow block to quotient by.
 
 namespace NativeScc
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Small : Type where
   | nil
