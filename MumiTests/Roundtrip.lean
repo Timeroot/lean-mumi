@@ -340,7 +340,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (unproven := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 

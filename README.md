@@ -765,6 +765,15 @@ members really are simultaneous is unaffected either way.
   stays out: there is nothing to specialise to the block.
 * In a denested block only the writer's own type carries the whole-block
   recursor; the other members are pre-existing types whose `.rec` is Lean's.
+  The recursion at each nested target is `X.rec_k`, numbered as Lean numbers a
+  nested inductive's: every type one constructor nests, then what those nest.
+* A field at a denested copy is stored as the copy and read back through
+  `toOrig (ofOrig x)`, which is `x` only by induction, so the recursors' and
+  `casesOn`'s rules at such a constructor do not hold by `rfl`.  Each is stated
+  instead as a `@[simp]` lemma under the name the rule would have, `X.rec_c`,
+  `X.rec_k_c` or `X.casesOn_c`, which `simp` and `rw` use as Lean's own
+  definitional rules would be used; `set_option mumi.roundTripRules false`
+  skips them.
 * An *indexed* block's recursor depends on `propext`, by way of the `injEq`
   Lean's own `cases` uses to unify indices, and a denested block with an
   *infinitary* constructor depends on `Quot.sound`, because the round trip

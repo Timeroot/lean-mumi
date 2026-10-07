@@ -42,7 +42,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (unproven := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 
@@ -379,7 +379,7 @@ mumi_spec
 inductive OkBag (α : Type) where
   | mk (b : Bag α) (h : BagOk α b)
 
-mumi_spec (unproven := [Rec2.rec_mk, Rec2.rec_1_mk, Rec2.rec_2_mk, Rec2.rec_4_cons, Rec2.casesOn_mk])
+mumi_spec (simp := [Rec2.rec_mk, Rec2.rec_1_mk, Rec2.rec_2_mk, Rec2.rec_4_cons, Rec2.casesOn_mk])
 inductive Rec2 (β : Type) where
   | leaf (b : β)
   | mk (x : OkBag (Rec2 β))
@@ -413,7 +413,7 @@ mumi_spec
 inductive OkVec (α : Type) where
   | mk {n : Nat} (v : Vec α n) (h : VecOk α v)
 
-mumi_spec (unproven := [Rec3.rec_mk, Rec3.rec_1_mk, Rec3.rec_2_cons, Rec3.casesOn_mk]) (xfail := [axioms])
+mumi_spec (simp := [Rec3.rec_mk, Rec3.rec_1_mk, Rec3.rec_2_cons, Rec3.casesOn_mk]) (xfail := [axioms])
 inductive Rec3 where
   | mk (x : OkVec Rec3)
 
@@ -527,7 +527,7 @@ inductive Ba (α : Type) : Type where
   | cons (f : Fo α) (b : Ba α)
 end
 
-mumi_spec (unproven := [MT.casesOn_mk]) (xfail := [rec])
+mumi_spec (simp := [MT.casesOn_mk]) (xfail := [rec])
 mutual
 inductive MT : Type where
   | tip

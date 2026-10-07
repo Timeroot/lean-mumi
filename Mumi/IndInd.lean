@@ -9,6 +9,7 @@ public import Mumi.Options
 public import Mumi.Lowering
 public import Mumi.Runtime
 public import Mumi.View
+public import Mumi.Public
 public import Mumi.Owned
 public import Lean.Elab.MutualInductive
 import all Lean.Elab.MutualInductive
@@ -7220,6 +7221,23 @@ def emit (p : Plan) : TermElabM Unit := do
       addDef dst ci.levelParams (pub ci.type) (mkConst src (ci.levelParams.map Level.param))
         (compile := false)
       markElabAsElim dst
+  -- 14. the rules that a round trip through a copy keeps from holding by `rfl`,
+  -- as `@[simp]` lemmas under the names they would have had
+  if !copyNames.isEmpty && mumi.roundTripRules.get (← getOptions) then
+    let env ← getEnv
+    let written := b.members.filter (!copyNames.contains ·.name)
+    let trips := copyNames.filterMap fun c =>
+      if env.contains (c ++ `toOrig_ofOrig) then some (c ++ `toOrig_ofOrig) else none
+    if let some first := written[0]? then
+      let mut recs := written.filterMap fun m =>
+        if env.contains (m.name ++ `rec) then some (m.name ++ `rec) else none
+      let mut k := 1
+      while env.contains (first.name ++ `rec |>.appendIndexAfter k) do
+        recs := recs.push (first.name ++ `rec |>.appendIndexAfter k)
+        k := k + 1
+      let cases := written.filterMap fun m =>
+        if env.contains (m.name ++ `casesOn) then some (m.name ++ `casesOn) else none
+      addTripRules b.numParams trips recs cases
 
 /-! ## The entry point -/
 

@@ -54,3 +54,9 @@ register_option mumi.partialRecursors : Bool := {
     field whose index the recursion cannot follow, as `Ok (f Γ)` for a function `f` from \
     outside the block -- with those hypotheses left out, instead of rejecting it"
 }
+
+register_option mumi.roundTripRules : Bool := {
+  defValue := true
+  descr := "state each recursor and `casesOn` rule that a round trip through a nested copy keeps \
+    from holding by `rfl` as a `@[simp]` lemma under the rule's name, `X.rec_c` or `X.casesOn_c`"
+}

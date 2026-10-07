@@ -59,7 +59,7 @@ copies visible.
 
 namespace Deep
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.rec_4_mk, R.rec_5_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.rec_4_mk, R.rec_5_node, R.casesOn_mk])
 inductive R where
   | mk (x : WFTree (WFTree R))
 
@@ -133,7 +133,7 @@ well-formedness of its own; the denesting has to see straight through it to the
 
 namespace Between
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_cons, R.rec_2_mk, R.rec_3_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_cons, R.rec_2_mk, R.rec_3_node, R.casesOn_mk])
 inductive R where
   | mk (xs : List (WFTree R))
 
@@ -184,7 +184,7 @@ mumi_spec
 inductive UVec (α : Type) (n : Nat) where
   | mk (v : Vec α n) (h : Vec.Up α n v)
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_cons, R.casesOn_mk]) (xfail := [axioms])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_cons, R.casesOn_mk]) (xfail := [axioms])
 inductive R where
   | tip
   | mk (x : UVec R 2)
@@ -217,7 +217,7 @@ Two fields at the same nested type have to share one copy, not get one each.
 
 namespace Twice
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R where
   | tip
   | mk (x : WFTree R) (y : WFTree R)
@@ -269,7 +269,7 @@ declared rather than where the family it nests was.
 
 namespace Param
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R (β : Type u) : Type u where
   | leaf (b : β)
   | mk (x : WFTree (R β))
@@ -353,7 +353,7 @@ structure SWFTree (α : Type u) : Type u where
   x : Tree α
   h : x.WF
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R where
   | tip
   | mk (y : SWFTree R)
@@ -390,7 +390,7 @@ field is, is its beta-normal form.
 
 namespace Sub
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R where
   | tip
   | mk (y : { t : Tree R // t.WF })
@@ -440,7 +440,7 @@ one recursion, with `List`'s minors after the family's.
 
 namespace Mixed
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_cons, R.rec_3_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_cons, R.rec_3_node, R.casesOn_mk])
 inductive R where
   | tip
   | mk (x : WFTree R) (l : List R)
@@ -455,7 +455,7 @@ so it is copied too and gets a motive of its own.
 
 namespace InParam
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R where
   | tip
   | mk (x : WFTree (Option R))
@@ -471,12 +471,12 @@ end InParam
 
 namespace Twin
 
-mumi_spec (unproven := [Ra.rec_mk, Ra.rec_1_mk, Ra.rec_2_node, Ra.casesOn_mk])
+mumi_spec (simp := [Ra.rec_mk, Ra.rec_1_mk, Ra.rec_2_node, Ra.casesOn_mk])
 inductive Ra where
   | tip
   | mk (x : WFTree Ra)
 
-mumi_spec (unproven := [Rb.rec_mk, Rb.rec_1_mk, Rb.rec_2_node, Rb.casesOn_mk])
+mumi_spec (simp := [Rb.rec_mk, Rb.rec_1_mk, Rb.rec_2_node, Rb.casesOn_mk])
 inductive Rb where
   | tip
   | mk (x : WFTree (Ra × Rb))
@@ -591,7 +591,7 @@ mumi_spec
 inductive QA (α : Type) where
   | mk (x : A α) (h : x.P) (q : A.Q α x h)
 
-mumi_spec (unproven := [R.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [R.casesOn_mk]) (xfail := [rec, recOn])
 inductive R where
   | mk (x : QA R)
 
@@ -636,7 +636,7 @@ mumi_spec
 inductive NBox (α : Type) where
   | mk (b : Box α) (h : b.Never)
 
-mumi_spec (unproven := [R.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [R.casesOn_mk]) (xfail := [rec, recOn])
 inductive R where
   | tip
   | mk (x : NBox R)
@@ -658,7 +658,7 @@ the recursor is stated over `WFTree`, `Tree` and `Tree.WF` themselves.
 
 namespace IdxW
 
-mumi_spec (unproven := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R : Nat → Type where
   | tip (n : Nat) : R n
   | mk (n : Nat) (x : WFTree (R n)) : R n
@@ -720,7 +720,7 @@ inductive Stock where
   | tip : Stock
   | mk : (n : Nat) → Cx Stock n → Stock
 
-mumi_spec (unproven := [H.rec_mk, H.casesOn_mk])
+mumi_spec (simp := [H.rec_mk, H.casesOn_mk])
 inductive H where
   | tip : H
   | mk : (n : Nat) → Cx H n → H

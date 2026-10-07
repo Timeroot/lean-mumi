@@ -685,7 +685,7 @@ subsingleton.
 
 namespace Forgotten
 
-mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T
@@ -729,7 +729,7 @@ forgotten field costs. -/
 
 namespace Kept
 
-mumi_spec (unproven := [T.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, casesOn])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T

@@ -52,7 +52,7 @@ mumi_spec
 inductive OLbl (α : Type u) (β : Type v) : Type (max u v) where
   | mk (x : Lbl α β) (h : x.Ord)
 
-mumi_spec (unproven := [Nest.rec_mk, Nest.rec_1_mk, Nest.rec_2_bin, Nest.casesOn_mk])
+mumi_spec (simp := [Nest.rec_mk, Nest.rec_1_mk, Nest.rec_2_bin, Nest.casesOn_mk])
 inductive Nest (γ : Type w) : Type w where
   | leaf (c : γ)
   | mk (x : OLbl (Nest γ) γ)
@@ -135,7 +135,7 @@ mumi_spec
 inductive Good (α : Type) where
   | mk (c : Chain α) (h1 : c.P) (h2 : c.Q)
 
-mumi_spec (unproven := [RecGood.rec_mk, RecGood.rec_1_mk, RecGood.rec_2_cons, RecGood.casesOn_mk])
+mumi_spec (simp := [RecGood.rec_mk, RecGood.rec_1_mk, RecGood.rec_2_cons, RecGood.casesOn_mk])
 inductive RecGood where
   | mk (x : Good RecGood)
 
@@ -207,7 +207,7 @@ mumi_spec
 inductive FBr (α : Type) where
   | mk (b : Br α) (h : b.Fin)
 
-mumi_spec (unproven := [RecBr.rec_mk, RecBr.rec_1_mk, RecBr.rec_2_node, RecBr.casesOn_mk]) (xfail := [axioms])
+mumi_spec (simp := [RecBr.rec_mk, RecBr.rec_1_mk, RecBr.rec_2_node, RecBr.casesOn_mk]) (xfail := [axioms])
 inductive RecBr where
   | mk (x : FBr RecBr)
 
@@ -294,7 +294,7 @@ mumi_spec
 inductive NESeq (α : Type) where
   | mk (s : Seq α) (h : s.NonEmpty)
 
-mumi_spec (unproven := [RecTwo.rec_mk, RecTwo.rec_1_mk, RecTwo.rec_2_mk, RecTwo.rec_3_bin, RecTwo.rec_5_cons, RecTwo.casesOn_mk])
+mumi_spec (simp := [RecTwo.rec_mk, RecTwo.rec_1_mk, RecTwo.rec_2_mk, RecTwo.rec_3_bin, RecTwo.rec_5_cons, RecTwo.casesOn_mk])
 inductive RecTwo where
   | tip
   | mk (x : FTr RecTwo) (y : NESeq RecTwo)
@@ -380,7 +380,7 @@ mumi_spec
 inductive RelPair (α : Type) where
   | mk (s t : Lst α) (h : Rel α s t)
 
-mumi_spec (unproven := [RecRel.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [RecRel.casesOn_mk]) (xfail := [rec, recOn])
 inductive RecRel where
   | mk (x : RelPair RecRel)
 
@@ -529,7 +529,7 @@ mumi_spec
 inductive EChain (α : Type) where
   | mk (c : Chain α) (h : c.Even)
 
-mumi_spec (unproven := [RecEven.rec_mk, RecEven.rec_1_mk, RecEven.rec_2_cons, RecEven.casesOn_mk])
+mumi_spec (simp := [RecEven.rec_mk, RecEven.rec_1_mk, RecEven.rec_2_cons, RecEven.casesOn_mk])
 inductive RecEven where
   | mk (x : EChain RecEven)
 
