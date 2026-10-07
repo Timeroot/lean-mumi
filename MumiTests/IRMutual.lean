@@ -13,7 +13,7 @@ set_option maxRecDepth 6000
 namespace IRMutualUpper
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Ty : Type where
     | base : Ty
@@ -58,7 +58,7 @@ end IRMutualUpper
 namespace IRMutualLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Ty : Type where
     | base : Ty

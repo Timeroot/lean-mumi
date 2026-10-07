@@ -25,7 +25,7 @@ set_option autoImplicit false
 namespace Deep
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -64,7 +64,7 @@ namespace DeepLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -102,7 +102,7 @@ it, which ties it into the block. -/
 namespace Rel
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -135,7 +135,7 @@ namespace RelLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -168,7 +168,7 @@ a proof -- so it eliminates into any sort, as Lean's would. -/
 namespace Large
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq, axioms])
+mumi_spec (xfail := [rec, recOn, casesOn, axioms])
 mutual
 inductive U : Type where
   | nat : U
@@ -195,7 +195,7 @@ namespace LargeLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | nat : U
@@ -224,7 +224,7 @@ relation.  Its recursion is well-founded recursion on codes, into any sort. -/
 namespace LargeAcc
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | nat : U
@@ -249,7 +249,7 @@ set_option mumi.mahlo false
 
 -- `Inh .nat` has a proof for each `n`: eliminating into `Nat` would tell them
 -- apart, so its recursor is into `Prop`
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | nat : U
@@ -289,7 +289,7 @@ end
 namespace Mixed
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq, axioms])
+mumi_spec (unproven := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, injEq, axioms])
 mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n

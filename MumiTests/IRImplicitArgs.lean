@@ -67,7 +67,7 @@ index of type `Ty (.snoc Γ A)` stands for `.base (.snoc Γ A)`. -/
 namespace Fields
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -107,7 +107,7 @@ namespace FieldsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [casesOn, injEq, axioms])
+mumi_spec (xfail := [axioms])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

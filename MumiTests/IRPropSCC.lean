@@ -17,7 +17,7 @@ set_option mumi.mahlo false
 
 namespace PropSCC
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | base : U
@@ -73,7 +73,7 @@ the well-formedness sits on top of them. -/
 namespace PropIdx
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -122,7 +122,7 @@ namespace PropSCCLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | base : U
@@ -169,7 +169,7 @@ namespace PropIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -218,7 +218,7 @@ way. -/
 namespace Several
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 /-- codes over `α` -/
 inductive U (α : Type) : Type where
@@ -241,7 +241,7 @@ theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | base : T
@@ -268,7 +268,7 @@ namespace SeveralLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 /-- codes over `α` -/
 inductive U (α : Type) : Type where
@@ -291,7 +291,7 @@ theorem Good.t (α : Type) (u : U α) (g : Good α u) : True := by
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | base : T
@@ -314,7 +314,7 @@ clauses: given their full names when the block is read. -/
 namespace NestedProp
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -348,7 +348,7 @@ namespace NestedPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X

@@ -23,7 +23,7 @@ field out of a constructor. -/
 
 namespace CtxTyL
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -93,7 +93,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValueL
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Code : Type where
   | one : Code
@@ -120,7 +120,7 @@ end ByValueL
 namespace PolyL
 universe u
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx (X : Type u) : Type u where
   | nil : Ctx X
@@ -143,7 +143,7 @@ end PolyL
 
 namespace DottedL
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -171,7 +171,7 @@ the recursor is the stage engine's, and it runs. -/
 
 namespace PlainL
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Vec : Nat → Type where
   | nil : Vec 0
@@ -268,7 +268,7 @@ nothing is erased, so it goes through, equations included. -/
 
 namespace UnderBinderL
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -296,7 +296,7 @@ namespace NestedL
 -- at a nested index transports along the decode of that index, which does not
 -- reduce here, so `El_deep` and `El_shift` are not definitional and are not
 -- stated; the iota rules are.
-mumi_spec (unproven := [El_deep, El_shift]) (xfail := [casesOn, injEq])
+mumi_spec (unproven := [El_deep, El_shift])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

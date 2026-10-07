@@ -22,7 +22,7 @@ field out of a constructor. -/
 
 namespace CtxTy
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -90,7 +90,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValue
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Code : Type where
   | one : Code
@@ -120,7 +120,7 @@ end ByValue
 namespace Poly
 universe u
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx (X : Type u) : Type u where
   | nil : Ctx X
@@ -143,7 +143,7 @@ end Poly
 
 namespace Dotted
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -172,7 +172,7 @@ through it are `noncomputable`. -/
 
 namespace Plain
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Vec : Nat → Type where
   | nil : Vec 0

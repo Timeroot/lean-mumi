@@ -50,6 +50,26 @@ open Lean Lean.Elab Lean.Elab.Command
 
 namespace Mumi
 
+/--
+`inj` and `injEq` for the constructors of the data members an induction-recursion
+declared as definitions, read back through each member's `casesOn`. -/
+meta def publishIRInjs (elems : Array Syntax) : CommandElabM Unit := do
+  let ns ← getCurrNamespace
+  for e in elems do
+    unless e[1].isOfKind ``Lean.Parser.Command.«inductive» do continue
+    let mem := ns ++ e[1][1][0].getId
+    let env ← getEnv
+    unless (env.find? mem).any (·.isDefinition) do continue
+    let ctors := e[1][4].getArgs.map fun c => mem ++ c[3].getId
+    unless ctors.all env.contains && env.contains (mem ++ `casesOn) do continue
+    liftTermElabM do
+      if ← Meta.forallTelescope (← getConstInfo mem).type fun _ s => pure s.isProp then return
+      let np ← casesParams mem
+      for c in ctors do
+        if (← getConstInfo c).isCtor then continue
+        discard <| MultiuniverseInductive.attempt? `Mumi m!"no injectivity for `{c}`" <|
+          addInjViaCases np mem c ctors
+
 /-- Shared interception point for every Mumi `mutual` translation.  A mixed
 `inductive`/`def` block tries stock Lean first and falls to the IR frontend; an
 all-`inductive` block goes to the heterogeneous and induction-inductive routes;
@@ -77,6 +97,7 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
         withoutCommandIncrementality true do
         withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
           IndRec.elaborateAny elems
+          publishIRInjs elems
       catch ex =>
         unless mumi.ir.debug.get (← getOptions) do set saved
         logException ex

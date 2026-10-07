@@ -24,13 +24,15 @@ run_meta do
   for n in names do
     let axioms ← collectAxioms n
     let isLower := lower.any (·.isPrefixOf (privateToUserName n))
-    let stockInjectivity := n.getString! == "injEq" && env.isConstructor n.getPrefix
+    -- `injEq` is stated by `propext` from `inj`, as Lean states its own, whether
+    -- the constructor is the kernel's or a definition over the encoding
+    let stockInjectivity := n.getString! == "injEq"
     for a in axioms do
       unless (isLower && a == ``IR.mahlo) || (stockInjectivity && a == ``propext) do
         throwError "Unexpected axiom {a} in generated IR declaration {n}"
     if axioms.contains ``IR.mahlo then mahloUsers := mahloUsers + 1
   unless mahloUsers > 0 do throwError "IR audit missed the lower mode"
-  logInfo m!"Audited {names.size} IR declarations; {mahloUsers} use the single IR.mahlo axiom. Upper mode is axiom-free apart from stock constructor injEq lemmas."
+  logInfo m!"Audited {names.size} IR declarations; {mahloUsers} use the single IR.mahlo axiom. Upper mode is axiom-free apart from constructor injEq lemmas."
 
 /-- info: 'IRUpper.U.rec' does not depend on any axioms -/
 #guard_msgs in

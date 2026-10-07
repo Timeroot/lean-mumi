@@ -7,6 +7,7 @@ module
 
 public import Mumi.Lowering
 public import Mumi.View
+import all Lean.Meta.Injective
 
 public section
 
@@ -127,5 +128,160 @@ def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := 
         addMajorFirst numParams mem (mem ++ `casesP) (mem ++ `casesOn)
     discard <| attempt? `Mumi m!"no `recOn` for `{mem}`" <|
       addMajorFirst numParams mem (mem ++ `rec) (mem ++ `recOn)
+
+/-! ## Injectivity of a constructor that is a definition
+
+A member that is a definition over an encoding has constructors that are
+definitions too, and `injection` does not see through one.  What every such
+member does have is a `casesOn` that computes, so the fields of a constructor
+can be read back out of its value: a case split sending the constructor to its
+fields, gathered in a tuple, and every other constructor to nothing.  Equal
+values give equal tuples, and a tuple's components are taken apart one at a time,
+each equation substituted before the next is read, as `injection` would.  The
+statements are Lean's own (`mkInjectiveTheoremTypeCore?`).
+-/
+
+/-- The binders of `ty` up to its conclusion as one nested `PSigma`, ending at `PUnit`. -/
+private partial def tupleType (ty : Expr) : MetaM Expr := do
+  match ty with
+  | .forallE n d b bi =>
+    withLocalDecl n bi d fun x => do
+      mkAppOptM ``PSigma #[d, ← mkLambdaFVars #[x] (← tupleType (b.instantiate1 x))]
+  | .mdata _ e => tupleType e
+  | _ => return mkConst ``PUnit [levelOne]
+
+/-- `args`, for the binders of `ty`, as an element of `tupleType ty`. -/
+private partial def tupleOf (ty : Expr) (args : List Expr) : MetaM Expr := do
+  match ty, args with
+  | .forallE n d b bi, a :: as =>
+    let beta ← withLocalDecl n bi d fun x => do mkLambdaFVars #[x] (← tupleType (b.instantiate1 x))
+    mkAppOptM ``PSigma.mk #[d, beta, a, ← tupleOf (b.instantiate1 a) as]
+  | .mdata _ e, as => tupleOf e as
+  | _, _ => return mkConst ``PUnit.unit [levelOne]
+
+/-- The conjuncts of a right-nested `And`. -/
+private partial def conjunctsOf (e : Expr) : Array Expr :=
+  if e.isAppOfArity ``And 2 then #[e.appFn!.appArg!] ++ conjunctsOf e.appArg! else #[e]
+
+/--
+`c.inj` and `c.injEq` for a constructor `ctor` of `mem` that is a definition,
+read back through `mem.casesOn`, whose minor premises are for `ctors` in order. -/
+def addInjViaCases (numParams : Nat) (mem ctor : Name) (ctors : Array Name) : TermElabM Unit := do
+  let injName := mkInjectiveTheoremNameFor ctor
+  let eqName := mkInjectiveEqTheoremNameFor ctor
+  if (← getEnv).contains injName then return
+  let info ← getConstInfo ctor
+  let arity ← forallTelescope info.type fun xs _ => pure xs.size
+  let cv : ConstructorVal :=
+    { name := ctor, levelParams := info.levelParams, type := info.type, induct := mem,
+      cidx := 0, numParams, numFields := arity - numParams, isUnsafe := false }
+  let some injTy ← mkInjectiveTheoremTypeCore? cv false | return
+  let some eqTy ← mkInjectiveTheoremTypeCore? cv true | return
+  let us := info.levelParams.map Level.param
+  let ident (s : String) (k : Nat) := mkIdent (Name.mkSimple s!"{s}{k}")
+  let injVal ← forallTelescope injTy fun xs conj => do
+    let h := xs.back!
+    let some (_, lhs, rhs) := (← inferType h).eq? | throwError "`{injName}` states no equation"
+    let ps := lhs.getAppArgs.extract 0 numParams
+    let fieldsTy ← instantiateForall (info.instantiateTypeLevelParams us) ps
+    let tupleTy ← tupleType fieldsTy
+    let resTy := mkApp2 (mkConst ``PSum [levelOne, ← getLevel tupleTy])
+      (mkConst ``PUnit [levelOne]) tupleTy
+    let resLvl ← getLevel resTy
+    -- the case split into the tuple, at an element of the constructor's type
+    let selTy ← inferType lhs
+    let sel ← withLocalDeclD `t selTy fun t => do
+      let ci ← getConstInfo (mem ++ `casesOn)
+      let mut e := mkAppN (mkConst (mem ++ `casesOn) (resLvl :: us)) ps
+      let mut ty ← instantiateForall (ci.instantiateTypeLevelParams (resLvl :: us)) ps
+      -- the motive, the indices and the major, as the type of `t` gives them
+      let .forallE _ motTy _ _ := ty | throwError "`{mem}.casesOn` takes no motive"
+      let motive ← forallTelescope motTy fun ys _ => mkLambdaFVars ys resTy
+      e := mkApp e motive
+      ty ← instantiateForall ty #[motive]
+      let idxs := selTy.getAppArgs.extract numParams selTy.getAppNumArgs
+      for a in idxs.push t do
+        e := mkApp e a
+        ty ← instantiateForall ty #[a]
+      for c in ctors do
+        let .forallE _ d _ _ := ty
+          | throwError "`{mem}.casesOn` takes fewer minor premises than `{mem}` has constructors"
+        let minor ← forallTelescope d fun fs _ => do
+          let v ← if c == ctor then
+              mkAppOptM ``PSum.inr #[mkConst ``PUnit [levelOne], tupleTy, ← tupleOf fieldsTy fs.toList]
+            else
+              mkAppOptM ``PSum.inl #[mkConst ``PUnit [levelOne], tupleTy, mkConst ``PUnit.unit [levelOne]]
+          mkLambdaFVars fs v
+        e := mkApp e minor
+        ty ← instantiateForall ty #[minor]
+      mkLambdaFVars #[t] e
+    -- one field at a time: its equation, substituted where it can be, then the
+    -- rest of the tuple, at one type once it has been
+    let n := arity - numParams
+    let mut steps : Array (TSyntax `tactic) := #[← `(tactic| intro $(ident "mumiT" 0):ident)]
+    for k in *...n do
+      let t := ident "mumiT" k
+      let p := ident "mumiP" k
+      let e := ident "mumiE" k
+      let r := ident "mumiR" k
+      steps := steps ++ #[
+        ← `(tactic| have $p:ident := PSigma.mk.inj $t:ident),
+        ← `(tactic| have $e:ident := $p:ident.1),
+        ← `(tactic| have $r:ident := $p:ident.2),
+        ← `(tactic| first | subst $e | skip),
+        ← `(tactic| have $(ident "mumiT" (k + 1)):ident := eq_of_heq $r:ident)]
+    let terms ← (conjunctsOf conj).mapM fun c =>
+      if c.isAppOf ``HEq then `(term| HEq.rfl) else `(term| rfl)
+    steps := steps.push <| ← match terms with
+      | #[t] => `(tactic| exact $t)
+      | _ => `(tactic| exact ⟨$terms,*⟩)
+    -- the two tuples, stated over the fields themselves: read off the case
+    -- split instead, a field of a structure type would come back eta-expanded
+    -- and no longer be a variable to substitute
+    let as := lhs.getAppArgs.extract numParams lhs.getAppNumArgs
+    let bs := rhs.getAppArgs.extract numParams rhs.getAppNumArgs
+    let tA ← tupleOf fieldsTy as.toList
+    let tB ← tupleOf (← instantiateForall (info.instantiateTypeLevelParams us) ps) bs.toList
+    -- the step from the values to the tuples is the case split computing, which
+    -- is left to the kernel: Meta's unifier can wander off into an encoding the
+    -- kernel decides at once
+    let selEq := mkApp6 (mkConst ``congrArg [← getLevel selTy, resLvl]) selTy resTy lhs rhs sel h
+    let tuples := mkApp5 (mkConst ``PSum.inr.inj [levelOne, ← getLevel tupleTy])
+      (mkConst ``PUnit [levelOne]) tupleTy tA tB selEq
+    let goal ← mkArrow (← mkEq tA tB) conj
+    let prf ← proveBy goal (← `(Lean.Parser.Tactic.tacticSeq| $[$steps]*))
+    mkLambdaFVars xs (mkApp prf tuples)
+  addDecl (.thmDecl { name := injName, levelParams := info.levelParams,
+                      type := ← instantiateMVars injTy, value := ← instantiateMVars injVal })
+  let eqVal ← forallTelescope eqTy fun xs goal => do
+    let comps := conjunctsOf goal.appArg!
+    let hC := mkIdent `mumiC
+    let mut bwd : Array (TSyntax `tactic) := #[← `(tactic| intro $hC:ident)]
+    for k in *...comps.size do
+      let mut t : Term := hC
+      for _ in *...k do t ← `($t.2)
+      if k + 1 != comps.size then t ← `($t.1)
+      bwd := bwd.push (← `(tactic| have $(ident "mumiQ" k):ident := $t))
+    for k in *...comps.size do
+      bwd := bwd.push <| ← `(tactic| first | subst $(ident "mumiQ" k) | cases $(ident "mumiQ" k):term)
+    bwd := bwd.push (← `(tactic| rfl))
+    let back ← proveBy (← mkArrow goal.appArg! goal.appFn!.appArg!)
+      (← `(Lean.Parser.Tactic.tacticSeq| $[$bwd]*))
+    mkLambdaFVars xs (← mkAppM ``Eq.propIntro #[mkAppN (mkConst injName us) xs, back])
+  addDecl (.thmDecl { name := eqName, levelParams := info.levelParams,
+                      type := ← instantiateMVars eqTy, value := ← instantiateMVars eqVal })
+  let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
+  simpAttr.add eqName default .global
+
+/-- How many parameters `mem.casesOn` takes before its motive: those of the block. -/
+def casesParams (mem : Name) : MetaM Nat := do
+  let ci ← getConstInfo (mem ++ `casesOn)
+  forallTelescope ci.type fun xs _ => do
+    for h : k in *...xs.size do
+      let isMotive ← forallTelescope (← inferType xs[k]) fun ys c => do
+        let some y := ys.back? | return false
+        return c.isSort && (← inferType y).getAppFn.constName? == some mem
+      if isMotive then return k
+    throwError "`{mem}.casesOn` has no motive"
 
 end Mumi

@@ -15,7 +15,7 @@ namespace IRShapesUpper
 set_option mumi.mahlo false
 
 universe u
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -27,7 +27,7 @@ mutual
     | .checked t h => width t
 end
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Ty : Type where
     | nat : Ty
@@ -44,7 +44,7 @@ mutual
 end
 
 namespace Names
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Value : Type where
     | leaf (n : Nat) : Value
@@ -62,7 +62,7 @@ namespace IRShapesLower
 set_option mumi.mahlo true
 
 universe u
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -74,7 +74,7 @@ mutual
     | .checked t h => width t
 end
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Ty : Type where
     | nat : Ty
@@ -91,7 +91,7 @@ mutual
 end
 
 namespace Names
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
   inductive Value : Type where
     | leaf (n : Nat) : Value

@@ -806,11 +806,33 @@ private def emitUpper (b : Block) : CommandElabM Unit := do
 as Lean names a mutual block's; `single` when there is one motive, then
 `motive`, as Lean names an inductive's. -/
 def motiveFor (single : Bool) (i : Nat) := if single then "motive" else "motive_" ++ toString (i+1)
+
+/-- `s` with every occurrence of the identifier `motive` -- the whole word, so not
+`motive_1` -- renamed to `to`: a one-motive eliminator written over `motive`
+takes the name the joint recursor gives the member's motive, as Lean's does. -/
+def renameMotive (to s : String) : String := Id.run do
+  if to == "motive" then return s
+  let word (c : Char) := c.isAlphanum || c == '_' || c == '\'' || c == '.' || c == '?' || c == '!'
+  let cs := s.toList.toArray
+  let pat := "motive".toList.toArray
+  let mut out := ""
+  let mut i := 0
+  while i < cs.size do
+    let isAt := i + pat.size ≤ cs.size && (List.range pat.size).all (fun k => cs[i + k]! == pat[k]!)
+    let before := i == 0 || !word cs[i - 1]!
+    let after := i + pat.size ≥ cs.size || !word cs[i + pat.size]!
+    if isAt && before && after then
+      out := out ++ to
+      i := i + pat.size
+    else
+      out := out.push cs[i]!
+      i := i + 1
+  return out
 private def motive (b : Block) (i : Nat) := motiveFor (b.members.size == 1) i
 private def minor (b : Block) (i ci : Nat) := minorVar i ci b.members[i]!.ctors[ci]!.name
 private def motiveArgs (b : Block) := (Array.range b.members.size).map (motive b)
 private def minorArgs (b : Block) := (Array.range b.members.size).flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
-private def motiveDecls (b : Block) := join ((Array.range b.members.size).map fun i => "{" ++ motive b i ++ " : (_ir_self : " ++ typeAt b i ++ ") → Sort _ir_elim}")
+private def motiveDecls (b : Block) := join ((Array.range b.members.size).map fun i => "{" ++ motive b i ++ " : (t : " ++ typeAt b i ++ ") → Sort _ir_elim}")
 /-- `@X.c params xs`. -/
 private def ctorApp (b : Block) (i ci : Nat) (xs : Array String) :=
   app ("@" ++ b.members[i]!.name.toString ++ "." ++ b.members[i]!.ctors[ci]!.name.toString) (pArgs b ++ xs)
@@ -1136,7 +1158,9 @@ private def emitViews (b : Block) (lower : Bool) : CommandElabM Unit := do
       branches := branches.push ("  | ." ++ c.name.toString ++ " " ++ join (names c.fields) ++ " => " ++ app (minor b i ci) (names c.fields))
     let mot := "{motive : " ++ typeAt b i ++ " → Sort _ir_elim}"
     let minorNames := (Array.range m.ctors.size).map (minor b i)
-    emitDefinition "@[elab_as_elim, cases_eliminator] " (m.name.toString ++ ".casesOn " ++ (← pubParamsDecl b) ++ " " ++ mot ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ join minors ++ " : motive _ir_self :=\n  match " ++ app (m.name.toString ++ "._ir_view") (pArgs b ++ #["_ir_self"]) ++ " with\n" ++ String.intercalate "\n" branches.toList)
+    -- the motive named as the joint recursor names this member's, over a major `t`
+    let cmot := "{motive : (t : " ++ typeAt b i ++ ") → Sort _ir_elim}"
+    emitDefinition "@[elab_as_elim, cases_eliminator] " (renameMotive (motive b i) (m.name.toString ++ ".casesOn " ++ (← pubParamsDecl b) ++ " " ++ cmot ++ " (_ir_self : " ++ typeAt b i ++ ") " ++ join minors ++ " : motive _ir_self :=\n  match " ++ app (m.name.toString ++ "._ir_view") (pArgs b ++ #["_ir_self"]) ++ " with\n" ++ String.intercalate "\n" branches.toList))
     emitDefinition "@[elab_as_elim] " (m.name.toString ++ ".cases " ++ (← pubParamsDecl b) ++ " " ++ mot ++ " " ++ join minors ++ " (_ir_self : " ++ typeAt b i ++ ") : motive _ir_self := " ++ app ("@" ++ m.name.toString ++ ".casesOn") (pArgs b ++ #["motive", "_ir_self"] ++ minorNames))
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!

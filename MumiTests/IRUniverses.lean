@@ -18,7 +18,7 @@ set_option autoImplicit false
 namespace UnivUpper
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -56,7 +56,7 @@ end UnivUpper
 namespace UnivLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -92,7 +92,7 @@ end UnivLower
 
 namespace Split
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive U : Type where
   | base : U

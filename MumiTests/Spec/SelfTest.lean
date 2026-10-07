@@ -50,7 +50,7 @@ error: [rules] `Marks.U.rec_none` is not a rule the specification states
 error: `xfail := [cases]`, but every claim of the kind holds
 -/
 #guard_msgs in
-mumi_spec (simp := [U.rec_base]) (unproven := [U.rec_none]) (xfail := [casesOn, injEq, cases])
+mumi_spec (simp := [U.rec_base]) (unproven := [U.rec_none]) (xfail := [cases])
 mutual
 inductive U : Type where
   | base : U

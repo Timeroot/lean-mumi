@@ -16,7 +16,7 @@ set_option mumi.mahlo false
 
 namespace Tangle
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive A : Type where
   | nil : A
@@ -78,7 +78,7 @@ end Tangle
 
 namespace Dependent
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

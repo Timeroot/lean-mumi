@@ -19,7 +19,7 @@ set_option autoImplicit false
 namespace Notations
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | base : U
@@ -59,7 +59,7 @@ namespace NotationsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | base : U
@@ -94,7 +94,7 @@ end NotationsLower
 namespace Implicit
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -126,7 +126,7 @@ namespace ImplicitLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -160,7 +160,7 @@ a decoder call writes the ones its declaration binds explicitly. -/
 namespace Params
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -192,7 +192,7 @@ namespace ParamsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [casesOn, injEq])
+mumi_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -221,7 +221,7 @@ end ParamsLower
 inductive (`MumiTests/IRParams.lean` has more). -/
 
 namespace ImplicitCarrier
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive U {α : Type} : Type where
   | base : U

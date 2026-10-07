@@ -1455,7 +1455,8 @@ private def minorArgs (b : Block) (scope : Array Nat := dataMembers b) :=
   scope.flatMap fun i => (Array.range b.members[i]!.ctors.size).map (minor b i)
 private def motiveType (b : Block) (i : Nat) : CommandElabM String := do
   let arity ← pubArity b i
-  let self := "(_ir_self : " ++ typeAt b i (pubIdxNames b i) ++ ")"
+  -- the major named `t`, as Lean names a motive's
+  let self := "(t : " ++ typeAt b i (pubIdxNames b i) ++ ")"
   return "∀ " ++ arity ++ " " ++ self ++ ", Sort _ir_elim"
 private def motiveDecls (b : Block) (scope : Array Nat := dataMembers b) : CommandElabM String := do
   return join (← scope.mapM fun i => do return "{" ++ motive b i ++ " : " ++ (← motiveType b i) ++ "}")
@@ -1887,7 +1888,8 @@ private def emitSolo (b : Block) : CommandElabM Unit := do
       "@[elab_as_elim] def " ++ recDRest, "@[elab_as_elim] noncomputable def " ++ recDRest]
     let minors ← soloMinors b i false
     let minorNames := (Array.range m.ctors.size).map (minor b i)
-    let casesRest := elimName b m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join minors ++ " : " ++ concl ++ " := " ++ app ("@" ++ elimName b m "rec") (soloArgs b i false ++ idx ++ #["_ir_self"])
+    -- the motive named as the joint recursor names this member's
+    let casesRest := renameMotive (motive b i) (elimName b m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arity ++ " " ++ self ++ " " ++ join minors ++ " : " ++ concl ++ " := " ++ app ("@" ++ elimName b m "rec") (soloArgs b i false ++ idx ++ #["_ir_self"]))
     emitFirst #[elimAttrs b "@[elab_as_elim, cases_eliminator] " ++ "def " ++ casesRest,
       elimAttrs b "@[elab_as_elim, cases_eliminator] " ++ "noncomputable def " ++ casesRest,
       "@[elab_as_elim] def " ++ casesRest, "@[elab_as_elim] noncomputable def " ++ casesRest]
@@ -3907,10 +3909,10 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
     let mut cargs := #[]
     for ci in [:m.ctors.size] do
       cargs := cargs.push (← copyMinor k ci false "motive")
-    emitDef "@[elab_as_elim, cases_eliminator] " (m.name.toString ++ ".casesOn " ++ pubPs ++ " " ++ mot ++ " " ++
+    emitDef "@[elab_as_elim, cases_eliminator] " (renameMotive (motive b k) (m.name.toString ++ ".casesOn " ++ pubPs ++ " " ++ mot ++ " " ++
       (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") " ++ join cminors ++ " : " ++
       app "motive" (idx ++ #["_ir_self"]) ++ " := " ++
-      app ("@" ++ elimName b m "casesOn") (pa ++ #["motive"] ++ idx ++ #["_ir_self"] ++ cargs))
+      app ("@" ++ elimName b m "casesOn") (pa ++ #["motive"] ++ idx ++ #["_ir_self"] ++ cargs)))
   -- the rules: at a copy's constructor and at a constructor without nested fields, `rfl`
   let eqBinders := ps ++ " " ++ motives ++ " " ++ minors
   let ihsAt (c : Ctor) : CommandElabM (Array String) := do

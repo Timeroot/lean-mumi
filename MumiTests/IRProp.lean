@@ -20,7 +20,7 @@ set_option autoImplicit false
 namespace PropUpper
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | base : U
@@ -63,7 +63,7 @@ end PropUpper
 namespace PropLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive U : Type where
   | base : U
