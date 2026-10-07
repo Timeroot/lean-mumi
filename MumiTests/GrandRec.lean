@@ -52,7 +52,7 @@ mumi_spec
 inductive OLbl (α : Type u) (β : Type v) : Type (max u v) where
   | mk (x : Lbl α β) (h : x.Ord)
 
-mumi_spec (unproven := [Nest.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [Nest.rec_mk, Nest.rec_1_mk, Nest.rec_2_bin, Nest.casesOn_mk])
 inductive Nest (γ : Type w) : Type w where
   | leaf (c : γ)
   | mk (x : OLbl (Nest γ) γ)
@@ -135,7 +135,7 @@ mumi_spec
 inductive Good (α : Type) where
   | mk (c : Chain α) (h1 : c.P) (h2 : c.Q)
 
-mumi_spec (unproven := [RecGood.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [RecGood.rec_mk, RecGood.rec_1_mk, RecGood.rec_2_cons, RecGood.casesOn_mk])
 inductive RecGood where
   | mk (x : Good RecGood)
 
@@ -207,7 +207,7 @@ mumi_spec
 inductive FBr (α : Type) where
   | mk (b : Br α) (h : b.Fin)
 
-mumi_spec (unproven := [RecBr.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [RecBr.rec_mk, RecBr.rec_1_mk, RecBr.rec_2_node, RecBr.casesOn_mk]) (xfail := [axioms])
 inductive RecBr where
   | mk (x : FBr RecBr)
 
@@ -294,7 +294,7 @@ mumi_spec
 inductive NESeq (α : Type) where
   | mk (s : Seq α) (h : s.NonEmpty)
 
-mumi_spec (unproven := [RecTwo.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [RecTwo.rec_mk, RecTwo.rec_1_mk, RecTwo.rec_2_mk, RecTwo.rec_3_bin, RecTwo.rec_5_cons, RecTwo.casesOn_mk])
 inductive RecTwo where
   | tip
   | mk (x : FTr RecTwo) (y : NESeq RecTwo)
@@ -314,13 +314,13 @@ def one : RecTwo :=
 /-- How many `RecTwo`s are inside. -/
 def size : RecTwo → Nat :=
   RecTwo.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ => Nat)
-    (motive_4 := fun _ _ _ => True) (motive_5 := fun _ => Nat) (motive_6 := fun _ => Nat)
+    (motive_4 := fun _ => Nat) (motive_5 := fun _ _ _ => True) (motive_6 := fun _ => Nat)
     (motive_7 := fun _ _ _ => True)
     1 (fun _ _ ihx ihy => ihx + ihy)
     (fun _ _ ih _ => ih)
+    (fun _ _ ih _ => ih)
     0 (fun _ _ _ ihl ihr iha => ihl + ihr + iha)
     trivial (fun _ _ _ _ _ _ _ _ _ _ => trivial)
-    (fun _ _ ih _ => ih)
     0 (fun _ _ iha iht => iha + iht)
     (fun _ _ _ _ => trivial)
 
@@ -329,15 +329,14 @@ example : size one = 2 := rfl
 /-- Rebuilding, carrying both families' proofs. -/
 def rebuild : RecTwo → RecTwo :=
   RecTwo.rec (motive_1 := fun _ => RecTwo) (motive_2 := fun _ => FTr RecTwo)
-    (motive_3 := fun _ => Tr RecTwo)
-    (motive_4 := fun _ ih _ => Tr.Full RecTwo ih)
-    (motive_5 := fun _ => NESeq RecTwo) (motive_6 := fun _ => Seq RecTwo)
+    (motive_3 := fun _ => NESeq RecTwo) (motive_4 := fun _ => Tr RecTwo)
+    (motive_5 := fun _ ih _ => Tr.Full RecTwo ih) (motive_6 := fun _ => Seq RecTwo)
     (motive_7 := fun _ ih _ => Seq.NonEmpty RecTwo ih)
     RecTwo.tip (fun _ _ ihx ihy => RecTwo.mk ihx ihy)
     (fun _ _ ih hf => FTr.mk ih hf)
+    (fun _ _ ih hn => NESeq.mk ih hn)
     Tr.tip (fun _ _ _ ihl ihr iha => Tr.bin ihl ihr iha)
     Tr.Full.tip (fun _ _ _ _ _ ihl ihr iha hl hr => Tr.Full.bin ihl ihr iha hl hr)
-    (fun _ _ ih hn => NESeq.mk ih hn)
     Seq.nil (fun _ _ iha iht => Seq.cons iha iht)
     (fun _ _ iha iht => Seq.NonEmpty.cons iha iht)
 
@@ -381,7 +380,7 @@ mumi_spec
 inductive RelPair (α : Type) where
   | mk (s t : Lst α) (h : Rel α s t)
 
-mumi_spec (unproven := [RecRel.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [RecRel.casesOn_mk]) (xfail := [rec, recOn])
 inductive RecRel where
   | mk (x : RelPair RecRel)
 
@@ -530,7 +529,7 @@ mumi_spec
 inductive EChain (α : Type) where
   | mk (c : Chain α) (h : c.Even)
 
-mumi_spec (unproven := [RecEven.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [RecEven.rec_mk, RecEven.rec_1_mk, RecEven.rec_2_cons, RecEven.casesOn_mk])
 inductive RecEven where
   | mk (x : EChain RecEven)
 

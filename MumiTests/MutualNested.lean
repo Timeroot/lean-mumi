@@ -56,7 +56,7 @@ motives, and every one of them is spelled in the writer's own names --
 
 namespace Twin
 
-mumi_spec (unproven := [A.casesOn_mk, B.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, B.rec_mk, A.rec_1_mk, A.rec_2_mk, A.rec_3_node, A.rec_5_node, A.casesOn_mk, B.casesOn_mk])
 mutual
 inductive A : Type where
   | tip
@@ -74,13 +74,14 @@ end
 def size : A → Nat :=
   A.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     (motive_3 := fun _ => Nat) (motive_4 := fun _ => Nat)
-    (motive_5 := fun _ _ _ => True) (motive_6 := fun _ => Nat)
+    (motive_5 := fun _ => Nat) (motive_6 := fun _ _ _ => True)
     (motive_7 := fun _ => Nat) (motive_8 := fun _ _ _ => True)
     0 (fun _ n => n + 1)
     0 (fun _ n => n + 1)
-    (fun _ _ n _ => n) 0 (fun _ _ _ b l r => b + l + r)
+    (fun _ _ n _ => n) (fun _ _ n _ => n)
+    0 (fun _ _ _ b l r => b + l + r)
     trivial (fun _ _ _ _ _ _ _ _ _ _ => trivial)
-    (fun _ _ n _ => n) 0 (fun _ _ _ a l r => a + l + r)
+    0 (fun _ _ _ a l r => a + l + r)
     trivial (fun _ _ _ _ _ _ _ _ _ _ => trivial)
 
 theorem leafWF (α : Type) : Tree.WF α .empty := .empty
@@ -115,7 +116,7 @@ nesting type is made at it.
 
 namespace Self
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.casesOn_mk])
 mutual
 inductive A : Type where
   | tip
@@ -134,7 +135,7 @@ stays `WFTree (B α)` and the recursor leads with `{α : Type}`.
 
 namespace Param
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.casesOn_mk])
 mutual
 inductive A (α : Type) : Type where
   | tip (a : α)
@@ -154,7 +155,7 @@ of `WFTree` at `B`, and both layers show up as motives of their own.
 
 namespace Deep
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.rec_4_mk, A.rec_5_node, A.casesOn_mk])
 mutual
 inductive A : Type where
   | tip
@@ -175,7 +176,7 @@ like any other.
 
 namespace Mixed
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_cons, A.rec_3_node, A.casesOn_mk])
 mutual
 inductive A : Type where
   | tip
@@ -194,7 +195,7 @@ induction hypothesis for each side.
 
 namespace Pair
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.casesOn_mk])
 mutual
 inductive A : Type where
   | tip
@@ -213,7 +214,7 @@ implicitly in the major premise.
 
 namespace Indexed
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.casesOn_mk])
 mutual
 inductive A : Nat → Type where
   | tip : A 0
@@ -240,7 +241,7 @@ are what make it one worth taking.
 
 namespace Modifiers
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.casesOn_mk])
 mutual
 /-- The one with the nesting. -/
 inductive A : Type where
@@ -293,7 +294,7 @@ namespace FreeProp
 -- one declaration at a time
 set_option mumi.separate false
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type where
   | tip
@@ -326,7 +327,7 @@ the routing. -/
 namespace FreePropField
 set_option mumi.separate false
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn])
 mutual
 inductive A : Type where
   | tip
@@ -360,7 +361,7 @@ stated over the originals.
 namespace BigSmall
 set_option mumi.separate false
 
-mumi_spec (unproven := [A.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [A.rec_mk, A.rec_1_mk, A.rec_2_node, A.casesOn_mk])
 mutual
 inductive A : Type 1 where
   | tip

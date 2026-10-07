@@ -5,7 +5,8 @@ import MumiTests.Spec.Harness
 
 What Lean declares of a block it takes is the specification's ground truth, so
 `mumi_spec` passes Lean's own blocks whole: an indexed mutual family, a nested
-inductive, an inductive predicate that eliminates into any sort.  And it
+inductive, an inductive predicate that eliminates into any sort, and blocks with no
+constructor at all.  And it
 reports, at the block, each way a test's marks are wrong: a rule said to hold
 only by `simp` that holds by `rfl`, a rule the specification does not state, a
 kind of claim marked to fail that holds, a block said to be rejected that is
@@ -32,6 +33,13 @@ inductive Rose (α : Type) : Type where
 mumi_spec
 inductive Le : Nat → Nat → Prop where
   | refl (n : Nat) : Le n n
+
+-- no constructor anywhere: the motive is explicit, and the indices promoted
+mumi_spec
+inductive Never : Prop
+
+mumi_spec
+inductive Gap (n : Nat) : Nat → Type
 
 end Native
 

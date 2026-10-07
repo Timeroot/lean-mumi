@@ -42,7 +42,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (unproven := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 
@@ -256,9 +256,10 @@ example : depthW (.mk (leaf bottom) (leafWF bottom)) = 1 := rfl
 #guard_msgs in
 #print axioms depthT
 
--- the round trip out of the `WFTree` copy carries a proof, and that is proved
--- by `propext`; the one out of the `Tree` copy carries none
-/-- info: 'RecWFTree.depthW' depends on axioms: [propext] -/
+-- the round trip out of the `WFTree` copy carries a proof, whose type moves
+-- with the tree before it; the two propositions are equal by the same
+-- congruence, so no `propext` is spent on it
+/-- info: 'RecWFTree.depthW' does not depend on any axioms -/
 #guard_msgs in
 #print axioms depthW
 
@@ -378,21 +379,21 @@ mumi_spec
 inductive OkBag (α : Type) where
   | mk (b : Bag α) (h : BagOk α b)
 
-mumi_spec (unproven := [Rec2.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [Rec2.rec_mk, Rec2.rec_1_mk, Rec2.rec_2_mk, Rec2.rec_4_cons, Rec2.casesOn_mk])
 inductive Rec2 (β : Type) where
   | leaf (b : β)
   | mk (x : OkBag (Rec2 β))
 
-/-- info: Rec2.nested_BagOk_4 : (β : Type) → Rec2.nested_Bag_2 β → Prop -/
+/-- info: Rec2.nested_BagOk_3 : (β : Type) → Rec2.nested_Bag_2 β → Prop -/
 #guard_msgs in
-#check @Rec2.nested_BagOk_4
+#check @Rec2.nested_BagOk_3
 
 -- the `List` inside `Bag` is a copy in its own right, and recurses two ways
 /--
-info: @Rec2.nested_List_3.cons : {β : Type} → Rec2 β → Rec2.nested_List_3 β → Rec2.nested_List_3 β
+info: @Rec2.nested_List_4.cons : {β : Type} → Rec2 β → Rec2.nested_List_4 β → Rec2.nested_List_4 β
 -/
 #guard_msgs in
-#check @Rec2.nested_List_3.cons
+#check @Rec2.nested_List_4.cons
 
 -- and the recursor is over `OkBag`, `Bag` and `List`, the parameter carried through
 
@@ -412,7 +413,7 @@ mumi_spec
 inductive OkVec (α : Type) where
   | mk {n : Nat} (v : Vec α n) (h : VecOk α v)
 
-mumi_spec (unproven := [Rec3.casesOn_mk]) (xfail := [rec, recOn, axioms])
+mumi_spec (unproven := [Rec3.rec_mk, Rec3.rec_1_mk, Rec3.rec_2_cons, Rec3.casesOn_mk]) (xfail := [axioms])
 inductive Rec3 where
   | mk (x : OkVec Rec3)
 
@@ -590,7 +591,7 @@ mumi_spec
 inductive OkFam (α : Type) (n : Nat) where
   | mk (v : Fam α n) (h : FamOk α v)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive BadLocals where
   | tip
   | mk (n : Nat) (x : OkFam BadLocals n)

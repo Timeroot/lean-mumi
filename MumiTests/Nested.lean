@@ -1001,7 +1001,7 @@ inductive BunVek (α : Type u) : Nat → Type u where
   | nil : BunVek α 0
   | cons : α → BunVek α n → BunVek α (n + 1)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Bn1 : Type 1 where
   | tip : Bn1
@@ -1572,7 +1572,7 @@ mumi_spec
 inductive LocWrap (α : Type) (n : Nat) : Type where
   | mk (a : α) : LocWrap α n
 
-mumi_spec (unproven := [LocA.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocA.rec_mk, LocA.rec_1_cons, LocA.casesOn_mk])
 inductive LocA : Type where
   | tip
   | mk (n : Nat) (v : List (LocWrap LocA n))
@@ -1651,7 +1651,7 @@ example : locTag (.mk 3 [.mk .tip]) = 3 := rfl
 
 /-! The same in a `mutual`, where the local is a sibling member's index. -/
 
-mumi_spec (unproven := [LocB.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocB.rec_mk, LocB.rec_1_cons, LocB.casesOn_mk])
 mutual
 inductive LocB : Type where
   | tip
@@ -1667,7 +1667,7 @@ version of the same thing: the copy of the nesting type would have to be
 parameterised by a value only the constructor knows.  It is not parameterised by
 it -- it is *indexed* by it, and that a copy can be. -/
 
-mumi_spec (unproven := [LocIx.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocIx.rec_mk, LocIx.rec_1_cons, LocIx.casesOn_mk])
 inductive LocIx : Nat → Type where
   | tip : LocIx 0
   | mk (n : Nat) (v : List (LocIx n)) : LocIx (n + 1)
@@ -1694,7 +1694,7 @@ inductive LocTree (α : Type) : Type where
   | tip
   | node (l : α) (r : LocTree α)
 
-mumi_spec (unproven := [LocS.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocS.rec_mk, LocS.rec_1_node, LocS.casesOn_mk])
 inductive LocS : Nat → Type where
   | base : LocS 0
   | mk (n : Nat) (x : LocTree (LocS n)) : LocS n
@@ -1716,18 +1716,18 @@ example : locSNodes .base = 1 := rfl
 /-! Only the copies that need the local get it.  `LocMix` nests twice, once
 under the local and once not, and the second copy stays unindexed. -/
 
-mumi_spec (unproven := [LocMix.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (unproven := [LocMix.rec_mk, LocMix.rec_1_cons, LocMix.rec_2_cons, LocMix.casesOn_mk])
 inductive LocMix : Type where
   | tip
   | mk (n : Nat) (v : List (LocWrap LocMix n)) (w : List LocMix)
 
-/-- info: LocMix.nested_List_3 : Type -/
+/-- info: LocMix.nested_List_2 : Type -/
 #guard_msgs in
-#check LocMix.nested_List_3
+#check LocMix.nested_List_2
 
 /-! A local under two layers of nesting reaches both. -/
 
-mumi_spec (unproven := [LocDeep.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocDeep.rec_mk, LocDeep.rec_1_cons, LocDeep.rec_2_cons, LocDeep.casesOn_mk])
 inductive LocDeep : Type where
   | tip
   | mk (n : Nat) (v : List (List (LocWrap LocDeep n)))
@@ -1738,7 +1738,7 @@ inductive LocDeep : Type where
 
 /-! Two different nesting types may hang off the one local. -/
 
-mumi_spec (unproven := [LocTwo.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (unproven := [LocTwo.rec_mk, LocTwo.rec_1_cons, LocTwo.casesOn_mk])
 inductive LocTwo where
   | tip
   | mk (n : Nat) (v : List (LocWrap LocTwo n)) (o : Option (LocWrap LocTwo n))
@@ -1757,10 +1757,11 @@ inductive LocBoth where
 
 def bothSize : LocBoth → Nat :=
   LocBoth.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ _ => Nat) (motive_4 := fun _ => Nat) (motive_5 := fun _ => Nat)
+    (motive_3 := fun _ => Nat) (motive_4 := fun _ _ => Nat) (motive_5 := fun _ => Nat)
     1 (fun _ _ ih => ih + 1) (fun _ ih => ih + 1)
-    (fun _ => 0) (fun _ _ _ h t => h + t) (fun _ _ ih => ih)
-    0 (fun _ _ h t => h + t) (fun _ ih => ih)
+    (fun _ => 0) (fun _ _ _ h t => h + t)
+    0 (fun _ _ h t => h + t)
+    (fun _ _ ih => ih) (fun _ ih => ih)
 
 /-- info: 3 -/
 #guard_msgs in
@@ -1773,7 +1774,7 @@ def bothSize : LocBoth → Nat :=
 /-! The nesting may sit under a function type, where the recursion it drives is
 infinitary and the round trip costs `Quot.sound`. -/
 
-mumi_spec (unproven := [LocFun.casesOn_mk]) (xfail := [rec, injEq, axioms])
+mumi_spec (unproven := [LocFun.rec_mk, LocFun.rec_1_cons, LocFun.casesOn_mk]) (xfail := [injEq, axioms])
 inductive LocFun where
   | tip
   | mk (n : Nat) (f : Nat → List (LocWrap LocFun n))
@@ -1785,7 +1786,7 @@ mumi_spec
 inductive LocTag (α : Type) {k : Nat} (i : Fin k) : Type where
   | mk (a : α)
 
-mumi_spec (unproven := [LocFin.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocFin.rec_mk, LocFin.rec_1_cons, LocFin.casesOn_mk])
 inductive LocFin where
   | tip
   | mk (k : Nat) (i : Fin k) (v : List (LocTag LocFin i))
@@ -1846,7 +1847,7 @@ mumi_spec
 inductive LocWrapU (α : Type u) (n : Nat) : Type u where
   | mk (a : α)
 
-mumi_spec (unproven := [LocU.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocU.rec_mk, LocU.rec_1_cons, LocU.casesOn_mk])
 inductive LocU : Type u where
   | tip
   | mk (n : Nat) (v : List (LocWrapU LocU n)) : LocU
@@ -1868,7 +1869,7 @@ inductive LocNest where
 /-! Two constructors whose locals differ only in name are one occurrence, so
 they share a copy and the recursor asks for one motive, not two. -/
 
-mumi_spec (unproven := [LocShare.casesOn_mk1, LocShare.casesOn_mk2]) (xfail := [rec])
+mumi_spec (unproven := [LocShare.rec_mk1, LocShare.rec_mk2, LocShare.rec_1_cons, LocShare.casesOn_mk1, LocShare.casesOn_mk2])
 inductive LocShare where
   | tip
   | mk1 (n : Nat) (v : List (LocWrap LocShare n))
@@ -1883,7 +1884,7 @@ inductive LocVec (α : Type) : Nat → Type where
   | nil : LocVec α 0
   | cons (a : α) {k : Nat} (v : LocVec α k) : LocVec α (k + 1)
 
-mumi_spec (unproven := [LocIxNest.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [LocIxNest.rec_mk, LocIxNest.rec_1_cons, LocIxNest.casesOn_mk])
 inductive LocIxNest where
   | tip
   | mk (n : Nat) (v : LocVec (LocWrap LocIxNest n) n) : LocIxNest
@@ -1928,7 +1929,7 @@ inductive SVWrap (β : Type) (n : Nat) where
 
 section
 variable (α : Type)
-mumi_spec (unproven := [SVR.casesOn_mk]) (xfail := [rec])
+mumi_spec (unproven := [SVR.rec_mk, SVR.rec_1_cons, SVR.casesOn_mk])
 inductive SVR where
   | tip (a : α)
   | mk (n : Nat) (v : List (SVWrap SVR n)) : SVR

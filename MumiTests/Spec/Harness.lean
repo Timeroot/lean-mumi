@@ -556,7 +556,13 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
       if !members[k]!.prop then return #[]
       forallTelescope tys[k]! fun idx _ => (promotedPs ++ idx).mapM fun i => do
         return (targetOf (← instantiateMVars (← inferType i))).filter (!isPropT ·)
-    | .nested _ => return #[]
+    -- a nested proposition displays as a member does: `Tree.WF R a` takes the
+    -- value at its `Tree R`
+    | .nested a =>
+      if !isPropT t then return #[]
+      lambdaTelescope a fun locals n => do
+        forallTelescope (← inferType n) fun idx _ => (locals ++ idx).mapM fun i => do
+          return (targetOf (← instantiateMVars (← inferType i))).filter (!isPropT ·)
   -- a motive at index arguments, the data values there, and a major
   let motiveApp (motives : Array Expr) (t : Nat) (args : Array Expr) (vals : Array (Option Expr)) (major : Expr) : Expr :=
     Id.run do
@@ -565,38 +571,42 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
         out := out.push args[i]!
         if let some (some v) := vals[i]? then out := out.push v
       mkAppN motives[t]! (out.push major)
-  -- the motives, each over those before it; a displayed one takes after each
-  -- index of data type the value there
+  -- the motive of target `t` over its indices `ixs` and a major of type `major`;
+  -- a displayed one takes after each index of data type the value there
+  let motiveOver (t : Nat) (prev ixs : Array Expr) (major : Expr) : TermElabM Expr := do
+      let mut shown := #[]
+      for i in [:ixs.size] do
+        if let some (some j) := displayAt[t]![i]? then
+          let ty ← instantiateMVars (← inferType ixs[i]!)
+          shown := shown.push (i, mkAppN prev[j]! ((motiveArgs j ty).push ixs[i]!))
+      -- nothing is said of a value by name: its binder is inaccessible
+      let v ← mkFreshUserName `v
+      withLocalDecls (shown.map fun (_, ty) => (v, BinderInfo.default, fun _ => pure ty)) fun vs => do
+      withLocalDeclD `t major fun x => do
+        let mut binders := #[]
+        for i in [:ixs.size] do
+          binders := binders.push ixs[i]!
+          if let some n := shown.findIdx? (·.1 == i) then binders := binders.push vs[n]!
+        mkForallFVars (binders.push x) (sortOf t)
+  -- a motive is implicit, as there is a minor premise to read it off -- explicit
+  -- in a block with no constructor at all, as `False.rec`'s is
+  let noCtors ← (Array.range targets.size).allM fun t => return (← ctorsOf t).isEmpty
+  let motiveInfo := if noCtors then BinderInfo.default else BinderInfo.implicit
   let motiveDecls := (Array.range targets.size).map fun t =>
-    (motiveName t, BinderInfo.implicit, fun (prev : Array Expr) => do
+    (motiveName t, motiveInfo, fun (prev : Array Expr) => do
       match targets[t]! with
       | .member k =>
         forallTelescope tys[k]! fun idx _ => do
           let major := mkAppN (← mkConstWithLevelParams members[k]!.name) (params ++ idx)
-          let ixs := promotedPs ++ idx
-          let mut shown := #[]
-          for i in [:ixs.size] do
-            if let some (some j) := displayAt[t]![i]? then
-              let ty ← instantiateMVars (← inferType ixs[i]!)
-              shown := shown.push (i, mkAppN prev[j]! ((motiveArgs j ty).push ixs[i]!))
-          -- nothing is said of a value by name: its binder is inaccessible
-          let v ← mkFreshUserName `v
-          withLocalDecls (shown.map fun (_, ty) => (v, BinderInfo.default, fun _ => pure ty)) fun vs => do
-          withLocalDeclD `t major fun x => do
-            let mut binders := #[]
-            for i in [:ixs.size] do
-              binders := binders.push ixs[i]!
-              if let some n := shown.findIdx? (·.1 == i) then binders := binders.push vs[n]!
-            mkForallFVars (binders.push x) (sortOf t)
+          motiveOver t prev (promotedPs ++ idx) major
       | .nested a => lambdaTelescope a fun locals n => do
-        forallTelescope (← inferType n) fun idx _ =>
-          withLocalDeclD `t (mkAppN n idx) fun x => mkForallFVars (locals ++ idx ++ #[x]) (sortOf t))
+        forallTelescope (← inferType n) fun idx _ => motiveOver t prev (locals ++ idx) (mkAppN n idx))
   withLocalDecls motiveDecls fun motives => do
   -- the hypothesis at a field: at a field of a target, the motive at its
   -- indices, their data values, and the field
   let hypAt (minors : Minors) (hyps : Hyps) (f : Expr) : TermElabM Hyp := do
     forallTelescope (← inferType f) fun dom ty => do
-      let ty ← instantiateMVars ty
+      let ty := (← instantiateMVars ty).headBeta
       let some j := targetOf ty | return .none
       let args := motiveArgs j ty
       let mut vals := #[]
@@ -677,7 +687,14 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
             lambdaTelescope a fun locals n => do
             forallTelescope (← inferType n) fun idx _ =>
             withLocalDeclD `t (mkAppN n idx) fun x => withInfos (uniformPs ++ locals ++ idx) implicit do
-              let concl := mkAppN motives[t]! (locals ++ idx ++ #[x])
+              let ixs := locals ++ idx
+              let mut vals := #[]
+              for i in [:ixs.size] do
+                if let some (some j) := displayAt[t]![i]? then
+                  let ty ← instantiateMVars (← inferType ixs[i]!)
+                  vals := vals.push (some (← recAt j ((motiveArgs j ty).push ixs[i]!)))
+                else vals := vals.push none
+              let concl := motiveApp motives t ixs vals x
               return some (← mkForallFVars (uniformPs ++ motives ++ minors ++ locals ++ idx ++ #[x]) concl,
                 ← mkForallFVars (uniformPs ++ motives ++ locals ++ idx ++ #[x] ++ minors) concl)
       catch e => do problem r .recursor m!"the recursor `{recOf t}`: {e.toMessageData}"; pure none)
@@ -711,7 +728,7 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
         for f in fields do
           if missing.contains (← f.fvarId!.getDecl).userName then continue
           let some ih ← forallTelescope (← inferType f) fun dom ty => do
-              let ty ← instantiateMVars ty
+              let ty := (← instantiateMVars ty).headBeta
               let some j := targetOf ty | return none
               return some (← mkLambdaFVars dom (← recAt j ((motiveArgs j ty).push (mkAppN f dom))))
             | continue
@@ -730,7 +747,7 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
         let major := mkAppN (← mkConstWithLevelParams m.name) (params ++ idx)
         let ixs := promotedPs ++ idx
         let mty ← withLocalDeclD `t major fun x => mkForallFVars (ixs.push x) (sortOf t)
-        withLocalDecl (motiveName t) .implicit mty fun mot => do
+        withLocalDecl (motiveName t) motiveInfo mty fun mot => do
         let decls := (Array.range cs.size).map fun ci => (cs[ci]!.1, BinderInfo.default, fun (_ : Array Expr) =>
           atCtor t ci fun _ ctor fields cidx => withInfos promotedPs (fun _ => .implicit) do
             mkForallFVars (promotedPs ++ fields) (mkAppN mot (cidx.push ctor)))
@@ -941,7 +958,21 @@ private def targetOrder (members : Array Member) (tys params : Array Expr) (unif
     TermElabM (Array Target) := do
   let written : Array Target := (Array.range members.size).map .member ++ nested.map .nested
   let depsOf (t : Target) : TermElabM (Array Nat) := do
-    let .member k := t | return #[]
+    let atIdxs (idx : Array Expr) : TermElabM (Array Nat) := do
+      let mut out := #[]
+      for x in idx do
+        let ty ← instantiateMVars (← inferType x)
+        let q? := written.findIdx? fun w => match w with
+          | .member j => !members[j]!.prop && ty.getAppFn.isConstOf members[j]!.name
+          | .nested a => (nestedArgs? a ty).isSome
+        if let some q := q? then out := out.push q
+      return out
+    match t with
+    | .nested a =>
+      -- a nested proposition follows the data its motive displays
+      lambdaTelescope a fun locals n => do forallTelescope (← inferType n) fun idx s => do
+        if s.isProp then atIdxs (locals ++ idx) else return #[]
+    | .member k =>
     unless members[k]!.prop do return #[]
     forallTelescope tys[k]! fun idx _ => do
       let mut out := #[]
@@ -1081,7 +1112,8 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
   let nestedIn (params : Array Expr) (fields : Array Expr) : TermElabM (Array Expr) := do
     let mut out := #[]
     for f in fields do
-      let t ← forallTelescope (← inferType f) fun _ t => instantiateMVars t
+      -- a field is its beta-normal form: a predicate a container takes is applied there
+      let t ← forallTelescope (← inferType f) fun _ t => return (← instantiateMVars t).headBeta
       if let some n ← nestedHead? memberNames params t then out := out.push n
     return out
   let lone := members.size == 1 && (← members[0]!.decl[4].getArgs.allM fun c =>

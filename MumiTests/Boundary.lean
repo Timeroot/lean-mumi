@@ -59,7 +59,7 @@ motive is indexed by the context the list is at.
 
 namespace ListNest
 
-mumi_spec (unproven := [Ctx.casesOn_many, Ty.casesOn_list]) (xfail := [rec])
+mumi_spec (unproven := [Ctx.rec_many, Ty.rec_list, Ctx.rec_1_cons, Ctx.casesOn_many, Ty.casesOn_list])
 mutual
 inductive Ctx : Type where
   | nil
@@ -81,7 +81,7 @@ other summand is unrelated.
 
 namespace OtherNests
 
-mumi_spec (unproven := [Ctx.casesOn_maybe, Ctx.casesOn_either]) (xfail := [rec])
+mumi_spec (unproven := [Ctx.rec_maybe, Ctx.rec_either, Ctx.casesOn_maybe, Ctx.casesOn_either])
 mutual
 inductive Ctx : Type where
   | nil
@@ -113,7 +113,7 @@ inductive Vec (α : Type) : Nat → Type where
   | nil : Vec α 0
   | cons {n} (a : α) (v : Vec α n) : Vec α (n + 1)
 
-mumi_spec (unproven := [Ctx.casesOn_snoc]) (xfail := [rec])
+mumi_spec (unproven := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc])
 mutual
 inductive Ctx : Type where
   | nil

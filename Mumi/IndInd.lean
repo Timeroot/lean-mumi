@@ -2603,17 +2603,8 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
     modify (·.push { key := stripLevels names (mkAppN (.const fi.name lvls) params)
                      name, params, localTys, indName := fi.name, levels := lvls,
                      numParams := params.size, ctors := fi.ctors.toArray })
-  -- the copies' own arities and constructors are fresh telescopes, so nothing
-  -- this scan is under is a binder of theirs -- except the fields the parameters
-  -- were abstracted over, which a nesting inside them may mention in turn
-  withHoles localTys #[] fun ls => do
-    let params := params.map (fillHoles ls)
-    let inner := ls.map (·.fvarId!)
-    for fi in fam do
-      let some ci := (← getEnv).find? fi.name | return
-      scanExpr names root inner (← instantiateForall (ci.instantiateTypeLevelParams lvls) params)
-      for c in fi.ctors do
-        scanExpr names root inner (← ctorTypeAt c lvls params)
+  -- the copies' own constructors are scanned once everything before them has
+  -- been, by `scanCopies`: the kernel numbers what it denests in that order
 
 /-- Look for nested occurrences everywhere in `e`, indices included. -/
 private partial def scanExpr (names : Array Name) (root : Name) (bound : Array FVarId)
@@ -2621,6 +2612,12 @@ private partial def scanExpr (names : Array Name) (root : Name) (bound : Array F
   match e with
   | .app .. =>
     internNested names root bound e
+    -- a nesting's parameters are the copy's now, and what they nest is met
+    -- among the copy's constructors, as the kernel meets it; its indices are
+    -- this occurrence's own
+    if let some (_, _, _, _, idxArgs) ← nestedApp? names e then
+      for a in idxArgs do scanExpr names root bound a
+      return
     scanExpr names root bound e.getAppFn
     for a in e.getAppArgs do scanExpr names root bound a
   | .forallE n d b bi | .lam n d b bi =>
@@ -2638,6 +2635,27 @@ private partial def scanExpr (names : Array Name) (root : Name) (bound : Array F
   | _ => pure ()
 
 end
+
+/--
+Scan each copy's arity and constructors, the copies found meanwhile included, in
+the order they were found: every occurrence in one constructor before the
+constructors of what it nests, which is the order the kernel numbers the types
+it denests in, and so the order of the motives of Lean's own recursor.  The
+copies' arities and constructors are fresh telescopes, so nothing the first scan
+was under is a binder of theirs -- except the fields the parameters were
+abstracted over, which a nesting inside them may mention in turn. -/
+private def scanCopies (names : Array Name) (root : Name) : DenestM Unit := do
+  let mut k := 0
+  while k < (← get).size do
+    let s := (← get)[k]!
+    withHoles s.localTys #[] fun ls => do
+      let params := s.params.map (fillHoles ls)
+      let inner := ls.map (·.fvarId!)
+      let some ci := (← getEnv).find? s.indName | return
+      scanExpr names root inner (← instantiateForall (ci.instantiateTypeLevelParams s.levels) params)
+      for c in s.ctors do
+        scanExpr names root inner (← ctorTypeAt c s.levels params)
+    k := k + 1
 
 /--
 The spec `app` is an occurrence of, and what its holes stood for there: a copy
@@ -2709,6 +2727,7 @@ def denestRaw (r : Raw) : TermElabM Raw := do
         scanExpr names root #[] (← instantiateForall r.arities[i]! ps)
         for ct in r.ctorTypes[i]! do
           scanExpr names root #[] (← instantiateForall ct ps)
+      scanCopies names root
     let (_, specs) ← scan.run #[]
     if specs.isEmpty then return r
     -- the copies are referenced exactly as the members are: one metavariable
@@ -4130,12 +4149,47 @@ round trip comes back by eta through a structure, and is otherwise that
 hypothesis or the round trip of the copy it is at.  The congruence is
 `mkHCongrWithArity`'s and so heterogeneous, which a field indexed by another
 needs: what moves under such a field moves its type with it, leaving a `HEq`.  A
-data field there is out of reach; a `Prop` one is `proof_irrel_heq`.
+data field there is out of reach; a `Prop` one is `heqOfProofs`, which needs no
+`propext`: the two propositions are equal by the same congruence, taken over the
+fields before it.
 
 This exists for `ofOrig_inj`, and through it the injectivity of a constructor
 with a field at a copy: `injection` leaves an equation between the two sides'
 `ofOrig`s, for which `ofOrig_toOrig` is the wrong half.
 -/
+
+/--
+`HEq a b` for two proofs, of `ty[as]` and of `ty[bs]` where `ty` is stated over
+the fields `bs` and `es` says the fields `as` and `bs` are equal one by one, as
+the steps of a congruence do.  The two propositions are equal by the same
+congruence, taken over `ty`, and two proofs of one proposition are the same, so
+no `propext` is spent. -/
+def heqOfProofs (bs as es : Array Expr) (a b ty : Expr) : MetaM Expr := do
+  let tyFn ← mkLambdaFVars bs ty
+  let ct ← mkHCongrWithArity tyFn bs.size
+  let mut prf := ct.proof
+  let mut cty := ct.type
+  for z in *...bs.size do
+    let rest := (cty.bindingBody!.instantiate1 as[z]!).bindingBody!.instantiate1 bs[z]!
+    let e := es[z]!
+    -- the congruence over `ty` may want either kind of equation where the
+    -- one over the constructor had the other
+    let isEq := (← whnfR (← inferType e)).isAppOf ``Eq
+    let e ← match isEq, rest.bindingDomain!.isAppOf ``Eq with
+      | true, false => mkHEqOfEq e
+      | false, true => mkEqOfHEq e
+      | _, _ => pure e
+    prf := mkApp3 prf as[z]! bs[z]! e
+    cty := rest.bindingBody!.instantiate1 e
+  -- `ty[as] = ty[bs]`, and along it a proof of the one is one of the other
+  let tyEq ← mkEqOfHEq prf
+  let some (_, tyA, tyB) := (← inferType tyEq).eq? | throwError "not an equation of propositions"
+  let motive ← withLocalDeclD `q (mkSort .zero) fun q => do
+    withLocalDeclD `e (← mkEq tyA q) fun eq =>
+      withLocalDeclD `h q fun h => do
+        mkLambdaFVars #[q, eq] (← mkForallFVars #[h] (← mkHEq a h))
+  let base ← withLocalDeclD `h tyA fun h => do mkLambdaFVars #[h] (← mkHEqRefl a)
+  return mkApp (mkApp6 (mkConst ``Eq.rec [.zero, .succ .zero]) (mkSort .zero) tyA motive base tyB tyEq) b
 
 /-- `X.toOrig (X.ofOrig x)`, for `x` the original at `jdxs`. -/
 def backLhs (c : BridgeCtx) (k : Nat) (jdxs : Array Expr) (x : Expr) : MetaM Expr := do
@@ -4186,7 +4240,7 @@ def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Arra
           if c.b.members[c.copies[k']!.idx]!.isProp then
             -- two proofs of two propositions that differ only in what has
             -- moved underneath them: no equation is wanted or available,
-            -- and `proof_irrel_heq` closes the step below
+            -- and `heqOfProofs` closes the step below
             let cpn := c.copies[k']!.name
             unless nzs == 0 do
               throwError "field {z} of `{cn}` is a family of proofs at `{cpn}`"
@@ -4214,6 +4268,7 @@ def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Arra
     let ct ← mkHCongrWithArity (mkAppN (mkConst cn lvls) params) nf
     let mut prf := ct.proof
     let mut cty := ct.type
+    let mut done : Array Expr := #[]
     for z in *...nf do
       let a := lhss[z]!
       let b := fields[z]!
@@ -4223,7 +4278,9 @@ def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Arra
         | some s, false => mkHEqOfEq s
         | none,   true  => mkEqRefl b
         | none,   false =>
-          if a == b then mkHEqRefl b else mkAppM ``proof_irrel_heq #[a, b]
+          if a == b then mkHEqRefl b
+          else heqOfProofs (fields.extract 0 z) (lhss.extract 0 z) done a b (← inferType b)
+      done := done.push e
       prf := mkApp3 prf a b e
       cty := rest.bindingBody!.instantiate1 e
     mkEqOfHEq prf
@@ -7123,6 +7180,46 @@ def emit (p : Plan) : TermElabM Unit := do
         addMajorFirst b.numParams m.name cases (m.name ++ `casesOn)
     discard <| attempt? `Mumi.view m!"no `recOn` for `{m.name}`" <|
       addMajorFirst b.numParams m.name (m.name ++ `rec) (m.name ++ `recOn)
+  -- 13. the recursion at each nested target under the name Lean gives it,
+  -- `X.rec_k` of the block's first member, numbered by the target's motive
+  -- past the members'; a copy's recursor is stated at the type it copies
+  discard <| attempt? `Mumi.indind m!"no `rec_k` for the nested targets" <| do
+    let some first := b.members.find? (!copyNames.contains ·.name) | return
+    let some ri := (← getEnv).find? (first.name ++ `rec) | return
+    let written := b.members.filterMap fun m =>
+      if copyNames.contains m.name then none else some m.name
+    -- how many of the joint recursor's motives are at a member's type
+    let numMemberMotives ← forallTelescope ri.type fun xs _ => do
+      let mut k := 0
+      for x in xs.extract b.numParams xs.size do
+        let some head ← forallTelescope (← inferType x) fun ys c => do
+            unless c.isSort do return none
+            let some y := ys.back? | return none
+            return (← inferType y).getAppFn.constName?
+          | break
+        if written.contains head then k := k + 1
+      return k
+    let mut found : Array (Nat × Name) := #[]
+    for c in copyNames do
+      let some ci := (← getEnv).find? (c ++ `rec) | continue
+      let q? ← forallTelescope ci.type fun xs concl => do
+        return (xs.extract b.numParams xs.size).idxOf? concl.getAppFn
+      let some q := q? | continue
+      unless q ≥ numMemberMotives do continue
+      found := found.push (q + 1 - numMemberMotives, c ++ `rec)
+    -- each stated at the others' public names: a displayed motive takes the
+    -- value the recursion at a nested target computes, which is one of these
+    let pub (e : Expr) : Expr := e.replace fun
+      | .const n us => (found.find? (·.2 == n)).map fun (k, _) =>
+          .const (first.name ++ `rec |>.appendIndexAfter k) us
+      | _ => none
+    for (k, src) in found.qsort (·.1 < ·.1) do
+      let dst := first.name ++ `rec |>.appendIndexAfter k
+      if (← getEnv).contains dst then continue
+      let ci ← getConstInfo src
+      addDef dst ci.levelParams (pub ci.type) (mkConst src (ci.levelParams.map Level.param))
+        (compile := false)
+      markElabAsElim dst
 
 /-! ## The entry point -/
 
