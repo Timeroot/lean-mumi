@@ -17,14 +17,14 @@ Everything here is a declaration Lean rejects.  The cases Lean *accepts* are in
 `T` together with a copy of `Nonempty` specialised to `T` -- is heterogeneous.
 -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive T : Type where
   | mk1 : T
   | mkT : Nonempty T → T
 
--- the copy is displayed as the type it copies, so the constructor reads the way
--- it was written; `mumi.pp.nested` is what shows the block as it is built
-/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+-- the constructor takes what was written: it packs the original into the copy
+-- the kernel holds, so even with the copy shown as it is there is none to see
+/-- info: T.mkT : Nonempty T → T -/
 #guard_msgs in
 set_option mumi.pp.nested false in
 #check @T.mkT
@@ -44,7 +44,7 @@ set_option mumi.pp.nested false in
 info: @T.mutualRec : {motive_1 : T → Sort u_1} →
   {motive_2 : Nonempty T → Prop} →
     motive_1 T.mk1 →
-      ((a : Nonempty T) → motive_2 a → motive_1 (T.mkT a)) →
+      ((a : Nonempty T) → motive_2 a → motive_1 (T._ind.mkT a)) →
         (∀ (val : T) (val_ih : motive_1 val), motive_2 ⋯) → (t : T) → motive_1 t
 -/
 #guard_msgs in
@@ -94,25 +94,13 @@ def T.probe : T → Prop
   | .mk1 => False
   | .mkT h => T.witnessed h
 
--- a coercion needs somewhere to go, so a consumer whose type argument is still
--- open does not get one; ascribing the field is enough, and the copy's name is
--- still not what gets written
+-- the field a `match` binds is the original itself, read back out of the copy,
+-- so a consumer whose type argument is still open needs no help
 example (x : T) : True :=
   match x with
   | .mk1 => trivial
   | .mkT h => Nonempty.elim (h : Nonempty T) fun _ => trivial
 
-/--
-error: Application type mismatch: The argument
-  h
-has type
-  Nonempty T
-but is expected to have type
-  Nonempty (?m.6 h)
-in the application
-  Nonempty.elim h
--/
-#guard_msgs in
 example (x : T) : True :=
   match x with
   | .mk1 => trivial
@@ -135,16 +123,13 @@ in the application
 #guard_msgs in
 example (h : Nonempty Nat) : T := T.mkT h
 
--- `pp.explicit` asks for the term as it is, so the copy is not dressed up: that
--- is what keeps a mismatch whose two sides would both read `Nonempty T` from
--- being reported as one against itself, since Lean turns the option on for
--- exactly that case
-/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+-- `pp.explicit` and `pp.all` ask for the term as it is, which is the original
+/-- info: T.mkT : Nonempty T → T -/
 #guard_msgs in
 set_option pp.explicit true in
 #check @T.mkT
 
-/-- info: T.mkT : T.nested_Nonempty_1 → T -/
+/-- info: T.mkT : Nonempty.{1} T → T -/
 #guard_msgs in
 set_option pp.all true in
 #check @T.mkT
@@ -173,18 +158,8 @@ example : T := ⟨⟨T.mk1⟩⟩
 #guard_msgs in
 example := (⟨T.mk1⟩)
 
--- and it is off with the rest of the library
-/--
-error: Application type mismatch: The argument
-  T.mk1
-has type
-  T
-of sort `Type` but is expected to have type
-  T._shadow
-of sort `Prop` in the application
-  T.nested_Nonempty_1._shadow.intro T.mk1
--/
-#guard_msgs in
+-- and since `T.mkT` takes the original, it needs no detour at all once the
+-- block is declared, not even with the rest of the library off
 set_option mumi.enabled false in
 example : T := T.mkT ⟨T.mk1⟩
 
@@ -194,7 +169,7 @@ The rescued type is an ordinary inductive: it pattern-matches, it recurses
 structurally, and it runs.
 -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive U : Type where
   | leaf : Nat → U
   | node : U → U → U
@@ -226,7 +201,7 @@ Any inductive `Prop` nests the same way; `Nonempty` is not special.  `Exists`
 mentions the member inside a binder's domain rather than as a bare parameter.
 -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive V : Type where
   | mk0 : V
   | mkE : (∃ _ : V, True) → V
@@ -235,7 +210,7 @@ mumi_spec
 inductive Box (α : Type) : Prop where
   | intro : α → Box α
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive W : Type where
   | mk0 : Nat → W
   | mkB : Box W → W
@@ -258,7 +233,7 @@ inductive Two (α : Type) : Prop where
   | l : α → Two α
   | r : Nat → α → Two α
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive X2 : Type where
   | mk0 : X2
   | mkT : Two X2 → X2
@@ -276,7 +251,7 @@ rescuing the block has to leave it that way -- it decides whether the
 constructor is written `P.ghost h` or `P.ghost α h`.
 -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive P (α : Type) : Type where
   | leaf : α → P α
   | ghost : Nonempty (P α) → P α
@@ -299,7 +274,7 @@ example (α : Type) (h : Nonempty (P α)) : P α := P.ghost h
 #guard_msgs in
 #check @P.nested_Nonempty_1.eq_orig
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn, injEq])
 /-- An instance parameter is an instance parameter on the other side too. -/
 inductive PI (α : Type) [Inhabited α] : Type where
   | leaf : α → PI α
@@ -314,7 +289,7 @@ the universes do line up: *nested inductive datatypes parameters cannot contain
 local variables*.
 -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 inductive Ix : Nat → Type where
   | base : Ix 0
   | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
@@ -339,7 +314,7 @@ example (n : Nat) (h : Nonempty (Ix n)) : Ix (n + 1) :=
 -- its original the same way
 example : Ix 1 := Ix.step 0 ⟨Ix.base⟩
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 /-- Two occurrences that differ only in which local they mention share a member. -/
 inductive Iy : Nat → Type where
   | base : Iy 0
@@ -557,7 +532,7 @@ example (t : D9B) : D9B.tag t = D9B.tag t := by
 
 /-! ## Nesting inside nesting -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 inductive N : Type where
   | mk0 : N
   | mkL : Nonempty (List N) → N
@@ -596,7 +571,7 @@ info: @N.mutualRec : {motive_1 : N → Sort u_1} →
   {motive_2 : Nonempty (List N) → Prop} →
     {motive_3 : List N → Sort u_2} →
       motive_1 N.mk0 →
-        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N.mkL a)) →
+        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N._ind.mkL a)) →
           (∀ (val : List N) (val_ih : motive_3 val), motive_2 ⋯) →
             motive_3 [] →
               ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
@@ -610,7 +585,7 @@ info: @N.mutualRec_1 : {motive_1 : N → Sort u_1} →
   {motive_2 : Nonempty (List N) → Prop} →
     {motive_3 : List N → Sort u_2} →
       motive_1 N.mk0 →
-        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N.mkL a)) →
+        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N._ind.mkL a)) →
           (∀ (val : List N) (val_ih : motive_3 val), motive_2 ⋯) →
             motive_3 [] →
               ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
@@ -703,7 +678,7 @@ def T3.count : T3 → Nat
 occurrence, so which hypothesis belongs to which field has to be read off the
 recursor rather than guessed from a field's head. -/
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec (xfail := [rec])
 mutual
 inductive V3 : Type 1 where
   | tip : V3
@@ -754,7 +729,7 @@ inductive Vek3 (α : Type) : Nat → Type where
   | nil : Vek3 α 0
   | cons : (n : Nat) → α → Vek3 α n → Vek3 α (n + 1)
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec])
 mutual
 inductive A3 : Type 1 where
   | tip : A3
@@ -769,7 +744,7 @@ info: @A3.mutualRec_1 : {motive_1 : A3 → Sort u_1} →
     {motive_3 : (n : Nat) → Nonempty (Vek3 B3 n) → Prop} →
       {motive_4 : (a : Nat) → Vek3 B3 a → Sort u_3} →
         motive_1 A3.tip →
-          ((n : Nat) → (a : Nonempty (Vek3 B3 n)) → motive_3 n a → motive_1 (A3.mk n a)) →
+          ((n : Nat) → (a : Nonempty (Vek3 B3 n)) → motive_3 n a → motive_1 (A3._ind.mk n a)) →
             motive_2 B3.tip →
               (∀ (n : Nat) (val : Vek3 B3 n) (val_ih : motive_4 n val), motive_3 n ⋯) →
                 motive_4 0 Vek3.nil →
@@ -858,7 +833,7 @@ inductive FamPB (α : Type u) : Prop where
   | cons : FamPA α → FamPB α → FamPB α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Mu2A : Type 1 where
   | tip : Mu2A
@@ -1320,7 +1295,7 @@ inductive Sp (α : Type u) : Prop where
   | nil : Sp α
   | mk : α → SList (Sp α) → Sp α
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive St1 : Type 1 where
   | tip : St1

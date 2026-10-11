@@ -47,7 +47,12 @@ def publicName? (env : Environment) (n : Name) : Option Name :=
   match n with
   | .str p@(.str q "_ind") c =>
     let pub := Name.str q c
-    if env.contains pub && env.contains p then some pub else none
+    -- only where the writer's constructor is the kernel's under another name: one
+    -- that takes a field at the original of a copy is a different function
+    let alias := match env.find? pub with
+      | some (.defnInfo d) => d.value.getAppFn.constName? == some n && d.value.isConst
+      | _ => false
+    if alias && env.contains p then some pub else none
   | .str q "_ind" => if env.contains q then some q else none
   | _ => none
 
@@ -89,45 +94,6 @@ def restate (src dst : Name) (motiveAt : Option (Nat × Name) := none) (simp := 
   if simp then
     let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
     simpAttr.add dst default .global
-
-/--
-Everything Lean built for `X._ind`, under the names it would have built it under
-for an inductive `X`, for each aliased data member of a block with `numParams`
-parameters; and for each `Prop` member, the one-motive `casesOn` the block's
-recursor cuts down to. -/
-def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := do
-  for mem in members do
-    let ind := aliasIndName mem
-    let env ← getEnv
-    unless env.contains mem do continue
-    match env.find? ind with
-    | some (.inductInfo ii) =>
-      let motive? ← motiveNameOf? numParams mem
-      discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" <|
-        restate (ind ++ `casesOn) (mem ++ `casesOn) (motive?.map (numParams, ·))
-      for s in [`noConfusionType, `noConfusion, `ctorIdx, `below, `brecOn] do
-        discard <| attempt? `Mumi m!"no `{s}` for `{mem}`" <| restate (ind ++ s) (mem ++ s)
-      for c in ii.ctors do
-        let pub := Name.str mem c.getString!
-        discard <| attempt? `Mumi m!"no injectivity for `{pub}`" do
-          restate (c ++ `inj) (pub ++ `inj)
-          restate (c ++ `injEq) (pub ++ `injEq) (simp := true)
-        discard <| attempt? `Mumi m!"no `sizeOf` lemma for `{pub}`" <|
-          restate (c ++ `sizeOf_spec) (pub ++ `sizeOf_spec) (simp := true)
-    | _ =>
-      -- a `Prop` member, whose name is its shadow's: its case split is the
-      -- block's recursion with every hypothesis and every other motive dropped
-      unless ← forallTelescope (← getConstInfo mem).type fun _ s => pure s.isProp do
-        continue
-      unless env.contains (mem ++ `rec) do continue
-      -- the recursor's own universe is the first, as Lean orders them
-      let elim := (← getConstInfo (mem ++ `rec)).levelParams.take 1
-      discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" do
-        addSoloElim numParams elim.toArray true (mem ++ `rec) (mem ++ `casesP)
-          (forCases := true) (evenIfWeaker := true)
-        addMajorFirst numParams mem (mem ++ `casesP) (mem ++ `casesOn)
-    discard <| attempt? `Mumi m!"no `recOn` for `{mem}`" <|
-      addMajorFirst numParams mem (mem ++ `rec) (mem ++ `recOn)
 
 /-! ## Injectivity of a constructor that is a definition
 
@@ -771,6 +737,209 @@ partial def addJointRecs (members : Array Name) (defOrder : Array Nat) : TermEla
     addDef (m ++ `rec) recLps type value (compile := false)
     MultiuniverseInductive.markElabAsElim (m ++ `rec)
 
+/-! ## Stated over the originals, a `Prop` copy's bridge crossed by proof irrelevance
+
+A constructor with a field at a `Prop` copy `denest` made -- `T.mkT : Nonempty T
+→ T`, where the kernel holds a `T.nested_Nonempty_1` -- is the kernel's with the
+copy until the bridge `ofOrig`/`toOrig` exists.  Then the writer's `T.mkT` takes
+the original and packs it, and the block's recursion is stated over the
+originals: a motive at `Nonempty T`, a minor at `Nonempty.intro`.  Its value is
+the lowering's `mutualRec` at motives and minors moved across the bridge, and
+every such move is definitional, because the two sides of a `Prop` bridge are
+proofs and any two proofs of one proposition are one. -/
+
+/-- The last names of the constructors the writer has at the originals of
+copies, which a `match` on one is rewritten for (`Mumi.MatchView`). -/
+initialize heldExt : SimplePersistentEnvExtension Name NameSet ←
+  registerSimplePersistentEnvExtension {
+    addEntryFn    := fun s n => s.insert n
+    addImportedFn := fun as => as.foldl (init := {}) fun s a => a.foldl NameSet.insert s
+  }
+
+/-- Whether some constructor called `c`, last name only, is held at a copy. -/
+def isHeldName (env : Environment) (c : Name) : Bool :=
+  (heldExt.getState env).contains c
+
+/-- The bridge out of the copy `e` is an application of, if it is one: what it
+copies, and `ofOrig` and `toOrig` at its arguments. -/
+private def bridgeAt? (e : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
+  let .const n us := e.getAppFn | return none
+  let env ← getEnv
+  unless env.contains (n ++ `ofOrig) && env.contains (n ++ `toOrig) do return none
+  let args := e.getAppArgs
+  let toO := mkAppN (mkConst (n ++ `toOrig) us) args
+  let ofO := mkAppN (mkConst (n ++ `ofOrig) us) args
+  let ty ← whnf (← inferType toO)
+  unless ty.isForall do return none
+  return some (ty.bindingBody!, ofO, toO)
+
+/-- `e` read over the originals: a round trip through a bridge dropped, a copy's
+constructor read as the original's, a held constructor at a packed field as the
+writer's at the field. -/
+private partial def overOriginals (held : Array (Name × Name)) (e : Expr) : MetaM Expr := do
+  let post (e : Expr) : MetaM TransformStep := do
+    let f := e.getAppFn
+    let args := e.getAppArgs
+    match f with
+    | .const n us =>
+      -- only a whole application: `transform` meets the head and every partial
+      -- application on the way out to it
+      let arity ← try forallTelescope (← getConstInfo n).type fun xs _ => pure xs.size
+        catch _ => pure 0
+      unless args.size == arity && arity > 0 do return .continue
+      -- `toOrig (ofOrig y)` is `y`, and `toOrig (C.c xs)` is the original's `c`
+      if n.isStr && n.getString! == "toOrig" then
+        let x := args.back!
+        let xf := x.getAppFn
+        if let .const m _ := xf then
+          if m == n.getPrefix ++ `ofOrig then return .done x.appArg!
+          if m.getPrefix == n.getPrefix && (← getEnv).contains m then
+            -- the copy's constructor, and the original's of the same name
+            let ty ← whnf (← inferType e)
+            if let .const o ous := ty.getAppFn then
+              let oc := Name.str o m.getString!
+              if (← getEnv).contains oc then
+                let ii ← getConstInfoInduct o
+                let fields := x.getAppArgs.extract (x.getAppNumArgs - ((← getConstInfoCtor oc).numFields)) x.getAppNumArgs
+                -- a field at a copy in turn goes back to what it copies
+                let fields ← fields.mapM fun f => do
+                  match ← bridgeAt? (← inferType f) with
+                  | some (_, _, toO) => overOriginals held (mkApp toO f)
+                  | none => pure f
+                return .done (mkAppN (mkConst oc ous) (ty.getAppArgs.extract 0 ii.numParams ++ fields))
+      -- a held constructor at a field packed by `ofOrig` is the writer's at it
+      if let some (_, pub) := held.find? (·.1 == n) then
+        let args' := args.map fun a => match a.getAppFn with
+          | .const m _ => if m.isStr && m.getString! == "ofOrig" then a.appArg! else a
+          | _ => a
+        return .done (mkAppN (mkConst pub us) args')
+      return .continue
+    | _ => return .continue
+  Meta.transform e (post := post)
+
+/--
+Rebuild a telescope over the originals: each binder at a copy is put at what it
+copies and stands, under the binders after it, for its `ofOrig`; a motive over a
+copy is put over the original and stands for itself at `toOrig`; a minor premise
+is rebuilt in turn and stands for itself at its fields' `toOrig`. -/
+private partial def rebuildPi (held : Array (Name × Name)) (motives : Array Expr) (ty : Expr)
+    (k : Array Expr → Array Expr → Expr → MetaM α) (olds : Array Expr := #[]) : MetaM α := do
+  match ty with
+  | .forallE n d b bi =>
+    let d ← overOriginals held (← Core.betaReduce d)
+    if let some (orig, ofO, _) ← bridgeAt? d then
+      withLocalDecl n bi orig fun y =>
+        rebuildPi held motives (b.instantiate1 (mkApp ofO y)) k (olds.push y)
+    else
+      withLocalDecl n bi d fun y =>
+        rebuildPi held motives (b.instantiate1 y) k (olds.push y)
+  | _ => k olds #[] (← overOriginals held (← Core.betaReduce ty))
+
+/--
+`dst` as `src` stated over the originals: `src` is the lowering's `mutualRec`
+for a member or a copy, its component universes all `u`. -/
+partial def restateOverOriginals (held : Array (Name × Name)) (blockLps : List Name) (src dst : Name) :
+    MetaM Unit := do
+  let info ← getConstInfo src
+  let u := elimLevelName blockLps
+  let lvls := info.levelParams.map fun l => if blockLps.contains l then Level.param l else .param u
+  let ty := info.instantiateTypeLevelParams lvls
+  -- the new binders, and what each old one stands for in terms of them
+  let rec go (ty : Expr) (news images : Array Expr) : MetaM (Expr × Expr) := do
+    match ty with
+    | .forallE n d b bi =>
+      let d := d.headBeta
+      -- a motive over a copy: over the original, and the old one is it at `toOrig`
+      let motiveOverCopy? ← forallTelescope d fun zs s => do
+        unless s.isSort do return none
+        let some z := zs.back? | return none
+        let some (orig, _, toO) ← bridgeAt? (← inferType z) | return none
+        let newTy ← mkForallFVars zs.pop (← withLocalDecl `t .default orig fun t => do
+          mkForallFVars #[t] s)
+        return some (newTy, toO, zs.size)
+      if let some (newTy, _, arity) := motiveOverCopy? then
+        return ← withLocalDecl n bi newTy fun m => do
+          let img ← forallTelescope d fun zs _ => do
+            let some (_, _, toO) ← bridgeAt? (← inferType zs.back!) | throwError "lost the bridge"
+            mkLambdaFVars zs (mkAppN m (zs.pop.push (mkApp toO zs.back!)))
+          let _ := arity
+          go (b.instantiate1 img) (news.push m) (images.push img)
+      -- a binder at a copy: at the original, and the old one is its `ofOrig`
+      if let some (orig, ofO, _) ← bridgeAt? d then
+        return ← withLocalDecl n bi orig fun y =>
+          go (b.instantiate1 (mkApp ofO y)) (news.push y) (images.push (mkApp ofO y))
+      -- a minor premise, or anything else: rebuilt over the originals, and the old
+      -- one is the new at its arguments' `toOrig`
+      let isPi := d.isForall
+      let newTy ← if isPi then
+          rebuildPi held #[] d fun ys _ body => do mkForallFVars ys body
+        else overOriginals held d
+      withLocalDecl n bi newTy fun y => do
+        let img ← if !isPi then pure y else forallTelescope d fun xs _ => do
+          let mut args := #[]
+          for x in xs do
+            if let some (_, _, toO) ← bridgeAt? (← inferType x) then args := args.push (mkApp toO x)
+            else args := args.push x
+          mkLambdaFVars xs (mkAppN y args)
+        go (b.instantiate1 img) (news.push y) (images.push img)
+    | body =>
+      let body ← overOriginals held (← Core.betaReduce body)
+      let value := mkAppN (mkConst src lvls) images
+      return (← mkForallFVars news body, ← mkLambdaFVars news value)
+  let (type, value) ← go ty #[] #[]
+  addDef dst (u :: blockLps) type value (compile := false)
+  markElabAsElim dst
+
+/--
+For an aliased block whose `Prop` copies have their bridge: the writer's
+constructors held back at the copies, and the block's recursors stated over the
+originals, `X.rec` at each member written and `X.rec_k` at each copy. -/
+partial def publishOverOriginals (written : Array Name) : MetaM Unit := do
+  let env ← getEnv
+  let mut held : Array (Name × Name) := #[]
+  for m in written do
+    let some (.inductInfo ii) := env.find? (aliasIndName m) | continue
+    for c in ii.ctors do
+      let pub := Name.str m c.getString!
+      unless env.contains pub do held := held.push (c, pub)
+  if held.isEmpty then return
+  -- the constructors, each at the originals, packing what it is handed
+  for (c, pub) in held do
+    let ci ← getConstInfo c
+    let us := ci.levelParams.map Level.param
+    let rec build (ty : Expr) (news args : Array Expr) : MetaM (Expr × Expr) := do
+      match ty with
+      | .forallE n d b bi =>
+        if let some (orig, ofO, _) ← bridgeAt? d then
+          withLocalDecl n bi orig fun y =>
+            build (b.instantiate1 (mkApp ofO y)) (news.push y) (args.push (mkApp ofO y))
+        else
+          withLocalDecl n bi d fun y => build (b.instantiate1 y) (news.push y) (args.push y)
+      | body => return (← mkForallFVars news body, ← mkLambdaFVars news (mkAppN (mkConst c us) args))
+    let (type, value) ← build ci.type #[] #[]
+    addDef pub ci.levelParams (← publicize type) value .abbrev
+    setReducibleAttribute pub
+    modifyEnv (heldExt.addEntry · (Name.mkSimple pub.getString!))
+  -- the recursions, the members' and then the copies' in the lowering's order
+  let mut lps : List Name := []
+  for m in written do
+    for l in (← getConstInfo m).levelParams do
+      unless lps.contains l do lps := lps ++ [l]
+  for m in written do
+    if env.contains (m ++ `mutualRec) && !env.contains (m ++ `rec) then
+      restateOverOriginals held lps (m ++ `mutualRec) (m ++ `rec)
+  -- every copy's recursion, at the major it copies
+  let some first := written[0]? | return
+  let mut k := 1
+  let copies := env.constants.map₂.toList.filterMap fun (n, _) =>
+    if n.getPrefix == first && n.isStr && (n.getString!.startsWith "nested_")
+        && env.contains (n ++ `mutualRec) && env.contains (n ++ `toOrig) then some n else none
+  let copies := copies.toArray.qsort fun a b =>
+    (a.getString!.splitOn "_").getLast!.toNat! < (b.getString!.splitOn "_").getLast!.toNat!
+  for c in copies do
+    restateOverOriginals held lps (c ++ `mutualRec) (first ++ `rec |>.appendIndexAfter k)
+    k := k + 1
+
 /-- How many parameters `mem.casesOn` takes before its motive: those of the block. -/
 def casesParams (mem : Name) : MetaM Nat := do
   let ci ← getConstInfo (mem ++ `casesOn)
@@ -781,5 +950,63 @@ def casesParams (mem : Name) : MetaM Nat := do
         return c.isSort && (← inferType y).getAppFn.constName? == some mem
       if isMotive then return k
     throwError "`{mem}.casesOn` has no motive"
+
+/--
+Everything Lean built for `X._ind`, under the names it would have built it under
+for an inductive `X`, for each aliased data member of a block with `numParams`
+parameters; and for each `Prop` member, the one-motive `casesOn` the block's
+recursor cuts down to. -/
+def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := do
+  for mem in members do
+    let ind := aliasIndName mem
+    let env ← getEnv
+    unless env.contains mem do continue
+    match env.find? ind with
+    | some (.inductInfo ii) =>
+      let motive? ← motiveNameOf? numParams mem
+      -- a constructor the writer has at the originals of a copy is not the
+      -- kernel's, nor are what the kernel's `casesOn` and injectivity say of it
+      let heldCtor (c : Name) : Bool := (publicName? env c).isNone
+      unless ii.ctors.any heldCtor do
+        discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" <|
+          restate (ind ++ `casesOn) (mem ++ `casesOn) (motive?.map (numParams, ·))
+      -- a constructor at the originals rather than the kernel's is not the
+      -- kernel's `casesOn`'s to state, and the case split is cut out of `X.rec`
+      if !(← getEnv).contains (mem ++ `casesOn) && (← getEnv).contains (mem ++ `rec) then
+        let elim := (← getConstInfo (mem ++ `rec)).levelParams.take 1
+        discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" do
+          addSoloElim numParams elim.toArray false (mem ++ `rec) (mem ++ `casesD)
+            (forCases := true) (evenIfWeaker := true)
+          addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `casesOn)
+      for s in [`noConfusionType, `noConfusion, `ctorIdx, `below, `brecOn] do
+        discard <| attempt? `Mumi m!"no `{s}` for `{mem}`" <| restate (ind ++ s) (mem ++ s)
+      let pubs := ii.ctors.toArray.map fun c => Name.str mem c.getString!
+      for c in ii.ctors do
+        let pub := Name.str mem c.getString!
+        unless heldCtor c do
+          discard <| attempt? `Mumi m!"no injectivity for `{pub}`" do
+            restate (c ++ `inj) (pub ++ `inj)
+            restate (c ++ `injEq) (pub ++ `injEq) (simp := true)
+        -- and its injectivity is read back through the case split
+        if !(← getEnv).contains (pub ++ `inj) && ((← getEnv).find? pub).any (·.isDefinition) then
+          discard <| attempt? `Mumi m!"no injectivity for `{pub}`" <|
+            addInjViaCases numParams mem pub pubs
+        unless heldCtor c do
+          discard <| attempt? `Mumi m!"no `sizeOf` lemma for `{pub}`" <|
+            restate (c ++ `sizeOf_spec) (pub ++ `sizeOf_spec) (simp := true)
+    | _ =>
+      -- a `Prop` member, whose name is its shadow's: its case split is the
+      -- block's recursion with every hypothesis and every other motive dropped
+      unless ← forallTelescope (← getConstInfo mem).type fun _ s => pure s.isProp do
+        continue
+      unless env.contains (mem ++ `rec) do continue
+      -- the recursor's own universe is the first, as Lean orders them
+      let elim := (← getConstInfo (mem ++ `rec)).levelParams.take 1
+      discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" do
+        addSoloElim numParams elim.toArray true (mem ++ `rec) (mem ++ `casesP)
+          (forCases := true) (evenIfWeaker := true)
+        addMajorFirst numParams mem (mem ++ `casesP) (mem ++ `casesOn)
+    discard <| attempt? `Mumi m!"no `recOn` for `{mem}`" <|
+      addMajorFirst numParams mem (mem ++ `rec) (mem ++ `recOn)
 
 end Mumi

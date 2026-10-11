@@ -6,6 +6,7 @@ Authors: Alex Meiburg
 module
 
 public meta import Mumi.View
+public meta import Mumi.Public
 public meta import Lean.Elab.Match
 public meta import Lean.Elab.Do.Basic
 
@@ -315,5 +316,148 @@ meta def elabDoMatchThroughView : Lean.Elab.Do.DoElab := fun stx cont => do
     |>.setArg 6 (stx.raw[6].setArg 0 (mkNullNode newAlts))
   trace[Mumi.view] "matching through a view in a `do` block:{indentD m!"{stx}"}"
   Lean.Elab.Do.elabDoElem ⟨stx⟩ cont
+
+/-! ## A constructor at the original of a `Prop` copy
+
+`T.mkT : Nonempty T → T` packs its proof into the copy the kernel's `T._ind.mkT`
+holds, so a pattern `.mkT h` would bind `h` only under that packing, where Lean
+cannot see it.  Such a pattern is written against the kernel's constructor
+instead, its proof bound under a fresh name, and the writer's name given the
+proof read back out of the copy on the right-hand side.  The rewritten `match`
+is an ordinary one, nested patterns and all. -/
+
+/-- A constructor the writer has at the originals of copies: the kernel's, and
+for each of its explicit fields at a copy, the copy's `toOrig` and how many
+arguments that takes before the copy. -/
+private structure Held where
+  kernel : Name
+  /-- One entry per explicit field. -/
+  trips : Array (Option (Name × Nat))
+
+/-- `n` as such a constructor, if it is one. -/
+private meta def heldOf? (n : Name) : MetaM (Option Held) := do
+  let env ← getEnv
+  let some (.defnInfo _) := env.find? n | return none
+  let .str mem c := n | return none
+  let kernel := Name.str (MultiuniverseInductive.aliasIndName mem) c
+  let some (.ctorInfo ci) := env.find? kernel | return none
+  -- the writer's constructor is the kernel's under another name: nothing held
+  if (publicName? env kernel).isSome then return none
+  forallTelescope ci.type fun xs _ => do
+    let mut trips := #[]
+    for x in xs.extract ci.numParams xs.size do
+      unless (← x.fvarId!.getBinderInfo).isExplicit do continue
+      let ty ← inferType x
+      match ty.getAppFn with
+      | .const cp _ =>
+        if env.contains (cp ++ `toOrig) then
+          let arity ← forallTelescope (← getConstInfo (cp ++ `toOrig)).type fun ys _ => pure ys.size
+          trips := trips.push (some (cp ++ `toOrig, arity - 1))
+        else trips := trips.push none
+      | _ => trips := trips.push none
+    return some { kernel, trips }
+
+/-- The held constructor a pattern is headed by, if any: named outright, or
+written `.c` at a discriminant whose type is the member's. -/
+private meta def heldHead? (mem? : Option Name) (p : Syntax) :
+    TermElabM (Option (Held × Array Syntax)) := do
+  let (fn, args) := patHead p
+  if fn.getKind == ``Lean.Parser.Term.dotIdent then
+    let some mem := mem? | return none
+    let some id := fn.find? (·.isIdent) | return none
+    let some h ← heldOf? (mem ++ id.getId.eraseMacroScopes) | return none
+    return some (h, args)
+  if fn.isIdent then
+    for c in (← try resolveGlobalConst fn catch _ => pure []) do
+      if let some h ← heldOf? c then return some (h, args)
+  return none
+
+/-- The member a discriminant's type is, read through its alias. -/
+private meta def aliasedMemberOf? (d : Syntax) : TermElabM (Option Name) :=
+  withoutModifyingState do
+    try
+      let e ← withoutErrToSorry <| elabTerm d[1] none
+      let ty ← whnfR (← instantiateMVars (← inferType e))
+      let .const n _ := ty.getAppFn | return none
+      return publicName? (← getEnv) n
+    catch _ => return none
+
+/-- A pattern rewritten against the kernel's constructor wherever a held one
+heads it, and the bindings its right-hand side is to be given. -/
+private meta partial def rewriteHeld (mem? : Option Name) (p : Syntax) :
+    StateT (Array (Ident × Term) × Bool) TermElabM Syntax := do
+  if let some (h, args) ← heldHead? mem? p then
+    modify fun (ls, _) => (ls, true)
+    let mut newArgs := #[]
+    for a in args, trip? in h.trips do
+      match trip? with
+      | some (toOrig, n) =>
+        if a.isIdent then
+          let a' := mkIdentFrom a (a.getId.appendAfter "_copy")
+          let holes := (List.replicate n (← `(_))).toArray
+          let v ← `(@$(mkIdent toOrig) $holes* $a')
+          modify fun (ls, c) => (ls.push (⟨a⟩, v), c)
+          newArgs := newArgs.push a'.raw
+        else if a.getKind == ``Lean.Parser.Term.hole then newArgs := newArgs.push a
+        else throwErrorAt a "This field is a proof, held in a copy of its \
+          proposition; it can be written only as a name or as `_`."
+      | none => newArgs := newArgs.push (← rewriteHeld none a)
+    let head := mkIdentFrom p (`_root_ ++ h.kernel)
+    return if newArgs.isEmpty then head
+      else Syntax.node .none ``Lean.Parser.Term.app #[head, mkNullNode newArgs]
+  -- underneath, a held constructor can only be named outright
+  match p with
+  | .node info k args => return .node info k (← args.mapM (rewriteHeld none))
+  | _ => return p
+
+/-- The discriminants' alternatives with every held constructor rewritten. -/
+private meta def heldAlts (discrs alts : Array Syntax)
+    (withLets : Array (Ident × Term) → Syntax → TermElabM Syntax) : TermElabM (Array Syntax) := do
+  -- the cheap look first: some identifier in some pattern is a held name
+  let env ← getEnv
+  let named := alts.any fun alt => (alt[1].find? fun s =>
+    s.isIdent && (match s.getId.eraseMacroScopes with
+      | .str _ c => isHeldName env (.mkSimple c)
+      | _ => false)).isSome
+  unless named do throwUnsupportedSyntax
+  let mems ← discrs.mapM aliasedMemberOf?
+  let mut changed := false
+  let mut newAlts := #[]
+  for alt in alts do
+    let mut lists := #[]
+    let mut lets := #[]
+    let mut here := false
+    for pl in alt[1].getSepArgs do
+      let pats := pl.getSepArgs
+      let mut newPats := #[]
+      for i in *...pats.size do
+        let (p', (ls, c)) ← (rewriteHeld (mems[i]?.join) pats[i]!).run (lets, false)
+        lets := ls
+        here := here || c
+        newPats := newPats.push p'
+      lists := lists.push (sepNode ", " newPats)
+    unless here do newAlts := newAlts.push alt; continue
+    changed := true
+    if lists.size > 1 then throwUnsupportedSyntax
+    newAlts := newAlts.push <| alt.setArg 1 (sepNode " | " lists) |>.setArg 3 (← withLets lets alt[3])
+  unless changed do throwUnsupportedSyntax
+  return newAlts
+
+/-- Elaborate a `match` whose patterns name a held constructor against the
+kernel's constructor instead. -/
+@[term_elab Lean.Parser.Term.match]
+meta def elabMatchHeld : TermElab := fun stx expectedType? => do
+  unless stx[2].isNone do throwUnsupportedSyntax
+  let alts := stx[5][0].getArgs
+  let newAlts ← heldAlts stx[3].getSepArgs alts termLets
+  elabTerm (stx.setArg 5 (stx[5].setArg 0 (mkNullNode newAlts))) expectedType?
+
+/-- The same, in a `do` block. -/
+@[doElem_elab Lean.Parser.Term.doMatch]
+meta def elabDoMatchHeld : Lean.Elab.Do.DoElab := fun stx cont => do
+  unless stx.raw[3].isNone do throwUnsupportedSyntax
+  let alts := stx.raw[6][0].getArgs
+  let newAlts ← heldAlts stx.raw[4].getSepArgs alts doLets
+  Lean.Elab.Do.elabDoElem ⟨stx.raw.setArg 6 (stx.raw[6].setArg 0 (mkNullNode newAlts))⟩ cont
 
 end Mumi

@@ -248,13 +248,15 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
             if requireHeterogeneous && !(← inp.isHeterogeneous) && !inp.localIndices then
               throwError "This block is homogeneous once denested, so it is Lean's to elaborate"
             MultiuniverseInductive.lower inp
-            -- a lowered block's data members are aliased, and what Lean built
-            -- for each is restated under the writer's names
-            -- the members written, not the copies denesting added
-            let written := indTypes.map (·.name)
-            let env ← getEnv
-            if written.any (env.contains <| MultiuniverseInductive.aliasIndName ·) then
-              Mumi.publishAliased inp.numParams written
+          -- a lowered block's data members are aliased, and what Lean built for
+          -- each is restated under the writer's names -- once `denest` has built
+          -- its bridges, over which a constructor at a copy takes the original.
+          -- The members written, not the copies denesting added
+          let written := indTypes.map (·.name)
+          let env ← getEnv
+          if written.any (env.contains <| MultiuniverseInductive.aliasIndName ·) then
+            Mumi.publishOverOriginals written
+            Mumi.publishAliased context.numParams written
           buildFinalizeContext context.elabs' context.levelParams context.vars context.params
             context.views context.indFVars context.rs)
         vars elabs rs scopeLevelNames

@@ -295,6 +295,16 @@ in a block whose recursion is more than the kernel's. -/
 def Block.isAliased (b : Block) (i : Nat) : Bool :=
   b.aliased && !b.members[i]!.isProp && b.isWritten i
 
+/--
+Whether constructor `c` of an aliased member has a field at a `Prop` copy
+`denest` added.  The copy is equal to what it copies but not the same type, so
+the writer's `X.c` can take the original only once the bridge between the two
+exists; until then the block is stated over the kernel's `X._ind.c`, and `X.c`
+and `X.rec` are left for `Mumi.publishOverOriginals`. -/
+def Block.isHeld (b : Block) (c : CtorInfo) : Bool :=
+  b.isAliased c.owner && (Array.range b.size).any fun j =>
+    !b.isWritten j && b.members[j]!.isProp && c.type.containsFVar b.memberFVars[j]!.fvarId!
+
 /-- The inductive a data member is declared as: its own name, or `X._ind`. -/
 def Block.kernelName (b : Block) (i : Nat) : Name :=
   let m := b.members[i]!
@@ -357,7 +367,13 @@ Constructor `c` as the real world writes it, at the block's parameters and the
 constructor's own fields. -/
 def Block.userCtorApp (b : Block) (c : CtorInfo) (params fields : Array Expr) : Expr :=
   match b.members[c.owner]!.ghost? with
-  | none   => mkAppN (mkConst c.name b.ownLevels) (params ++ fields)
+  | none   =>
+    -- a constructor held back is the kernel's until the bridge gives it the
+    -- writer's type
+    let n := if b.isHeld c then
+        reroot b.members[c.owner]!.name (aliasIndName b.members[c.owner]!.name) c.name
+      else c.name
+    mkAppN (mkConst n b.ownLevels) (params ++ fields)
   | some g =>
     let q := (b.members[c.owner]!.ctors.findIdx? (·.name == c.name)).getD 0
     let oparams := (b.realTypeAt c.owner params #[]).getAppArgs
@@ -598,7 +614,8 @@ to the constructor, so `match` is Lean's own, nested patterns and all, and the
 variables it binds have the types the writer reads; `X.rec` is left free for a
 recursion over more than this block. -/
 def addAliasedInds (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
-    (isClass : Bool := false) (aliasOf : Name → Bool := fun _ => true) : MetaM Unit := do
+    (isClass : Bool := false) (aliasOf : Name → Bool := fun _ => true)
+    (holdCtor : Name → Bool := fun _ => false) : MetaM Unit := do
   -- a member not to alias keeps its name, and its constructors theirs
   let names := (indTypes.map (·.name)).filter aliasOf
   let us := levelParams.map Level.param
@@ -622,6 +639,7 @@ def addAliasedInds (levelParams : List Name) (numParams : Nat) (indTypes : Array
     setReducibleAttribute t.name
   for t in indTypes do
     for c in t.ctors do
+      if holdCtor c.name then continue
       addDef c.name levelParams c.type
         (mkConst (reroot t.name (aliasIndName t.name) c.name) us) .abbrev
       setReducibleAttribute c.name
@@ -1074,7 +1092,10 @@ private def emitUserGroup (b : Block) (which : Array Nat) (skipGhosts : Bool) : 
   if indTypes.isEmpty then return
   if b.aliased then
     let aliased := which.filterMap fun i => if b.isAliased i then some b.members[i]!.name else none
+    let held := which.flatMap fun i =>
+      (b.members[i]!.ctors.filter b.isHeld).map (·.name)
     addAliasedInds b.levelParams b.numParams indTypes b.isClass (aliased.contains ·)
+      (holdCtor := (held.contains ·))
   else
     addInd b.levelParams b.numParams indTypes b.isClass
 
@@ -2066,9 +2087,13 @@ private def emitPublicRecs (b : Block) (ns : Nests) : MetaM Unit := do
     let info ← getConstInfo src
     addDef dst (u :: b.levelParams) (info.instantiateTypeLevelParams lvls) (mkConst src lvls)
     markElabAsElim dst
+  -- a block holding a constructor back states its recursion over the originals
+  -- once the bridge is there; only the copies' own are published now
+  let holding := b.allCtors.any b.isHeld
   for i in *...b.size do
     -- a copy keeps the kernel's recursor if it has one, or the block's if it
     -- is a `Prop` copy, which has none of its own
+    if holding && b.isWritten i then continue
     unless b.isGhost i || (!b.isWritten i && !b.members[i]!.isProp) do
       publish (b.recName i) (b.members[i]!.name ++ `rec)
   let mut k := 1

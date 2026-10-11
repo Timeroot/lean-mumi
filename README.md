@@ -124,17 +124,21 @@ def T.two : T := T.mkT ⟨T.mk1⟩
 #print axioms T.two    -- 'T.two' does not depend on any axioms
 ```
 
-Underneath, the field really has the type of an auxiliary *copy* of `Nonempty`
-specialised to `T`, and the copy cannot be avoided: `T.mkT : Nonempty T → T` is
-precisely the constructor the kernel refuses. What can be arranged is that its
-name is never needed. A `Prop` copy is not merely isomorphic to the original but
-*equal*, by `propext`, and from the two halves of that `Iff` come a coercion each
-way plus a delaborator keyed off it — so the original goes in, comes out, and is
-what every signature, goal and error message shows. Crossing between them uses
-the coercions rather than a `cast` along the equality, which is why a rescued
-value depends on no axioms and still reduces. `set_option mumi.pp.nested false`
-turns the display off, and it is off under `pp.explicit` anyway, so a mismatch
-between a copy and its original cannot hide behind it.
+Underneath, the kernel holds the field at an auxiliary *copy* of `Nonempty`
+specialised to `T`, and the copy cannot be avoided: a constructor `Nonempty T →
+T` of the inductive itself is precisely what the kernel refuses. What can be
+arranged is that its name is never needed. A `Prop` copy is not merely
+isomorphic to the original but *equal*, and maps each way between the two are
+built by recursion, with no axiom. The inductive is declared as `T._ind`, and
+the writer's `T.mkT` is a definition at the type written that packs its
+argument into the copy. Every move across the copy is between two proofs of
+one proposition, so it holds by proof irrelevance alone: `T.rec` is stated over
+the originals, with a motive at `Nonempty T` and a minor premise at
+`Nonempty.intro`, and so are `T.rec_1`, `casesOn` and the rest, with their
+rules holding by `rfl`. A `match` that names `.mkT h` is matched against the
+kernel's constructor, `h` given the original read back out of the copy. Only
+`cases` on the kernel's eliminator still shows the copy, displayed as the type
+it copies; `set_option mumi.pp.nested false` turns that display off.
 
 **Nested inductives that already work are untouched.** Denesting is the kernel's
 own feature, so `Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates
