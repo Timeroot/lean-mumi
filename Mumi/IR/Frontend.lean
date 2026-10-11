@@ -352,9 +352,13 @@ private def elimUniverses (s : String) (cmd : Syntax) : CommandElabM (String × 
     s := String.Pos.Raw.extract s 0 tail ++ listed ++ String.Pos.Raw.extract s tail s.rawEndPos
   return (renameToken s "_ir_elim" elim.toString, elim :: own)
 
-/-- Whether a declared name is public, its binders displayed. -/
+/-- Whether a declared name is public, its binders displayed: an eliminator the
+block's public one is restated from (`X._ir_elim_casesOn`, see `Mumi.Displayed`) is. -/
 private def isPublic (n : Name) : Bool :=
-  !n.components.any fun c => (c.toString.startsWith "_ir") || (c.toString.startsWith "_nested")
+  !n.components.any fun c =>
+    let c := c.toString
+    (c.startsWith "_ir" && !c.startsWith "_ir_elim_") ||
+      c.startsWith "_nested"
 
 /-- The names of the binders of a recursive field's domain: each its own, or `a`
 for one written as an arrow, as Lean names it, fresh against `avoid`. -/

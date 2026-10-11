@@ -3,6 +3,7 @@ module
 public import Lean
 public import Mumi.IR.Frontend
 public import Mumi.Options
+public import Mumi.Displayed
 
 public section
 
@@ -70,6 +71,12 @@ well-formedness and the proofs off the node's (`_ir_X_invert`, by cases on
 the predicate at a motive `_ir_X_Inv` computed by cases on the node).  Iota
 is `rfl` by structure eta and proof irrelevance.  `P.rec` and `P.casesOn` come
 from `_ir_P_W`'s, with a hypothesis at each proof of a `Prop` member.
+
+Those are the encoding's own eliminators, and in such a block they are
+declared under `_ir_elim_` names (`X._ir_elim_rec`): the public `X.rec` and
+`P.rec` are the block's one recursion, with displayed `Prop` motives and a
+hypothesis at every field, which `Mumi.Displayed` builds out of the two
+(`publishJoint`), or, where it cannot, these restated.
 
 ## What is not here yet
 
@@ -199,6 +206,10 @@ structure Block where
   /-- The decoders over a `Prop` member: no part of the encoding, defined after
   the block by the member's recursor into any sort. -/
   propDecoders : Array Decoder := #[]
+  /-- Whether the eliminators are the encoding's own, under `_ir_elim_` names, the
+  public ones being the joint recursion over the data and the proofs that
+  `Mumi.Displayed` builds out of them. -/
+  internal : Bool := false
   deriving Inhabited
 
 /-- The eliminator prefix the block being elaborated is given: `_nested_` while
@@ -222,7 +233,7 @@ the nested pass, which rebuilds only the data members' (theirs mention no
 copy); the one into `Prop` set aside (`propPrefix`) where the large one, not
 `small`, takes the public name. -/
 def Block.forProp (b : Block) (small := true) : Block :=
-  { b with elimPrefix := if small then b.propPrefix else "" }
+  { b with elimPrefix := (if b.internal then "_ir_elim_" else "") ++ (if small then b.propPrefix else "") }
 
 /-- `attrs` without the tactic registrations where the eliminators are not the
 public ones. -/
@@ -3223,6 +3234,21 @@ private def finishLarge (b : Block) : CommandElabM Unit := do
   emitLarge b j
   emitPropDecoders b j
 
+/-- Whether the block's eliminators are to be the joint recursion over its data
+and its proofs: a block with a `Prop` member, but not a nested one's
+denesting (whose eliminators are restated over the originals) nor one whose
+`Prop` member may eliminate into any sort. -/
+private def internalFor (b : Block) : Bool :=
+  b.elimPrefix.isEmpty && b.members.any (·.prop) && (largeCandidate b).isNone
+
+/-- The block's public eliminators, out of the encoding's own. -/
+private def publishJoint (b : Block) : CommandElabM Unit := do
+  let ns ← getCurrNamespace
+  let members := b.members.mapIdx fun k m =>
+    { name := ns ++ m.name, prop := m.prop, ctors := m.ctors.map (ns ++ m.name ++ ·.name),
+      scope := b.recs[k]?.getD #[] : Mumi.Displayed.Member }
+  liftTermElabM <| Mumi.Displayed.publish { numParams := b.params.size, members, internal := "_ir_elim_" }
+
 /-- Lower mode, end to end: one stage engine per universe, in order, the
 certificates of every member in one `mutual` after them all, and the
 recursion of each engine at its own motives. -/
@@ -3251,6 +3277,7 @@ private def elaborateLower (b : Block) (order : Array (Sum Nat Nat)) : CommandEl
   finishLarge b
   emitEquations b
   emitSolo b
+  if b.internal then publishJoint b
 
 /-- Whether `s` has an implicit binder anywhere. -/
 private partial def hasImplicit (s : Syntax) : Bool :=
@@ -3273,6 +3300,7 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   blockConsts.set {}
   elimUniverse.set {}
   let order ← declarationOrder b
+  let b := if internalFor b then { b with internal := true, elimPrefix := "_ir_elim_" } else b
   if mumi.mahlo.get (← getOptions) then
     elaborateLower { b with lower := true } order
     return
@@ -3291,6 +3319,7 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   finishLarge b
   emitEquations b
   emitSolo b
+  if b.internal then publishJoint b
 
 
 /-! ## Universes written as `Sort` -/

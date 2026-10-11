@@ -25,7 +25,7 @@ set_option autoImplicit false
 namespace Deep
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -51,12 +51,15 @@ end
 -- index is irrelevant
 example (Γ : Ctx) (h h' : Ok Γ) : Sound Γ h = Sound Γ h' := rfl
 
+-- the block's recursion: `Ok`'s motive and `Sound`'s take the value at their context
 theorem sound (Γ : Ctx) (h : Ok Γ) : Sound Γ h :=
-  Ok.rec (motive_1 := fun Γ h => Sound Γ h) (motive_2 := fun _ _ _ => True)
-    .nil (fun Γ A h ih => .snoc Γ A h ih) trivial (fun _ _ _ _ _ _ => trivial) h
+  Ok.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
+    (motive_3 := fun Γ _ h => Sound Γ h) (motive_4 := fun _ _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
+    .nil (fun Γ A h _ _ ih => .snoc Γ A h ih) trivial (fun _ _ _ _ _ _ _ _ => trivial) h
 
 theorem Sound.ok {Γ : Ctx} {h : Ok Γ} (s : Sound Γ h) : True := by
-  induction s using Sound.rec (motive_1 := fun _ _ => True) <;> trivial
+  cases s <;> trivial
 
 end Deep
 
@@ -64,7 +67,7 @@ namespace DeepLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -88,9 +91,12 @@ end
 
 example (Γ : Ctx) (h h' : Ok Γ) : Sound Γ h = Sound Γ h' := rfl
 
+-- the block's recursion: `Ok`'s motive and `Sound`'s take the value at their context
 theorem sound (Γ : Ctx) (h : Ok Γ) : Sound Γ h :=
-  Ok.rec (motive_1 := fun Γ h => Sound Γ h) (motive_2 := fun _ _ _ => True)
-    .nil (fun Γ A h ih => .snoc Γ A h ih) trivial (fun _ _ _ _ _ _ => trivial) h
+  Ok.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
+    (motive_3 := fun Γ _ h => Sound Γ h) (motive_4 := fun _ _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
+    .nil (fun Γ A h _ _ ih => .snoc Γ A h ih) trivial (fun _ _ _ _ _ _ _ _ => trivial) h
 
 end DeepLower
 
@@ -102,7 +108,7 @@ it, which ties it into the block. -/
 namespace Rel
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -119,14 +125,15 @@ def Den : Ty → Type
   | .arr A B => Den A → Den B
 end
 
-theorem Conv.symm' {A : Ty} {t t' : Tm A} (h : Conv A t t') : Conv A t' t := by
-  induction h using Conv.rec with
-  | refl A t => exact .refl A t
-  | lam A B t t' h ih => exact .lam A B t' t ih
+theorem Conv.symm' {A : Ty} {t t' : Tm A} (h : Conv A t t') : Conv A t' t :=
+  Conv.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun A _ t _ t' _ _ => Conv A t' t)
+    () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())
+    (fun A t _ _ => .refl A t) (fun A B t t' _ _ _ _ _ ih => .lam A B t' t ih) h
 
 def size {A : Ty} (t : Tm A) : Nat :=
-  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Nat)
-    () (fun _ _ _ _ => ()) (fun _ _ => 1) (fun _ _ _ _ _ ih => ih + 1) (fun _ _ _ _ _ iht iht' => iht + iht') t
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Nat) (motive_3 := fun _ _ _ _ _ _ _ => True)
+    () (fun _ _ _ _ => ()) (fun _ _ => 1) (fun _ _ _ _ _ ih => ih + 1) (fun _ _ _ _ _ iht iht' _ => iht + iht')
+    (fun _ _ _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ => trivial) t
 example (A : Ty) (t t' : Tm A) (h : Conv A t t') : size (Tm.coe A t t' h) = size t + size t' := rfl
 
 end Rel
@@ -135,7 +142,7 @@ namespace RelLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -152,10 +159,10 @@ def Den : Ty → Type
   | .arr A B => Den A → Den B
 end
 
-theorem Conv.symm' {A : Ty} {t t' : Tm A} (h : Conv A t t') : Conv A t' t := by
-  induction h using Conv.rec with
-  | refl A t => exact .refl A t
-  | lam A B t t' h ih => exact .lam A B t' t ih
+theorem Conv.symm' {A : Ty} {t t' : Tm A} (h : Conv A t t') : Conv A t' t :=
+  Conv.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun A _ t _ t' _ _ => Conv A t' t)
+    () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())
+    (fun A t _ _ => .refl A t) (fun A B t t' _ _ _ _ _ ih => .lam A B t' t ih) h
 
 end RelLower
 
@@ -249,7 +256,7 @@ set_option mumi.mahlo false
 
 -- `Inh .nat` has a proof for each `n`: eliminating into `Nat` would tell them
 -- apart, so its recursor is into `Prop`
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive U : Type where
   | nat : U

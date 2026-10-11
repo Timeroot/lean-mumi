@@ -19,7 +19,7 @@ set_option autoImplicit false
 namespace Notations
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive U : Type where
   | base : U
@@ -48,10 +48,10 @@ def Fn : U → Nat → Nat
 end
 
 theorem Good.t (u : U) (g : Good u) : True := by
-  induction g with
+  cases g with
   | base => trivial
-  | pi a b h hb ih ihb => trivial
-  | sig a b ha hb ih => trivial
+  | pi a b h hb => trivial
+  | sig a b ha hb => trivial
 
 end Notations
 
@@ -59,7 +59,7 @@ namespace NotationsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive U : Type where
   | base : U
@@ -84,10 +84,10 @@ def Fn : U → Nat → Nat
 end
 
 theorem Good.t (u : U) (g : Good u) : True := by
-  induction g with
+  cases g with
   | base => trivial
-  | pi a b h hb ih ihb => trivial
-  | sig a b ha hb ih => trivial
+  | pi a b h hb => trivial
+  | sig a b ha hb => trivial
 
 end NotationsLower
 

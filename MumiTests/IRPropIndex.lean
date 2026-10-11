@@ -16,7 +16,7 @@ set_option autoImplicit false
 namespace Simple
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -41,10 +41,14 @@ end
 -- a proof is no data: the index is irrelevant
 example (Γ : Ctx) (h h' : Closed Γ) (A : Ty Γ) : Tm Γ h A = Tm Γ h' A := rfl
 
+-- the block's recursion: a hypothesis at every field, the proof `h` too, and
+-- `Closed`'s motive displayed, taking the value at its context
 def size {Γ : Ctx} {h : Closed Γ} {A : Ty Γ} (t : Tm Γ h A) : Nat :=
-  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ _ => Nat)
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => True)
+    (motive_4 := fun _ _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
-    (fun _ _ _ => 1) (fun _ _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
+    trivial (fun _ _ _ _ _ _ => trivial)
+    (fun _ _ _ _ => 1) (fun _ _ _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (h : Closed Γ) : size (Tm.lit Γ h) = 1 := rfl
 example (Γ : Ctx) (h : Closed Γ) (A B : Ty Γ) (f : Tm Γ h (.arr Γ A B)) (x : Tm Γ h A) :
     size (Tm.app Γ h A B f x) = size f + size x + 1 := rfl
@@ -59,7 +63,7 @@ namespace SimpleLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -83,10 +87,14 @@ end
 
 example (Γ : Ctx) (h h' : Closed Γ) (A : Ty Γ) : Tm Γ h A = Tm Γ h' A := rfl
 
+-- the block's recursion: a hypothesis at every field, the proof `h` too, and
+-- `Closed`'s motive displayed, taking the value at its context
 def size {Γ : Ctx} {h : Closed Γ} {A : Ty Γ} (t : Tm Γ h A) : Nat :=
-  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ _ => Nat)
+  Tm.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_3 := fun _ _ _ => True)
+    (motive_4 := fun _ _ _ _ => Nat)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
-    (fun _ _ _ => 1) (fun _ _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
+    trivial (fun _ _ _ _ _ _ => trivial)
+    (fun _ _ _ _ => 1) (fun _ _ _ _ _ _ _ _ _ _ ihf ihx => ihf + ihx + 1) t
 example (Γ : Ctx) (h : Closed Γ) (A B : Ty Γ) (f : Tm Γ h (.arr Γ A B)) (x : Tm Γ h A) :
     size (Tm.app Γ h A B f x) = size f + size x + 1 := rfl
 
@@ -100,7 +108,7 @@ extending a context takes a type at it. -/
 namespace Tied
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -120,8 +128,9 @@ def Val : (Γ : Ctx) → (h : Ok Γ) → Ty Γ h → Type
 end
 
 def depth {Γ : Ctx} {h : Ok Γ} (A : Ty Γ h) : Nat :=
-  Ty.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => Nat)
-    () (fun _ _ _ _ _ => ()) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => max ihA ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => True) (motive_3 := fun _ _ _ => Nat)
+    () (fun _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ => trivial)
+    (fun _ _ _ _ => 0) (fun _ _ _ _ _ _ ihA ihB => max ihA ihB + 1) A
 example (Γ : Ctx) (h : Ok Γ) (A : Ty Γ h) (B : Ty (.snoc Γ h A) (.snoc Γ h A)) :
     depth (.pi Γ h A B) = max (depth A) (depth B) + 1 := rfl
 
@@ -131,7 +140,7 @@ namespace TiedLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -151,8 +160,9 @@ def Val : (Γ : Ctx) → (h : Ok Γ) → Ty Γ h → Type
 end
 
 def depth {Γ : Ctx} {h : Ok Γ} (A : Ty Γ h) : Nat :=
-  Ty.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => Nat)
-    () (fun _ _ _ _ _ => ()) (fun _ _ _ => 0) (fun _ _ _ _ _ ihA ihB => max ihA ihB + 1) A
+  Ty.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => True) (motive_3 := fun _ _ _ => Nat)
+    () (fun _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ => trivial)
+    (fun _ _ _ _ => 0) (fun _ _ _ _ _ _ ihA ihB => max ihA ihB + 1) A
 example (Γ : Ctx) (h : Ok Γ) (A : Ty Γ h) (B : Ty (.snoc Γ h A) (.snoc Γ h A)) :
     depth (.pi Γ h A B) = max (depth A) (depth B) + 1 := rfl
 

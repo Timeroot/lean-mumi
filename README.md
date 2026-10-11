@@ -888,6 +888,19 @@ universes -- `A : Type 1` takes a proof of `P x`, `P` takes a `B : Type 3`,
 both modes (`MumiTests/IRUniversesProp.lean`): at the written universe each
 carrier stays where it was written, on one stage engine per universe.
 
+The recursor of a block with a `Prop` member is the block's one recursion, as a
+`mutual` Lean accepted would have it: a motive per member, the `Prop` ones
+*displayed* (after each index of data type, the value the recursion computed
+there), and a hypothesis at every field, the proofs included. The encoding has
+two recursions, one over the data and one over the proofs into `Prop`;
+`Mumi/Displayed.lean` builds the joint one out of them, with no axiom, and its
+rules hold by `rfl` wherever the data's own do. It reads the data's values a
+proof's constructor needs off the indices that name them, so a `Prop`
+constructor taking a datum its conclusion does not name (`Ok.yes (t : T)`),
+which only a recursion through the proof could value, keeps the encoding's two
+recursions for now; so does a block whose `Prop` member may eliminate into any
+sort, and a nested one.
+
 See [the frontend guide](Mumi/IR/README.md) for syntax, generated APIs, the exact
 supported fragment, and the reflection assumption. General constructor patterns
 use an indexed view; this is not yet an unrestricted Lean IR elaborator.
