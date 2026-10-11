@@ -360,7 +360,7 @@ already in hand.  Written that way `Tm.bump` needs no axioms at all.
 
 namespace Bump
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Tm : Type where
   | var : Nat → Tm
@@ -594,7 +594,7 @@ inductive UIok : (n : Nat) → UIVec n → Prop where
   | nil : UIok 0 .nil
 end
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UBSmall : Type 2 where
   | nil : UBSmall
@@ -690,7 +690,7 @@ which is why `UDDCtx.rec` below has the one motive. -/
 section
 universe v
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive UDDCtx : Type where
   | nil : UDDCtx
@@ -702,8 +702,12 @@ end
 end
 
 /--
-info: @UDDCtx.rec : {motive : UDDCtx → Sort u_1} →
-  motive UDDCtx.nil → ((Γ : UDDCtx) → motive Γ → motive Γ.more) → (t : UDDCtx) → motive t
+info: @UDDCtx.rec : {motive_1 : UDDCtx → Sort u_1} →
+  {motive_2 : (a : UDDCtx) → UDDTy a → Sort u_1} →
+    motive_1 UDDCtx.nil →
+      ((Γ : UDDCtx) → motive_1 Γ → motive_1 Γ.more) →
+        ((Γ : UDDCtx) → motive_1 Γ → motive_2 Γ (UDDTy.base Γ)) →
+          ({Γ : UDDCtx} → (a : Type u_2) → motive_1 Γ → motive_2 Γ (UDDTy.of a)) → (t : UDDCtx) → motive_1 t
 -/
 #guard_msgs(whitespace := lax) in
 #check @UDDCtx.rec
@@ -813,7 +817,7 @@ inductive".  Declared apart they are not mutually inductive, and `cases`,
 `induction`, `injection` and `deriving` all work with no help from us.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Val : Type where
   | unit
@@ -844,14 +848,15 @@ example (v : Val) : v = v := by
   | unit => rfl
   | pair a b => rfl
 
-/-! `Val.rec` is Lean's, with the one motive, and `induction` takes it. -/
+/-! `Val.rec` is the block's, a motive at each member; `induction` takes the
+eliminator of the inductive behind `Val`, which is Lean's own, with one. -/
 
 example (v : Val) : v = v := by
   induction v with
   | unit => rfl
   | pair a b ha hb => rfl
 
--- and the members really are separate declarations, so `deriving` reaches them
+-- and behind each member is a separate inductive, which `deriving` reaches
 deriving instance DecidableEq for Val
 
 example : (Val.pair .unit .unit) ≠ .unit := by decide
@@ -865,7 +870,7 @@ and the universe parameter are shared exactly as they are written, so nothing
 about the block as stated is lost by taking it apart.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive TmU (α : Type u) : Type u where
   | var : α → TmU α
@@ -891,8 +896,8 @@ example {α : Type u} (t : TmU α) (h : WfU α t) : True := by
   | var a => trivial
   | app f s ih => trivial
 
-/-! `WfU` is a genuine `inductive`, so a `cases` that has to refine the index
-goes through. -/
+/-! Behind `WfU` is a genuine `inductive`, so a `cases` that has to refine the
+index goes through. -/
 
 example {α : Type u} (a : α) (h : WfU α (.var a)) : True := by
   cases h
@@ -904,7 +909,7 @@ example {α : Type u} (a : α) (s : TyU α) (h : WfU α (.app (.var a) s)) :
   | app t s' hw => exact hw
 
 def TmU.head {α : Type u} (t : TmU α) : Option α :=
-  TmU.casesOn (motive := fun _ => Option α) t some (fun _ _ => none)
+  TmU.casesOn (motive_1 := fun _ => Option α) t some (fun _ _ => none)
 
 example : (TmU.var (α := Nat) 7).head = some 7 := rfl
 example : (TmU.app (TmU.var (α := Nat) 7) .base).head = none := rfl
@@ -1370,7 +1375,7 @@ it in the block.
 
 namespace DataOnDataTm
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1589,7 +1594,7 @@ constructor's own conclusion gives them.
 
 namespace DataOnDataLengthTm
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2508,7 +2513,7 @@ miss.
 
 namespace DataOnDataBuilt
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2745,7 +2750,7 @@ def Vec4.len : Vec4 → Nat :=
 example : Vec4.len Vec4.nil = 0 := rfl
 example (v : Vec4) (n : Len v) : Vec4.len (Vec4.cons v n) = Vec4.len v + 1 := rfl
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx7 : Type where
   | nil  : Ctx7
@@ -2781,7 +2786,7 @@ namespace BuiltTwo
 -- on it
 set_option mumi.separate false
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2802,7 +2807,7 @@ example (Γ : Ctx) : psize (Pair.mk Γ) = 7 := rfl
 -- both built out of fields rather than out of the one index that was kept, and
 -- both at the same member, so the two transports are along equations about the
 -- same pre-type
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Cx : Type where
   | nil  : Cx
@@ -2882,7 +2887,7 @@ and the block is refused only when two of them are.
 namespace RepeatedIdx
 set_option mumi.separate false
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2910,7 +2915,7 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (s : Sub Γ Δ) :
 
 -- three readings of the one field, so two of them are carried
 namespace Three
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2925,7 +2930,7 @@ end Three
 
 -- a repeat and a genuinely built index in the same constructor
 namespace Mixed
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2940,7 +2945,7 @@ end Mixed
 
 -- and the case where only the second reading can be the field
 namespace Choice
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3009,7 +3014,7 @@ with, and terms compute.
 
 namespace Tower
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3046,7 +3051,7 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A))
 
 -- two built indices reading a third, rather than one reading one
 namespace Chain
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3064,7 +3069,7 @@ end Chain
 -- transport substitutes is a term the earlier transport built and not a binder
 -- the constructor was handed
 namespace FromField
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3141,7 +3146,7 @@ turned away any more.
 namespace Promoted
 
 namespace AtBuilt
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3168,7 +3173,7 @@ end AtBuilt
 -- a field given as two indices, with a type at each of them.  Whichever reading
 -- stays the field, the other's type is promoted rather than stranded
 namespace BothRead
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3183,7 +3188,7 @@ end BothRead
 
 -- two fields promoted at once, at a member with three indices
 namespace Three
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3555,7 +3560,7 @@ family of variables, whose constructors give their deleted index as a value of a
 
 namespace CwF
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Con : Type where
   | nil  : Con
@@ -3595,7 +3600,7 @@ end CwF
 
 namespace Vars
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3643,7 +3648,7 @@ rather than the inductive one name over.
 
 namespace TwoLeave
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3720,7 +3725,7 @@ into the block ought to give and what no erasure of `F13` could have produced.
 
 namespace FnIndex
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx13 : Type where
   | nil  : Ctx13
@@ -3856,7 +3861,7 @@ state it at, and denesting would hand back a `Ty14` indexed by a name nobody
 wrote.  Neither has to happen.  `Ctx14` does not mention `Ty14`, so the block
 separates and Lean reads the two declarations in turn. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx14 : Type where
   | nil : Ctx14
@@ -5741,7 +5746,7 @@ any content, and no such proposition remains.  So both halves go back to Lean --
 the core first, since what left the block is stated over it -- and come out as
 Lean's own inductives, with everything that implies. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Tm : Type where
   | var : Nat → Tm

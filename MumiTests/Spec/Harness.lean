@@ -653,8 +653,15 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
       return
   let hypGaps ← hypGaps.get
   -- a recursor's universes: the motive's first, `u` or the first `u_i` the member's do not use
-  let levelsOf (owner : Name) (sorted : Bool) : TermElabM (List Name) := do
-    let own := (← getConstInfo owner).levelParams
+  let levelsOf (owner : Name) (sorted : Bool) (joint := true) : TermElabM (List Name) := do
+    -- a recursor over the whole block mentions every member, so it carries the
+    -- universes of all of them, as Lean's do; a case split only its own
+    let mut own : List Name := []
+    if !joint then own := (← getConstInfo owner).levelParams
+    if joint then
+      for m in members do
+        for l in (← getConstInfo m.name).levelParams do
+          unless own.contains l do own := own ++ [l]
     let elim := (List.range (own.length + 1)).map (fun i => if i == 0 then `u else Name.mkSimple s!"u_{i}")
       |>.find? (!own.contains ·) |>.getD `u
     return if sorted then elim :: own else own
@@ -755,7 +762,8 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
         withLocalDeclD `t major fun x => do
           let expected ← withInfos (uniformPs ++ ixs) implicit do
             mkForallFVars (uniformPs ++ #[mot] ++ ixs ++ #[x] ++ cminors) (mkAppN mot (ixs.push x))
-          let ok ← checkConst r .casesOnForm casesOn expected (levels := ← levelsOf m.name !(sortOf t).isProp)
+          let ok ← checkConst r .casesOnForm casesOn expected
+            (levels := ← levelsOf m.name (!(sortOf t).isProp) (joint := false))
           -- its rules: `casesOn` at a constructor is the minor premise at the fields
           unless (sortOf t).isProp || !ok do
             for ci in [:cs.size] do

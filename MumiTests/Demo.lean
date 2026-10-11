@@ -623,7 +623,7 @@ refuses the block, because `R`'s arity names its siblings.
 
 namespace TwoHosts
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive C : Type where
   | nil : C
@@ -998,7 +998,7 @@ indexed by a function.
 
 namespace FunIndex
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

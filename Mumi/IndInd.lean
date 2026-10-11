@@ -7063,28 +7063,12 @@ def emit (p : Plan) : TermElabM Unit := do
         else
           for a in ready do groups := groups.push #[a]
           done := done ++ ready
+      -- as a heterogeneous block's data members are: `X._ind` with constructors
+      -- `X._ind.c`, behind a reducible `X` and `@[match_pattern]` `X.c` at the
+      -- types the writer wrote, so that a pattern, a field and a goal all read
+      -- the writer's names
       for g in groups do
-        let toInd (e : Expr) : Expr := e.replace fun
-          | .const n us =>
-            if g.any (names[·]! == n) then some (.const (peelIndName n) us) else none
-          | _ => none
-        addInd b.us b.numParams <| g.map fun a =>
-          let t := p.peeled[a]!
-          { t with name := peelIndName t.name, type := toInd t.type
-                   ctors := t.ctors.map fun c => { c with type := toInd c.type } }
-        -- and left as a plain definition, not a reducible one, so that the
-        -- namespace `.var` is looked up in is still the writer's: what resolves a
-        -- dot stops at the head of the expected type, and unfolding it would send
-        -- the reader to a constructor of `Tm._ind` that was never declared
-        for a in g do
-          let t := p.peeled[a]!
-          addDef t.name b.us t.type (mkConst (peelIndName t.name) (b.us.map Level.param))
-          -- the one place the head is `Tm._ind` regardless is a field of a
-          -- constructor, since an inductive's own occurrences in its
-          -- constructors are the one thing the kernel will not let a definition
-          -- stand in for
-          for c in t.ctors do
-            modifyEnv (Lean.addAlias · (Name.str (peelIndName t.name) c.name.getString!) c.name)
+        MultiuniverseInductive.addAliasedInds b.us b.numParams (g.map (p.peeled[·]!))
       let total := b.size + p.peeled.size
       let keptAt := (Array.range total).filter (!p.peeledIdxs.contains ·)
       let pubRec (o : Nat) : Name :=
@@ -7114,6 +7098,8 @@ def emit (p : Plan) : TermElabM Unit := do
               m!"no recursor over the whole block for `{n}`" <|
             widenWithPeeled b p.peeled p.peeledIdxs pubRec (peelIndName n ++ `rec) (n ++ `rec)
               coreAt p.peeledIdxs[k]! (compile := false)
+      -- and what Lean built for each `X._ind`, under the writer's names
+      publishAliased b.numParams (p.peeled.map (·.name))
 
   -- 10. one recursor per member with the other members' motives discharged,
   -- which is the shape `induction` can drive, and the same one without its
@@ -7260,6 +7246,18 @@ private def groupCommand (elems : Array Syntax) (g : Array Nat) : Syntax :=
   if es.size == 1 then es[0]!
   else mkNode ``Lean.Parser.Command.mutual
     #[mkAtomFrom es[0]! "mutual", mkNullNode es, mkAtomFrom es.back! "end"]
+
+/--
+`groupCommand`, each member declared as `X._ind` and every mention of one of
+them renamed with it, constructors included: Lean then writes `X._ind.rec` over
+the component, and `X.rec` is left for the recursion over the whole block. -/
+private def aliasedGroupCommand (elems : Array Syntax) (g : Array Nat) : Syntax :=
+  let names := g.map fun i => elems[i]![1][1][0].getId
+  Id.run <| (groupCommand elems g).replaceM fun s => pure <|
+    if !s.isIdent then none else
+    let id := s.getId
+    (names.find? (·.isPrefixOf id)).map fun n =>
+      mkIdentFrom s (id.replacePrefix n (MultiuniverseInductive.aliasIndName n))
 
 /-- Carry the docstrings the writer put on the block through to what was built. -/
 def addViewDocStrings (views : Array InductiveView) : TermElabM Unit := do
@@ -7482,9 +7480,29 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       -- in dependency order, since a later group is stated over an earlier one.
       -- Lean's to accept or not, and if not there is still the erasure to fall
       -- back on
-      unless ← tentatively (groups.forM fun g => elabCommand (groupCommand elems g)) do
+      -- each component Lean's, under `X._ind`, and then the block's recursion over
+      -- all of them under the writer's names
+      let names := views.map (·.declName)
+      let joined : CommandElabM Unit := do
+        for g in groups do
+          -- the block's parameters, not a component's: Lean promotes an index it
+          -- finds fixed across what it is handed, and a component's members can
+          -- fix one the block's others do not
+          withScope (fun sc => { sc with
+              opts := inductive.autoPromoteIndices.set sc.opts false }) do
+            elabCommand (aliasedGroupCommand elems g)
+          liftTermElabM <| addPublicAliases (g.map (names[·]!))
+        liftTermElabM do
+          addJointRecs names (groups.flatMap id)
+          let np ← names.foldlM (init := 1000000) fun a n => do
+            return min a (← getConstInfoInduct (MultiuniverseInductive.aliasIndName n)).numParams
+          publishAliased np names
+      if let some why ← tentatively? joined then
         set s
-        go false
+        trace[Mumi.indind] "the components could not be joined under the block's recursion: {why}"
+        unless ← tentatively (groups.forM fun g => elabCommand (groupCommand elems g)) do
+          set s
+          go false
     | none =>
       unless ← peeled.get do throw ex
       set s

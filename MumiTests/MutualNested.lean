@@ -383,7 +383,7 @@ nor lowering runs.
 
 namespace Separates
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive A : Type 1 where
   | tip

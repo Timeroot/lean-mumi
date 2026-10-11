@@ -67,4 +67,25 @@ meta def elabPrintAliased : CommandElab
     else throwUnsupportedSyntax
   | _ => throwUnsupportedSyntax
 
+open Lean Elab Command Lean.Elab in
+/-- `deriving instance C for X`, for an aliased `X`, is the handler's for `X._ind`,
+which `X` unfolds to: what it builds is found for `X` by instance search. -/
+@[command_elab Lean.Parser.Command.«deriving»]
+meta def elabDerivingAliased : CommandElab := fun stx => do
+  let `(deriving $[noncomputable%$_nc?]? instance $[$_classes],* for $[$decls],*) := stx
+    | throwUnsupportedSyntax
+  let env ← getEnv
+  let mut repl : Array (Syntax × Syntax) := #[]
+  for d in decls do
+    unless d.raw.isIdent do continue
+    let some n ← (try some <$> liftCoreM (realizeGlobalConstNoOverload d.raw) catch _ => pure none)
+      | continue
+    let ind := MultiuniverseInductive.aliasIndName n
+    if (env.find? n).any (·.isDefinition) && (env.find? ind).any (·.isInductive) then
+      repl := repl.push (d.raw, mkIdentFrom d.raw (`_root_ ++ ind))
+  if repl.isEmpty then throwUnsupportedSyntax
+  let stx' ← stx.replaceM fun s => pure <| (repl.find? fun (d, _) =>
+    s.isIdent && s.getId == d.getId && s.getPos? == d.getPos?).map (·.2)
+  elabCommand stx'
+
 end Mumi
