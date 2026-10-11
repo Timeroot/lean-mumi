@@ -18,7 +18,7 @@ set_option autoImplicit false
 namespace UnivUpper
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -37,9 +37,10 @@ end
 example : F (A.a1 A.a0 (fun _ => A.a0)) = (Type → Type) := rfl
 example : G (B.b1 A.a0 Nat B.b0 (fun _ => B.b0)) = (Type × (Type 2 → Type 2)) := rfl
 
-/-- `B` recurses on its `A` through `A`'s own recursor: each is Lean's. -/
-def sizeA : A → Nat := A.rec 0 (fun _ _ ih _ => ih + 1)
-def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => sizeA x + ih + 1)
+/-- One recursion over both, across the two universes, as a `mutual` has: `B`'s
+minor premise takes a hypothesis at its `A`. -/
+def sizeA : A → Nat := A.rec (motive_2 := fun _ => Nat) 0 (fun _ _ ih _ => ih + 1) 0 (fun _ _ _ _ ihx ihb _ => ihx + ihb + 1)
+def sizeB : B → Nat := B.rec (motive_1 := fun _ => Nat) 0 (fun _ _ ih _ => ih + 1) 0 (fun _ _ _ _ ihx ihb _ => ihx + ihb + 1)
 
 example : sizeB (B.b1 (A.a1 A.a0 fun _ => A.a0) (fun x => x) B.b0 fun _ => B.b0) = 2 := rfl
 
@@ -56,7 +57,7 @@ end UnivUpper
 namespace UnivLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -72,8 +73,8 @@ def G : B → Type 3
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
 
-def sizeA : A → Nat := A.rec 0 (fun _ _ ih _ => ih + 1)
-def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => sizeA x + ih + 1)
+def sizeA : A → Nat := A.rec (motive_2 := fun _ => Nat) 0 (fun _ _ ih _ => ih + 1) 0 (fun _ _ _ _ ihx ihb _ => ihx + ihb + 1)
+def sizeB : B → Nat := B.rec (motive_1 := fun _ => Nat) 0 (fun _ _ ih _ => ih + 1) 0 (fun _ _ _ _ ihx ihb _ => ihx + ihb + 1)
 
 -- a closed `F`/`G` does not normalise here; the values are given through the equations
 def v0 : F A.a0 := cast F_a0.symm Nat

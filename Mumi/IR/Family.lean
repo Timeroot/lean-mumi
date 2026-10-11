@@ -216,6 +216,11 @@ structure Block where
 a denesting is. -/
 initialize nestedPrefix : IO.Ref String ← IO.mkRef ""
 
+/-- While a written block is elaborated a component at a time: the members of
+the components so far and the number of parameters, whose one recursion is
+built once they all are. -/
+initialize jointMembers : IO.Ref (Option (Array Mumi.Displayed.Member × Nat)) ← IO.mkRef none
+
 /-- `s` with each subterm `f` maps replaced, outermost first. -/
 partial def replaceStx (f : Syntax → Option Syntax) (s : Syntax) : Syntax :=
   match f s with
@@ -3234,12 +3239,16 @@ private def finishLarge (b : Block) : CommandElabM Unit := do
   emitLarge b j
   emitPropDecoders b j
 
-/-- Whether the block's eliminators are to be the joint recursion over its data
-and its proofs: a block with a `Prop` member, but not a nested one's
-denesting (whose eliminators are restated over the originals) nor one whose
-`Prop` member may eliminate into any sort. -/
-private def internalFor (b : Block) : Bool :=
-  b.elimPrefix.isEmpty && b.members.any (·.prop) && (largeCandidate b).isNone
+/-- Whether the block's eliminators are to be the one recursion over all of it,
+which the encoding's are not: a block with a `Prop` member, whose proofs the
+encoding recurses over apart, or with carriers at several universes, whose
+recursions it splits; but not a nested one's denesting (whose eliminators are
+restated over the originals) nor one whose `Prop` member may eliminate into any
+sort. -/
+private def internalFor (b : Block) (deferred : Bool) : Bool :=
+  let levels := (b.members.filter (!·.prop)).map (·.level)
+  b.elimPrefix.isEmpty && (largeCandidate b).isNone &&
+    (deferred || b.members.any (·.prop) || levels.any (· != levels[0]!))
 
 /-- The block's public eliminators, out of the encoding's own. -/
 private def publishJoint (b : Block) : CommandElabM Unit := do
@@ -3247,6 +3256,11 @@ private def publishJoint (b : Block) : CommandElabM Unit := do
   let members := b.members.mapIdx fun k m =>
     { name := ns ++ m.name, prop := m.prop, ctors := m.ctors.map (ns ++ m.name ++ ·.name),
       scope := b.recs[k]?.getD #[] : Mumi.Displayed.Member }
+  -- one component of several: the recursion is built once they all are
+  if let some (acc, _) ← jointMembers.get then
+    let members := members.map fun m => { m with scope := m.scope.map (· + acc.size) }
+    jointMembers.set (some (acc ++ members, b.params.size))
+    return
   liftTermElabM <| Mumi.Displayed.publish { numParams := b.params.size, members, internal := "_ir_elim_" }
 
 /-- Lower mode, end to end: one stage engine per universe, in order, the
@@ -3300,7 +3314,7 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   blockConsts.set {}
   elimUniverse.set {}
   let order ← declarationOrder b
-  let b := if internalFor b then { b with internal := true, elimPrefix := "_ir_elim_" } else b
+  let b := if internalFor b (← jointMembers.get).isSome then { b with internal := true, elimPrefix := "_ir_elim_" } else b
   if mumi.mahlo.get (← getOptions) then
     elaborateLower { b with lower := true } order
     return
@@ -4165,14 +4179,46 @@ partial def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
         i := j + 1
         continue
     i := i + 1
-  for (comp, _) in groups do
+  -- carriers in several components, each an induction-recursion: the block's
+  -- one recursion is built over theirs, once they are all declared
+  let carrierGroups := groups.filter fun (comp, _) => comp.any isInductive
+  let mut joint := (← Family.nestedPrefix.get).isEmpty && carrierGroups.size > 1 &&
+    carrierGroups.all (isIR ·.1)
+  for (comp, _) in carrierGroups do
+    if !(← (comp.filter isInductive).filterM isPropInductive).isEmpty then joint := false
+  if joint then Family.jointMembers.set (some (#[], 0))
+  let collected ← try
+      for (comp, _) in groups do
+        elaborateGroup comp joint
+      Family.jointMembers.get
+    finally
+      if joint then Family.jointMembers.set none
+  if let some (ms, np) := collected then
+    -- the members in the order written, which the recursion's motives follow
+    let ns ← getCurrNamespace
+    let written := (elems.filter isInductive).map (·[1][1][0].getId)
+    let rank (m : Mumi.Displayed.Member) := (written.idxOf? (m.name.replacePrefix ns .anonymous)).getD written.size
+    let perm := (Array.range ms.size).qsort fun a b => rank ms[a]! < rank ms[b]!
+    let members := perm.map fun k =>
+      { ms[k]! with scope := ms[k]!.scope.map fun j => (perm.idxOf? j).getD j }
+    liftTermElabM <| Mumi.Displayed.publish { numParams := np, members, internal := "_ir_elim_" }
+where
+  elaborateGroup (comp : Array Syntax) (joint : Bool) : CommandElabM Unit := do
+    let isInductive (e : Syntax) := e[1].isOfKind ``Parser.Command.«inductive»
     let inductives := comp.filter isInductive
     let props ← inductives.filterM isPropInductive
     if inductives.isEmpty || inductives.size == comp.size || props.size == inductives.size then
       -- Lean's own: a block of definitions, or of inductives, with `mutual` taking several
       if h : comp.size = 1 then elabCommand comp[0]
       else elabCommand (mkNode ``Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode comp, mkAtom "end", mkNullNode])
-    else if (← Family.isIndexed comp) || !(← Family.nestedPrefix.get).isEmpty then Family.elaborate comp
-    else elaborate comp
+    else
+      -- carriers at several universes: the block's one recursion is built over
+      -- the encoding's, which only this path does
+      let datas ← inductives.filterM fun e => return !(← isPropInductive e)
+      let levels ← datas.mapM levelOf
+      let several := levels.any (· != levels.getD 0 "")
+      if (← Family.isIndexed comp) || several || joint || !(← Family.nestedPrefix.get).isEmpty then
+        Family.elaborate comp
+      else elaborate comp
 
 end Mumi.IndRec

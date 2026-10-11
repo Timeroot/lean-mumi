@@ -894,7 +894,9 @@ The recursor of a block with a `Prop` member is the block's one recursion, as a
 there), and a hypothesis at every field, the proofs included. The encoding has
 two recursions, one over the data and one over the proofs into `Prop`;
 `Mumi/Displayed.lean` builds the joint one out of them, with no axiom, and its
-rules hold by `rfl` wherever the data's own do. It reads the data's values a
+rules hold by `rfl` wherever the data's own do. The same goes for carriers at
+several universes, which the encoding declares a component at a time, each with
+a recursion of its own (`MumiTests/IRUniverses.lean`). It reads the data's values a
 proof's constructor needs off the indices that name them, so a `Prop`
 constructor taking a datum its conclusion does not name (`Ok.yes (t : T)`),
 which only a recursion through the proof could value, keeps the encoding's two
