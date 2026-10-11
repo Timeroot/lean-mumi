@@ -6,38 +6,26 @@ Authors: Alex Meiburg
 module
 
 public meta import Mumi.Public
-public meta import Lean.PrettyPrinter.Delaborator.Basic
-public meta import Lean.PrettyPrinter.Delaborator.Builtins
 public meta import Lean.Elab.Print
 
 /-!
-# Displaying an aliased member under the writer's name
+# Commands at an aliased member
 
 An aliased data member is declared as `X._ind` with constructors `X._ind.c`, and
 `X` and `X.c` unfold to them (`Lean.Elab.MultiuniverseInductive.addAliasedInds`).
-What Lean computes -- the goals `cases` leaves, the type of a field a `match`
-binds -- is stated over the inductive, so it would read `X._ind`.  The two are
-the same up to unfolding, so this delaborator shows the writer's name wherever
-the internal one would appear.  `pp.explicit` shows the term as it is.
+Nothing is displayed under a name it does not have: what `cases` and `induction`
+leave is stated over `X` because their eliminators are (`Mumi.Public`), not
+because `X._ind` is printed as `X`.
 
-`#print X` and `#print X.c` print what Lean prints for an inductive and its
-constructor, which is what the writer declared; `#print X._ind` shows the
-declaration as it is.
+`#print X` and `#print X.c` print the declarations the writer has under those
+names -- the type former `X` and its constructors, at their own types -- in the
+form Lean prints an inductive in; `#print X._ind` shows the kernel's.
+`deriving instance C for X` is the handler's for `X._ind`.
 -/
 
 public section
 
 namespace Mumi
-
-open Lean PrettyPrinter Delaborator SubExpr in
-/-- Display `X._ind` as `X`, and `X._ind.c` as `X.c`. -/
-@[delab app, delab const]
-meta def delabAliased : Delab := do
-  if ← getPPOption getPPExplicit then failure
-  let e ← getExpr
-  let .const n us := e.getAppFn | failure
-  let some pub := publicName? (← getEnv) n | failure
-  withTheReader SubExpr ({ · with expr := mkAppN (.const pub us) e.getAppArgs }) delab
 
 open Lean Elab Command Lean.Elab in
 /-- `#print` an aliased member as the inductive it was written as, and its

@@ -10,7 +10,7 @@ public import Mumi.Runtime
 public import Mumi.Lowering
 public import Mumi.View
 public import Mumi.Public
-public import Mumi.AliasDelab
+public import Mumi.AliasCommands
 public import Mumi.Denest
 public import Mumi.IndInd
 public import Mumi.Bridge

@@ -26,14 +26,13 @@ inductive T : Type where
 -- the kernel holds, so even with the copy shown as it is there is none to see
 /-- info: T.mkT : Nonempty T → T -/
 #guard_msgs in
-set_option mumi.pp.nested false in
 #check @T.mkT
 
-/-- info: Nonempty T : Prop -/
+/-- info: T.nested_Nonempty_1 : Prop -/
 #guard_msgs in
 #check @T.nested_Nonempty_1
 
-/-- info: T.nested_Nonempty_1.intro : ∀ (val : T), Nonempty T -/
+/-- info: T.nested_Nonempty_1.intro : ∀ (val : T), T.nested_Nonempty_1 -/
 #guard_msgs in
 #check @T.nested_Nonempty_1.intro
 
@@ -42,25 +41,18 @@ set_option mumi.pp.nested false in
 -- lined up
 /--
 info: @T.mutualRec : {motive_1 : T → Sort u_1} →
-  {motive_2 : Nonempty T → Prop} →
+  {motive_2 : T.nested_Nonempty_1 → Prop} →
     motive_1 T.mk1 →
-      ((a : Nonempty T) → motive_2 a → motive_1 (T._ind.mkT a)) →
+      ((a : T.nested_Nonempty_1) → motive_2 a → motive_1 (T._ind.mkT a)) →
         (∀ (val : T) (val_ih : motive_1 val), motive_2 ⋯) → (t : T) → motive_1 t
 -/
 #guard_msgs in
 #check @T.mutualRec
 
 -- the copy is a `Prop` with the same constructors as the original, so the two
--- are equal, and saying so lets the original type back into the user's code.
--- It reads as a triviality precisely because it holds: both sides display as
--- the original.
-/-- info: T.nested_Nonempty_1.eq_orig : Nonempty T = Nonempty T -/
-#guard_msgs in
-#check @T.nested_Nonempty_1.eq_orig
-
+-- are equal, which is what lets the original type back into the user's code
 /-- info: T.nested_Nonempty_1.eq_orig : T.nested_Nonempty_1 = Nonempty T -/
 #guard_msgs in
-set_option mumi.pp.nested false in
 #check @T.nested_Nonempty_1.eq_orig
 
 /-- info: 'T.nested_Nonempty_1.eq_orig' depends on axioms: [propext] -/
@@ -147,7 +139,7 @@ example : T := by
 
 -- the detour is only for a copy: everything else is Lean's
 /--
-error: Invalid `⟨...⟩` notation: The expected type `T` has more than one constructor
+error: Invalid `⟨...⟩` notation: The expected type `T._ind` has more than one constructor
 
 Note: This notation can only be used when the expected type is an inductive type with a single constructor
 -/
@@ -215,15 +207,15 @@ inductive W : Type where
   | mk0 : Nat → W
   | mkB : Box W → W
 
-/-- info: W.nested_Box_1.intro : ∀ (a : W), Box W -/
+/-- info: W.nested_Box_1.intro : ∀ (a : W), W.nested_Box_1 -/
 #guard_msgs in
 #check @W.nested_Box_1.intro
 
-/-- info: V.nested_Exists_1.eq_orig : (∃ x, True) = ∃ x, True -/
+/-- info: V.nested_Exists_1.eq_orig : V.nested_Exists_1 = ∃ x, True -/
 #guard_msgs in
 #check @V.nested_Exists_1.eq_orig
 
-/-- info: W.nested_Box_1.eq_orig : Box W = Box W -/
+/-- info: W.nested_Box_1.eq_orig : W.nested_Box_1 = Box W -/
 #guard_msgs in
 #check @W.nested_Box_1.eq_orig
 
@@ -238,7 +230,7 @@ inductive X2 : Type where
   | mk0 : X2
   | mkT : Two X2 → X2
 
-/-- info: X2.nested_Two_1.eq_orig : Two X2 = Two X2 -/
+/-- info: X2.nested_Two_1.eq_orig : X2.nested_Two_1 = Two X2 -/
 #guard_msgs in
 #check @X2.nested_Two_1.eq_orig
 
@@ -266,11 +258,11 @@ example (α : Type) (h : Nonempty (P α)) : P α := P.ghost h
 
 -- a partially applied copy is shown under its own name: its original's
 -- parameters may mention the arguments it has not been given
-/-- info: @P.nested_Nonempty_1.intro : ∀ {α : Type} (val : P α), Nonempty (P α) -/
+/-- info: @P.nested_Nonempty_1.intro : ∀ {α : Type} (val : P α), P.nested_Nonempty_1 α -/
 #guard_msgs in
 #check @P.nested_Nonempty_1.intro
 
-/-- info: P.nested_Nonempty_1.eq_orig : ∀ (α : Type), Nonempty (P α) = Nonempty (P α) -/
+/-- info: P.nested_Nonempty_1.eq_orig : ∀ (α : Type), P.nested_Nonempty_1 α = Nonempty (P α) -/
 #guard_msgs in
 #check @P.nested_Nonempty_1.eq_orig
 
@@ -298,12 +290,12 @@ inductive Ix : Nat → Type where
 #guard_msgs in
 #check @Ix.nested_Nonempty_1
 
-/-- info: Ix.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Ix n), Nonempty (Ix n) -/
+/-- info: Ix.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Ix n), Ix.nested_Nonempty_1 n -/
 #guard_msgs in
 #check @Ix.nested_Nonempty_1.intro
 
 -- the generalised index is quantified in the bridge too
-/-- info: Ix.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Nonempty (Ix n) = Nonempty (Ix n) -/
+/-- info: Ix.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Ix.nested_Nonempty_1 n = Nonempty (Ix n) -/
 #guard_msgs in
 #check @Ix.nested_Nonempty_1.eq_orig
 
@@ -537,9 +529,9 @@ inductive N : Type where
   | mk0 : N
   | mkL : Nonempty (List N) → N
 
-/-! The outer copy is a `Prop`, so it is *equal* to what it copies and is
-displayed as it: the constructor reads back exactly as it was written, even
-though its field's type had to be replaced twice over. -/
+/-! The outer copy is a `Prop`, so the constructor takes what it copies: it
+reads back exactly as it was written, even though the kernel's field had to be
+replaced twice over. -/
 
 /-! ## A copy that lives in the shadow alone
 
@@ -556,7 +548,7 @@ everywhere the writer can see. -/
 #guard_msgs in
 #check @N.nested_List_2
 
-/-- info: N.nested_Nonempty_1.intro : ∀ (val : List N), Nonempty (List N) -/
+/-- info: N.nested_Nonempty_1.intro : ∀ (val : List N), N.nested_Nonempty_1 -/
 #guard_msgs in
 #check @N.nested_Nonempty_1.intro
 
@@ -568,10 +560,10 @@ nothing for. -/
 
 /--
 info: @N.mutualRec : {motive_1 : N → Sort u_1} →
-  {motive_2 : Nonempty (List N) → Prop} →
+  {motive_2 : N.nested_Nonempty_1 → Prop} →
     {motive_3 : List N → Sort u_2} →
       motive_1 N.mk0 →
-        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N._ind.mkL a)) →
+        ((a : N.nested_Nonempty_1) → motive_2 a → motive_1 (N._ind.mkL a)) →
           (∀ (val : List N) (val_ih : motive_3 val), motive_2 ⋯) →
             motive_3 [] →
               ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
@@ -582,10 +574,10 @@ info: @N.mutualRec : {motive_1 : N → Sort u_1} →
 
 /--
 info: @N.mutualRec_1 : {motive_1 : N → Sort u_1} →
-  {motive_2 : Nonempty (List N) → Prop} →
+  {motive_2 : N.nested_Nonempty_1 → Prop} →
     {motive_3 : List N → Sort u_2} →
       motive_1 N.mk0 →
-        ((a : Nonempty (List N)) → motive_2 a → motive_1 (N._ind.mkL a)) →
+        ((a : N.nested_Nonempty_1) → motive_2 a → motive_1 (N._ind.mkL a)) →
           (∀ (val : List N) (val_ih : motive_3 val), motive_2 ⋯) →
             motive_3 [] →
               ((head : N) → (tail : List N) → motive_1 head → motive_3 tail → motive_3 (head :: tail)) →
@@ -615,35 +607,24 @@ example : N.count [] = 0 := rfl
 /-! ## Where a copy is only isomorphic
 
 A `Prop` copy is *equal* to what it copies, proof irrelevance and all, so it
-gets an `eq_orig` and `Mumi.Bridge` displays it as the original. -/
+gets an `eq_orig`. -/
 
-/-- info: N.nested_Nonempty_1.eq_orig : Nonempty (List N) = Nonempty (List N) -/
+/-- info: N.nested_Nonempty_1.eq_orig : N.nested_Nonempty_1 = Nonempty (List N) -/
 #guard_msgs in
 #check @N.nested_Nonempty_1.eq_orig
 
-/-- info: N.nested_Nonempty_1.coeToOrig : CoeOut (Nonempty (List N)) (Nonempty (List N)) -/
+/-- info: N.nested_Nonempty_1.coeToOrig : CoeOut N.nested_Nonempty_1 (Nonempty (List N)) -/
 #guard_msgs in
 #check @N.nested_Nonempty_1.coeToOrig
 
 /-! A data member is only isomorphic to what it copies: it has constructors of
 its own, distinct constants from the original's, and no equation between the
-two types is true.  So it gets no `eq_orig` and is displayed as itself, which
-is the honest answer.  What it does get is the isomorphism, and a coercion each
+two types is true.  So it gets no `eq_orig`.  What it does get is the
+isomorphism, and a coercion each
 way, so its name need not be written at a use site.  `MumiTests.NestedIndInd`
 has those: an induction-inductive copy is indexed by a sibling, which is what
 keeps it from being a ghost. -/
 
-/-- info: N.nested_Nonempty_1.eq_orig : Nonempty (List N) = Nonempty (List N) -/
-#guard_msgs in
-#check @N.nested_Nonempty_1.eq_orig
-
-/-! Both sides of that equation print the same, which is the point: with
-`mumi.pp.nested` off, the copy shows through. -/
-
-set_option mumi.pp.nested false in
-/-- info: N.nested_Nonempty_1.eq_orig : N.nested_Nonempty_1 = Nonempty (List N) -/
-#guard_msgs in
-#check @N.nested_Nonempty_1.eq_orig
 
 /-! ## How far a denesting reaches
 
@@ -687,9 +668,7 @@ inductive W3 : Type where
   | w : W3
 end
 
-/--
-info: V3.nested_Nonempty_1.eq_orig : Nonempty (Nonempty (List V3)) = Nonempty (Nonempty (List V3))
--/
+/-- info: V3.nested_Nonempty_1.eq_orig : V3.nested_Nonempty_1 = Nonempty (Nonempty (List V3)) -/
 #guard_msgs in
 #check @V3.nested_Nonempty_1.eq_orig
 
@@ -741,10 +720,10 @@ end
 /--
 info: @A3.mutualRec_1 : {motive_1 : A3 → Sort u_1} →
   {motive_2 : B3 → Sort u_2} →
-    {motive_3 : (n : Nat) → Nonempty (Vek3 B3 n) → Prop} →
+    {motive_3 : (n : Nat) → A3.nested_Nonempty_1 n → Prop} →
       {motive_4 : (a : Nat) → Vek3 B3 a → Sort u_3} →
         motive_1 A3.tip →
-          ((n : Nat) → (a : Nonempty (Vek3 B3 n)) → motive_3 n a → motive_1 (A3._ind.mk n a)) →
+          ((n : Nat) → (a : A3.nested_Nonempty_1 n) → motive_3 n a → motive_1 (A3._ind.mk n a)) →
             motive_2 B3.tip →
               (∀ (n : Nat) (val : Vek3 B3 n) (val_ih : motive_4 n val), motive_3 n ⋯) →
                 motive_4 0 Vek3.nil →
@@ -756,13 +735,11 @@ info: @A3.mutualRec_1 : {motive_1 : A3 → Sort u_1} →
 #guard_msgs in
 #check @A3.mutualRec_1
 
-/-- info: A3.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Vek3 B3 n), Nonempty (Vek3 B3 n) -/
+/-- info: A3.nested_Nonempty_1.intro : ∀ (n : Nat) (val : Vek3 B3 n), A3.nested_Nonempty_1 n -/
 #guard_msgs in
 #check @A3.nested_Nonempty_1.intro
 
-/--
-info: A3.nested_Nonempty_1.eq_orig : ∀ (n : Nat), Nonempty (Vek3 B3 n) = Nonempty (Vek3 B3 n)
--/
+/-- info: A3.nested_Nonempty_1.eq_orig : ∀ (n : Nat), A3.nested_Nonempty_1 n = Nonempty (Vek3 B3 n) -/
 #guard_msgs in
 #check @A3.nested_Nonempty_1.eq_orig
 
@@ -842,7 +819,7 @@ inductive Mu2B : Type where
   | b : Mu2B
 end
 
-/-- info: Mu2A.nested_FamPB_2.eq_orig : FamPB Mu2A = FamPB Mu2A -/
+/-- info: Mu2A.nested_FamPB_2.eq_orig : Mu2A.nested_FamPB_2 = FamPB Mu2A -/
 #guard_msgs in
 #check @Mu2A.nested_FamPB_2.eq_orig
 
@@ -1304,7 +1281,7 @@ inductive St2 : Type where
   | b : St2
 end
 
-/-- info: St1.nested_Sp_1.eq_orig : Sp St1 = Sp St1 -/
+/-- info: St1.nested_Sp_1.eq_orig : St1.nested_Sp_1 = Sp St1 -/
 #guard_msgs in
 #check @St1.nested_Sp_1.eq_orig
 
@@ -1468,9 +1445,8 @@ A field that mentions a copy anywhere else -- in the domain of one of its own
 binders, or in a nested position -- has nothing to be handed over as.
 
 A data copy has none for a reason of its own.  It is isomorphic to what it
-copies rather than equal to it, so the coercions are there and the equality that
-would license displaying one as the other is not -- which is why the copies that
-survive at all are the ones the writer sees under their own names. -/
+copies rather than equal to it, so the coercions are there and the equality is
+not. -/
 
 /-- error: Unknown constant `Xs1.nested_Xbox_2.eq_orig` -/
 #guard_msgs in

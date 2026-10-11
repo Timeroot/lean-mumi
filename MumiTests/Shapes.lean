@@ -730,7 +730,6 @@ take a `Cx H n`. -/
 
 /-- info: H.mk : (n : Nat) → Cx H n → H -/
 #guard_msgs in
-set_option mumi.pp.nested false in
 #check @H.mk
 
 /--
@@ -741,7 +740,6 @@ info: @H.rec : {motive_1 : H → Sort u_1} →
         ((n : Nat) → (a : H) → motive_1 a → motive_2 n (Cx.mk a)) → ((n : Nat) → motive_2 n Cx.z) → (t : H) → motive_1 t
 -/
 #guard_msgs in
-set_option mumi.pp.nested false in
 #check @H.rec
 
 def H.size : H → Nat :=

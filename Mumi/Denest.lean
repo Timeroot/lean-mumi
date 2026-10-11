@@ -183,7 +183,9 @@ private partial def internNested (root : Name) (members ps : Array Expr) (body :
   let name := root ++ Name.mkSimple s!"nested_{shortName info.name}_{(← get).specs.size + 1}"
   let spec : AuxSpec :=
     { key, name, extras, paramsAbs := params.map (·.abstract xs), resType := resType.abstract xs,
-      origAbs := vis.abstract xs, indName := info.name, levels := lvls,
+      -- what the copy stands for as the writer has it: an aliased type under
+      -- its own name, not the kernel's it unfolds to
+      origAbs := (toAliasPublic (← getEnv) vis).abstract xs, indName := info.name, levels := lvls,
       ctors := info.ctors.toArray }
   modify fun s => { s with specs := s.specs.push spec }
   for c in info.ctors do

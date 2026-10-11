@@ -9,15 +9,13 @@ public meta import Mumi.Options
 public meta import Mumi.Denest
 public meta import Lean.Meta.Basic
 public meta import Lean.Elab.Term
-public meta import Lean.PrettyPrinter.Delaborator.Basic
-public meta import Lean.PrettyPrinter.Delaborator.Builtins
 
 /-!
-# Displaying an auxiliary member as the type it copies
+# Writing the original where a copy is expected
 
-Denesting replaces a nested occurrence by a *copy* of the nested type: a
-constructor written as taking `Nonempty T` takes a `T.nested_Nonempty_1`.  The
-copy is an implementation detail, and this module hides it.
+Denesting replaces a nested occurrence by a *copy* of the nested type: the
+kernel's constructor for one written as taking `Nonempty T` takes a
+`T.nested_Nonempty_1`.
 
 Most nestings need no copy.  When the head is data the kernel denests the
 occurrence itself, and `Mumi.Lowering` lets it, so no copy exists.  A copy is
@@ -25,21 +23,13 @@ needed only for a nesting the kernel rejects: a head in `Prop` under a member in
 `Type`.  There it is unavoidable, since `T.mkT : Nonempty T → T` is exactly the
 declaration the kernel refuses.
 
-What can be arranged is that no one writes or reads the copy's name.
-`Mumi.Denest` proves the copy equal to the original and registers a coercion in
-each direction; the delaborator below displays the copy as the original.
-Together these make `#check @T.mkT`, `#print T`, `@T.rec`, a `match`, and the
-equation lemmas of a function defined by one all read `Nonempty T`.  Anonymous
-constructor notation bypasses coercions, because it reads the expected type
-before elaborating, so `elabAnonymousCtorNested` handles it here.
-
-Only a member carrying the equality is displayed this way.  A data copy is
-isomorphic to its original but not equal to it, so it keeps its own name;
-`Mumi.IndInd` instead defines its constructors and recursor over the original
-directly, using the isomorphism.
-
-`set_option mumi.pp.nested false` disables the display.  `pp.explicit` disables
-it too, so an error about a copy/original mismatch shows the difference.
+What can be arranged is that no one has to write the copy's name: the writer's
+constructors and recursors take the original (`Mumi.Public.publishOverOriginals`),
+and `Mumi.Denest` registers a coercion in each direction for a value that does
+meet the copy.  Anonymous constructor notation bypasses coercions, because it
+reads the expected type before elaborating, so `elabAnonymousCtorNested` reads
+`⟨...⟩` at a copy as written at the original.  Nothing here changes how anything
+is displayed: a copy is shown under its own name wherever it is the type.
 -/
 
 public section
@@ -80,19 +70,5 @@ meta def elabAnonymousCtorNested : TermElab := fun stx expectedType? => do
   -- elaborating at `orig` re-enters this elaborator, which then falls through:
   -- the original is not a copy of anything
   ensureHasType expectedType (← elabTerm stx orig)
-
-open PrettyPrinter Delaborator SubExpr in
-/-- Display an identified auxiliary member as the type it copies. -/
-@[delab app, delab const]
-meta def delabNestedAux : Delab := withIncRecDepth do
-  unless mumi.pp.nested.get (← getOptions) do failure
-  -- `pp.explicit` asks for the term as it is
-  if ← getPPOption getPPExplicit then failure
-  let e ← getExpr
-  let .const n lvls := e.getAppFn | failure
-  let some orig ← origType? n lvls e.getAppArgs | failure
-  -- the position stays that of the whole application, so the replacement is one
-  -- clickable unit with no misattributed children
-  annotateCurPos (← withTheReader SubExpr ({ · with expr := orig }) delab)
 
 end Lean.Elab.MultiuniverseInductive

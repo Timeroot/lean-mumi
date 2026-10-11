@@ -978,6 +978,18 @@ def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := 
           addSoloElim numParams elim.toArray false (mem ++ `rec) (mem ++ `casesD)
             (forCases := true) (evenIfWeaker := true)
           addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `casesOn)
+      -- `cases` and `induction` reach for an eliminator by the type's head, and
+      -- the kernel's are stated over `X._ind`: the writer's are registered, so
+      -- what the tactics leave is stated over `X`
+      if (← getEnv).contains (mem ++ `casesOn) then
+        markElabAsElim (mem ++ `casesOn) (induction := false)
+      if (← getEnv).contains (mem ++ `rec) && !(← getEnv).contains (mem ++ `recD) then
+        let elim := (← getConstInfo (mem ++ `rec)).levelParams.take 1
+        -- a proposition's eliminates into `Prop`, its other universe pinned
+        let isPropMem ← forallTelescope (← getConstInfo mem).type fun _ s => pure s.isProp
+        discard <| attempt? `Mumi m!"no one-motive recursor for `{mem}`" <|
+          addSoloElim numParams elim.toArray isPropMem (mem ++ `rec) (mem ++ `recD)
+            (forCases := false) (evenIfWeaker := true)
       for s in [`noConfusionType, `noConfusion, `ctorIdx, `below, `brecOn] do
         discard <| attempt? `Mumi m!"no `{s}` for `{mem}`" <| restate (ind ++ s) (mem ++ s)
       let pubs := ii.ctors.toArray.map fun c => Name.str mem c.getString!

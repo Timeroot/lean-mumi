@@ -87,10 +87,11 @@ per member, as a `mutual` block's has -- which the kernel's recursor over one
 component is not.  Everything else works as on any inductive: a pattern
 elaborates against `X.c` and unfolds to the constructor, so `match` is Lean's
 own, nested patterns and all, and binds variables at the types the writer
-reads; `cases`, `injection`, `noConfusion`, `sizeOf` and the code generator
-reach `X._ind` through the unfolding.  `Mumi.Public` restates what Lean built
-for `X._ind` under the names it would have built it under for `X`, and
-`Mumi.AliasDelab` displays the internal names as the writer's.
+reads; `injection`, `noConfusion`, `sizeOf` and the code generator reach
+`X._ind` through the unfolding.  `Mumi.Public` restates what Lean built for
+`X._ind` under the names it would have built it under for `X`, and registers the
+eliminators `cases` and `induction` reach for, so that what they leave is stated
+over `X`.
 
 A `Prop` member's constructors must be re-derived, because their fields have the
 wrong types in the shadow: `A.fromB` must take a real `B`, not a `B._shadow`.
@@ -138,6 +139,18 @@ recursion over more than the inductive's own block.  The writer's `X` and `X.c`
 are reducible definitions unfolding to it and to its constructors; see
 `addAliasedInds`. -/
 def aliasIndName (n : Name) : Name := n ++ `_ind
+
+/-- `e` with every aliased inductive `X._ind` written as the writer's `X` that
+unfolds to it, where one exists. -/
+def toAliasPublic (env : Environment) (e : Expr) : Expr :=
+  e.replace fun
+    | .const n us => match n with
+      | .str p "_ind" =>
+        match env.find? p with
+        | some (.defnInfo d) => if d.value.isConstOf n then some (.const p us) else none
+        | _ => none
+      | _ => none
+    | _ => none
 
 /-- Re-root a constructor name `X.c` at `newRoot`, giving `newRoot.c`. -/
 def reroot (memberName newRoot ctorName : Name) : Name :=
