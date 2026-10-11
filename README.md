@@ -136,9 +136,12 @@ one proposition, so it holds by proof irrelevance alone: `T.rec` is stated over
 the originals, with a motive at `Nonempty T` and a minor premise at
 `Nonempty.intro`, and so are `T.rec_1`, `casesOn` and the rest, with their
 rules holding by `rfl`; `cases` and `induction` use those eliminators, so the
-fields they bind are at the originals. Nothing is printed under a name it does
-not have: the copy appears, under its own name, in the internal declarations
-that mention it.
+fields they bind are at the originals. A `match` goes through a view, an
+inductive over `T` whose constructors take what the writer's do (`Mumi.View`,
+`Mumi.MatchView`), so `| .mkT h =>` binds `h : Nonempty T` and nothing else, and
+the code it compiles to is a case split on `T._ind`. Nothing is printed under a
+name it does not have: the copy appears, under its own name, in the internal
+declarations that mention it.
 
 **Nested inductives that already work are untouched.** Denesting is the kernel's
 own feature, so `Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates
@@ -187,8 +190,8 @@ Lowering relates a data copy to its original too, but by an isomorphism rather
 than an equality, which is the most that can be true of two distinct data types.
 Each copy gets `toOrig` and `ofOrig` and a coercion each way, so a list already
 in hand goes in and comes out, and both directions compile. What it does not get
-is the display: a `Prop` copy is *equal* to its original and can be shown as it,
-and a data copy has to be shown under its own name. Which copies are settled
+is the equality a `Prop` copy has, and so it keeps its own name wherever it is
+the type. Which copies are settled
 together is read off the recursor, so a copy reached through another copy —
 `RL` defined through `List (RL α)`, nested in a heterogeneous block — is bridged
 in the same pass, and a cycle of them goes in as one mutually recursive group.
@@ -671,9 +674,12 @@ members really are simultaneous is unaffected either way.
   agree, since an edge puts one universe at or below the other and a cycle makes
   them equal, and a field still has to fit inside the member it belongs to.
 * Its constructors are `def`s, so `match` works through the view above rather
-  than on the member itself: a pattern may not constrain a field the view
-  carries as a parameter, and a constructor written inside another pattern
-  needs a `match` of its own. The names an `inductive` answers to are there
+  than on the member itself, and a pattern may not constrain a field the view
+  carries as a parameter. A constructor written inside another pattern is fine:
+  the alternatives are compiled one column at a time into `match`es on views
+  (and on ordinary inductives above them), first fit first, and what each
+  alternative sees, what is reported missing and what is redundant read as
+  for Lean's own `match`. The names an `inductive` answers to are there
   anyway: `X.casesOn` and `X.recOn` permute the telescope of `X.casesD` and
   `X.rec` the way `mkRecOn` permutes a recursor's, and `X.noConfusionType`,
   `X.noConfusion` and `X.ctorIdx` restate the view's — the view being a real

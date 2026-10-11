@@ -748,18 +748,6 @@ the lowering's `mutualRec` at motives and minors moved across the bridge, and
 every such move is definitional, because the two sides of a `Prop` bridge are
 proofs and any two proofs of one proposition are one. -/
 
-/-- The last names of the constructors the writer has at the originals of
-copies, which a `match` on one is rewritten for (`Mumi.MatchView`). -/
-initialize heldExt : SimplePersistentEnvExtension Name NameSet ←
-  registerSimplePersistentEnvExtension {
-    addEntryFn    := fun s n => s.insert n
-    addImportedFn := fun as => as.foldl (init := {}) fun s a => a.foldl NameSet.insert s
-  }
-
-/-- Whether some constructor called `c`, last name only, is held at a copy. -/
-def isHeldName (env : Environment) (c : Name) : Bool :=
-  (heldExt.getState env).contains c
-
 /-- The bridge out of the copy `e` is an application of, if it is one: what it
 copies, and `ofOrig` and `toOrig` at its arguments. -/
 private def bridgeAt? (e : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
@@ -919,7 +907,6 @@ partial def publishOverOriginals (written : Array Name) : MetaM Unit := do
     let (type, value) ← build ci.type #[] #[]
     addDef pub ci.levelParams (← publicize type) value .abbrev
     setReducibleAttribute pub
-    modifyEnv (heldExt.addEntry · (Name.mkSimple pub.getString!))
   -- the recursions, the members' and then the copies' in the lowering's order
   let mut lps : List Name := []
   for m in written do
@@ -951,6 +938,29 @@ def casesParams (mem : Name) : MetaM Nat := do
       if isMotive then return k
     throwError "`{mem}.casesOn` has no motive"
 
+/-- The function into the view of a member with held constructors, as a case
+split by the kernel's `casesOn`, which the compiler implements.  A held field is
+read back out of its copy; the writer's constructor packs it in again, which is
+the kernel's field up to proof irrelevance. -/
+private def heldViewFn (numParams : Nat) (ind : Name) (kctors : Array Name)
+    (binders : Array Expr) (x motive : Expr) : MetaM Expr := do
+  let .const _ us := (← whnfR (← inferType x)).getAppFn | throwError "no inductive under `{x}`"
+  let ps := binders.extract 0 numParams
+  let is := binders.extract numParams binders.size
+  let vName := viewName ind.getPrefix
+  let lvl ← getLevel (← instantiateLambda motive (is.push x))
+  let mut minors := #[]
+  for kc in kctors do
+    let kt ← instantiateForall ((← getConstInfo kc).instantiateTypeLevelParams us) ps
+    minors := minors.push <| ← forallTelescope kt fun fs _ => do
+      let args ← fs.mapM fun f => do
+        let ty ← inferType f
+        if let some (_, _, toO) ← bridgeAt? ty then
+          if ← isProp ty then return mkApp toO f
+        return f
+      mkLambdaFVars fs (mkAppN (mkConst (Name.str vName kc.getString!) us) (ps ++ args))
+  return mkAppN (mkConst (ind ++ `casesOn) (lvl :: us)) (ps ++ #[motive] ++ is ++ #[x] ++ minors)
+
 /--
 Everything Lean built for `X._ind`, under the names it would have built it under
 for an inductive `X`, for each aliased data member of a block with `numParams`
@@ -978,6 +988,13 @@ def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := 
           addSoloElim numParams elim.toArray false (mem ++ `rec) (mem ++ `casesD)
             (forCases := true) (evenIfWeaker := true)
           addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `casesOn)
+      -- the equation compiler would take such a constructor apart as the
+      -- kernel's, so a `match` goes through a view, which presents it as the
+      -- writer's (`Mumi.MatchView`)
+      if ii.ctors.any heldCtor then
+        discard <| attempt? `Mumi m!"no view for `{mem}`" <|
+          addView numParams mem (ii.ctors.toArray.map fun c => Name.str mem c.getString!)
+            (fnValue? := some (heldViewFn numParams ind ii.ctors.toArray))
       -- `cases` and `induction` reach for an eliminator by the type's head, and
       -- the kernel's are stated over `X._ind`: the writer's are registered, so
       -- what the tactics leave is stated over `X`

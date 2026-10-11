@@ -86,12 +86,34 @@ def T.probe : T → Prop
   | .mk1 => False
   | .mkT h => T.witnessed h
 
--- the field a `match` binds is the original itself, read back out of the copy,
+-- the field a `match` binds is the original itself: `T` is matched through a
+-- view whose constructor holds what `T.mkT` was given, so the alternative sees
+-- that and nothing else
+/--
+trace: x : T
+h : Nonempty T
+⊢ True
+-/
+#guard_msgs in
+example (x : T) : True :=
+  match x with
+  | .mk1 => trivial
+  | .mkT h => by trace_state; exact Nonempty.elim h fun _ => trivial
+
 -- so a consumer whose type argument is still open needs no help
 example (x : T) : True :=
   match x with
   | .mk1 => trivial
   | .mkT h => Nonempty.elim (h : Nonempty T) fun _ => trivial
+
+-- and it runs: the view is a case split on the kernel's constructors
+def T.depth : T → Nat
+  | .mk1 => 0
+  | .mkT _ => 1
+
+/-- info: 1 -/
+#guard_msgs in
+#eval T.depth (.mkT ⟨.mk1⟩)
 
 example (x : T) : True :=
   match x with

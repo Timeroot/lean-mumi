@@ -40,7 +40,11 @@ This is legal where the member's own declaration was not: `Ctx` already exists
 to be indexed by, and the view is not recursive.  A case split on `Ctx.View c`
 refines `c` to the constructor in its index, so matching `c` alongside `c.view`
 recovers the alternatives that were written.  `Mumi.MatchView` is that rewrite;
-this module builds what it needs.
+this module builds what it needs.  A member with a constructor the writer has at
+the original of a `Prop` copy is matched the same way, for the same reason --
+the kernel's constructor holds what the writer's was given packed -- and its
+view's function is a case split on the kernel's inductive
+(`Mumi.Public.publishAliased`).
 
 ## Indices that are proofs
 
@@ -385,8 +389,11 @@ private def promoted (numParams : Nat) (ctors : Array Name)
     if pinned < k then return 0
   return k
 
-/-- The view of `mem`, and the function into it. -/
-def addView (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := do
+/-- The view of `mem`, and the function into it.  The function is a case split
+by `X.casesD` unless `fnValue?` builds it, from `mem`'s binders, the element and
+the view's motive at them. -/
+def addView (numParams : Nat) (mem : Name) (ctors : Array Name)
+    (fnValue? : Option (Array Expr → Expr → Expr → MetaM Expr) := none) : MetaM Unit := do
   let mi ← getConstInfo mem
   let lps := mi.levelParams
   let us := lps.map mkLevelParam
@@ -420,17 +427,21 @@ def addView (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := 
     -- the function is built by hand rather than by the equation compiler, which
     -- is the thing that does not work here yet
     let cdName := mem ++ `casesD
-    let some cd := (← getEnv).find? cdName | throwError "no `{cdName}` to see through"
-    unless cd.levelParams.length == lps.length + 1 do
-      throwError "`{cdName}` does not eliminate into a sort of its own"
+    if fnValue?.isNone then
+      let some cd := (← getEnv).find? cdName | throwError "no `{cdName}` to see through"
+      unless cd.levelParams.length == lps.length + 1 do
+        throwError "`{cdName}` does not eliminate into a sort of its own"
     withLocalDeclD `x selfTy fun x => do
       let motive ← mkLambdaFVars (is.push x) (mkAppN (mkConst vName us) (binders.push x))
-      let mut minors := #[]
-      for c in ctors do
-        minors := minors.push <| ←
-          forallTelescope (← instantiateForall (← getConstInfo c).type ps) fun fs _ =>
-            mkLambdaFVars fs (mkAppN (mkConst (vCtor c) us) (ps ++ fs))
-      let value := mkAppN (mkConst cdName (v' :: us)) (ps ++ #[motive] ++ minors ++ is ++ #[x])
+      let value ← match fnValue? with
+        | some f => f binders x motive
+        | none => do
+          let mut minors := #[]
+          for c in ctors do
+            minors := minors.push <| ←
+              forallTelescope (← instantiateForall (← getConstInfo c).type ps) fun fs _ =>
+                mkLambdaFVars fs (mkAppN (mkConst (vCtor c) us) (ps ++ fs))
+          pure <| mkAppN (mkConst cdName (v' :: us)) (ps ++ #[motive] ++ minors ++ is ++ #[x])
       let ty ← mkForallFVars (binders.push x) (mkAppN (mkConst vName us) (binders.push x))
       addDef (viewFnName mem) lps (implicitUpTo binders.size ty)
         (← mkLambdaFVars (binders.push x) value)

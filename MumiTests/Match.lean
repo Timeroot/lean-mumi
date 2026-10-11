@@ -19,10 +19,9 @@ the view anywhere.  Most of them are checked by `#eval`, because the point is
 not only that they elaborate but that they run: a view is a genuine inductive
 and everything built from one has a compiler implementation.
 
-The two things a view cannot do are here as well, near the end -- a constructor
-nested inside another pattern, and a promoted argument bound by the pattern
-rather than by the type -- so that a change in either shows up as a test
-failure.
+Patterns inside patterns are near the end, and so is the one thing a view
+cannot do -- a promoted argument bound by the pattern rather than by the type --
+so that a change in it shows up as a test failure.
 -/
 
 namespace MumiTests.Match
@@ -723,36 +722,151 @@ which no table can hold a row for. -/
 #guard_msgs in
 #print axioms viaDoMut
 
-/-! ## What a view cannot present
+/-! ## Patterns inside patterns
 
-A view is one layer deep, so a constructor written inside another pattern is
-out of its reach.  Saying so is better than letting the equation compiler
-report it, which it would do in terms of the view. -/
+A view presents the constructor a member was built by and stops, so a pattern
+under one is taken apart by a `match` of its own.  The rewrite writes those
+`match`es: the alternatives are split one column at a time, in their order, so
+the first one that fits is the one taken, as with any `match`. -/
+
+def twoDeep (c : Ctx) : Nat :=
+  match c with
+  | .snoc (.snoc Δ _) _ => len Δ + 10
+  | .snoc .nil _ => 1
+  | .nil => 0
+
+/-- info: (10, 1, 0) -/
+#guard_msgs in
+#eval (twoDeep c2, twoDeep c1, twoDeep .nil)
+
+/-- info: 'MumiTests.Match.twoDeep' does not depend on any axioms -/
+#guard_msgs in
+#print axioms twoDeep
+
+-- an alternative that takes anything is tried where the ones before it do not fit
+def firstFit : Ctx → Ctx → Nat
+  | .snoc _ _, .snoc (.snoc _ _) _ => 1
+  | _, .snoc _ _ => 2
+  | .nil, _ => 3
+  | _, _ => 4
+
+/-- info: (1, 2, 2, 3, 4) -/
+#guard_msgs in
+#eval (firstFit c2 c2, firstFit c2 c1, firstFit .nil c1, firstFit .nil .nil, firstFit c1 .nil)
+
+-- under a constructor of an ordinary inductive too
+def optLen : Option Ctx → Nat
+  | some (.snoc Γ _) => len Γ + 1
+  | some .nil => 0
+  | none => 100
+
+/-- info: (2, 100) -/
+#guard_msgs in
+#eval (optLen (some c2), optLen none)
+
+-- and in a `do` block, mutable variables and all
+def viaDoNested (c : Ctx) : Id Nat := do
+  let mut n := 0
+  match c with
+  | .snoc (.snoc _ _) _ => n := n + 5
+  | _ => n := n + 1
+  return n
+
+/-- info: (5, 1) -/
+#guard_msgs in
+#eval (viaDoNested c2, viaDoNested c1)
+
+/-! Recursion two constructors down is still structural.  The proof the inner
+view generalises over is what brings `propext` in; a `match` written by hand on
+the views does the same. -/
+
+def every2 : Ctx → Nat
+  | .snoc (.snoc Γ _) _ => every2 Γ + 1
+  | _ => 0
+
+/-- info: def MumiTests.Match.every2 : Ctx → Nat :=
+fun x => Ctx._sub.brecOn x every2._f -/
+#guard_msgs in
+#print every2
+
+/-- info: 1 -/
+#guard_msgs in
+#eval every2 c2
+
+def wkDepth {Γ : Ctx} {h : Ok Γ} : Tm Γ h → Nat
+  | .wk _ _ (.wk _ _ t) => wkDepth t + 2
+  | .wk _ _ _ => 1
+  | .var _ _ => 0
+
+/-- info: 3 -/
+#guard_msgs in
+#eval wkDepth (Tm.wk c1 o1 (.wk c1 o1 (.wk c1 o1 (.var c1 o1))))
+
+/-! What each alternative sees is what it would under Lean's own `match`: its
+variables, and none of the ones the rewrite bound on the way. -/
 
 /--
-error: A constructor of `MumiTests.Match.Ctx` cannot be written inside another pattern. `MumiTests.Match.Ctx` is matched through a view, which presents one constructor and stops, so this one has to be reached by a `match` of its own.
+trace: x Γ : Ctx
+h : Ok Γ
+h' : Ok (Γ.snoc h)
+⊢ True
+-/
+#guard_msgs in
+example (x : Ctx) : True :=
+  match x with
+  | .snoc (.snoc Γ h) h' => by trace_state; trivial
+  | _ => trivial
+
+/--
+trace: x Γ : Ctx
+h : Ok Γ
+h' : Ok (Γ.snoc h)
+⊢ len ((Γ.snoc h).snoc h') = len ((Γ.snoc h).snoc h')
+-/
+#guard_msgs in
+example (x : Ctx) : len x = len x := by
+  match x with
+  | .snoc (.snoc Γ h) h' => trace_state; rfl
+  | _ => rfl
+
+/-! An alternative nothing reaches, and the ones left out, are reported as Lean
+reports them, in terms of the patterns written. -/
+
+/-- error: Redundant alternative: Any expression matching this pattern will match one of the preceding alternatives -/
+#guard_msgs in
+example (c : Ctx) : Nat :=
+  match c with
+  | .snoc (.snoc Γ _) _ => len Γ
+  | .snoc _ _ => 1
+  | .snoc .nil _ => 2
+  | .nil => 0
+
+/--
+error: Missing cases:
+(Ctx.snoc Ctx.nil _)
+Ctx.nil
 -/
 #guard_msgs in
 example (c : Ctx) : Nat :=
   match c with
   | .snoc (.snoc Γ _) _ => len Γ
-  | _ => 0
 
-/-- The same split, written as the two `match`es it is. -/
-def twoDeep (c : Ctx) : Nat :=
-  match c with
-  | .snoc Γ _ =>
-    match Γ with
-    | .snoc Δ _ => len Δ + 10
-    | .nil => 1
-  | .nil => 0
-
-/-- info: 10 -/
+/--
+error: Missing cases:
+Ctx.nil
+-/
 #guard_msgs in
-#eval twoDeep c2
+example (c : Ctx) : Nat :=
+  match c with
+  | .snoc Γ _ => len Γ
 
--- a promoted argument is settled by the discriminant's type, so a pattern that
--- would constrain it rather than name it is not something a view can carry
+/-! ## What a view cannot present
+
+A promoted argument is settled by the discriminant's type, so a pattern that
+would constrain it rather than name it is not something a view can carry.  On a
+discriminant of the `match` a name is given the index by definition; further in
+there is no discriminant to read it from. -/
+
 /--
 error: This argument of `MumiTests.Match.Tm.var` is settled by the type of what is being matched rather than by the pattern, so it can be written only as `_`, or as a name to have it under.
 -/
@@ -762,17 +876,14 @@ example {Γ : Ctx} {h : Ok Γ} (t : Tm Γ h) : Nat :=
   | .var .nil _ => 0
   | _ => 1
 
--- an alternative left out is still an alternative left out, but the equation
--- compiler counts the alternatives it was given, which are the view's: one slot
--- for the member, matched by nothing, and one for the view
 /--
-error: Missing cases:
-_, Ctx.View.nil
+error: This argument of `MumiTests.Match.Tm.var` is settled by the type of what is being matched rather than by the pattern, so it can be written only as `_` here.
 -/
 #guard_msgs in
-example (c : Ctx) : Nat :=
-  match c with
-  | .snoc Γ _ => len Γ
+example {Γ : Ctx} {h : Ok Γ} (t : Tm Γ h) : Nat :=
+  match t with
+  | .wk _ _ (.var Δ _) => len Δ
+  | _ => 1
 
 /-! ## Other blocks
 

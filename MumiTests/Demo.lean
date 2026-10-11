@@ -405,22 +405,11 @@ example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by contr
 example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by simp at h
 
 /-! A view presents one constructor and stops, so a constructor written inside
-another pattern needs a `match` of its own.  Saying so is the whole of the fix
-we can offer; the split itself is two `match`es. -/
-
-/--
-error: A constructor of `MumiTests.Demo.IndInd.Ctx` cannot be written inside another pattern. `MumiTests.Demo.IndInd.Ctx` is matched through a view, which presents one constructor and stops, so this one has to be reached by a `match` of its own.
--/
-#guard_msgs in
-example (c : Ctx) : Nat :=
-  match c with
-  | .snoc (.snoc Γ _) _ => len Γ
-  | _ => 0
+another pattern is taken apart by a `match` of its own, which the rewrite writes. -/
 
 def twoDeep : Ctx → Nat
-  | .snoc Γ _ => match Γ with
-    | .snoc Δ _ => len Δ + 10
-    | .nil => 1
+  | .snoc (.snoc Δ _) _ => len Δ + 10
+  | .snoc .nil _ => 1
   | .nil => 0
 
 /-- info: 10 -/
