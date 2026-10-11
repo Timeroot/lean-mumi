@@ -135,10 +135,10 @@ argument into the copy. Every move across the copy is between two proofs of
 one proposition, so it holds by proof irrelevance alone: `T.rec` is stated over
 the originals, with a motive at `Nonempty T` and a minor premise at
 `Nonempty.intro`, and so are `T.rec_1`, `casesOn` and the rest, with their
-rules holding by `rfl`. A `match` that names `.mkT h` is matched against the
-kernel's constructor, `h` given the original read back out of the copy. Only
-`cases` on the kernel's eliminator still shows the copy, displayed as the type
-it copies; `set_option mumi.pp.nested false` turns that display off.
+rules holding by `rfl`; `cases` and `induction` use those eliminators, so the
+fields they bind are at the originals. Nothing is printed under a name it does
+not have: the copy appears, under its own name, in the internal declarations
+that mention it.
 
 **Nested inductives that already work are untouched.** Denesting is the kernel's
 own feature, so `Mumi/Declaration.lean` is a *catch-and-retry*: Lean elaborates
