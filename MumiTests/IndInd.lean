@@ -283,7 +283,7 @@ Both members are indexed, and the `Prop` member is indexed by the data member at
 one of its own indices.
 -/
 
-mumi_spec (xfail := [axioms])
+mumi_spec
 mutual
 inductive IVec : Nat → Type where
   | nil : IVec 0
@@ -329,9 +329,10 @@ example (n : Nat) (v : IVec n) (x : Nat) (h : IFresh x n v) :
           (IFresh.rec nil cons dnil dcons h) := rfl
 end
 
--- indexed, so the recursor carries `propext` and everything built from it does too
+-- indexed, and still no axiom: the recursion over the whole block is assembled
+-- out of the split ones by terms the kernel checks, with no `propext` in them
 
-/-- info: 'IVec.sum' depends on axioms: [propext] -/
+/-- info: 'IVec.sum' does not depend on any axioms -/
 #guard_msgs in
 #print axioms IVec.sum
 
@@ -424,16 +425,15 @@ example (p : Prop) (h : p) : SortC p := .ext .nil h .mk
 The data members become one mutual pre-block, so each of their recursors takes
 one motive per data member and one minor premise per constructor of any of them.
 
-`Wf` is indexed by *two* data members, and a predicate's motive is carried in
-the recursion on the one data member it is indexed by -- there is no one member
-to hang this on.  So this block keeps the split recursors: a data recursor with
-no predicate motives, and a `Prop` recursor of its own.  `set_option
-trace.Mumi.indind true` says so while the block elaborates.  The consolation is
-that `Wf.rec` is then free to eliminate into `Sort u`, which a joint recursor
-could not offer.
+`Wf` is indexed by *two* data members, so its motive takes the value the
+recursion computed at each: `(a : Ctx2) → motive_1 a → (a_1 : Ty) → motive_2 a_1
+→ Wf a a_1 → Prop`.  No one data member's recursion carries that, so the
+recursion over the whole block is assembled out of the split ones
+(`Mumi.Displayed`), and `Ctx2.snoc`'s minor premise takes a hypothesis at its
+proof too.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx2 : Type where
   | nil : Ctx2
@@ -446,12 +446,12 @@ inductive Wf : Ctx2 → Ty → Prop where
 end
 
 def Ctx2.length (Γ : Ctx2) : Nat :=
-  Ctx2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
-    0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) Γ
+  Ctx2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ _ _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) 1 (fun _ _ i j => i + j + 1) (fun _ _ => trivial) Γ
 
 def Ty.size (t : Ty) : Nat :=
-  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
-    0 (fun _ _ _ ih _ => ih + 1) 1 (fun _ _ i j => i + j + 1) t
+  Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ _ _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) 1 (fun _ _ i j => i + j + 1) (fun _ _ => trivial) t
 
 def exCtx2 : Ctx2 := .snoc .nil .base (.base .nil)
 
@@ -743,11 +743,11 @@ end
 
 `Nat → Tree` recurses under a binder, and the induction hypothesis follows it.
 
-`Good`'s index is `Nat → Tree`, not a `Tree`, so again there is no data member
-to carry its motive and the block keeps the split recursors.
+`Good`'s index is `Nat → Tree`, not a `Tree`, so its motive displays no value:
+it is `(a : Nat → Tree) → Good a → Prop`, over the function itself.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [injEq])
 mutual
 inductive Tree : Type where
   | leaf : Tree
@@ -757,8 +757,8 @@ inductive Good : (Nat → Tree) → Prop where
 end
 
 def Tree.depthAt (t : Tree) (k : Nat) : Nat :=
-  Tree.rec (motive := fun _ => Nat → Nat) (fun _ => 0)
-    (fun _ _ ih k => ih k k + 1) t k
+  Tree.rec (motive_1 := fun _ => Nat → Nat) (motive_2 := fun _ _ => True) (fun _ => 0)
+    (fun _ _ ih _ k => ih k k + 1) trivial t k
 
 /-- info: 1 -/
 #guard_msgs in
@@ -768,10 +768,9 @@ example : Tree.depthAt (.node (fun _ => .leaf) .leaf) 3 = 1 := rfl
 
 /-! ### One the whole block does recurse over
 
-Above, `Good`'s index is a function, so no data member carries its motive and
-the block keeps the split recursors.  Here `Sound`'s index is a `Skel`, so the
-recursion over the whole block does form -- and it has to carry the higher-order
-field through it.  `Skel.fan`'s minor gets a hypothesis under the binder, and
+Above, `Good`'s index is a function, so its motive displays nothing.  Here
+`Sound`'s index is a `Skel`, so its motive takes the value there -- and the
+recursion has to carry the higher-order field through it.  `Skel.fan`'s minor gets a hypothesis under the binder, and
 `Sound.fan`'s proof component is stated at `fan f fun a => f_ih a`: the value the
 data recursion computes at `Skel.fan f`, eta-expanded, which is the only term
 that could stand there.
@@ -924,11 +923,11 @@ The parameters lead every arity, every constructor and the recursor, and are
 implicit on the last two.  The universe parameters are shared by the whole
 block, as they are for a Lean `mutual`.
 
-`OkB` is indexed by both `Bag` and `Tag2`, so this is a third block on the
-split recursors.
+`OkB` is indexed by both `Bag` and `Tag2`, and its motive takes the value at
+each.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Bag (α : Type u) (β : Type v) : Nat → Type (max u v) where
   | nil : Bag α β 0
@@ -941,7 +940,8 @@ end
 
 def Bag.count {α : Type u} {β : Type v} : (n : Nat) → Bag α β n → Nat :=
   fun _ b => Bag.rec (motive_1 := fun _ _ => Nat) (motive_2 := fun _ => Nat)
-    0 (fun _ _ _ _ ih _ => ih + 1) (fun _ _ => 0) b
+    (motive_3 := fun _ _ _ _ _ _ => True)
+    0 (fun _ _ _ _ ih _ _ => ih + 1) (fun _ _ => 0) (fun _ _ => trivial) b
 
 def exBag : Bag String Nat 1 := .cons 0 .nil (.mk "a" 3) (.nil (.mk "a" 3))
 
@@ -1020,7 +1020,7 @@ is that none of them mentions a name the user did not write: no `_pre`, no
 `_wf`, no `nested_` copy.
 -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive TreeNested where
   | empty
@@ -1047,28 +1047,28 @@ end
 -- is what this test is about; without `pp.proofs` they all print as `⋯`
 /--
 info: @TreeNested.WFWith.rec : ∀ {motive_1 : TreeNested → Sort u_1}
-  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop}
+  {motive_2 : (a : TreeNested) → motive_1 a → (a_1 : List Nat) → a.WFWith a_1 → Prop}
   {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} {motive_4 : WFTreeNested → Sort u_1}
   {motive_5 : RecWFTree → Sort u_1} (empty : motive_1 TreeNested.empty)
   (node :
     (key : Nat) →
       (value : RecWFTree) →
         (l r : TreeNested) → motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r))
-  (empty_1 : motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty)
+  (empty_1 : motive_2 TreeNested.empty empty [] TreeNested.WFWith.empty)
   (node_1 :
     ∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
       (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a)
       (value_ih : motive_5 value) (l_ih : motive_1 l) (r_ih : motive_1 r),
-      motive_2 l llist l_ih hl →
-        motive_2 r rlist r_ih hr →
-          motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist) (node key value l r value_ih l_ih r_ih)
+      motive_2 l l_ih llist hl →
+        motive_2 r r_ih rlist hr →
+          motive_2 (TreeNested.node key value l r) (node key value l r value_ih l_ih r_ih) (llist ++ key :: rlist)
             (TreeNested.WFWith.node key value l r hl hr hl' hr'))
   (intro :
     ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
-      motive_2 t l t_ih h → motive_3 t t_ih (TreeNested.WF.intro l t h))
+      motive_2 t t_ih l h → motive_3 t t_ih (TreeNested.WF.intro l t h))
   (mk : (x : TreeNested) → (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h))
   (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) {a : TreeNested} {a_1 : List Nat}
-  (t : a.WFWith a_1), motive_2 a a_1 (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) t
+  (t : a.WFWith a_1), motive_2 a (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) a_1 t
 -/
 #guard_msgs in
 set_option pp.proofs true in
@@ -1076,25 +1076,25 @@ set_option pp.proofs true in
 
 /--
 info: @TreeNested.WF.rec : ∀ {motive_1 : TreeNested → Sort u_1}
-  {motive_2 : (a : TreeNested) → (a_1 : List Nat) → motive_1 a → a.WFWith a_1 → Prop}
+  {motive_2 : (a : TreeNested) → motive_1 a → (a_1 : List Nat) → a.WFWith a_1 → Prop}
   {motive_3 : (a : TreeNested) → motive_1 a → a.WF → Prop} {motive_4 : WFTreeNested → Sort u_1}
   {motive_5 : RecWFTree → Sort u_1} (empty : motive_1 TreeNested.empty)
   (node :
     (key : Nat) →
       (value : RecWFTree) →
         (l r : TreeNested) → motive_5 value → motive_1 l → motive_1 r → motive_1 (TreeNested.node key value l r))
-  (empty_1 : motive_2 TreeNested.empty [] empty TreeNested.WFWith.empty)
+  (empty_1 : motive_2 TreeNested.empty empty [] TreeNested.WFWith.empty)
   (node_1 :
     ∀ {llist rlist : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested) (hl : l.WFWith llist)
       (hr : r.WFWith rlist) (hl' : ∀ (a : Nat), a ∈ llist → a < key) (hr' : ∀ (a : Nat), a ∈ rlist → key < a)
       (value_ih : motive_5 value) (l_ih : motive_1 l) (r_ih : motive_1 r),
-      motive_2 l llist l_ih hl →
-        motive_2 r rlist r_ih hr →
-          motive_2 (TreeNested.node key value l r) (llist ++ key :: rlist) (node key value l r value_ih l_ih r_ih)
+      motive_2 l l_ih llist hl →
+        motive_2 r r_ih rlist hr →
+          motive_2 (TreeNested.node key value l r) (node key value l r value_ih l_ih r_ih) (llist ++ key :: rlist)
             (TreeNested.WFWith.node key value l r hl hr hl' hr'))
   (intro :
     ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : motive_1 t),
-      motive_2 t l t_ih h → motive_3 t t_ih (TreeNested.WF.intro l t h))
+      motive_2 t t_ih l h → motive_3 t t_ih (TreeNested.WF.intro l t h))
   (mk : (x : TreeNested) → (h : x.WF) → (x_ih : motive_1 x) → motive_3 x x_ih h → motive_4 (WFTreeNested.mk x h))
   (mk_1 : (x : WFTreeNested) → motive_4 x → motive_5 (RecWFTree.mk x)) {a : TreeNested} (t : a.WF),
   motive_3 a (TreeNested.rec empty node empty_1 node_1 intro mk mk_1 a) t
@@ -1131,8 +1131,8 @@ own mutual recursors; that is the price of one recursor for the whole block.
 abbrev M1 : TreeNested → Type := fun _ => Nat
 abbrev M4 : WFTreeNested → Type := fun _ => Nat
 abbrev M5 : RecWFTree → Type := fun _ => Nat
-abbrev M2 : (x : TreeNested) → (l : List Nat) → M1 x → x.WFWith l → Prop :=
-  fun _ l n _ => l.length ≤ n
+abbrev M2 : (x : TreeNested) → M1 x → (l : List Nat) → x.WFWith l → Prop :=
+  fun _ n l _ => l.length ≤ n
 abbrev M3 : (x : TreeNested) → M1 x → x.WF → Prop := fun _ _ _ => True
 
 def sEmpty : M1 .empty := 0
@@ -1141,19 +1141,19 @@ def sNode : (key : Nat) → (value : RecWFTree) → (l r : TreeNested) →
     M5 value → M1 l → M1 r → M1 (.node key value l r) :=
   fun _ _ _ _ v l r => v + l + r + 1
 
-theorem sEmptyW : M2 .empty [] sEmpty .empty := by simp [sEmpty]
+theorem sEmptyW : M2 .empty sEmpty [] .empty := by simp [sEmpty]
 
 theorem sNodeW : ∀ {ll rl : List Nat} (key : Nat) (value : RecWFTree) (l r : TreeNested)
     (hl : l.WFWith ll) (hr : r.WFWith rl) (hl' : ∀ a ∈ ll, a < key) (hr' : ∀ a ∈ rl, key < a)
-    (vih : M5 value) (lih : M1 l) (rih : M1 r), M2 l ll lih hl → M2 r rl rih hr →
-      M2 (.node key value l r) (ll ++ key :: rl) (sNode key value l r vih lih rih)
+    (vih : M5 value) (lih : M1 l) (rih : M1 r), M2 l lih ll hl → M2 r rih rl hr →
+      M2 (.node key value l r) (sNode key value l r vih lih rih) (ll ++ key :: rl)
       (TreeNested.WFWith.node key value l r hl hr hl' hr') := by
   intro ll rl k v l r hl hr _ _ vih lih rih ihl ihr
   simp only [M2, sNode, List.length_append, List.length_cons] at *
   omega
 
 theorem sIntro : ∀ (l : List Nat) (t : TreeNested) (h : t.WFWith l) (t_ih : M1 t),
-    M2 t l t_ih h → M3 t t_ih (.intro l t h) := fun _ _ _ _ _ => trivial
+    M2 t t_ih l h → M3 t t_ih (.intro l t h) := fun _ _ _ _ _ => trivial
 
 def sMk : (x : TreeNested) → (h : x.WF) → (x_ih : M1 x) → M3 x x_ih h → M4 (.mk x h) :=
   fun _ _ n _ => n
@@ -1655,7 +1655,7 @@ recursion the length along with the context.
 
 namespace DataOnDataLengthProp
 
-mumi_spec (xfail := [axioms])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1750,7 +1750,7 @@ end DataOnDataLengthAfter
 
 namespace DataOnDataLengthOk
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1768,7 +1768,7 @@ end
 -- the block was written to have
 theorem ok : ∀ {n : Nat} {Γ : Ctx n} (A : Ty n Γ), Ok n Γ A :=
   fun {_} {_} A => Ty.rec (motive_1 := fun _ _ => True) (motive_2 := fun n Γ A => Ok n Γ A)
-    (motive_3 := fun _ _ _ _ _ => True)
+    (motive_3 := fun _ _ _ _ _ _ => True)
     trivial (fun _ _ _ _ _ => trivial)
     (fun n Γ _ => Ok.base n Γ) (fun n Γ A B _ ihA ihB => Ok.pi n Γ A B ihA ihB)
     (fun _ _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ _ => trivial) A
@@ -2002,7 +2002,7 @@ on it, which is the only way to say anything about the function itself.
 
 namespace DataOnDataTwo
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2026,7 +2026,7 @@ info: @Ok.casesP : ∀ {motive : (Γ : Ctx) → (a : Ty Γ) → Ok Γ a → Prop
 def Ty.size : {Γ : Ctx} → Ty Γ → Nat :=
   fun {_} t =>
     Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-      (motive_3 := fun _ _ n _ => 0 < n)
+      (motive_3 := fun _ _ _ n _ => 0 < n)
       0 (fun _ _ n _ => n + 1) (fun _ _ => 1)
       (fun _ _ => Nat.zero_lt_one) t
 
@@ -2034,7 +2034,7 @@ example (Γ : Ctx) : (Ty.base Γ).size = 1 := rfl
 
 theorem Ok.size_pos : ∀ {Γ : Ctx} {A : Ty Γ}, Ok Γ A → 0 < A.size :=
   Ok.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ _ n _ => 0 < n)
+    (motive_3 := fun _ _ _ n _ => 0 < n)
     0 (fun _ _ n _ => n + 1) (fun _ _ => 1)
     (fun _ _ => Nat.zero_lt_one)
 
@@ -2058,7 +2058,7 @@ not about the other two.
 
 namespace DataOnDataJudge
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2086,7 +2086,7 @@ info: @Good.casesP : ∀ {motive : (Γ : Ctx) → (A : Ty Γ) → (a : Tm Γ A) 
 def Tm.size : {Γ : Ctx} → {A : Ty Γ} → Tm Γ A → Nat :=
   fun {_} {_} t =>
     Tm.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-      (motive_3 := fun _ _ _ => Nat) (motive_4 := fun _ _ _ n _ => 0 < n)
+      (motive_3 := fun _ _ _ => Nat) (motive_4 := fun _ _ _ _ _ n _ => 0 < n)
       0 (fun _ _ n _ => n + 1) (fun _ _ => 0)
       (fun _ _ _ _ => 1) (fun _ _ _ _ _ _ _ n => n + 1)
       (fun _ _ _ _ => Nat.zero_lt_one)
@@ -2097,7 +2097,7 @@ example (Γ : Ctx) (A B : Ty Γ) : (Tm.wk Γ A B (Tm.var Γ A)).size = 2 := rfl
 
 theorem Good.size_pos : ∀ {Γ : Ctx} {A : Ty Γ} {t : Tm Γ A}, Good Γ A t → 0 < t.size :=
   Good.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ _ _ => Nat) (motive_4 := fun _ _ _ n _ => 0 < n)
+    (motive_3 := fun _ _ _ => Nat) (motive_4 := fun _ _ _ _ _ n _ => 0 < n)
     0 (fun _ _ n _ => n + 1) (fun _ _ => 0)
     (fun _ _ _ _ => 1) (fun _ _ _ _ _ _ _ n => n + 1)
     (fun _ _ _ _ => Nat.zero_lt_one)
@@ -2121,7 +2121,7 @@ functions and the two propositions about them, off one set of minors.
 
 namespace DataOnDataTwoProps
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2137,7 +2137,7 @@ end
 
 def Ctx.size : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ m _ => 0 < m)
+    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ _ m _ => 0 < m)
     1 (fun _ _ n _ => n + 1) (fun _ _ => 1)
     Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
     (fun _ _ => Nat.zero_lt_one)
@@ -2145,7 +2145,7 @@ def Ctx.size : Ctx → Nat :=
 def Ty.size : {Γ : Ctx} → Ty Γ → Nat :=
   fun {_} A =>
     Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-      (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ m _ => 0 < m)
+      (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ _ m _ => 0 < m)
       1 (fun _ _ n _ => n + 1) (fun _ _ => 1)
       Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
       (fun _ _ => Nat.zero_lt_one) A
@@ -2158,14 +2158,14 @@ example (Γ : Ctx) : (Ty.base Γ).size = 1 := rfl
 
 theorem Ok.size_pos : ∀ {Γ : Ctx}, Ok Γ → 0 < Γ.size :=
   Ok.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ m _ => 0 < m)
+    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ _ m _ => 0 < m)
     1 (fun _ _ n _ => n + 1) (fun _ _ => 1)
     Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
     (fun _ _ => Nat.zero_lt_one)
 
 theorem Wf.size_pos : ∀ {Γ : Ctx} {A : Ty Γ}, Wf Γ A → 0 < A.size :=
   Wf.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ m _ => 0 < m)
+    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ _ m _ => 0 < m)
     1 (fun _ _ n _ => n + 1) (fun _ _ => 1)
     Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
     (fun _ _ => Nat.zero_lt_one)
@@ -2192,7 +2192,7 @@ bundle in sight.
 
 namespace DataOnDataPropOnProp
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2211,14 +2211,14 @@ end
 -- induction hypothesis at it there is nothing to conclude from
 theorem Wf.ok : ∀ {Γ : Ctx} {A : Ty Γ}, Wf Γ A → Ok Γ :=
   Wf.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
-    (motive_3 := fun Γ _ _ => Ok Γ) (motive_4 := fun Γ _ _ _ => Ok Γ)
+    (motive_3 := fun Γ _ _ => Ok Γ) (motive_4 := fun Γ _ _ _ _ => Ok Γ)
     () (fun _ _ _ _ => ()) (fun _ _ => ())
     Ok.nil (fun Γ A _ _ _ h => Ok.snoc Γ A h)
     (fun _ _ _ h => h)
 
 def Ctx.size : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ m _ => 0 < m)
+    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ _ m _ => 0 < m)
     1 (fun _ _ n _ => n + 1) (fun _ _ => 1)
     Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
     (fun _ _ _ _ => Nat.zero_lt_one)
@@ -2229,7 +2229,7 @@ def Ctx.size : Ctx → Nat :=
 
 theorem Ok.size_pos : ∀ {Γ : Ctx}, Ok Γ → 0 < Γ.size :=
   Ok.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ m _ => 0 < m)
+    (motive_3 := fun _ n _ => 0 < n) (motive_4 := fun _ _ _ m _ => 0 < m)
     1 (fun _ _ n _ => n + 1) (fun _ _ => 1)
     Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
     (fun _ _ _ _ => Nat.zero_lt_one)
@@ -2253,7 +2253,7 @@ type's context carries, and neither step is a separate induction.
 
 namespace DataOnDataStack
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2275,7 +2275,7 @@ def Tm.size : {Γ : Ctx} → {A : Ty Γ} → Tm Γ A → Nat :=
   fun {_} {_} t =>
     Tm.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
       (motive_3 := fun _ _ _ => Nat) (motive_4 := fun _ n _ => 0 < n)
-      (motive_5 := fun _ _ m _ => 0 < m) (motive_6 := fun _ _ _ k _ => 0 < k)
+      (motive_5 := fun _ _ _ m _ => 0 < m) (motive_6 := fun _ _ _ _ _ k _ => 0 < k)
       1 (fun _ _ n _ => n + 1) (fun _ _ => 1) (fun _ _ _ _ => 1)
       Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
       (fun _ _ _ _ => Nat.zero_lt_one) (fun _ _ _ _ _ _ => Nat.zero_lt_one) t
@@ -2285,7 +2285,7 @@ example (Γ : Ctx) (A : Ty Γ) : (Tm.var Γ A).size = 1 := rfl
 theorem Good.size_pos : ∀ {Γ : Ctx} {A : Ty Γ} {t : Tm Γ A}, Good Γ A t → 0 < t.size :=
   Good.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
     (motive_3 := fun _ _ _ => Nat) (motive_4 := fun _ n _ => 0 < n)
-    (motive_5 := fun _ _ m _ => 0 < m) (motive_6 := fun _ _ _ k _ => 0 < k)
+    (motive_5 := fun _ _ _ m _ => 0 < m) (motive_6 := fun _ _ _ _ _ k _ => 0 < k)
     1 (fun _ _ n _ => n + 1) (fun _ _ => 1) (fun _ _ _ _ => 1)
     Nat.zero_lt_one (fun _ _ _ _ _ _ => Nat.succ_pos _)
     (fun _ _ _ _ => Nat.zero_lt_one) (fun _ _ _ _ _ _ => Nat.zero_lt_one)
@@ -2295,7 +2295,7 @@ theorem Good.size_pos : ∀ {Γ : Ctx} {A : Ty Γ} {t : Tm Γ A}, Good Γ A t �
 theorem Good.ok : ∀ {Γ : Ctx} {A : Ty Γ} {t : Tm Γ A}, Good Γ A t → Ok Γ :=
   Good.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
     (motive_3 := fun _ _ _ => Unit) (motive_4 := fun Γ _ _ => Ok Γ)
-    (motive_5 := fun Γ _ _ _ => Ok Γ) (motive_6 := fun Γ _ _ _ _ => Ok Γ)
+    (motive_5 := fun Γ _ _ _ _ => Ok Γ) (motive_6 := fun Γ _ _ _ _ _ _ => Ok Γ)
     () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ => ())
     Ok.nil (fun Γ A _ _ _ h => Ok.snoc Γ A h)
     (fun _ _ _ h => h) (fun _ _ _ _ _ h => h)
@@ -2314,7 +2314,7 @@ namespace DataOnDataPropOnPropUniv
 
 universe u
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2340,15 +2340,15 @@ and `Ty.base Γ` is no part of `Ty.unit Γ`.  There is no call at it, and nowher
 one could come from: a proposition that steps sideways across a data member's
 constructors is not following that member's recursion at all.
 
-So the block takes the split recursors.  `Wf.rec` recurses on the proof instead
-and is a perfectly good induction principle -- it is only the joint recursion,
-the one that would let a `Ty` function be declared with `Wf`'s motive on it,
-that is not available.  The data recursors are untouched.
+So the recursion over the whole block is assembled out of the split ones
+instead (`Mumi.Displayed`), which reads the value at `Ty.base Γ` off the data
+recursion's minor premise there: `Wf.unit`'s hypothesis is stated at
+`base Γ Γ_ih`, and nothing has to recurse sideways.
 -/
 
 namespace DataOnDataPropSibling
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3448,7 +3448,7 @@ reading the value the data motive computed.
 
 namespace PropInBuiltCtx
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3467,7 +3467,7 @@ end
 
 def size : {Γ : Ctx} → Ty Γ → Nat := fun {_} A =>
   Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ _ n _ => 0 < n)
+    (motive_3 := fun _ _ _ n _ => 0 < n)
     0 (fun _ _ n m => n + m + 1) (fun _ _ => 1) (fun _ _ _ _ n m => n + m + 1)
     (fun _ _ => Nat.zero_lt_one) (fun _ _ _ _ _ _ _ _ _ _ => Nat.succ_pos _) A
 
@@ -3478,7 +3478,7 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) :
 -- the same six alternatives again, read off at `Wf` instead of at `Ty`
 theorem Wf.size_pos : ∀ {Γ : Ctx} {A : Ty Γ}, Wf Γ A → 0 < size A :=
   Wf.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ _ n _ => 0 < n)
+    (motive_3 := fun _ _ _ n _ => 0 < n)
     0 (fun _ _ n m => n + m + 1) (fun _ _ => 1) (fun _ _ _ _ n m => n + m + 1)
     (fun _ _ => Nat.zero_lt_one) (fun _ _ _ _ _ _ _ _ _ _ => Nat.succ_pos _)
 
@@ -3491,16 +3491,15 @@ context is well formed when the type it was extended by is, and a base type is
 well formed when its context is -- so neither is an induction principle on its
 own, and what the block owes is a *mutual* one over both.
 
-That is what comes out: `Ok.rec` and `Wf.rec` share two motives and four minor
-premises, which is exactly the induction a metatheory does over a derivation.
-The data half keeps its own recursors, and the recursion over the whole block
-is not available here -- it would have to recurse on a `Subtype`, which has no
-`brecOn` -- so `Ok` and `Wf` come out as a recursion between themselves.
+That is what comes out, as one recursion over the whole block: `Ok.rec` and
+`Wf.rec` take the data members' motives too, and their own displayed, which is
+exactly the induction a metatheory does over a derivation, with the sizes it
+computes along the way at hand.
 -/
 
 namespace OkAndWf
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3522,11 +3521,15 @@ end
 -- is the one that says the transport left nothing behind
 def csize : Ctx → Nat :=
   Ctx.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
+    (motive_3 := fun _ _ _ => True) (motive_4 := fun _ _ _ _ _ => True)
     0 (fun _ _ n m => n + m + 1) (fun _ _ => 1) (fun _ _ _ _ n m => n + m + 1)
+    trivial (fun _ _ _ _ _ _ _ _ => trivial) (fun _ _ _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ => trivial)
 
 def tsize : {Γ : Ctx} → Ty Γ → Nat := fun {_} A =>
   Ty.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    0 (fun _ _ n m => n + m + 1) (fun _ _ => 1) (fun _ _ _ _ n m => n + m + 1) A
+    (motive_3 := fun _ _ _ => True) (motive_4 := fun _ _ _ _ _ => True)
+    0 (fun _ _ n m => n + m + 1) (fun _ _ => 1) (fun _ _ _ _ n m => n + m + 1)
+    trivial (fun _ _ _ _ _ _ _ _ => trivial) (fun _ _ _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ => trivial) A
 
 example (Γ : Ctx) : tsize (Ty.base Γ) = 1 := rfl
 example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A)) :
@@ -3536,17 +3539,20 @@ example : csize (Ctx.snoc Ctx.nil (Ty.base Ctx.nil)) = 2 := rfl
 -- and it is a usable induction principle: every well-formed type sits in a
 -- well-formed context, which needs both halves at once
 theorem Wf.ok : ∀ {Γ : Ctx} {A : Ty Γ}, Wf Γ A → Ok Γ :=
-  Wf.rec (motive_1 := fun _ _ => True) (motive_2 := fun Γ _ _ => Ok Γ)
-    trivial (fun _ _ _ _ _ _ => trivial)
-    (fun _ h _ => h) (fun _ _ _ _ _ h _ => h)
+  Wf.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
+    (motive_3 := fun _ _ _ => True) (motive_4 := fun Γ _ _ _ _ => Ok Γ)
+    () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
+    trivial (fun _ _ _ _ _ _ _ _ => trivial)
+    (fun _ h _ _ => h) (fun _ _ _ _ _ _ _ _ h _ => h)
 
 -- the two halves meet: what the propositional recursion proves is a statement
 -- about what the data one computes
 theorem Wf.size_pos : ∀ {Γ : Ctx} {A : Ty Γ}, Wf Γ A → 0 < tsize A :=
-  Wf.rec (motive_1 := fun _ _ => True) (motive_2 := fun _ A _ => 0 < tsize A)
-    trivial (fun _ _ _ _ _ _ => trivial)
-    (fun _ _ _ => Nat.zero_lt_one)
-    (fun _ _ _ _ _ _ _ => Nat.succ_pos _)
+  Wf.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit)
+    (motive_3 := fun _ _ _ => True) (motive_4 := fun _ _ A _ _ => 0 < tsize A)
+    () (fun _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ => ())
+    trivial (fun _ _ _ _ _ _ _ _ => trivial)
+    (fun _ _ _ _ => Nat.zero_lt_one) (fun _ _ _ _ _ _ _ _ _ _ => Nat.succ_pos _)
 
 end OkAndWf
 
@@ -3781,7 +3787,7 @@ hypothesis it arrived with.  What the block may not do is *build* one, and the
 
 namespace PropIndex
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx15 : Type where
   | nil  : Ctx15
@@ -3810,8 +3816,8 @@ fun Γ a => Tm15._sub Γ.val a
 example (Γ : Ctx15) (h h' : Ok15 Γ) : Tm15 Γ h = Tm15 Γ h' := rfl
 
 def depth {Γ : Ctx15} {h : Ok15 Γ} (t : Tm15 Γ h) : Nat :=
-  Tm15.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => Nat)
-    () (fun _ _ _ => ()) (fun _ _ _ => 0) (fun _ _ _ _ n => n + 1) t
+  Tm15.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ _ => True) (motive_3 := fun _ _ _ => Nat)
+    () (fun _ _ _ _ => ()) trivial (fun _ _ _ _ => trivial) (fun _ _ _ _ => 0) (fun _ _ _ _ _ n => n + 1) t
 
 example : depth (Tm15.wk .nil .nil (.var .nil .nil)) = 1 := rfl
 
@@ -3834,7 +3840,7 @@ as any other.
 
 namespace WitnessIndex
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx10 : Type where
   | nil  : Ctx10
@@ -3909,7 +3915,7 @@ end
 -- data.  `Ctx6.dep` is what keeps `Sub6` in the block at all: without it
 -- nothing else is stated with `Sub6` and it would be peeled, which is the
 -- `PeelPropOnProp` case below.
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx6 : Type where
   | nil : Ctx6

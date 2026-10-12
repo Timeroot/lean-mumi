@@ -10,6 +10,7 @@ public import Mumi.Lowering
 public import Mumi.Runtime
 public import Mumi.View
 public import Mumi.Public
+public import Mumi.Displayed
 public import Mumi.Owned
 public import Lean.Elab.MutualInductive
 import all Lean.Elab.MutualInductive
@@ -6724,10 +6725,17 @@ def emit (p : Plan) : TermElabM Unit := do
   -- an induction-inductive block wants one recursor over all of its members at
   -- once, and falls back to the split recursors of steps 8 and 9 when there is
   -- none
+  -- a block with `Prop` members gets its one recursion from `Mumi.Displayed`,
+  -- out of the split ones (step 7b), which displays a `Prop` member's every index:
+  -- the recursor over the whole block built here is what is published where that
+  -- cannot be done, and is built under names of its own
+  let candidate := !b.propIdxs.isEmpty && p.copies.isEmpty && !widen
   let grandRecName (i : Nat) : Name :=
-    if p.copies.isEmpty then recName i else Name.mkStr b.members[i]!.name "_nested_grand"
+    if candidate then Name.mkStr b.members[i]!.name "_grand_rec"
+    else if p.copies.isEmpty then recName i else Name.mkStr b.members[i]!.name "_nested_grand"
   let grandAuxName (i : Nat) : Name :=
-    if p.copies.isEmpty then b.members[i]!.name ++ `recAux
+    if candidate then Name.mkStr b.members[i]!.name "_grand_recAux"
+    else if p.copies.isEmpty then b.members[i]!.name ++ `recAux
     else Name.mkStr b.members[i]!.name "_nested_grandAux"
   -- `none` if there is no recursor over the whole block, and otherwise the
   -- `Prop` members it left out -- free-standing ones, which step 9 still owes
@@ -6746,9 +6754,14 @@ def emit (p : Plan) : TermElabM Unit := do
         emitGrandRecs b docCtx lp grandRecName grandAuxName rawCtorName false
   let grand := grand?.isSome
   let grandFree := grand?.getD #[]
+  -- with no recursor over the whole block, the split ones are declared apart and
+  -- the joint one is assembled out of them afterwards (`Mumi.Displayed`)
+  let jointWanted := candidate
+  let rawRecName (i : Nat) : Name :=
+    if jointWanted then Name.mkStr b.members[i]!.name "_split_rec" else rawRecName i
   -- the split recursors are what step 10 builds the bridge out of, so they are
   -- skipped only when there is no bridge to build
-  let grandOnly := grand && p.copies.isEmpty
+  let grandOnly := grand && p.copies.isEmpty && !candidate
   -- the parameters are shared by every motive, minor and recursive call, so the
   -- whole group is built under one telescope of them
   let results ←
@@ -6902,6 +6915,34 @@ def emit (p : Plan) : TermElabM Unit := do
       unless ok.isEmpty || ok.size == gKeep.size do
         if let some s ← buildProps grp[0]! ok then propRecs := propRecs.push s
   let propBuilt := !propRecs.isEmpty
+
+  -- 7b. the one recursion over the whole block, out of the split ones: a
+  -- motive per member, the `Prop` ones displayed, a hypothesis at every field
+  if jointWanted then
+    let members := b.members.mapIdx fun i m =>
+      let scope := if m.isProp then ((propRecs.find? (·.kIdxs.contains i)).map (·.kIdxs)).getD #[] else dIdxs
+      ({ name := m.name, prop := m.isProp, ctors := m.ctors.map (·.name), source := rawRecName i, scope }
+        : Mumi.Displayed.Member)
+    let ok ← if propBuilt && b.propIdxs.all fun j => propRecs.any (·.kIdxs.contains j) then
+        Mumi.Displayed.buildJoint { numParams := b.numParams, members, internal := "" }
+      else pure false
+    -- else the recursor over the whole block, as far as it goes, and the split
+    -- ones for the rest
+    let fallback (i : Nat) : Name :=
+      if grand && !(b.members[i]!.isProp && grandFree.contains i) then grandRecName i else rawRecName i
+    if ok then
+      for i in *...b.size do markElabAsElim (pubRecName i)
+    else
+      for i in dIdxs ++ b.propIdxs do
+        let some info := (← getEnv).find? (fallback i) | continue
+        let rawRecName := fallback
+        if info.isTheorem then
+          let value := mkConst (rawRecName i) (info.levelParams.map Level.param)
+          addDecl (.thmDecl { name := pubRecName i, levelParams := info.levelParams, type := info.type, value })
+        else
+          addDef (pubRecName i) info.levelParams info.type
+            (mkConst (rawRecName i) (info.levelParams.map Level.param))
+        markElabAsElim (pubRecName i)
 
   -- 8. the bridge back to the originals
   unless p.copies.isEmpty do

@@ -30,7 +30,7 @@ namespace MumiTests.Match
 
 `Ctx` and `Tm` are data and get views; `Ok` is a `Prop` and does not need one. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil

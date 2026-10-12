@@ -734,10 +734,13 @@ members really are simultaneous is unaffected either way.
   two recursions that differ in the motives they were given are not defeq. A
   `Prop` member covered by it eliminates only into `Prop`, even a subsingleton
   one that could have had large elimination under the split.
-* A `Prop` member indexed by no data member, or by two, keeps the split
-  recursors, and so does one whose constructor pins a field of the data
-  constructor it stands at rather than naming it. The consolation is that a
-  split `Prop` recursor may eliminate into `Sort u`.
+* Where no one data member's recursion can carry a `Prop` member's motive -- it
+  is indexed by none, or by several, or a constructor pins a field rather than
+  naming it -- the recursion over the whole block is assembled out of the split
+  recursors instead (`Mumi/Displayed.lean`, as for the IR frontend), displaying
+  every index of data type and with every rule still by `rfl`. Blocks with copies
+  in them, or with members peeled off, are not assembled this way yet and keep
+  the split recursors there.
 * A `Prop` constructor with a data field its *conclusion* never mentions —
   `Pair.cons (a : α) (t u : Chain α) (h : Pair t) : Pair (.cons a t)`, where `u`
   goes nowhere — costs more than that. Such a field cannot be put back at its

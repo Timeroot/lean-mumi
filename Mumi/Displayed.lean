@@ -80,6 +80,10 @@ structure Member where
   /-- A data member's: the data members whose motives its recursion over the
   data takes, in order. -/
   scope : Array Nat := #[]
+  /-- Its recursion, where it is not `X.<internal>rec`: a data member's over the
+  data, a `Prop` member's into `Prop` (or any sort) over the `Prop` members of
+  its `scope`, all of them when that is empty. -/
+  source : Name := .anonymous
   deriving Inhabited
 
 /-- What the block is. -/
@@ -91,7 +95,8 @@ structure Input where
   deriving Inhabited
 
 private def Input.elim (inp : Input) (k : Nat) (s : String) : Name :=
-  inp.members[k]!.name ++ Name.mkSimple (inp.internal ++ s)
+  if s == "rec" && !inp.members[k]!.source.isAnonymous then inp.members[k]!.source
+  else inp.members[k]!.name ++ Name.mkSimple (inp.internal ++ s)
 
 /-- The construction cannot be made for this block. -/
 private def gap {α} (msg : MessageData) : MetaM α :=
@@ -674,9 +679,9 @@ private def proofHyp (c : Ctx) (known : Array (Expr × Expr)) (j : Nat) (h d : E
     let facts ← vals.mapM (proveG c known)
     mkLambdaFVars dom (mkAppN (c.aux j "LEM") (idx ++ #[mkAppN h dom] ++ vals ++ facts))
 
-/-- `LEM` for every `Prop` member, out of their recursion into `Prop`. -/
-private def Ctx.addLem (c : Ctx) : MetaM Unit := do
-  let props := (Array.range c.inp.members.size).filter (c.inp.members[·]!.prop)
+/-- `LEM` for the `Prop` members of `props`, out of their recursion into `Prop`;
+a proof of one outside it by its `LEM`, which comes first. -/
+private def Ctx.addLem (c : Ctx) (props : Array Nat) : MetaM Unit := do
   -- `∀ vs, facts → motive (displayed) g`
   let stmt (j : Nat) (idx : Array Expr) (g : Expr) : MetaM Expr := do
     let shown := c.displayAt[j]!
@@ -697,8 +702,12 @@ private def Ctx.addLem (c : Ctx) : MetaM Unit := do
         bindFacts 0 #[]
     go 0 #[] #[] #[]
   let mots ← props.mapM fun j => c.overMember j (stmt j)
-  let info ← getConstInfo (c.inp.elim props[0]! "rec")
-  let rec0 := mkConst info.name (info.levelParams.map mkLevelParam)
+  -- a recursion that may eliminate into any sort does so into `Prop`
+  let recAt (j : Nat) : MetaM Expr := do
+    let info ← getConstInfo (c.inp.elim j "rec")
+    return mkConst info.name (info.levelParams.map fun n =>
+      if c.blockLvls.contains n then mkLevelParam n else .zero)
+  let rec0 ← recAt props[0]!
   let n := props.foldl (fun n j => n + c.inp.members[j]!.ctors.size) 0
   let tys ← minorTypes rec0 (c.ps ++ mots) n
   let mut minors := #[]
@@ -710,7 +719,7 @@ private def Ctx.addLem (c : Ctx) : MetaM Unit := do
       minors := minors.push <| ← minorLambda mty (← c.numFields j ci) fun fs pihs => do
         let kinds ← kindsOf c.inp fs
         let (cidx, self) ← c.ctorAt j ci fs
-        let pihOf := (kinds.filter (!·.isData)).map (·.field) |>.zip pihs
+        let pihOf := (kinds.filter fun kd => !kd.isData && props.contains kd.member).map (·.field) |>.zip pihs
         let goalTy := (← instantiateForall mty (fs ++ pihs)).headBeta
         forallTelescope goalTy fun vhs goal => do
           let nv := vhs.size / 2
@@ -772,6 +781,8 @@ private def Ctx.addLem (c : Ctx) : MetaM Unit := do
                 let .forallE _ d body _ := ty | throwError "a minor premise ended early"
                 let v ← if kd.isData then
                     pure ((ks.find? (·.1 == fs[kd.field]!)).get!.2.1)
+                  else if !props.contains kd.member then
+                    proofHyp c facts kd.member fs[kd.field]! d
                   else
                     let some (_, pih) := pihOf.find? (·.1 == kd.field) | throwError "no hypothesis at a proof"
                     -- the recursion's hypothesis there, at its values
@@ -804,7 +815,7 @@ private def Ctx.addLem (c : Ctx) : MetaM Unit := do
               return proof
           mkLambdaFVars vhs (← atIndex 0)
   for j in props do
-    let recJ ← constAt (c.inp.elim j "rec")
+    let recJ ← recAt j
     let value ← c.overMember j fun idx g => pure (mkAppN recJ (c.ps ++ mots ++ minors ++ idx ++ #[g]))
     let type ← c.forallMember j (stmt j)
     c.add (auxName c.inp j "LEM") type value true
@@ -910,7 +921,13 @@ private def build (inp : Input) : MetaM Unit := withSpec inp fun c => do
   for scope in scopes do
     if scope.any q.contains then c.addUniq scope q
   let c := { c with uniq := q }
-  if inp.members.any (·.prop) then c.addLem
+  -- the propositions' recursions, in the order given
+  let mut propScopes : Array (Array Nat) := #[]
+  let allProps := (Array.range inp.members.size).filter (inp.members[·]!.prop)
+  for k in allProps do
+    let sc := if inp.members[k]!.scope.isEmpty then allProps else inp.members[k]!.scope
+    if !propScopes.contains sc then propScopes := propScopes.push sc
+  for sc in propScopes do c.addLem sc
   for scope in scopes do c.addValue scope
   c.addRecs
 
@@ -961,6 +978,19 @@ private def publishAround (inp : Input) : MetaM Unit := do
           restate (inp.elim k s) (m.name ++ Name.mkSimple s)
       markElabAsElim (m.name ++ `recD) (induction := true)
       tagElim (m.name ++ `cases)
+
+/-- Build the joint recursor under the public names `X.rec`, out of the
+recursions the members name; whether it could be, the environment as it was
+when it could not. -/
+def buildJoint (inp : Input) : MetaM Bool := do
+  let env ← getEnv
+  try
+    build inp
+    return true
+  catch e =>
+    setEnv env
+    trace[Mumi] "{e.toMessageData}"
+    return false
 
 /-- Publish the block's eliminators: the joint recursor where it can be built,
 the frontend's own otherwise. -/
