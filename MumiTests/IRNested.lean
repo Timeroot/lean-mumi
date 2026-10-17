@@ -172,3 +172,25 @@ def Els (α : Type) : List (U α) → Type
 end
 
 end ShapesLower
+
+/-! ## Minor premises named twice
+
+`nil` is `U`'s and `List`'s, and Lean binds both under it. -/
+
+namespace NamesTwice
+set_option mumi.mahlo false
+
+mumi_spec (simp := [U.rec_tuple]) (unproven := [U.casesOn_tuple]) (xfail := [recOn, injEq, axioms])
+mutual
+inductive U : Type where
+  | nil : U
+  | tuple (fs : List U) : U
+def El : U → Type
+  | .nil => Unit
+  | .tuple fs => Els fs
+def Els : List U → Type
+  | [] => Unit
+  | a :: as => El a × Els as
+end
+
+end NamesTwice

@@ -134,7 +134,7 @@ hypothesis about it is a family of hypotheses.
 
 namespace Infinitary
 
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil

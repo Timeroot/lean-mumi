@@ -5763,7 +5763,22 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
   let hC := mkIdent `mumiC
   let qName (k : Nat) := mkIdent (Name.mkSimple s!"mumiQ{k}")
   let injName := mkInjectiveTheoremNameFor c.name
-  let injVal ← forallBoundedTelescope injTy nBinders fun xs body => do
+  -- where the pre-world's equations do not lift back -- a field of function
+  -- type, whose images are equal only pointwise without `funext` -- the member's
+  -- `noConfusion` says it directly: its hypotheses are the fields' equations up
+  -- to eta, as for an `inductive`
+  let viaNoConfusion : TermElabM Expr := forallBoundedTelescope injTy nBinders fun xs body => do
+    let lhs := body.bindingDomain!.appFn!.appArg!
+    let n := (conjuncts (body.bindingBody!.instantiate1 lhs)).size
+    let es : Array Ident := (Array.range n).map fun k => mkIdent (Name.mkSimple s!"mumiE{k}")
+    let esT : Array Term := es.map (⟨·.raw⟩)
+    let tuple ← if n == 1 then pure esT[0]! else `(term| ⟨$esT,*⟩)
+    let binders : Array (TSyntax ``Lean.Parser.Term.funBinder) := es.map (⟨·.raw⟩)
+    let nc := mkCIdent (b.members[i]!.name ++ `noConfusion)
+    mkLambdaFVars xs (← proveBy body (← `(Lean.Parser.Tactic.tacticSeq|
+      intro mumiH
+      exact $nc mumiH fun $binders* => $tuple)))
+  let injVal ← try (forallBoundedTelescope injTy nBinders fun xs body => do
     let lhs := body.bindingDomain!.appFn!.appArg!
     let sub ← whnf (← inferType lhs)
     let some (sn, sus, sargs) := subOf? sub
@@ -5808,7 +5823,8 @@ def addInjEqs (b : Block) (ofInjs : Array Name) (i : Nat) (c : CtorSpec) :
       ← `(tactic| have $hV:ident := congrArg $(mkIdent (sn ++ `val)) $hH),
       ← `(tactic| injection $hV with $qs*),
       ← `(tactic| all_goals $[$rest]*)]
-    mkLambdaFVars xs (← proveBy body (← `(Lean.Parser.Tactic.tacticSeq| $[$steps]*)))
+    mkLambdaFVars xs (← proveBy body (← `(Lean.Parser.Tactic.tacticSeq| $[$steps]*))))
+    catch _ => viaNoConfusion
   addDecl (.thmDecl { name := injName, levelParams := info.levelParams,
                       type := ← instantiateMVars injTy, value := ← instantiateMVars injVal })
   let eqName := mkInjectiveEqTheoremNameFor c.name
@@ -7175,15 +7191,6 @@ def emit (p : Plan) : TermElabM Unit := do
         m!"no course-of-values recursion for `{b.members[i]!.name}`" <|
       emitBRecOn p preRecUnivs b i
 
-  -- 11. injectivity of the data constructors, which has to come after the
-  -- bridge: what is stated is stated about the type the writer wrote, and until
-  -- step 10 has run that is not yet what the constructor's own type says
-  let ofInjs ← copyNames.filterM fun n => return (← getEnv).contains (n ++ `ofOrig_inj)
-  for (i, c) in b.ctorsOf b.dataIdxs do
-    if copyNames.contains b.members[i]!.name then continue
-    discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
-      addInjEqs b (ofInjs.map (· ++ `ofOrig_inj)) i c
-
   -- 12. what `match` is driven through, and the eliminators under the names an
   -- `inductive` answers to.  A `Prop` member has no view, so it gets those two
   -- and nothing else
@@ -7208,6 +7215,17 @@ def emit (p : Plan) : TermElabM Unit := do
         addMajorFirst b.numParams m.name cases (m.name ++ `casesOn)
     discard <| attempt? `Mumi.view m!"no `recOn` for `{m.name}`" <|
       addMajorFirst b.numParams m.name (m.name ++ `rec) (m.name ++ `recOn)
+  -- 11. injectivity of the data constructors, which has to come after the
+  -- bridge: what is stated is stated about the type the writer wrote, and until
+  -- step 10 has run that is not yet what the constructor's own type says; and
+  -- after step 12, whose `noConfusion` is what a field the pre-world's equations
+  -- do not lift back through is read off
+  let ofInjs ← copyNames.filterM fun n => return (← getEnv).contains (n ++ `ofOrig_inj)
+  for (i, c) in b.ctorsOf b.dataIdxs do
+    if copyNames.contains b.members[i]!.name then continue
+    discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
+      addInjEqs b (ofInjs.map (· ++ `ofOrig_inj)) i c
+
   -- 13. the recursion at each nested target under the name Lean gives it,
   -- `X.rec_k` of the block's first member, numbered by the target's motive
   -- past the members'; a copy's recursor is stated at the type it copies

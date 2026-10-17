@@ -615,7 +615,7 @@ mumi_spec
 inductive UWrap (α : Type u) : Type u where
   | mk : α → UWrap α
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive UNCtx : Type where
   | nil : UNCtx
@@ -747,7 +747,7 @@ end
 it is `(a : Nat → Tree) → Good a → Prop`, over the function itself.
 -/
 
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive Tree : Type where
   | leaf : Tree
@@ -776,7 +776,7 @@ data recursion computes at `Skel.fan f`, eta-expanded, which is the only term
 that could stand there.
 -/
 
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive Skel : Type where
   | tip
@@ -4691,7 +4691,7 @@ namespace SectionVars
 
 section
 variable (α : Type) [Inhabited α] (unusedβ : Type)
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive C : Type where
   | nil  : C
@@ -5150,7 +5150,7 @@ always had. -/
 namespace ByMember
 set_option mumi.separate false
 
-mumi_spec (simp := [NTm.casesOn_app]) (xfail := [rec])
+mumi_spec (simp := [NTm.casesOn_app])
 mutual
 inductive NTm : Type where
   | app : (ts : List NTm) → NTm
@@ -5451,7 +5451,7 @@ kernel refuses either -- so the proposition keeps `Nat → T` as its index and
 nothing is added to the block.  What the data recursion gains is the hypothesis
 at every argument the function could be applied to. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (f : Nat → T) → Ok f → T

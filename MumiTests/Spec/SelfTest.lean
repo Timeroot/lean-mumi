@@ -30,6 +30,55 @@ mumi_spec
 inductive Rose (α : Type) : Type where
   | node (a : α) (kids : List (Rose α))
 
+/-! Minor premises are named by their constructors' last names, and a name two
+constructors share is bound twice: Lean does not rename the second, which a
+named argument then cannot reach.  A member's constructor against a nesting's
+(`nil` and `List.nil`), two nestings' (`Prod.mk` and `PProd.mk`, or `Prod.mk`
+twice), and two members' (`A.mk` and `B.mk`). -/
+
+namespace Names
+
+mumi_spec
+inductive T1 where
+  | nil : T1
+  | ofL : List T1 → T1
+
+mumi_spec
+inductive T2 where
+  | base : T2
+  | left : Prod T2 Nat → T2
+  | right : PProd Nat T2 → T2
+
+mumi_spec
+inductive T3 where
+  | fst : T3
+  | left : Prod T3 Nat → T3
+  | right : Prod T3 String → T3
+
+mumi_spec
+mutual
+inductive A where
+  | mk : A
+  | b : B → A
+inductive B where
+  | mk : B
+  | a : A → B
+end
+
+open Lean Meta in
+/-- info: [motive_1, motive_2, nil, ofL, nil, cons, t] -/
+#guard_msgs in
+run_meta do
+  forallTelescope (← getConstInfo ``T1.rec).type fun xs _ => do
+    logInfo m!"{← xs.mapM fun x => return (← x.fvarId!.getDecl).userName}"
+
+end Names
+
+-- an instance parameter: `inj` takes it implicitly, `injEq` as an instance
+mumi_spec
+inductive WithInst (α : Type) [Inhabited α] : Type where
+  | leaf : α → WithInst α
+
 mumi_spec
 inductive Le : Nat → Nat → Prop where
   | refl (n : Nat) : Le n n

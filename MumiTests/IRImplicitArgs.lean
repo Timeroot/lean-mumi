@@ -20,7 +20,7 @@ set_option autoImplicit false
 namespace Inst
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive U (α : Type) [BEq α] : Type where
   | base : U α
@@ -42,7 +42,7 @@ namespace InstLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive U (α : Type) [BEq α] : Type where
   | base : U α

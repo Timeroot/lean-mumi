@@ -469,7 +469,7 @@ mumi_spec
 inductive Rose (α : Type) : Type where
   | node (a : α) (cs : List (Rose α))
 
-mumi_spec (unproven := [RT.casesOn_mk]) (xfail := [rec, injEq])
+mumi_spec (unproven := [RT.casesOn_mk]) (xfail := [injEq])
 mutual
 inductive RT : Type where
   | tip
@@ -719,3 +719,22 @@ end LocalsII
 set_option mumi.enabled false in
 inductive Off2 where
   | mk (x : WFTree Off2)
+
+/-! ## Minor premises named twice
+
+`nil` is `NCtx`'s, `NTy`'s and `List`'s: three minor premises of one name, as
+Lean binds them. -/
+
+namespace NamesTwice
+
+mumi_spec (simp := [NTy.rec_tup, NCtx.rec_1_cons, NTy.casesOn_tup])
+mutual
+inductive NCtx : Type where
+  | nil : NCtx
+  | snoc : (Γ : NCtx) → NTy Γ → NCtx
+inductive NTy : NCtx → Type where
+  | nil : (Γ : NCtx) → NTy Γ
+  | tup : (Γ : NCtx) → List (NTy Γ) → NTy Γ
+end
+
+end NamesTwice

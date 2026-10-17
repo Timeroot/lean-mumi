@@ -13,7 +13,9 @@ were the restriction lifted:
   when `mumi.mahlo` is off, the graph encoding's cost);
 * each constructor: the shared parameters implicit, the fields as written; a
   parameter that varies is an index, which the constructor binds implicitly;
-* one recursion over the whole block, as a `mutual` has: motives for the data
+* one recursion over the whole block, as a `mutual` has (its recursion at a
+  nested target, `X.rec_k`, owed by name only where a displayed motive mentions
+  it): motives for the data
   members in the order written, then each nested application in the order met,
   then the `Prop` members (`motive` alone when there is one).  A `Prop` member's
   motive is *displayed*: at each index of data type it takes the value the data
@@ -669,10 +671,21 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
   let recAt (t : Nat) (args : Array Expr) : TermElabM Expr := do
     instantiateMVars (← mkAppOptM (recOf t) ((uniformPs ++ motives ++ minors ++ args).map some))
   let implicit (bi : BinderInfo) := if bi == .instImplicit then bi else .implicit
+  -- the recursion at a nested target, `X.rec_k`, is owed by name only where a
+  -- public recursor's type mentions it -- a displayed motive at an index of that
+  -- target.  Nothing else of Lean's reaches it by name: `below`, `brecOn`,
+  -- `sizeOf` and structural recursion read it off a kernel inductive's
+  -- `numNested`, which a block declared otherwise does not have.  Where it is
+  -- declared anyway, it is checked like any other
+  let shown : Array Nat := displayAt.foldl (fun acc row => acc ++ row.filterMap id) #[]
+  let isNested (t : Nat) : Bool := match targets[t]! with | .nested _ => true | _ => false
+  let owed (t : Nat) : TermElabM Bool := do
+    return !isNested t || shown.contains t || (← getEnv).contains (recOf t)
   let mut recsOk := true
   -- each recursor and `recOn`: the parameters, motives and minors, the indices
   -- implicit, the major `t`; a displayed motive at the recursion's values
   for t in [:targets.size] do
+    unless ← owed t do continue
     let some (rec', recOn') ← (try
         match targets[t]! with
           | .member k =>
@@ -729,16 +742,22 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
       let minor := minors[mi]!
       mi := mi + 1
       if (sortOf t).isProp then continue
+      -- a rule at a nested target, or with a hypothesis there, is stated with
+      -- that target's recursion, and so only where it has a name
+      unless ← owed t do continue
       atCtor t ci fun promoted ctor fields idx => do
         let lhs ← recAt t (idx.push ctor)
         let mut ihs := #[]
         for f in fields do
           if missing.contains (← f.fvarId!.getDecl).userName then continue
-          let some ih ← forallTelescope (← inferType f) fun dom ty => do
-              let ty := (← instantiateMVars ty).headBeta
-              let some j := targetOf ty | return none
-              return some (← mkLambdaFVars dom (← recAt j ((motiveArgs j ty).push (mkAppN f dom))))
-            | continue
+          -- `none`: no hypothesis; `some none`: one at a target with no name
+          let ih? : Option (Option Expr) ← forallTelescope (← inferType f) fun dom ty => do
+            let ty := (← instantiateMVars ty).headBeta
+            let some j := targetOf ty | return none
+            unless ← owed j do return some none
+            return some (some (← mkLambdaFVars dom (← recAt j ((motiveArgs j ty).push (mkAppN f dom)))))
+          let some ih := ih? | continue
+          let some ih := ih | return
           ihs := ihs.push ih
         let rhs ← mkAppOptM' minor ((promoted ++ fields ++ ihs).map some)
         let stmt ← mkForallFVars (uniformPs ++ motives ++ minors ++ promoted ++ fields) (← mkEq lhs rhs)
@@ -805,7 +824,9 @@ private def injectivity (r : Run) (m : Member) (params : Array Expr) (c : Syntax
           let some ands := eqs.back? | return none
           let ands := eqs.pop.foldr (fun e acc => mkApp2 (mkConst ``And) e acc) ands
           let body ← if useEq then mkEq eq ands else pure (← mkArrow eq ands)
-          withInfos params (fun bi => if bi == .default then .implicit else bi) do
+          -- `inj` takes every parameter implicitly, an instance's too, and
+          -- `injEq` keeps an instance's as it is: as Lean does
+          withInfos params (fun bi => if bi == .default || !useEq then .implicit else bi) do
             if useEq then mkForallFVars params (← mkForallFVars args1 (← mkForallFVars new body))
             else withInfos args1 (fun _ => .implicit) do
               mkForallFVars params (← mkForallFVars args1 (← mkForallFVars new body))

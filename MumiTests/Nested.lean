@@ -288,7 +288,7 @@ example (α : Type) (h : Nonempty (P α)) : P α := P.ghost h
 #guard_msgs in
 #check @P.nested_Nonempty_1.eq_orig
 
-mumi_spec (xfail := [rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [rec, recOn, casesOn])
 /-- An instance parameter is an instance parameter on the other side too. -/
 inductive PI (α : Type) [Inhabited α] : Type where
   | leaf : α → PI α
@@ -350,7 +350,7 @@ Lean writes for a `mutual` that nests -- constructors at `List D5B`, a native
 recursor with a motive for it, and a `D5B.mutualRec_1` beside `D5B.mutualRec`.
 -/
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive D5A : Prop where
   | mk : D5B → D5A
@@ -415,7 +415,7 @@ any other, so each of the ways one can be written has to survive the round trip.
 
 /-! Under the block's own parameters. -/
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive D6A (α : Type) : Prop where
   | mk : D6B α → D6A α
@@ -442,7 +442,7 @@ mumi_spec
 inductive D7Rose (α : Type) : Type where
   | mk : α → List α → D7Rose α
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive D7A : Prop where
   | mk : D7B → D7A
@@ -475,7 +475,7 @@ inductive D8Vek (α : Type) : Nat → Type where
   | nil : D8Vek α 0
   | cons : α → D8Vek α n → D8Vek α (n + 1)
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive D8A : Prop where
   | mk : D8B → D8A
@@ -505,7 +505,7 @@ info: @D8B.mutualRec_1 : {motive_1 : D8A → Prop} →
 /-! One inside another, where the two copies share a head and are told apart by
 the whole type they stand for. -/
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive D9A : Prop where
   | mk : D9B → D9A
@@ -546,7 +546,7 @@ example (t : D9B) : D9B.tag t = D9B.tag t := by
 
 /-! ## Nesting inside nesting -/
 
-mumi_spec (xfail := [rec])
+mumi_spec
 inductive N : Type where
   | mk0 : N
   | mkL : Nonempty (List N) → N
@@ -681,7 +681,7 @@ def T3.count : T3 → Nat
 occurrence, so which hypothesis belongs to which field has to be read off the
 recursor rather than guessed from a field's head. -/
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive V3 : Type 1 where
   | tip : V3
@@ -730,7 +730,7 @@ inductive Vek3 (α : Type) : Nat → Type where
   | nil : Vek3 α 0
   | cons : (n : Nat) → α → Vek3 α n → Vek3 α (n + 1)
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive A3 : Type 1 where
   | tip : A3
@@ -1287,7 +1287,7 @@ inductive SList (α : Sort u) : Sort (max 1 u) where
   | nil : SList α
   | cons : α → SList α → SList α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [recOn, casesOn])
 /-- `Sp` is itself a rescued nesting: `SList (Sp α)` is data and `Sp α` is a
 proposition, so the block the kernel would have built is heterogeneous. -/
 inductive Sp (α : Type u) : Prop where
@@ -1918,3 +1918,18 @@ set_option mumi.enabled false in
 inductive Off : Type where
   | mk1 : Off
   | mkT : Nonempty Off → Off
+
+/-! ## Minor premises named twice
+
+A minor premise is named by its constructor's last name, and Lean binds a name
+two constructors share twice rather than renaming the second.  `intro` is `TI`'s
+own and `Nonempty`'s both. -/
+
+namespace NamesTwice
+
+mumi_spec
+inductive TI : Type where
+  | intro : TI
+  | mkT : Nonempty TI → TI
+
+end NamesTwice
