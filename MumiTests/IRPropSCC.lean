@@ -252,7 +252,7 @@ theorem Good.t (α : Type) (u : U α) (g : Good α u) : True :=
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T : Type where
   | base : T
@@ -264,7 +264,7 @@ def D : T → Type
   | .base => Nat
   | .pi a b h => (x : D a) → D (b x)
 end
-theorem Ok.t (h : Ok) : True := by induction h with | yes t h ih => trivial | base => trivial
+theorem Ok.t (h : Ok) : True := by cases h with | yes t h => trivial | base => trivial
 
 -- the documentation goes onto the public declarations
 open Lean Elab Command in
@@ -304,7 +304,7 @@ theorem Good.t (α : Type) (u : U α) (g : Good α u) : True :=
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T : Type where
   | base : T
@@ -316,7 +316,7 @@ def D : T → Type
   | .base => Nat
   | .pi a b h => (x : D a) → D (b x)
 end
-theorem Ok.t (h : Ok) : True := by induction h with | yes t h ih => trivial | base => trivial
+theorem Ok.t (h : Ok) : True := by cases h with | yes t h => trivial | base => trivial
 
 end SeveralLower
 
@@ -394,3 +394,53 @@ theorem Ok.t (X : Type) (Γ : Ctx X) (A : Ty X Γ) (h : Ok X Γ A) : True := by
 #eval clen Nat (Ctx.snoc (X := Nat) .nil (Ty.base .nil 3) (Ok.base .nil 3))
 
 end NestedPropLower
+
+/-! A datum no index names may be a function: the induction over the block has a
+hypothesis at each of its values, and the value of the recursion there is computed
+pointwise.  The minor premise binds it as any other, and uses it. -/
+
+namespace SeveralFun
+set_option mumi.mahlo false
+
+mumi_spec
+mutual
+inductive T : Type where
+  | base : T
+  | pi (a : T) (b : D a → T) (h : Ok) : T
+inductive Ok : Prop where
+  | yes (f : Nat → T) (h : Ok) : Ok
+  | base : Ok
+def D : T → Type
+  | .base => Nat
+  | .pi a b h => (x : D a) → D (b x)
+end
+
+/-- The hypothesis at `f` is the recursion's value at each `f n`. -/
+theorem Ok.values (h : Ok) : True :=
+  Ok.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) (fun _ _ f_ih _ => (fun _ : Nat => trivial) (f_ih 0)) trivial h
+
+/-- info: 'SeveralFun.Ok.values' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Ok.values
+
+end SeveralFun
+
+namespace SeveralFunLower
+set_option mumi.mahlo true
+set_option maxRecDepth 6000
+
+mumi_spec
+mutual
+inductive T : Type where
+  | base : T
+  | pi (a : T) (b : D a → T) (h : Ok) : T
+inductive Ok : Prop where
+  | yes (f : Nat → T) (h : Ok) : Ok
+  | base : Ok
+def D : T → Type
+  | .base => Nat
+  | .pi a b h => (x : D a) → D (b x)
+end
+
+end SeveralFunLower

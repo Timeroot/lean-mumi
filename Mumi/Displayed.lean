@@ -49,12 +49,15 @@ used.  `X.rec` at a constructor unfolds to `J'` there, which the data recursion
 reduces to the minor premise at the fields' values: each rule holds by `rfl`
 exactly where the data recursion's own do.
 
+A datum a `Prop` constructor takes without its conclusion naming it (`Ok.yes (t :
+T)` beside `T.pi … (h : Ok)`), whose value needs the proofs inside it, takes an
+induction over the data and the proofs at once, which a frontend may supply
+(below).
+
 What this does not reach, the caller publishing its own eliminators instead
-(`publish`): a datum a `Prop` constructor takes without its conclusion naming it
-(`Ok.yes (t : T)` beside `T.pi … (h : Ok)`), whose value only a recursion
-through the proof computes; a field named twice whose member's recursion is
-higher order, where `G` is functional only up to `funext`; and a field named in
-a constructor nested inside another index.
+(`publish`): such a datum with no such induction; a field named twice whose
+member's recursion is higher order, where `G` is functional only up to `funext`;
+and a field named in a constructor nested inside another index.
 
 Everything is assembled as terms and checked by the kernel alone: the
 statements unfold (`G` at a constructor) only definitionally, and for a block
@@ -679,29 +682,157 @@ private def proofHyp (c : Ctx) (known : Array (Expr × Expr)) (j : Nat) (h d : E
     let facts ← vals.mapM (proveG c known)
     mkLambdaFVars dom (mkAppN (c.aux j "LEM") (idx ++ #[mkAppN h dom] ++ vals ++ facts))
 
+/-- What `LEM` says of a proof `g` of `Prop` member `j`: `∀ vs, facts → motive (displayed) g`. -/
+private def Ctx.lemStmt (c : Ctx) (j : Nat) (idx : Array Expr) (g : Expr) : MetaM Expr := do
+  let shown := c.displayAt[j]!
+  let rec go (a : Nat) (vals : Array (Option Expr)) (vs facts : Array Expr) : MetaM Expr := do
+    if h : a < idx.size then
+      match shown[a]! with
+      | none => go (a + 1) (vals.push none) vs facts
+      | some k =>
+        let ity ← instantiateMVars (← inferType idx[a])
+        let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
+        withLocalDeclD `v (mkAppN (c.motiveOf k) (iargs.push idx[a])) fun v =>
+          go (a + 1) (vals.push (some v)) (vs.push v) (facts.push (mkAppN (c.aux k "G") (iargs ++ #[idx[a], v])))
+    else
+      let body := c.motiveApp j idx vals g
+      let rec bindFacts (i : Nat) (hs : Array Expr) : MetaM Expr := do
+        if h : i < facts.size then withLocalDeclD `hv facts[i] fun hv => bindFacts (i + 1) (hs.push hv)
+        else mkForallFVars (vs ++ hs) body
+      bindFacts 0 #[]
+  go 0 #[] #[] #[]
+
+/-- `LEM`'s minor premise at constructor `ci` of `Prop` member `j`, of type `mty`,
+at `fs` and the hypotheses `pihs` there: at the proofs of `props`, or, under
+`all`, at every field of the block, which reaches a datum no index names. -/
+private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr) (fs pihs : Array Expr)
+    (all : Bool := false) : MetaM Expr := do
+  let kinds ← kindsOf c.inp fs
+  let (cidx, self) ← c.ctorAt j ci fs
+  let pihOf := (kinds.filter fun kd => all || (!kd.isData && props.contains kd.member)).map (·.field) |>.zip pihs
+  let goalTy := (← instantiateForall mty (fs ++ pihs)).headBeta
+  forallTelescope goalTy fun vhs goal => do
+    let nv := vhs.size / 2
+    let vs := vhs.extract 0 nv
+    let hs := vhs.extract nv vhs.size
+    let shownAt := (Array.range cidx.size).filter fun a => c.displayAt[j]![a]!.isSome
+    -- the values at the data fields, read off `G` at the indices that name them
+    let known ← IO.mkRef (#[] : Array (Expr × Expr × Expr))
+    let disp ← IO.mkRef (#[] : Array (Expr × Option Expr))
+    let rec atIndex (n : Nat) : MetaM Expr := do
+      if h : n < shownAt.size then
+        let a := shownAt[n]
+        let t := cidx[a]!
+        let k := c.displayAt[j]![a]!.get!
+        let v := vs[n]!
+        let hv := hs[n]!
+        if t.isFVar && fs.contains t then
+          match (← known.get).find? (·.1 == t) with
+          | some (_, y, fy) =>
+            unless c.uniq.contains k do gap m!"a field named twice, of `{c.inp.members[k]!.name}`"
+            let ity ← instantiateMVars (← inferType t)
+            let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
+            disp.modify (·.push (y, some (mkAppN (c.aux k "UNIQ") (iargs ++ #[t, y, v, fy, hv]))))
+          | none =>
+            known.modify (·.push (t, v, hv))
+            disp.modify (·.push (v, none))
+          atIndex (n + 1)
+        else
+          let .const cn _ := t.getAppFn | gap m!"an index the recursion cannot follow: {t}"
+          let some (s, ci') := ctorOf? c.inp cn | gap m!"an index the recursion cannot follow: {t}"
+          let targs := t.getAppArgs.extract c.np t.getAppNumArgs
+          let m := c.minorOf[s]![ci']!
+          let mty ← instantiateForall (← inferType m) targs
+          let tkinds ← kindsOf c.inp targs
+          let hook (kd : Kind) (d x fact : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
+            let a' := targs[kd.field]!
+            unless a'.isFVar && fs.contains a' do return none
+            match (← known.get).find? (·.1 == a') with
+            | some (_, y, fy) =>
+              unless c.uniq.contains kd.member do gap m!"a field named twice, of `{c.inp.members[kd.member]!.name}`"
+              let args := (← whnfCore d).getAppArgs
+              return some (y, mkAppN (c.aux kd.member "UNIQ") (args ++ #[x, y, fact, fy]), fy)
+            | none =>
+              known.modify (·.push (a', x, fact))
+              return none
+          destructFrom c m targs v goal hook hv mty tkinds.toList #[] #[] fun acc _ e => do
+            disp.modify (·.push (mkAppN m (targs ++ acc), some (← mkEqSymm e)))
+            atIndex (n + 1)
+      else
+        -- every datum of the constructor has its value: read off `G` at the
+        -- indices that name them, or, of one none names, computed from the
+        -- hypothesis there that all the proofs inside it are as they should be
+        let finish (ks : Array (Expr × Expr × Expr)) : MetaM Expr := do
+          let facts := ks.map fun (_, y, fy) => (y, fy)
+          let mut hyps := #[]
+          let mut ty ← instantiateForall (← inferType c.minorOf[j]![ci]!) fs
+          for kd in kinds do
+            let .forallE _ d body _ := ty | throwError "a minor premise ended early"
+            let v ← if kd.isData then
+                pure ((ks.find? (·.1 == fs[kd.field]!)).get!.2.1)
+              else if !props.contains kd.member then
+                proofHyp c facts kd.member fs[kd.field]! d
+              else
+                let some (_, pih) := pihOf.find? (·.1 == kd.field) | throwError "no hypothesis at a proof"
+                -- the recursion's hypothesis there, at its values
+                forallTelescope d fun dom dbody => do
+                  let dargs := dbody.getAppArgs
+                  let (_, vals) := c.splitDisplayed kd.member dargs.pop
+                  let vfacts ← vals.mapM (proveG c facts)
+                  mkLambdaFVars dom (mkAppN pih (dom ++ vals ++ vfacts))
+            hyps := hyps.push v
+            ty := body.instantiate1 v
+          let mut proof := mkAppN c.minorOf[j]![ci]! (fs ++ hyps)
+          -- the displayed values carried over to the ones given
+          let ds ← disp.get
+          for i in [:ds.size] do
+            let some e := ds[i]!.2 | continue
+            let before := (vs.extract 0 i).map some
+            let after := (ds.extract (i + 1) ds.size).map (some ·.1)
+            let vty ← inferType vs[i]!
+            let mot ← withLocalDeclD `x vty fun x => do
+              let ws := before ++ #[some x] ++ after
+              let mut vals := #[]
+              let mut wi := 0
+              for a in [:cidx.size] do
+                if c.displayAt[j]![a]!.isSome then
+                  vals := vals.push ws[wi]!
+                  wi := wi + 1
+                else vals := vals.push none
+              mkLambdaFVars #[x] (c.motiveApp j cidx vals self)
+            proof ← ndrec vty ds[i]!.1 mot proof vs[i]! e
+          return proof
+        let ks0 ← known.get
+        let missing := kinds.filter fun kd => kd.isData && !(ks0.any (·.1 == fs[kd.field]!))
+        if !all && !missing.isEmpty then
+          gap m!"a datum of `{c.inp.members[j]!.ctors[ci]!}` its conclusion does not name"
+        let rec named (i : Nat) (ks : Array (Expr × Expr × Expr)) : MetaM Expr := do
+          if h : i < missing.size then
+            let .data fi jm := missing[i] | throwError "not a datum"
+            let f := fs[fi]!
+            let some (_, ih) := pihOf.find? (·.1 == fi) | throwError "no hypothesis at a datum"
+            let (d, val, fact) ← forallTelescope (← inferType f) fun dom fty => do
+              let fty := (← instantiateMVars fty).headBeta
+              let args := fty.getAppArgs.extract c.np fty.getAppNumArgs
+              let fx := mkAppN f dom
+              let α := mkAppN (c.motiveOf jm) (args.push fx)
+              let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux jm "G") (args ++ #[fx, r]))
+              let p := mkAppN (c.aux jm "JQ") (args ++ #[fx, mkAppN ih dom])
+              return (← mkForallFVars dom α,
+                ← mkLambdaFVars dom (mkApp3 (mkConst ``PSigma.fst [c.uLvl, .zero]) α β p),
+                ← mkLambdaFVars dom (mkApp3 (mkConst ``PSigma.snd [c.uLvl, .zero]) α β p))
+            withLocalDeclD `v d fun v => do
+            withLocalDeclD `hv (← factAt c jm d v) fun hv => do
+              let inner ← named (i + 1) (ks.push (f, v, hv))
+              return mkApp2 (← mkLambdaFVars #[v, hv] inner) val fact
+          else finish ks
+        named 0 ks0
+    mkLambdaFVars vhs (← atIndex 0)
+
 /-- `LEM` for the `Prop` members of `props`, out of their recursion into `Prop`;
 a proof of one outside it by its `LEM`, which comes first. -/
 private def Ctx.addLem (c : Ctx) (props : Array Nat) : MetaM Unit := do
-  -- `∀ vs, facts → motive (displayed) g`
-  let stmt (j : Nat) (idx : Array Expr) (g : Expr) : MetaM Expr := do
-    let shown := c.displayAt[j]!
-    let rec go (a : Nat) (vals : Array (Option Expr)) (vs facts : Array Expr) : MetaM Expr := do
-      if h : a < idx.size then
-        match shown[a]! with
-        | none => go (a + 1) (vals.push none) vs facts
-        | some k =>
-          let ity ← instantiateMVars (← inferType idx[a])
-          let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
-          withLocalDeclD `v (mkAppN (c.motiveOf k) (iargs.push idx[a])) fun v =>
-            go (a + 1) (vals.push (some v)) (vs.push v) (facts.push (mkAppN (c.aux k "G") (iargs ++ #[idx[a], v])))
-      else
-        let body := c.motiveApp j idx vals g
-        let rec bindFacts (i : Nat) (hs : Array Expr) : MetaM Expr := do
-          if h : i < facts.size then withLocalDeclD `hv facts[i] fun hv => bindFacts (i + 1) (hs.push hv)
-          else mkForallFVars (vs ++ hs) body
-        bindFacts 0 #[]
-    go 0 #[] #[] #[]
-  let mots ← props.mapM fun j => c.overMember j (stmt j)
+  let mots ← props.mapM fun j => c.overMember j (c.lemStmt j)
   -- a recursion that may eliminate into any sort does so into `Prop`
   let recAt (j : Nat) : MetaM Expr := do
     let info ← getConstInfo (c.inp.elim j "rec")
@@ -716,108 +847,11 @@ private def Ctx.addLem (c : Ctx) (props : Array Nat) : MetaM Unit := do
     for ci in [:c.inp.members[j]!.ctors.size] do
       let mty := tys[ti]!
       ti := ti + 1
-      minors := minors.push <| ← minorLambda mty (← c.numFields j ci) fun fs pihs => do
-        let kinds ← kindsOf c.inp fs
-        let (cidx, self) ← c.ctorAt j ci fs
-        let pihOf := (kinds.filter fun kd => !kd.isData && props.contains kd.member).map (·.field) |>.zip pihs
-        let goalTy := (← instantiateForall mty (fs ++ pihs)).headBeta
-        forallTelescope goalTy fun vhs goal => do
-          let nv := vhs.size / 2
-          let vs := vhs.extract 0 nv
-          let hs := vhs.extract nv vhs.size
-          let shownAt := (Array.range cidx.size).filter fun a => c.displayAt[j]![a]!.isSome
-          -- the values at the data fields, read off `G` at the indices that name them
-          let known ← IO.mkRef (#[] : Array (Expr × Expr × Expr))
-          let disp ← IO.mkRef (#[] : Array (Expr × Option Expr))
-          let rec atIndex (n : Nat) : MetaM Expr := do
-            if h : n < shownAt.size then
-              let a := shownAt[n]
-              let t := cidx[a]!
-              let k := c.displayAt[j]![a]!.get!
-              let v := vs[n]!
-              let hv := hs[n]!
-              if t.isFVar && fs.contains t then
-                match (← known.get).find? (·.1 == t) with
-                | some (_, y, fy) =>
-                  unless c.uniq.contains k do gap m!"a field named twice, of `{c.inp.members[k]!.name}`"
-                  let ity ← instantiateMVars (← inferType t)
-                  let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
-                  disp.modify (·.push (y, some (mkAppN (c.aux k "UNIQ") (iargs ++ #[t, y, v, fy, hv]))))
-                | none =>
-                  known.modify (·.push (t, v, hv))
-                  disp.modify (·.push (v, none))
-                atIndex (n + 1)
-              else
-                let .const cn _ := t.getAppFn | gap m!"an index the recursion cannot follow: {t}"
-                let some (s, ci') := ctorOf? c.inp cn | gap m!"an index the recursion cannot follow: {t}"
-                let targs := t.getAppArgs.extract c.np t.getAppNumArgs
-                let m := c.minorOf[s]![ci']!
-                let mty ← instantiateForall (← inferType m) targs
-                let tkinds ← kindsOf c.inp targs
-                let hook (kd : Kind) (d x fact : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
-                  let a' := targs[kd.field]!
-                  unless a'.isFVar && fs.contains a' do return none
-                  match (← known.get).find? (·.1 == a') with
-                  | some (_, y, fy) =>
-                    unless c.uniq.contains kd.member do gap m!"a field named twice, of `{c.inp.members[kd.member]!.name}`"
-                    let args := (← whnfCore d).getAppArgs
-                    return some (y, mkAppN (c.aux kd.member "UNIQ") (args ++ #[x, y, fact, fy]), fy)
-                  | none =>
-                    known.modify (·.push (a', x, fact))
-                    return none
-                destructFrom c m targs v goal hook hv mty tkinds.toList #[] #[] fun acc _ e => do
-                  disp.modify (·.push (mkAppN m (targs ++ acc), some (← mkEqSymm e)))
-                  atIndex (n + 1)
-            else
-              -- every datum of the constructor has its value
-              let ks := (← known.get)
-              for kd in kinds do
-                if kd.isData && !(ks.any (·.1 == fs[kd.field]!)) then
-                  gap m!"a datum of `{c.inp.members[j]!.ctors[ci]!}` its conclusion does not name"
-              let facts := ks.map fun (_, y, fy) => (y, fy)
-              let mut hyps := #[]
-              let mut ty ← instantiateForall (← inferType c.minorOf[j]![ci]!) fs
-              for kd in kinds do
-                let .forallE _ d body _ := ty | throwError "a minor premise ended early"
-                let v ← if kd.isData then
-                    pure ((ks.find? (·.1 == fs[kd.field]!)).get!.2.1)
-                  else if !props.contains kd.member then
-                    proofHyp c facts kd.member fs[kd.field]! d
-                  else
-                    let some (_, pih) := pihOf.find? (·.1 == kd.field) | throwError "no hypothesis at a proof"
-                    -- the recursion's hypothesis there, at its values
-                    forallTelescope d fun dom dbody => do
-                      let dargs := dbody.getAppArgs
-                      let (_, vals) := c.splitDisplayed kd.member dargs.pop
-                      let vfacts ← vals.mapM (proveG c facts)
-                      mkLambdaFVars dom (mkAppN pih (dom ++ vals ++ vfacts))
-                hyps := hyps.push v
-                ty := body.instantiate1 v
-              let mut proof := mkAppN c.minorOf[j]![ci]! (fs ++ hyps)
-              -- the displayed values carried over to the ones given
-              let ds ← disp.get
-              for i in [:ds.size] do
-                let some e := ds[i]!.2 | continue
-                let before := (vs.extract 0 i).map some
-                let after := (ds.extract (i + 1) ds.size).map (some ·.1)
-                let vty ← inferType vs[i]!
-                let mot ← withLocalDeclD `x vty fun x => do
-                  let ws := before ++ #[some x] ++ after
-                  let mut vals := #[]
-                  let mut wi := 0
-                  for a in [:cidx.size] do
-                    if c.displayAt[j]![a]!.isSome then
-                      vals := vals.push ws[wi]!
-                      wi := wi + 1
-                    else vals := vals.push none
-                  mkLambdaFVars #[x] (c.motiveApp j cidx vals self)
-                proof ← ndrec vty ds[i]!.1 mot proof vs[i]! e
-              return proof
-          mkLambdaFVars vhs (← atIndex 0)
+      minors := minors.push <| ← minorLambda mty (← c.numFields j ci) (c.lemMinor props j ci mty)
   for j in props do
     let recJ ← recAt j
     let value ← c.overMember j fun idx g => pure (mkAppN recJ (c.ps ++ mots ++ minors ++ idx ++ #[g]))
-    let type ← c.forallMember j (stmt j)
+    let type ← c.forallMember j (c.lemStmt j)
     c.add (auxName c.inp j "LEM") type value true
 
 /-- `J'` for the members of `scope`: the value and its `G`. -/
@@ -871,6 +905,183 @@ private def Ctx.addValue (c : Ctx) (scope : Array Nat) : MetaM Unit := do
     let value ← c.overMember s fun idx x => pure (mkAppN recS (c.ps ++ mots ++ minors ++ idx ++ #[x]))
     let type ← c.forallMember s (sigmaOf s)
     c.add (auxName c.inp s "J") type value false
+
+/-! ### A datum no index names
+
+`Ok.yes (t : T)` beside `T.pi … (h : Ok)`: a proof carries a datum its conclusion
+does not name, so `LEM` wants the recursion's value at it, and the recursion's
+value wants `LEM` at the proofs inside.  Neither recursion over the data nor over
+the proofs alone gets through that, but an induction over both does, and the
+encoding has one: its well-formedness is one `mutual`, and a frontend gives it as
+`X.<internal>recAll`, into `Prop`, with a hypothesis at every field of the block.
+It cannot compute a value, so it is asked only for what is in `Prop`:
+
+* `Q x` -- *every proof inside `x` is as `LEM` says* -- by the data recursion;
+* `JQ x : Q x → (r : M x) ×' G x r` by the data recursion, each proof's hypothesis
+  read off `Q` rather than out of `LEM`;
+* `QALL x : Q x` and `LEM` together by `recAll`: at a datum no index names, `JQ` at
+  the hypothesis there;
+* `J x := JQ x (QALL x)`.
+
+So `X.rec` at a constructor still unfolds to the minor premise, at values `JQ`
+computed from a part of `Q`, which proof irrelevance makes the `QALL` of the
+field: each rule holds by `rfl` exactly where it did. -/
+
+/-- A right-nested conjunction, ending in `True`. -/
+private def conjOf (parts : Array Expr) : Expr :=
+  parts.foldr mkAnd (mkConst ``True)
+
+/-- Conjunct `i` of a proof `q` of `conjOf parts`. -/
+private def conjAt (parts : Array Expr) (q : Expr) (i : Nat) : Expr := Id.run do
+  let mut cur := q
+  for n in [:i] do
+    cur := mkApp3 (mkConst ``And.right) parts[n]! (conjOf (parts.extract (n + 1) parts.size)) cur
+  return mkApp3 (mkConst ``And.left) parts[i]! (conjOf (parts.extract (i + 1) parts.size)) cur
+
+/-- A proof of `conjOf parts` from a proof of each. -/
+private def conjIntro (parts proofs : Array Expr) : Expr := Id.run do
+  let mut out := mkConst ``True.intro
+  for n in (List.range parts.size).reverse do
+    out := mkApp4 (mkConst ``And.intro) parts[n]! (conjOf (parts.extract (n + 1) parts.size)) proofs[n]! out
+  return out
+
+/-- What `Q` asks of a constructor at `fs`, per hypothesis: `atData` at a datum's
+points, `LEM`'s statement at a proof's. -/
+private def Ctx.qParts (c : Ctx) (fs : Array Expr) (kinds : Array Kind)
+    (atData : Nat → Nat → Array Expr → Array Expr → Expr → MetaM Expr) : MetaM (Array Expr) :=
+  kinds.mapM fun kd => do
+    let f := fs[kd.field]!
+    forallTelescope (← inferType f) fun dom fty => do
+      let fty := (← instantiateMVars fty).headBeta
+      let args := fty.getAppArgs.extract c.np fty.getAppNumArgs
+      match kd with
+      | .data fi j => mkForallFVars dom (← atData fi j dom args (mkAppN f dom))
+      | .proof _ j => mkForallFVars dom (← c.lemStmt j args (mkAppN f dom))
+
+/-- `Q` for the members of `scope`. -/
+private def Ctx.addQ (c : Ctx) (scope : Array Nat) : MetaM Unit := do
+  let lvl := mkLevelSucc .zero
+  let mots ← scope.mapM fun s => c.overMember s fun _ _ => pure (mkSort .zero)
+  let minors ← c.recursion scope lvl mots fun _ _ fs ihs => do
+    let kinds ← kindsOf c.inp fs
+    let ihAt := scopedIhs scope kinds ihs
+    return conjOf (← c.qParts fs kinds fun fi j dom args x =>
+      match ihAt.find? (·.1 == fi) with
+      | some (_, ih) => pure (mkAppN ih dom)
+      | none => pure (mkAppN (c.aux j "Q") (args.push x)))
+  for s in scope do
+    let recS ← c.dataRec s lvl
+    let value ← c.overMember s fun idx x => pure (mkAppN recS (c.ps ++ mots ++ minors ++ idx ++ #[x]))
+    let type ← c.forallMember s fun _ _ => pure (mkSort .zero)
+    c.add (auxName c.inp s "Q") type value false
+
+/-- `Q` at a constructor at `fs`, unfolded. -/
+private def Ctx.qAt (c : Ctx) (fs : Array Expr) (kinds : Array Kind) : MetaM (Array Expr) :=
+  c.qParts fs kinds fun _ j _ args x => pure (mkAppN (c.aux j "Q") (args.push x))
+
+/-- `JQ` for the members of `scope`. -/
+private def Ctx.addValueQ (c : Ctx) (scope : Array Nat) : MetaM Unit := do
+  let lvl := mkLevelMax' (mkLevelSucc .zero) c.uLvl
+  let sigmaOf (s : Nat) (idx : Array Expr) (x : Expr) : MetaM Expr := do
+    let α := mkAppN (c.motiveOf s) (idx.push x)
+    let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux s "G") (idx ++ #[x, r]))
+    return mkApp2 (mkConst ``PSigma [c.uLvl, .zero]) α β
+  let motOf (s : Nat) (idx : Array Expr) (x : Expr) : MetaM Expr := do
+    mkArrow (mkAppN (c.aux s "Q") (idx.push x)) (← sigmaOf s idx x)
+  let mots ← scope.mapM fun s => c.overMember s (motOf s)
+  let minors ← c.recursion scope lvl mots fun s ci fs ihs => do
+    let kinds ← kindsOf c.inp fs
+    let (idx, self) ← c.ctorAt s ci fs
+    let ihAt := scopedIhs scope kinds ihs
+    let m := c.minorOf[s]![ci]!
+    let mty ← instantiateForall (← inferType m) fs
+    let parts ← c.qAt fs kinds
+    withLocalDeclD `q (conjOf parts) fun q => do
+    let mut known := #[]
+    let mut supplied := #[]
+    let mut ty := mty
+    for n in [:kinds.size] do
+      let kd := kinds[n]!
+      let .forallE _ d body _ := ty | throwError "a minor premise ended early"
+      let part := conjAt parts q n
+      let (v, fact?) ← if let .data f j := kd then do
+          let pair ← forallTelescope d fun dom dbody => do
+            let qx := mkAppN part dom
+            let args := dbody.getAppArgs
+            let p := match ihAt.find? (·.1 == f) with
+              | some (_, ih) => mkApp (mkAppN ih dom) qx
+              | none => mkAppN (c.aux j "JQ") (args.push qx)
+            let α := dbody
+            let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux j "G") (args.push r))
+            let fst := mkApp3 (mkConst ``PSigma.fst [c.uLvl, .zero]) α β p
+            let snd := mkApp3 (mkConst ``PSigma.snd [c.uLvl, .zero]) α β p
+            return (← mkLambdaFVars dom fst, ← mkLambdaFVars dom snd)
+          pure (pair.1, some pair.2)
+        else do
+          let .proof _ j := kd | unreachable!
+          -- `LEM`'s statement is at hand: at the values the hypothesis displays
+          let w ← forallTelescope d fun dom dbody => do
+            let (_, vals) := c.splitDisplayed j dbody.getAppArgs.pop
+            let facts ← vals.mapM (proveG c known)
+            mkLambdaFVars dom (mkAppN part (dom ++ vals ++ facts))
+          pure (w, none)
+      if let some fact := fact? then known := known.push (v, fact)
+      supplied := supplied.push (v, fact?)
+      ty := body.instantiate1 v
+    let val := mkAppN m (fs ++ supplied.map (·.1))
+    let idxRef ← IO.mkRef 0
+    let gproof ← introFrom c m fs val (fun _ _ => do
+        let n ← idxRef.get
+        idxRef.set (n + 1)
+        return supplied[n]!) mty kinds.toList #[]
+    let α := mkAppN (c.motiveOf s) (idx.push self)
+    let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux s "G") (idx ++ #[self, r]))
+    mkLambdaFVars #[q] (mkApp4 (mkConst ``PSigma.mk [c.uLvl, .zero]) α β val gproof)
+  for s in scope do
+    let recS ← c.dataRec s lvl
+    let value ← c.overMember s fun idx x => pure (mkAppN recS (c.ps ++ mots ++ minors ++ idx ++ #[x]))
+    let type ← c.forallMember s (motOf s)
+    c.add (auxName c.inp s "JQ") type value false
+
+/-- `QALL` and `LEM`, by the induction over everything; then `J`. -/
+private def Ctx.addAll (c : Ctx) : MetaM Unit := do
+  let ks := Array.range c.inp.members.size
+  let mots ← ks.mapM fun k => c.overMember k fun idx x =>
+    if c.inp.members[k]!.prop then c.lemStmt k idx x else pure (mkAppN (c.aux k "Q") (idx.push x))
+  let recOfMember (k : Nat) : MetaM Expr := constAt (c.inp.elim k "recAll")
+  let rec0 ← recOfMember 0
+  let count := ks.foldl (fun a k => a + c.inp.members[k]!.ctors.size) 0
+  let tys ← minorTypes rec0 (c.ps ++ mots) count
+  let props := ks.filter (c.inp.members[·]!.prop)
+  let mut minors := #[]
+  let mut ti := 0
+  for k in ks do
+    for ci in [:c.inp.members[k]!.ctors.size] do
+      let mty := tys[ti]!
+      ti := ti + 1
+      let nf ← c.numFields k ci
+      minors := minors.push <| ← if c.inp.members[k]!.prop then
+          minorLambda mty nf fun fs ihs => c.lemMinor props k ci mty fs ihs (all := true)
+        else
+          minorLambda mty nf fun fs ihs => do
+            let kinds ← kindsOf c.inp fs
+            return conjIntro (← c.qAt fs kinds) ihs
+  for k in ks do
+    let recK ← recOfMember k
+    let value ← c.overMember k fun idx x => pure (mkAppN recK (c.ps ++ mots ++ minors ++ idx ++ #[x]))
+    if c.inp.members[k]!.prop then
+      c.add (auxName c.inp k "LEM") (← c.forallMember k (c.lemStmt k)) value true
+    else
+      c.add (auxName c.inp k "QALL") (← c.forallMember k fun idx x => pure (mkAppN (c.aux k "Q") (idx.push x))) value true
+  for k in ks do
+    if c.inp.members[k]!.prop then continue
+    let value ← c.overMember k fun idx x =>
+      pure (mkAppN (c.aux k "JQ") (idx ++ #[x, mkAppN (c.aux k "QALL") (idx.push x)]))
+    let type ← c.forallMember k fun idx x => do
+      let α := mkAppN (c.motiveOf k) (idx.push x)
+      let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux k "G") (idx ++ #[x, r]))
+      return mkApp2 (mkConst ``PSigma [c.uLvl, .zero]) α β
+    c.add (auxName c.inp k "J") type value false
 
 /-- The public recursors: a data member's the value `J'` computes, a `Prop`
 member's `LEM` at those values. -/
@@ -929,6 +1140,22 @@ private def build (inp : Input) : MetaM Unit := withSpec inp fun c => do
     if !propScopes.contains sc then propScopes := propScopes.push sc
   for sc in propScopes do c.addLem sc
   for scope in scopes do c.addValue scope
+  c.addRecs
+
+/-- As `build`, by the frontend's induction over everything: a datum no index names. -/
+private def buildAll (inp : Input) : MetaM Unit := withSpec inp fun c => do
+  let mut scopes : Array (Array Nat) := #[]
+  for k in [:inp.members.size] do
+    let m := inp.members[k]!
+    if !m.prop && !scopes.contains m.scope then scopes := scopes.push m.scope
+  for scope in scopes do c.addGraph scope
+  let q ← c.firstOrder
+  for scope in scopes do
+    if scope.any q.contains then c.addUniq scope q
+  let c := { c with uniq := q }
+  for scope in scopes do c.addQ scope
+  for scope in scopes do c.addValueQ scope
+  c.addAll
   c.addRecs
 
 /-- Tag `n` `@[elab_as_elim]`, without registering it with the tactics. -/
@@ -996,12 +1223,23 @@ def buildJoint (inp : Input) : MetaM Bool := do
 the frontend's own otherwise. -/
 def publish (inp : Input) : MetaM Unit := do
   let env ← getEnv
-  try
-    build inp
-    publishAround inp
-  catch e =>
-    setEnv env
-    trace[Mumi] "{e.toMessageData}; the frontend's own eliminators are published"
-    publishOwn inp
+  let first ← try
+      build inp
+      publishAround inp
+      pure none
+    catch e =>
+      setEnv env
+      pure (some e)
+  let some e := first | return
+  if (← getEnv).contains (inp.elim 0 "recAll") then
+    try
+      buildAll inp
+      publishAround inp
+      return
+    catch e' =>
+      setEnv env
+      trace[Mumi] "by the induction over everything: {e'.toMessageData}"
+  trace[Mumi] "{e.toMessageData}; the frontend's own eliminators are published"
+  publishOwn inp
 
 end Mumi.Displayed

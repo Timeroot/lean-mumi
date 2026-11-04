@@ -19,7 +19,7 @@ set_option mumi.mahlo false
 
 namespace UnivProp
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -41,14 +41,15 @@ end
 example : F A.a0 = Type := rfl
 example (x : A) (f : F x → A) (h : P x) (b : B) (k : G b) (hx : P x) : P (A.a1 x f h) := P.one x f h b k hx
 
-/-- `A.rec` and `B.rec` are one recursion over the carriers, with a motive at
-each, as a `mutual` block's are; the motive a function does not need is
-discharged at `Unit`. -/
+/-- `A.rec` and `B.rec` are one recursion over the whole block, across its
+universes, with a motive at each member, the proofs' displayed, as a `mutual`
+block's are; a motive a function does not need is discharged at `Unit` or `True`. -/
 def depth : A → Nat :=
-  A.rec (motive_2 := fun _ => Unit) 0 (fun _ _ _ ih _ => ih + 1) () (fun _ _ _ _ _ _ _ => ())
+  A.rec (motive_2 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) () (fun _ _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ _ _ _ _ _ => trivial)
 def sizeB : B → Nat :=
-  B.rec (motive_1 := fun _ => Unit) () (fun _ _ _ _ _ => ()) 0
-    (fun x _ _ _ _ ih _ => depth x + ih + 1)
+  B.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) 0 (fun x _ _ _ _ ih _ => depth x + ih + 1) trivial (fun _ _ _ _ _ _ _ _ _ _ _ => trivial)
 
 example (x : A) (f : F x → A) (h : P x) : depth (A.a1 x f h) = depth x + 1 := rfl
 example (x : A) (v : F x) (b : B) (g : G b → B) : sizeB (B.b1 x v b g) = depth x + sizeB b + 1 := rfl
@@ -62,12 +63,12 @@ example : sizeB b1 = 2 := rfl
 #guard_msgs in
 #eval sizeB b1
 
-/-- The predicate's own recursor, with a hypothesis at each proof of `P` a
-constructor takes: `h`, which the conclusion is at, and `hx`. -/
-theorem P.depth_pos (a : A) (h : P a) : a = A.a0 ∨ 0 < depth a := by
-  induction h with
-  | zero => exact .inl rfl
-  | one x f h b k hx ih ihx => exact .inr (Nat.succ_pos _)
+/-- The block's recursor at the predicate, with a hypothesis at every field of a
+constructor, the `B` it does not name included. -/
+theorem P.depth_pos (a : A) (h : P a) : a = A.a0 ∨ 0 < depth a :=
+  P.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ => Unit) (motive_3 := fun a _ _ => a = A.a0 ∨ 0 < depth a)
+    () (fun _ _ _ _ _ _ => ()) () (fun _ _ _ _ _ _ _ => ())
+    (.inl rfl) (fun _ _ _ _ _ _ _ _ _ _ _ => .inr (Nat.succ_pos _)) h
 
 theorem P.cases_test (a : A) (h : P a) : a = A.a0 ∨ ∃ x f h', a = A.a1 x f h' := by
   cases h with
@@ -95,7 +96,7 @@ namespace UnivPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -114,15 +115,19 @@ def G : B → Type 3
   | .b1 x v b g => F x × ((z : G b) → G (g z))
 end
 
-def depth : A → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
-def sizeB : B → Nat := B.rec 0 (fun x _ _ _ ih _ => depth x + ih + 1)
+def depth : A → Nat :=
+  A.rec (motive_2 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) () (fun _ _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ _ _ _ _ _ => trivial)
+def sizeB : B → Nat :=
+  B.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) 0 (fun x _ _ _ _ ih _ => depth x + ih + 1) trivial (fun _ _ _ _ _ _ _ _ _ _ _ => trivial)
 example (x : A) (f : F x → A) (h : P x) : depth (A.a1 x f h) = depth x + 1 := rfl
 example (x : A) (v : F x) (b : B) (g : G b → B) : sizeB (B.b1 x v b g) = depth x + sizeB b + 1 := rfl
 
-theorem P.depth_pos (a : A) (h : P a) : a = A.a0 ∨ 0 < depth a := by
-  induction h with
-  | zero => exact .inl rfl
-  | one x f h b k hx ih ihx => exact .inr (Nat.succ_pos _)
+theorem P.depth_pos (a : A) (h : P a) : a = A.a0 ∨ 0 < depth a :=
+  P.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ => Unit) (motive_3 := fun a _ _ => a = A.a0 ∨ 0 < depth a)
+    () (fun _ _ _ _ _ _ => ()) () (fun _ _ _ _ _ _ _ => ())
+    (.inl rfl) (fun _ _ _ _ _ _ _ _ _ _ _ => .inr (Nat.succ_pos _)) h
 
 theorem P.cases_test (a : A) (h : P a) : a = A.a0 ∨ ∃ x f h', a = A.a1 x f h' := by
   cases h with
@@ -153,14 +158,13 @@ end UnivPropLower
 and the proof tying them back: `Big.over` takes a context and a type over it,
 `Fine` takes a `Big`.  One universe up `Ctx` and `Ty` are induction-inductive
 and `Big` leaves that block; at the written universe `Big`'s engine reads
-`Ty`'s raw terms with their coherence.  Either way the recursion is one per
-universe, as a `mutual` has one: `Ctx.rec` over `Ctx` and `Ty`, `Big.rec` over
-`Big`, with no hypothesis at its `Ctx` or `Ty`. -/
+`Ty`'s raw terms with their coherence.  Either way there is one recursion, as a
+`mutual` has one: over `Ctx`, `Ty`, `Big` and `Fine` together. -/
 
 namespace MixIdx
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -185,16 +189,19 @@ def Large : Big → Type 2
   | .over Γ A v b g => Val Γ A × ((z : Large b) → Large (g z))
 end
 
-/-- One recursion over the three, as `Mumi.IndInd` declares the graphs. -/
+/-- One recursion over the four. -/
 def clen : Ctx → Nat :=
-  Ctx.rec (motive_2 := fun _ _ => Nat) (motive_3 := fun _ => Nat) 0 (fun _ _ _ ih _ => ih + 1)
-    (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1) 0 (fun _ _ _ _ _ _ _ ih _ => ih + 1)
+  Ctx.rec (motive_2 := fun _ _ => Nat) (motive_3 := fun _ => Nat) (motive_4 := fun _ _ _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1)
+    (fun _ _ => 0) (fun _ _ _ _ _ ihA _ ihB => ihA + ihB + 1)
+    0 (fun _ _ _ _ _ _ _ ih _ => ih + 1)
+    (fun _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ _ _ _ => trivial)
 example (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : clen (Ctx.snoc Γ A h) = clen Γ + 1 := rfl
 
 theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
-  induction h with
+  cases h with
   | base Γ => exact .inl rfl
-  | pi Γ A h B hB b w ih ihB => exact .inr ⟨A, h, B, rfl⟩
+  | pi Γ A h B hB b w => exact .inr ⟨A, h, B, rfl⟩
 
 /-- info: 1 -/
 #guard_msgs in
@@ -210,7 +217,7 @@ namespace MixIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -236,15 +243,23 @@ def Large : Big → Type 2
 end
 
 def clen : Ctx → Nat :=
-  Ctx.rec (motive_2 := fun _ _ => Nat) 0 (fun _ _ _ ih _ => ih + 1) (fun _ _ => 0) (fun _ _ _ _ _ ihA ihB => ihA + ihB + 1)
-def bsize : Big → Nat := Big.rec 0 (fun Γ _ _ _ _ ih _ => clen Γ + ih + 1)
+  Ctx.rec (motive_2 := fun _ _ => Nat) (motive_3 := fun _ => Unit) (motive_4 := fun _ _ _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1)
+    (fun _ _ => 0) (fun _ _ _ _ _ ihA _ ihB => ihA + ihB + 1)
+    () (fun _ _ _ _ _ _ _ _ _ => ())
+    (fun _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ _ _ _ => trivial)
+def bsize : Big → Nat :=
+  Big.rec (motive_1 := fun _ => Unit) (motive_2 := fun _ _ => Unit) (motive_4 := fun _ _ _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) (fun _ _ => ()) (fun _ _ _ _ _ _ _ _ => ())
+    0 (fun Γ _ _ _ _ _ _ ih _ => clen Γ + ih + 1)
+    (fun _ _ => trivial) (fun _ _ _ _ _ _ _ _ _ _ _ _ _ => trivial)
 example (Γ : Ctx) (A : Ty Γ) (v : Val Γ A) (b : Big) (g : Large b → Big) :
     bsize (Big.over Γ A v b g) = clen Γ + bsize b + 1 := rfl
 
 theorem Fine.base_or_pi (Γ : Ctx) (A : Ty Γ) (h : Fine Γ A) : A = Ty.base Γ ∨ ∃ A' h' B, A = Ty.pi Γ A' h' B := by
-  induction h with
+  cases h with
   | base Γ => exact .inl rfl
-  | pi Γ A h B hB b w ih ihB => exact .inr ⟨A, h, B, rfl⟩
+  | pi Γ A h B hB b w => exact .inr ⟨A, h, B, rfl⟩
 
 /-- info: 1 -/
 #guard_msgs in
@@ -265,7 +280,7 @@ universe u
 namespace PolyMix
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -285,15 +300,16 @@ def G : B → Type (u+1)
 end
 
 def depth : A.{u} → Nat :=
-  A.rec (motive_2 := fun _ => Unit) 0 (fun _ _ _ ih _ => ih + 1) () (fun _ _ _ _ _ _ => ())
+  A.rec (motive_2 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) () (fun _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
 def sizeB : B.{u} → Nat :=
-  B.rec (motive_1 := fun _ => Unit) () (fun _ _ _ _ _ => ()) 0
-    (fun x _ _ _ ih _ => depth x + ih + 1)
+  B.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) 0 (fun x _ _ _ ih _ => depth x + ih + 1) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
 example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
 theorem P.t (a : A.{u}) (h : P a) : a = A.a0 ∨ 0 < depth a := by
-  induction h with
+  cases h with
   | zero => exact .inl rfl
-  | one x f h b k ih => exact .inr (Nat.succ_pos _)
+  | one x f h b k => exact .inr (Nat.succ_pos _)
 
 /-- info: 'PolyMix.sizeB' does not depend on any axioms -/
 #guard_msgs in
@@ -305,7 +321,7 @@ namespace PolyMixLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -324,13 +340,17 @@ def G : B → Type (u+1)
   | .b1 x b g => F x × ((z : G b) → G (g z))
 end
 
-def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
-def sizeB : B.{u} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+def depth : A.{u} → Nat :=
+  A.rec (motive_2 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) () (fun _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
+def sizeB : B.{u} → Nat :=
+  B.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) 0 (fun x _ _ _ ih _ => depth x + ih + 1) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
 example (x : A.{u}) (b : B) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
 theorem P.t (a : A.{u}) (h : P a) : a = A.a0 ∨ 0 < depth a := by
-  induction h with
+  cases h with
   | zero => exact .inl rfl
-  | one x f h b k ih => exact .inr (Nat.succ_pos _)
+  | one x f h b k => exact .inr (Nat.succ_pos _)
 
 /-- info: 'PolyMixLower.sizeB' depends on axioms: [IR.mahlo] -/
 #guard_msgs in
@@ -346,7 +366,7 @@ namespace TwoParams
 set_option mumi.mahlo false
 set_option linter.unusedVariables false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -366,10 +386,11 @@ def G : B → Type (max u v + 1)
 end
 
 def depth : A.{u} → Nat :=
-  A.rec (motive_2 := fun _ => Unit) 0 (fun _ _ _ ih _ => ih + 1) () (fun _ _ _ _ _ _ => ())
+  A.rec (motive_2 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) () (fun _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
 def sizeB : B.{u, v} → Nat :=
-  B.rec (motive_1 := fun _ => Unit) () (fun _ _ _ _ _ => ()) 0
-    (fun x _ _ _ ih _ => depth x + ih + 1)
+  B.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) 0 (fun x _ _ _ ih _ => depth x + ih + 1) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
 example (x : A.{u}) (b : B.{u, v}) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
 
 end TwoParams
@@ -379,7 +400,7 @@ set_option mumi.mahlo true
 set_option maxRecDepth 6000
 set_option linter.unusedVariables false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -398,8 +419,12 @@ def G : B → Type (max u v + 1)
   | .b1 x b g => F x × ((z : G b) → G (g z))
 end
 
-def depth : A.{u} → Nat := A.rec 0 (fun _ _ _ ih _ => ih + 1)
-def sizeB : B.{u, v} → Nat := B.rec 0 (fun x _ _ ih _ => depth x + ih + 1)
+def depth : A.{u} → Nat :=
+  A.rec (motive_2 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    0 (fun _ _ _ ih _ _ => ih + 1) () (fun _ _ _ _ _ _ => ()) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
+def sizeB : B.{u, v} → Nat :=
+  B.rec (motive_1 := fun _ => Unit) (motive_3 := fun _ _ _ => True)
+    () (fun _ _ _ _ _ _ => ()) 0 (fun x _ _ _ ih _ => depth x + ih + 1) trivial (fun _ _ _ _ _ _ _ _ _ => trivial)
 example (x : A.{u}) (b : B.{u, v}) (g : G b → B) : sizeB (B.b1 x b g) = depth x + sizeB b + 1 := rfl
 
 end TwoParamsLower

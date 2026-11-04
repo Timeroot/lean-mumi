@@ -1776,6 +1776,98 @@ private def emitPropRec (b : Block) : CommandElabM Unit := do
       cgminors := cgminors.push g
     emit (elimAttrs bn "@[elab_as_elim, cases_eliminator] " ++ "theorem " ++ elimName bn m "casesOn" ++ " " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".casesOn") (pArgs b ++ #[gmotive] ++ pubPairIdx b j idx ++ #["_ir_self"] ++ cgminors ++ pubIdxWf b j idx))
 
+/-- The motive of member `k` in the induction over everything. -/
+private def allMotive (k : Nat) : String := "_ir_all_" ++ toString k
+
+/-- A minor premise of the induction over everything as it is bound: the fields, a
+hypothesis at each field of the block, and the motive at the constructor. -/
+private def allMinorPub (b : Block) (j ci : Nat) : CommandElabM String := do
+  let c := b.members[j]!.ctors[ci]!
+  let mut hyps := #[]
+  for f in c.fields do
+    if let some (k, _) := f.target then
+      hyps := hyps.push (par (ihVar f.name ++ " : " ++ (← ihType b f (some (allMotive k)))))
+  let result ← c.pubResult.mapM text
+  let concl := app (allMotive j) (result ++ #[ctorApp b j ci (fieldNames c)])
+  let decls ← ctorDecl c
+  let ty := if c.fields.isEmpty then concl else "∀ " ++ decls ++ " " ++ join hyps ++ ", " ++ concl
+  return par (propMinor b j ci ++ " : " ++ ty)
+
+/-- A minor premise of the induction over everything as the well-formedness
+recursor takes it: as `propMinorPair`, but with the hypotheses at the fields of
+carrier type kept, and at a data member's constructor as well as a `Prop`
+member's. -/
+private def allMinorWf (b : Block) (j ci : Nat) : CommandElabM String := do
+  let c := b.members[j]!.ctors[ci]!
+  let mut binders := #[]
+  let mut images := #[]
+  let mut wfs := #[]
+  let mut props := #[]
+  let mut wfIhs := #[]
+  let mut ihBinders := #[]
+  let mut ihImages := #[]
+  let mut src : Array Source := #[]
+  let mut pubPairs : Array (Name × Syntax) := #[]
+  for f in c.fields do
+    -- the hypothesis there, under the well-formedness of the field's indices
+    let hypAt (k : Nat) (args : Array Syntax) (name : String) : CommandElabM String := do
+      let dom ← f.domain.mapM fun x => do return { x with type := ← semantic b src x.type }
+      let mut ws := #[]
+      for (x, t) in b.members[k]!.indices.zip args do
+        if let some (jj, _) := x.member then ws := ws.push (← pair b src (some jj) t).2.2
+      for (x, t) in (pubIndicesOf b k).zip f.pubArgs do
+        if x.proof then ws := ws.push (← qualifyText b (x.member.map (·.1)) (subst t pubPairs))
+      lambda dom (applyTo (applyDomain name dom) ws)
+    if let some (k, args) := dataTarget b f then
+      let dom ← f.domain.mapM fun x => do return { x with type := ← semantic b src x.type }
+      ihImages := ihImages.push (← hypAt k args ("_ir_ihw_" ++ f.name.toString))
+      binders := binders.push (semVar f.name) |>.push f.name.toString
+      images := images.push (← lambda dom ("⟨⟨" ++ applyDomain (semVar f.name) dom ++ ", " ++ applyDomain f.name.toString dom ++ "⟩, " ++ applyDomain (wfVar f.name) dom ++ "⟩"))
+      if dom.isEmpty then pubPairs := pubPairs.push (f.name, ← parseTerm images.back!)
+      wfs := wfs.push (wfVar f.name)
+      wfIhs := wfIhs.push ("_ir_ihw_" ++ f.name.toString)
+      src := src.push { name := f.name, sem := semVar f.name, graph := f.name.toString, coh := wfVar f.name }
+    else if let some (k, args) := f.target then
+      props := props.push f.name.toString
+      images := images.push f.name.toString
+      ihBinders := ihBinders.push (ihVar f.name)
+      ihImages := ihImages.push (← hypAt k args (ihVar f.name))
+    else
+      binders := binders.push f.name.toString
+      images := images.push f.name.toString
+  let tail := (← arityHyps b j).map (·.1)
+  return untypedLambda (binders ++ wfs ++ props ++ wfIhs ++ ihBinders ++ tail) (app ("@" ++ propMinor b j ci) (images ++ ihImages))
+
+/-- The induction over everything, data and proofs, into `Prop`: the
+well-formedness recursor, each member's predicate at its public motive.  It is
+what `Mumi.Displayed` needs for a datum no index of its constructor names. -/
+private def emitAllRec (b : Block) : CommandElabM Unit := do
+  let ps ← pubParamsDecl b
+  let members := Array.range b.members.size
+  let wfOrder := dataMembers b ++ propMembers b
+  let mut motives := #[]
+  for k in members do
+    motives := motives.push ("{" ++ allMotive k ++ " : ∀ " ++ (← pubArity b k) ++ " (_ir_self : " ++ typeAt b k (pubIdxNames b k) ++ "), Prop}")
+  let mut gargs := pArgs b
+  for k in wfOrder do
+    let hyps := (← arityHyps b k).map fun (n, t) => par (n ++ " : " ++ t)
+    let (binders, major) := if b.members[k]!.prop then (graphIdxNames b k ++ #["_ir_h"], "_ir_h")
+      else (graphIdxNames b k ++ #["_ir_s", "_ir_a", "_ir_w"], "⟨⟨_ir_s, _ir_a⟩, _ir_w⟩")
+    let value := app (allMotive k) (repackIdx b k ++ #[major])
+    gargs := gargs.push (untypedLambda binders (if hyps.isEmpty then value else "∀ " ++ join hyps ++ ", " ++ value))
+  for k in wfOrder do
+    for ck in [:b.members[k]!.ctors.size] do
+      gargs := gargs.push (← allMinorWf b k ck)
+  let mut minors := #[]
+  for k in members do
+    for ck in [:b.members[k]!.ctors.size] do
+      minors := minors.push (← allMinorPub b k ck)
+  for k in members do
+    let m := b.members[k]!
+    let idx := pubIdxNames b k
+    let major := if m.prop then #["_ir_self"] else #["_ir_self.1.1", "_ir_self.1.2", "_ir_self.2"]
+    emit ("theorem " ++ elimName b m "recAll" ++ " " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (allMotive k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ wfName m ++ ".rec") (gargs ++ pubPairIdx b k idx ++ major ++ pubIdxWf b k idx))
+
 /-- An equation that is `rfl` where the encoding reduces.  One universe up it
 is stated as a theorem and elaborated as any other.  At the universe the block
 is written at, Meta's unifier is handed only the statement: the proof `Eq.refl`
@@ -3055,6 +3147,78 @@ private def emitLowerPropRec (b : Block) : CommandElabM Unit := do
       cgminors := cgminors.push g
     emitL (elimAttrs bn "@[elab_as_elim, cases_eliminator] " ++ "theorem " ++ elimName bn m "casesOn" ++ " " ++ ps ++ " " ++ mot ++ " " ++ join cminors ++ " " ++ (← pubArity b j (implicit := true)) ++ " (_ir_self : " ++ typeAt b j idx ++ ") : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".casesOn") (pArgs b ++ #[← gmotive j "motive"] ++ gIdx ++ #["_ir_self"] ++ cgminors ++ certs))
 
+/-- A minor premise of the induction over everything as the certificates'
+recursor takes it, as `lowerPropMinor` with the hypotheses at the fields of
+carrier type kept. -/
+private def lowerAllMinor (b : Block) (j ci : Nat) : CommandElabM String := do
+  let m := b.members[j]!
+  let c := m.ctors[ci]!
+  let r ← rawFields b c (forGood := true)
+  let ihNames := (r.names.filter fun (_, kind) => kind == .cert || kind == .proof).map fun (n, _) => "_ir_ih_" ++ n
+  let (comps, _, _) ← pubTele b j
+  let hxs := (comps.filter fun (n, _) => n.startsWith "_ir_hx_" || n.startsWith "_ir_pf_").map (·.1)
+  let binders := r.names.map (·.1) ++ ihNames ++ hxs
+  let mut pubPairs : Array (Name × Syntax) := #[]
+  let mut lets := ""
+  let mut images := #[]
+  let mut ihImages := #[]
+  for f in c.fields do
+    if let some (k, args) := f.target then
+      let pdom := f.domain.map fun x => { x with type := subst x.type pubPairs }
+      -- the certificates of its indices and the proofs among them, in order
+      let mut certs := #[]
+      let pargs := if f.pubArgs.size ≥ args.size then f.pubArgs else args
+      for (y, t) in (pubIndicesOf b k).zip (pargs.map (subst · pubPairs)) do
+        if y.proof then certs := certs.push (← qualifyText b (y.member.map (·.1)) t)
+        else if let some (i, _) := y.member then certs := certs.push (par (← qualifyText b (some i) t) ++ ".property")
+      if b.members[k]!.prop then
+        images := images.push f.name.toString
+        ihImages := ihImages.push (← lambda pdom (applyTo (applyDomain ("_ir_ih_" ++ f.name.toString) f.domain) certs))
+      else
+        ihImages := ihImages.push (← lambda pdom (applyTo (applyDomain ("_ir_ih_" ++ hVar f.name) f.domain) certs))
+        let pargs ← ((if f.pubArgs.size ≥ args.size then f.pubArgs else args).map (subst · pubPairs)).mapM text
+        lets := lets ++ "let " ++ pubVar f.name ++ " : " ++ (← forallS pdom (typeAt b k pargs)) ++ " := " ++ (← lambda pdom ("⟨" ++ applyDomain f.name.toString f.domain ++ ", " ++ applyDomain (hVar f.name) f.domain ++ "⟩")) ++ "\n      "
+        images := images.push (pubVar f.name)
+        pubPairs := pubPairs.push (f.name, mkIdent (Name.mkSimple (pubVar f.name)))
+    else images := images.push f.name.toString
+  let eqs := (r.names.filter (·.2 == .eq)).map (·.1)
+  let substs := if eqs.isEmpty then "" else "subst " ++ join eqs ++ "; "
+  let body := "by " ++ substs ++ "exact\n      " ++ lets ++ app ("@" ++ propMinor b j ci) (images ++ ihImages)
+  return if binders.isEmpty then par body else untypedLambda binders body
+
+/-- The induction over everything at the written universe: the certificates'
+recursor, each member's at its public motive. -/
+private def emitLowerAllRec (b : Block) : CommandElabM Unit := do
+  let ps ← pubParamsDecl b
+  let members := Array.range b.members.size
+  let mut motives := #[]
+  for k in members do
+    motives := motives.push ("{" ++ allMotive k ++ " : ∀ " ++ (← pubArity b k) ++ " (_ir_self : " ++ typeAt b k (pubIdxNames b k) ++ "), Prop}")
+  let mut gargs := pArgs b
+  for k in members do
+    let (comps, pub, _) ← pubTele b k
+    let hyps := (comps.filter fun (n, _) => n.startsWith "_ir_hx_" || n.startsWith "_ir_pf_").map fun (n, t) => par (n ++ " : " ++ t)
+    let (binders, major) := if b.members[k]!.prop then (rawArityNames b k ++ #["_ir_h"], "_ir_h")
+      else (rawArityNames b k ++ #["_ir_a", "_ir_h"], "⟨_ir_a, _ir_h⟩")
+    let value := app (allMotive k) (pub ++ #[major])
+    gargs := gargs.push (untypedLambda binders (if hyps.isEmpty then value else "∀ " ++ join hyps ++ ", " ++ value))
+  for k in members do
+    for ck in [:b.members[k]!.ctors.size] do
+      gargs := gargs.push (← lowerAllMinor b k ck)
+  let mut minors := #[]
+  for k in members do
+    for ck in [:b.members[k]!.ctors.size] do
+      minors := minors.push (← allMinorPub b k ck)
+  for k in members do
+    let m := b.members[k]!
+    let idx := pubIdxNames b k
+    let gIdx ← goodIdxPub b k (m.indices.map fun x => mkIdent x.name)
+    let certs := (pubIndicesOf b k).filterMap fun x =>
+      if x.proof then some x.name.toString
+      else if x.member.isSome then some (x.name.toString ++ ".property") else none
+    let major := if m.prop then #["_ir_self"] else #["_ir_self.val", "_ir_self.property"]
+    emitL ("theorem " ++ elimName b m "recAll" ++ " " ++ ps ++ " " ++ join motives ++ " " ++ join minors ++ " " ++ (← pubArity b k (implicit := true)) ++ " (_ir_self : " ++ typeAt b k idx ++ ") : " ++ app (allMotive k) (idx ++ #["_ir_self"]) ++ " := " ++ app ("@" ++ goodName m ++ ".rec") (gargs ++ gIdx ++ major ++ certs))
+
 /-- The engines: the data members by universe, each group in an order every
 carrier's fields and indices of carrier type come before it -- a carrier's
 are at its universe or below, so there is one. -/
@@ -3253,6 +3417,17 @@ private def internalFor (b : Block) (deferred : Bool) : Bool :=
 /-- The block's public eliminators, out of the encoding's own. -/
 private def publishJoint (b : Block) : CommandElabM Unit := do
   let ns ← getCurrNamespace
+  -- a datum of a `Prop` constructor that its conclusion does not name is reached
+  -- only by the induction over everything
+  let unnamed := b.members.any fun m => m.prop && m.ctors.any fun c => c.fields.any fun f =>
+    (dataTarget b f).isSome && !c.result.any (mentions · #[f.name])
+  if unnamed then
+    let saved ← get
+    try
+      if b.lower then emitLowerAllRec b else emitAllRec b
+    catch e =>
+      set saved
+      trace[Mumi] "no induction over everything: {e.toMessageData}"
   let members := b.members.mapIdx fun k m =>
     { name := ns ++ m.name, prop := m.prop, ctors := m.ctors.map (ns ++ m.name ++ ·.name),
       scope := b.recs[k]?.getD #[] : Mumi.Displayed.Member }
@@ -4133,7 +4308,8 @@ through `Family` when indexed, otherwise through the original path; a group of
 definitions alone, or of `Prop` inductives, is Lean's.  So members may sit in
 different universes, and a `Prop` inductive the rest only refers to is
 declared right after what it refers to.  An inductive of a group's universe
-that names its carriers joins it, with the groups between. -/
+that names its carriers joins it, with the groups between, as does a `Prop`
+inductive that names them, at any universe. -/
 partial def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
   let elems ← Family.normalizeSorts elems
   let elems ← Family.promoteParams elems
@@ -4170,12 +4346,16 @@ partial def elaborateAny (elems : Array Syntax) : CommandElabM Unit := do
   let mut i := 0
   while i < groups.size do
     let (comp, l) := groups[i]!
-    if !l.isEmpty && !isIR comp then
+    -- `Prop` inductives over the carriers join whichever universe those are at:
+    -- the block's one recursion is over the proofs as well
+    let props := (← (comp.filter isInductive).filterM isPropInductive).size
+    let allProp := props > 0 && props == (comp.filter isInductive).size
+    if (!l.isEmpty || allProp) && !isIR comp then
       let carriers (g : Array Syntax) := (g.filter isInductive).map (·[1][1][0].getId)
       if let some j := (Array.range i).find? fun j =>
-          groups[j]!.2 == l && isIR groups[j]!.1 && comp.any (mentions · (carriers groups[j]!.1)) then
+          (allProp || groups[j]!.2 == l) && isIR groups[j]!.1 && comp.any (mentions · (carriers groups[j]!.1)) then
         let merged := (groups.extract j (i+1)).flatMap (·.1)
-        groups := (groups.extract 0 j).push (merged, l) ++ groups.extract (i+1) groups.size
+        groups := (groups.extract 0 j).push (merged, groups[j]!.2) ++ groups.extract (i+1) groups.size
         i := j + 1
         continue
     i := i + 1
