@@ -312,16 +312,24 @@ private def nestedLocals : Expr → Nat
   | _ => 0
 
 /-- `pat`, with loose bound variables below `n` for the locals, at `e`: the
-values found for them. -/
-private partial def matchPat (n : Nat) (pat e : Expr) (acc : Array (Option Expr)) : Option (Array (Option Expr)) :=
+values found for them.  Under `depth` binders of the pattern (a local may sit in
+`Sigma`'s `fun _ => …`), the lowest variables are those binders', which stand for
+themselves, and a local's value cannot mention them. -/
+private partial def matchPat (n : Nat) (pat e : Expr) (acc : Array (Option Expr)) (depth : Nat := 0) :
+    Option (Array (Option Expr)) :=
   match pat, e with
   | .bvar i, _ =>
-    if i < n then
-      match acc[i]! with
-      | none => some (acc.set! i (some e))
+    if i < depth then
+      if e == pat then some acc else none
+    else if i - depth < n then
+      if e.hasLooseBVars then none else
+      match acc[i - depth]! with
+      | none => some (acc.set! (i - depth) (some e))
       | some v => if v == e then some acc else none
     else none
-  | .app f a, .app f' a' => (matchPat n f f' acc).bind (matchPat n a a' ·)
+  | .app f a, .app f' a' => (matchPat n f f' acc depth).bind (matchPat n a a' · depth)
+  | .lam _ d b _, .lam _ d' b' _ | .forallE _ d b _, .forallE _ d' b' _ =>
+    (matchPat n d d' acc depth).bind (matchPat n b b' · (depth + 1))
   -- a constant at universes written differently is the same constant
   | .const c _, .const c' _ => if c == c' then some acc else none
   | .sort _, .sort _ => some acc
@@ -509,13 +517,24 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
   let motiveName (t : Nat) := Name.mkSimple (if targets.size == 1 then "motive" else "motive_" ++ toString (t + 1))
   -- the first member's name, which a nested target's recursor is under
   let firstName := (targets.findSome? fun t => match t with | .member k => some members[k]!.name | _ => none).getD .anonymous
-  let dataCount := (targets.filter fun t => match t with | .member k => !members[k]!.prop | _ => false).size
+  -- `rec_k` counts the nested targets alone: a `Prop` member may sit among them
   let recOf (t : Nat) : Name := match targets[t]! with
     | .member k => members[k]!.name ++ `rec
-    | .nested _ => firstName ++ Name.mkSimple ("rec_" ++ toString (t + 1 - dataCount))
-  let targetOf (t : Expr) : Option Nat := targets.findIdx? fun x => match x with
-    | .member j => t.getAppFn.isConstOf members[j]!.name
-    | .nested a => (nestedArgs? a t).isSome
+    | .nested _ => firstName ++ Name.mkSimple ("rec_" ++ toString
+        ((targets.toList.take (t + 1)).countP fun x => match x with | .nested _ => true | _ => false))
+  -- of a target over locals and a narrower one, the narrower: `List (W 0)` is one
+  -- type where `fun n => List (W n)` is a family, and is its own target
+  let targetOf (t : Expr) : Option Nat := Id.run do
+    let mut best : Option (Nat × Nat) := none
+    for j in [:targets.size] do
+      let locals? := match targets[j]! with
+        | .member k => if t.getAppFn.isConstOf members[k]!.name then some 0 else none
+        | .nested a => if (nestedArgs? a t).isSome then some (nestedLocals a) else none
+      if let some n := locals? then
+        match best with
+        | some (_, m) => if n < m then best := some (j, n)
+        | none => best := some (j, n)
+    return best.map (·.1)
   -- the index arguments a target's motive takes of a type of it
   let motiveArgs (j : Nat) (t : Expr) : Array Expr := match targets[j]! with
     | .member _ => t.getAppArgs.extract uniform t.getAppArgs.size

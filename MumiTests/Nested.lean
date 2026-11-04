@@ -1722,7 +1722,7 @@ type where `List (LocWrap R n)` is a family, and the narrower one has to win:
 sending `at_0`'s list to the family at `0` would give that member's own `nil` a
 conclusion at a different type than the member it belongs to. -/
 
-mumi_spec (simp := [LocBoth.casesOn_at_n, LocBoth.casesOn_at_0]) (xfail := [rec, recOn])
+mumi_spec (simp := [LocBoth.rec_at_n, LocBoth.rec_at_0, LocBoth.rec_1_cons, LocBoth.rec_2_cons, LocBoth.casesOn_at_n, LocBoth.casesOn_at_0])
 inductive LocBoth where
   | tip
   | at_n (n : Nat) (v : List (LocWrap LocBoth n))
@@ -1768,7 +1768,7 @@ inductive LocFin where
 as `Sigma`'s second one is.  The local then sits under a lambda, one binder
 deeper than the occurrence that has to carry it out. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LocSig where
   | tip
   | mk (n : Nat) (p : Σ _ : Nat, LocWrap LocSig n)
@@ -1792,7 +1792,7 @@ def sigSize : LocSig → Nat :=
 /-! The block may just as well be in the component that is *not* under the
 lambda. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LocSigFst where
   | tip
   | mk (n : Nat) (p : Σ _ : LocWrap LocSigFst n, Nat)
@@ -1804,7 +1804,7 @@ mumi_spec
 inductive LocFn (f : Nat → Type) where
   | mk (g : f 0)
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LocFBox where
   | tip
   | mk (n : Nat) (x : LocFn (fun _ => LocWrap LocFBox n))
@@ -1865,7 +1865,7 @@ inductive LocIxNest where
 /-! A `Subtype` reaches the local from both of its parameters at once, the
 second under a lambda. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LocSub where
   | tip
   | mk (n : Nat) (p : { _x : LocWrap LocSub n // n = n }) : LocSub
@@ -1873,7 +1873,7 @@ inductive LocSub where
 /-! And two locals may be reached at two different depths of the one
 occurrence. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 inductive LocPair where
   | tip
   | mk (n m : Nat) (p : Σ _ : LocWrap LocPair n, LocWrap LocPair m) : LocPair

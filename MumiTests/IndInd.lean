@@ -3383,7 +3383,7 @@ mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
-mumi_spec (simp := [T.casesOn_node, U.casesOn_mk]) (xfail := [rec])
+mumi_spec (simp := [T.rec_node, U.rec_mk, T.rec_1_cons, T.casesOn_node, U.casesOn_mk])
 mutual
 inductive T where
   | tip
@@ -4084,7 +4084,7 @@ mumi_spec
 inductive LocalWrap (α : Type) (n : Nat) : Type where
   | mk (a : α) : LocalWrap α n
 
-mumi_spec (simp := [Cx.casesOn_snoc]) (xfail := [rec])
+mumi_spec (simp := [Cx.rec_snoc, Cx.rec_1_cons, Cx.casesOn_snoc])
 mutual
 inductive Cx : Type where
   | nil
@@ -4465,7 +4465,7 @@ mumi_spec
 inductive Wrap (α : Type) (n : Nat) where
   | mk (a : α) : Wrap α n
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec])
+mumi_spec (simp := [T.rec_node, T.rec_1_cons, T.casesOn_node])
 mutual
 inductive T where
   | tip
@@ -5150,7 +5150,7 @@ always had. -/
 namespace ByMember
 set_option mumi.separate false
 
-mumi_spec (simp := [NTm.casesOn_app])
+mumi_spec (simp := [NTm.rec_app, NTm.rec_1_cons, NTm.casesOn_app])
 mutual
 inductive NTm : Type where
   | app : (ts : List NTm) → NTm
