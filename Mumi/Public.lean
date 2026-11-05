@@ -217,6 +217,25 @@ def addInjViaCases (numParams : Nat) (mem ctor : Name) (ctors : Array Name) : Te
     -- is left to the kernel: Meta's unifier can wander off into an encoding the
     -- kernel decides at once
     let selEq := mkApp6 (mkConst ``congrArg [← getLevel selTy, resLvl]) selTy resTy lhs rhs sel h
+    -- unless a round trip keeps it from computing at this constructor, and then it is
+    -- the case split's rule
+    let rule := Name.mkStr mem s!"casesOn_{ctor.getString!}"
+    let selEq ← if !(← getEnv).contains rule then pure selEq else do
+      let tupleLvl ← getLevel tupleTy
+      let inrAt (t : Expr) : Expr :=
+        mkApp3 (mkConst ``PSum.inr [Level.one, tupleLvl]) (mkConst ``PUnit [Level.one]) tupleTy t
+      let lam := sel.bindingBody!
+      let largs := lam.getAppArgs
+      let nIdx := (selTy.getAppArgs.extract numParams selTy.getAppNumArgs).size
+      let front := largs.extract 0 (numParams + 1) ++ largs.extract (numParams + 1 + nIdx + 1) largs.size
+      let ruleAt (fs : Array Expr) : Expr :=
+        mkAppN (mkConst rule (resLvl :: us)) (front ++ fs)
+      let aA := mkApp sel lhs
+      let aB := mkApp sel rhs
+      -- `inr tA = sel lhs = sel rhs = inr tB`
+      let symmA := mkApp4 (mkConst ``Eq.symm [resLvl]) resTy aA (inrAt tA) (ruleAt as)
+      let mid := mkApp6 (mkConst ``Eq.trans [resLvl]) resTy aA aB (inrAt tB) selEq (ruleAt bs)
+      pure <| mkApp6 (mkConst ``Eq.trans [resLvl]) resTy (inrAt tA) aA (inrAt tB) symmA mid
     let tuples := mkApp5 (mkConst ``PSum.inr.inj [Level.one, ← getLevel tupleTy])
       (mkConst ``PUnit [Level.one]) tupleTy tA tB selEq
     let goal ← mkArrow (← mkEq tA tB) conj
@@ -572,6 +591,32 @@ def addTripRules (numParams : Nat) (trips : Array Name) (recs cases : Array Name
           let lhs ← instantiateMVars (mkAppN f (args ++ minors))
           addTripRule trips joints ci.levelParams name (ps ++ #[motive] ++ minors ++ fields) lhs
             (mkAppN m fields)
+
+/--
+The rules of `mem.casesOn` that a round trip keeps from `rfl`, for a member whose
+constructors `ctors` are definitions over copies: the copies are read off those
+definitions, the way a constructor stores a field through `ofOrig`. -/
+def addCaseRulesOverCopies (numParams : Nat) (mem : Name) (ctors : Array Name) : TermElabM Unit := do
+  let env ← getEnv
+  let copiesIn (n : Name) : Array Name :=
+    match env.find? n with
+    | some ci => ((ci.value? (allowOpaque := true)).map (·.getUsedConstants)).getD #[]
+        |>.filterMap fun c => match c with
+          | .str p "ofOrig" => some p
+          | _ => none
+    | none => #[]
+  let mut copies : Array Name := #[]
+  let mut todo : Array Name := ctors.flatMap copiesIn
+  while !todo.isEmpty do
+    let c := todo.back!
+    todo := todo.pop
+    if copies.contains c then continue
+    copies := copies.push c
+    todo := todo ++ copiesIn (c ++ `ofOrig)
+  let trips := copies.filterMap fun c =>
+    if env.contains (c ++ `toOrig_ofOrig) then some (c ++ `toOrig_ofOrig) else none
+  if trips.isEmpty then return
+  addTripRules numParams trips #[] #[mem ++ `casesOn]
 
 /-! ## A block of aliased inductives, joined
 
@@ -1244,7 +1289,7 @@ def addWidenedRecs (np : Nat) (written : Array Name) (cores : Array (Name × Nam
     | .core q => !coreIsProp[q]!
     | .peeled k => !peeledIsProp[k]!
   -- the universe of the recursion, the first of a core's
-  let elimU := recUs.headD levelZero
+  let elimU := recUs.headD Level.zero
   let idxTy (k : Nat) : MetaM Expr := do instantiateForall (← getConstInfo peeled[k]!).type ps
   let peeledShown ← (Array.range peeled.size).mapM fun k => do
     forallTelescope (← idxTy k) fun idx _ => idx.mapM fun i => do

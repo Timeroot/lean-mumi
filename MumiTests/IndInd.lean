@@ -4236,12 +4236,12 @@ example (v : Vec2) (n : { m : Nat // Ok2 v }) : vlen (Vec2.cons v n) = vlen v + 
 
 end SubAtProp
 
--- `Eq` at two data members.  The copy of a proposition is a proposition, so it
--- is erased along with the block's own and never reaches a motive: the recursor
--- is over `C1` alone, and the field is still the equation that was written
+-- `Eq` at two data members.  The copy of a proposition is a proposition, and it has a
+-- motive like the block's own, displayed at both sides of the equation; the field is
+-- still the equation that was written, and the recursion still computes by `rfl`
 namespace EqAtData
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive C1 : Type where
   | nil : C1
@@ -4250,7 +4250,10 @@ inductive P1 : C1 → Prop where
   | nil : P1 .nil
 end
 
-def csize : C1 → Nat := C1.rec 0 (fun _ _ _ _ x y => x + y + 1)
+def csize : C1 → Nat :=
+  C1.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => True)
+    (motive_3 := fun _ _ _ _ _ => True)
+    0 (fun _ _ _ _ x y _ _ => x + y + 1) trivial (fun _ _ => trivial)
 
 example : csize C1.nil = 0 := rfl
 example (a b : C1) (h : a = b) (p : P1 a) :

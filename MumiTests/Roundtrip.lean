@@ -340,7 +340,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (simp := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [RecWFTree.casesOn_mk, RecWFTree.rec_mk, RecWFTree.rec_1_mk, RecWFTree.rec_2_node])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 
@@ -371,7 +371,7 @@ noncomputable def ofCopy : Copy.RecWFTree → RecWFTree :=
     (motive_2 := fun _ => WFTree RecWFTree)
     (motive_3 := fun _ => Tree RecWFTree)
     (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
-    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (motive_5 := fun _ ih l _ => Tree.WFWith RecWFTree ih l)
     (fun _ ih => .mk ih)
     (fun _ _ ih hih => .mk ih hih)
     .empty

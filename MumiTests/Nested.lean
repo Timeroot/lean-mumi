@@ -1504,7 +1504,7 @@ that route already runs takes the copy along with everything else.
 never reaches the erasure at all.  The option holds it there, which is what the
 recursor below is pinned at. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 set_option mumi.separate false in
 mutual
 inductive EqZ : Type 1 where
@@ -1762,7 +1762,7 @@ def bothSize : LocBoth → Nat :=
 /-! The nesting may sit under a function type, where the recursion it drives is
 infinitary and the round trip costs `Quot.sound`. -/
 
-mumi_spec (simp := [LocFun.rec_mk, LocFun.rec_1_cons, LocFun.casesOn_mk]) (xfail := [injEq, axioms])
+mumi_spec (simp := [LocFun.rec_mk, LocFun.rec_1_cons, LocFun.casesOn_mk]) (xfail := [axioms])
 inductive LocFun where
   | tip
   | mk (n : Nat) (f : Nat → List (LocWrap LocFun n))

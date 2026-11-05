@@ -184,7 +184,7 @@ mumi_spec
 inductive UVec (α : Type) (n : Nat) where
   | mk (v : Vec α n) (h : Vec.Up α n v)
 
-mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_cons, R.casesOn_mk]) (xfail := [axioms])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_cons, R.casesOn_mk])
 inductive R where
   | tip
   | mk (x : UVec R 2)
@@ -591,7 +591,7 @@ mumi_spec
 inductive QA (α : Type) where
   | mk (x : A α) (h : x.P) (q : A.Q α x h)
 
-mumi_spec (simp := [R.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [R.casesOn_mk, R.rec_mk])
 inductive R where
   | mk (x : QA R)
 

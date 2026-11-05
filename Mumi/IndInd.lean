@@ -6984,6 +6984,18 @@ def emit (p : Plan) : TermElabM Unit := do
         if stands then ok := ok ++ sub.filter (!ok.contains ·)
       unless ok.isEmpty || ok.size == gKeep.size do
         if let some s ← buildProps grp[0]! ok then propRecs := propRecs.push s
+  -- a `Prop` copy no written member's recursion runs into still wants one, for the
+  -- recursion over the whole block, which covers every `Prop` member or none.  Apart
+  -- from the written ones, whose recursors are the tactic's and take no motive of its
+  unless widen do
+    for grp in propGroups do
+      let covered := propRecs.flatMap (·.kIdxs)
+      let rest := grp.filter fun j =>
+        copyNames.contains b.members[j]!.name && !covered.contains j
+      if rest.isEmpty then continue
+      let keep := closeUp grp rest
+      if keep.any covered.contains then continue
+      if let some s ← buildProps grp[0]! keep then propRecs := propRecs.push s
   let propBuilt := !propRecs.isEmpty
 
   -- 7b. the one recursion over the whole block, out of the split ones: a
@@ -7427,6 +7439,13 @@ def emit (p : Plan) : TermElabM Unit := do
       -- and the same of a view, which is what a `match`'s equations are stuck on
       for m in written do
         addViewRules b.numParams m.name (m.ctors.map (·.name))
+  -- a constructor the pre-world's equations do not lift through has its injectivity
+  -- from the case split, and those rules where there are any
+  for m in b.members do
+    if m.isProp || copyNames.contains m.name then continue
+    for c in m.ctors do
+      discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
+        addInjViaCases b.numParams m.name c.name (m.ctors.map (·.name))
 
 /-! ## The entry point -/
 

@@ -65,6 +65,11 @@ meta def publishIRInjs (elems : Array Syntax) : CommandElabM Unit := do
     liftTermElabM do
       if ← Meta.forallTelescope (← getConstInfo mem).type fun _ s => pure s.isProp then return
       let np ← casesParams mem
+      if (← getEnv).contains (mem ++ `rec) then
+        discard <| MultiuniverseInductive.attempt? `Mumi m!"no `recOn` for `{mem}`" <|
+          addMajorFirst np mem (mem ++ `rec) (mem ++ `recOn)
+      discard <| MultiuniverseInductive.attempt? `Mumi m!"no rules for `{mem}.casesOn`" <|
+        addCaseRulesOverCopies np mem ctors
       for c in ctors do
         if (← getConstInfo c).isCtor then continue
         discard <| MultiuniverseInductive.attempt? `Mumi m!"no injectivity for `{c}`" <|

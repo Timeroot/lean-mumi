@@ -4007,14 +4007,14 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
     let there := inner.map fun i' => copyName i' ++ ".toOrig_ofOrig"
     let back := inner.map fun i' => copyName i' ++ ".ofOrig_toOrig"
     emit ("theorem " ++ C ++ ".toOrig_ofOrig " ++ pubPs ++ " (_ir_x : " ++ orig i ++ ") : " ++
-      at_ (C ++ ".toOrig") #[at_ (C ++ ".ofOrig") #["_ir_x"]] ++ " = _ir_x := by\n  induction _ir_x <;> simp only [" ++
-      String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ there ++ ["*"]) ++ "]")
+      at_ (C ++ ".toOrig") #[at_ (C ++ ".ofOrig") #["_ir_x"]] ++ " = _ir_x := by\n  induction _ir_x <;> (conv => lhs; simp only [" ++
+      String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ there ++ ["*"]) ++ "])")
     let mut bs := #[]
     for ci in [:m.ctors.size] do
       let c := m.ctors[ci]!
       let own := c.fields.filter fun f => (dataTarget b f).any (·.1 == k)
       bs := bs.push (untypedLambda (fieldBinders c ++ own.map (ihVar ·.name))
-        ("(by simp only [" ++ String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ back ++ ["*"]) ++ "])"))
+        ("(by conv => lhs; simp only [" ++ String.intercalate ", " (eqs.toList ++ [C ++ ".ofOrig"] ++ back ++ ["*"]) ++ "])"))
     emit ("theorem " ++ C ++ ".ofOrig_toOrig " ++ pubPs ++ " (_ir_c : " ++ typeAt b k #[] ++ ") : " ++
       at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c := " ++
       app ("@" ++ free (elimName b m "recD")) (pa ++ #["(fun _ir_c => " ++ at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c)", "_ir_c"] ++ bs))

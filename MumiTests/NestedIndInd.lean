@@ -42,7 +42,7 @@ mumi_spec
 inductive WFTree (α : Type u) : Type u where
   | mk (x : Tree α) (h : x.WF)
 
-mumi_spec (simp := [RecWFTree.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [RecWFTree.casesOn_mk, RecWFTree.rec_mk, RecWFTree.rec_1_mk, RecWFTree.rec_2_node])
 inductive RecWFTree where
   | mk (x : WFTree RecWFTree)
 
@@ -195,7 +195,7 @@ def rebuild : RecWFTree → RecWFTree :=
     (motive_2 := fun _ => WFTree RecWFTree)
     (motive_3 := fun _ => Tree RecWFTree)
     (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
-    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (motive_5 := fun _ ih l _ => Tree.WFWith RecWFTree ih l)
     (fun _ ih => .mk ih)
     (fun _ _ ih hwf => .mk ih hwf)
     .empty
@@ -269,7 +269,7 @@ def rebuildT : Tree RecWFTree → Tree RecWFTree :=
     (motive_1 := fun _ => RecWFTree) (motive_2 := fun _ => WFTree RecWFTree)
     (motive_3 := fun _ => Tree RecWFTree)
     (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
-    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (motive_5 := fun _ ih l _ => Tree.WFWith RecWFTree ih l)
     (fun _ ih => .mk ih) (fun _ _ ih hwf => .mk ih hwf) .empty
     (fun key _ _ _ ihv ihl ihr => .node key ihv ihl ihr)
     (fun l _ _ ih hw => .intro l ih hw) .empty
@@ -288,7 +288,7 @@ theorem rebuildT_wf {a : Tree RecWFTree} (h : Tree.WF RecWFTree a) :
     (motive_1 := fun _ => RecWFTree) (motive_2 := fun _ => WFTree RecWFTree)
     (motive_3 := fun _ => Tree RecWFTree)
     (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
-    (motive_5 := fun _ l ih _ => Tree.WFWith RecWFTree ih l)
+    (motive_5 := fun _ ih l _ => Tree.WFWith RecWFTree ih l)
     (fun _ ih => .mk ih) (fun _ _ ih hwf => .mk ih hwf) .empty
     (fun key _ _ _ ihv ihl ihr => .node key ihv ihl ihr)
     (fun l _ _ ih hw => .intro l ih hw) .empty
@@ -413,7 +413,7 @@ mumi_spec
 inductive OkVec (α : Type) where
   | mk {n : Nat} (v : Vec α n) (h : VecOk α v)
 
-mumi_spec (simp := [Rec3.rec_mk, Rec3.rec_1_mk, Rec3.rec_2_cons, Rec3.casesOn_mk]) (xfail := [axioms])
+mumi_spec (simp := [Rec3.rec_mk, Rec3.rec_1_mk, Rec3.rec_2_cons, Rec3.casesOn_mk])
 inductive Rec3 where
   | mk (x : OkVec Rec3)
 
@@ -449,9 +449,7 @@ example : depth (wrap (wrap bottom)) = 3 := rfl
 #guard_msgs in
 #eval depth (wrap (wrap bottom))
 
--- `VecOk`'s copy is indexed, so the recursor over the whole block carries
--- `propext` and everything built from it does too
-/-- info: 'Rec3.depth' depends on axioms: [propext] -/
+/-- info: 'Rec3.depth' does not depend on any axioms -/
 #guard_msgs in
 #print axioms depth
 
@@ -639,7 +637,7 @@ any other, and the erasure carries the `n` through the pre-world without ever
 seeing that it began as a field.
 -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive LocalsII : Type where
   | tip
@@ -650,21 +648,21 @@ end
 
 /--
 info: @LocalsII.Ok.rec : ∀ {motive_1 : LocalsII → Sort u_1} {motive_2 : (n : Nat) → OkFam LocalsII n → Sort u_1}
-  {motive_3 : (n : Nat) → Fam LocalsII n → Sort u_1}
-  {motive_4 : (n : Nat) → (a : Fam LocalsII n) → motive_3 n a → FamOk LocalsII a → Prop}
-  {motive_5 : (n : Nat) → (a : OkFam LocalsII n) → motive_2 n a → LocalsII.Ok n a → Prop} (tip : motive_1 LocalsII.tip)
+  {motive_3 : (n : Nat) → (a : OkFam LocalsII n) → motive_2 n a → LocalsII.Ok n a → Prop}
+  {motive_4 : (n : Nat) → Fam LocalsII n → Sort u_1}
+  {motive_5 : (n : Nat) → (a : Fam LocalsII n) → motive_4 n a → FamOk LocalsII a → Prop} (tip : motive_1 LocalsII.tip)
   (mk :
     (n : Nat) →
       (x : OkFam LocalsII n) →
-        (a : LocalsII.Ok n x) → (x_ih : motive_2 n x) → motive_5 n x x_ih a → motive_1 (LocalsII.mk n x a))
+        (a : LocalsII.Ok n x) → (x_ih : motive_2 n x) → motive_3 n x x_ih a → motive_1 (LocalsII.mk n x a))
   (mk_1 :
     (n : Nat) →
       (v : Fam LocalsII n) →
-        (h : FamOk LocalsII v) → (v_ih : motive_3 n v) → motive_4 n v v_ih h → motive_2 n (OkFam.mk v h))
-  (mk_2 : (n : Nat) → (a : LocalsII) → motive_1 a → motive_3 n (Fam.mk a))
-  (mk_3 : ∀ (n : Nat) (a : LocalsII) (a_ih : motive_1 a), motive_4 n (Fam.mk a) (mk_2 n a a_ih) ⋯)
-  (mk_4 : ∀ (n : Nat) (x : OkFam LocalsII n) (x_ih : motive_2 n x), motive_5 n x x_ih ⋯) {n : Nat}
-  {a : OkFam LocalsII n} (t : LocalsII.Ok n a), motive_5 n a (LocalsII.rec_1 tip mk mk_1 mk_2 mk_3 mk_4 a) t
+        (h : FamOk LocalsII v) → (v_ih : motive_4 n v) → motive_5 n v v_ih h → motive_2 n (OkFam.mk v h))
+  (mk_2 : ∀ (n : Nat) (x : OkFam LocalsII n) (x_ih : motive_2 n x), motive_3 n x x_ih ⋯)
+  (mk_3 : (n : Nat) → (a : LocalsII) → motive_1 a → motive_4 n (Fam.mk a))
+  (mk_4 : ∀ (n : Nat) (a : LocalsII) (a_ih : motive_1 a), motive_5 n (Fam.mk a) (mk_3 n a a_ih) ⋯) {n : Nat}
+  {a : OkFam LocalsII n} (t : LocalsII.Ok n a), motive_3 n a (LocalsII.rec_1 tip mk mk_1 mk_2 mk_3 mk_4 a) t
 -/
 #guard_msgs in
 #check @LocalsII.Ok.rec
@@ -690,12 +688,12 @@ namespace LocalsII
 
 def size (t : LocalsII) : Nat :=
   LocalsII.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    (motive_3 := fun _ _ => Nat) (motive_4 := fun _ _ _ _ => True)
+    (motive_3 := fun _ _ _ _ => True) (motive_4 := fun _ _ => Nat)
     (motive_5 := fun _ _ _ _ => True)
     1 (fun _ _ _ ih _ => 1 + ih)
     (fun _ _ _ ihv _ => ihv)
-    (fun _ _ ih => ih)
     (fun _ _ _ => trivial)
+    (fun _ _ ih => ih)
     (fun _ _ _ => trivial)
     t
 

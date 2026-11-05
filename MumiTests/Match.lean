@@ -446,7 +446,7 @@ A constructor can have no recursive field, or several, or infinitely many, and
 the block can have parameters in front of all of it.  Each of those is a
 different shape of row in `below`, so each is recursed over here. -/
 
-mumi_spec (xfail := [injEq])
+mumi_spec
 mutual
 inductive Tree (α : Type) : Type where
   | leaf (a : α) : Tree α

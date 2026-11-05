@@ -352,16 +352,11 @@ end TwoFamilies
 
 /-! ## A `Prop` member indexed by two data values
 
-Not one of the ones that gets the recursor over the whole block, and the reason
-is the recursion's shape rather than an oversight.  What the recursion computes
-at a value of a data member is that value's image paired with the facts about
-it, and a relation between two values is not a fact about either one: at the
-first of them the second is not being recursed on and its image is not there to
-state the relation with.
-
-So the split recursors are what this block gets: a motive for each data member
-and nothing for `Rel`, which is still perfectly usable for everything that does
-not have to rebuild the relation.
+The older construction, which gets its recursor by pairing each value's image with the
+facts about it, cannot do this: a relation between two values is not a fact about either
+one.  `Mumi.Displayed` can, since it relates values to the recursion by a graph and proves
+the motive at any values so related.  So this block gets the recursion over the whole of
+it, with `Rel`'s motive taking a value at each of its two indices.
 -/
 
 namespace Relation
@@ -380,7 +375,7 @@ mumi_spec
 inductive RelPair (α : Type) where
   | mk (s t : Lst α) (h : Rel α s t)
 
-mumi_spec (simp := [RecRel.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [RecRel.casesOn_mk, RecRel.rec_mk, RecRel.rec_1_mk, RecRel.rec_2_cons])
 inductive RecRel where
   | mk (x : RelPair RecRel)
 
@@ -390,11 +385,13 @@ def bottom : RecRel := .mk (.mk .nil .nil .nil)
 
 def wrap (v : RecRel) : RecRel := .mk (.mk (.cons v .nil) (.cons v .nil) (.cons v v .nil .nil .nil))
 
-/-- The split recursors still compute. -/
+/-- The recursion over the whole block computes. -/
 def depth : RecRel → Nat :=
   RecRel.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ => Nat)
-    (fun _ ih => ih + 1) (fun _ _ _ ihs iht => ihs + iht)
+    (motive_4 := fun _ _ _ _ _ => True)
+    (fun _ ih => ih + 1) (fun _ _ _ ihs iht _ => ihs + iht)
     0 (fun _ _ iha iht => iha + iht)
+    trivial (fun _ _ _ _ _ _ _ _ _ _ => trivial)
 
 example : depth bottom = 1 := rfl
 -- both sides of the relation get recursed on, so a wrap doubles the count
