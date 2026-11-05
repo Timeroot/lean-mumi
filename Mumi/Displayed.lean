@@ -87,6 +87,10 @@ structure Member where
   data, a `Prop` member's into `Prop` (or any sort) over the `Prop` members of
   its `scope`, all of them when that is empty. -/
   source : Name := .anonymous
+  /-- What the joint recursion at it is called, where it is not `X.rec`. -/
+  out : Name := .anonymous
+  /-- Its minor premises' names, where the constructors' are not the writer's. -/
+  minorNames : Array Name := #[]
   deriving Inhabited
 
 /-- What the block is. -/
@@ -100,6 +104,11 @@ structure Input where
 private def Input.elim (inp : Input) (k : Nat) (s : String) : Name :=
   if s == "rec" && !inp.members[k]!.source.isAnonymous then inp.members[k]!.source
   else inp.members[k]!.name ++ Name.mkSimple (inp.internal ++ s)
+
+/-- What the joint recursion at member `k` is called. -/
+private def Input.out (inp : Input) (k : Nat) : Name :=
+  let m := inp.members[k]!
+  if m.out.isAnonymous then m.name ++ `rec else m.out
 
 /-- The construction cannot be made for this block. -/
 private def gap {α} (msg : MessageData) : MetaM α :=
@@ -346,7 +355,8 @@ private def withSpec {α} (inp : Input) (k : Ctx → MetaM α) : MetaM α := do
                 else vals := vals.push none
             mkForallFVars (fields ++ hyps.map (·.2)) (c.motiveApp mk idx vals self)
         hypsFrom 0 #[]
-      withLocalDeclD (Name.mkSimple ctor.getString!) ty fun m =>
+      let minorName := inp.members[mk]!.minorNames[ci]?.getD (Name.mkSimple ctor.getString!)
+      withLocalDeclD minorName ty fun m =>
         minorsFrom (i + 1) { c with minorOf := c.minorOf.modify mk (·.push m), minors := c.minors.push m } k'
     else k' c
   minorsFrom 0 c1 k
@@ -1088,7 +1098,7 @@ member's `LEM` at those values. -/
 private def Ctx.addRecs (c : Ctx) : MetaM Unit := do
   let lvls := c.lps.map mkLevelParam
   let implicitIdx {α} (idx : Array Expr) (k : MetaM α) : MetaM α := withInfos idx (fun bi => if bi == .instImplicit then bi else .implicit) k
-  for k in [:c.inp.members.size] do
+  for k in c.targets do
     let mem := c.inp.members[k]!
     let (type, value) ← forallTelescope (← c.arity k) fun idx _ => implicitIdx idx do
       withLocalDeclD `t (← c.memberAt k idx) fun t => do
@@ -1107,7 +1117,7 @@ private def Ctx.addRecs (c : Ctx) : MetaM Unit := do
             | some j =>
               let ity ← instantiateMVars (← inferType idx[a]!)
               let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
-              let recJ := mkAppN (mkConst (c.inp.members[j]!.name ++ `rec) lvls) (c.pre ++ iargs.push idx[a]!)
+              let recJ := mkAppN (mkConst (c.inp.out j) lvls) (c.pre ++ iargs.push idx[a]!)
               vals := vals.push (some recJ)
               let p := mkAppN (c.aux j "J") (iargs.push idx[a]!)
               let α := mkAppN (c.motiveOf j) (iargs.push idx[a]!)
@@ -1116,7 +1126,7 @@ private def Ctx.addRecs (c : Ctx) : MetaM Unit := do
           let concl := c.motiveApp k idx vals t
           let v := mkAppN (c.aux k "LEM") (idx ++ #[t] ++ vals.filterMap id ++ facts)
           return (← mkForallFVars (c.pre ++ idx.push t) concl, ← mkLambdaFVars (c.pre ++ idx.push t) v)
-    let name := mem.name ++ `rec
+    let name := c.inp.out k
     if mem.prop then addDecl (.thmDecl { name, levelParams := c.lps, type, value })
     else addDef name c.lps type value
 

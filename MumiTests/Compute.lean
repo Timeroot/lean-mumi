@@ -245,7 +245,7 @@ mumi_spec
 inductive Wrap (α : Type) where
   | mk : α → Wrap α
 
-mumi_spec (xfail := [rec])
+mumi_spec
 mutual
 inductive WT : Type where
   | leaf : WT
@@ -275,7 +275,7 @@ copies: the two agree on a constructor by computation apart from the recursive
 positions.  The block closes that gap with a `sizeOf_ofOrig` lemma per copy, and
 proves the constructor's `sizeOf_spec` by rewriting with it. -/
 
-mumi_spec (simp := [LstT.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [LstT.casesOn_node, LstT.rec_node, LstT.rec_1_cons])
 mutual
 inductive LstT : Type where
   | node (cs : List LstT) (h : LOk cs) : LstT

@@ -4079,7 +4079,8 @@ def addRestated (c : BridgeCtx) (i : Nat) (lp niceName : Name)
         let raw := mkAppN recCst (c.ps ++ rmots ++ rmins ++ rIdxs ++ #[rt])
         -- and then what the raw one concludes at is the round trip of the
         -- writer's arguments, which is those arguments up to `X.toOrig_ofOrig`
-        let body ← if (c.copyAt? i).isNone then pure raw
+        -- (and a proposition's conclusion too, its motive displayed over them)
+        let body ← if (c.copyAt? i).isNone && !b.members[i]!.isProp then pure raw
                    else c.backAcross (idxs ++ #[t]) raw
         -- `goalMot` is a motive when the conclusion is just that motive at the
         -- indices, and a function of them when the conclusion is more than that
@@ -6960,6 +6961,23 @@ def emit (p : Plan) : TermElabM Unit := do
             (mkConst (rawRecName i) (info.levelParams.map Level.param))
         markElabAsElim (pubRecName i)
 
+  -- the same in a block with copies, over the copies, where the copies are the
+  -- block's members like any other: the bridge restates it over the originals
+  let jointName (i : Nat) : Name := Name.mkStr b.members[i]!.name "_nested_joint"
+  let joint ← if p.copies.isEmpty || widen || !propBuilt
+        || !b.propIdxs.all (fun j => propRecs.any (·.kIdxs.contains j)) then pure false
+      else
+        let members := b.members.mapIdx fun i m =>
+          let scope := if m.isProp then ((propRecs.find? (·.kIdxs.contains i)).map (·.kIdxs)).getD #[] else dIdxs
+          ({ name := rawMemberName m.name, prop := m.isProp, ctors := m.ctors.map (rawCtorName ·.name),
+             source := rawRecName i, scope, out := jointName i
+             minorNames := m.ctors.map fun cc => Name.mkSimple cc.name.getString! }
+            : Mumi.Displayed.Member)
+        Mumi.Displayed.buildJoint { numParams := b.numParams, members, internal := "" }
+  let grandRecName (i : Nat) : Name := if joint then jointName i else grandRecName i
+  let grand := grand || joint
+  let grandFree := if joint then #[] else grandFree
+
   -- 8. the bridge back to the originals
   unless p.copies.isEmpty do
     let built ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
@@ -7017,6 +7035,12 @@ def emit (p : Plan) : TermElabM Unit := do
         -- the value the data recursion returned, and read off the split one it
         -- does not
         let mut grandDone : Array Nat := #[]
+        -- the recursion at a nested target goes by the name Lean gives it: the
+        -- block's first member's `rec_k`, numbered as the kernel numbers them
+        let niceRecName (i : Nat) : Name :=
+          match c.copyAt? i with
+          | some k => Name.mkStr b.members[0]!.name s!"rec_{k + 1}"
+          | none => recName i
         for i in dIdxs ++ b.propIdxs do
           -- a copy is one of the writer's own types under a name of ours, so the
           -- recursion over it restates like any other member's; it is the one
@@ -7028,11 +7052,11 @@ def emit (p : Plan) : TermElabM Unit := do
           let big ← if !covered then pure false else
             attempted `Mumi.indind
               "the recursor over the whole block does not restate over the originals" <|
-              c.addNiceGrandRec i lp grandRecName recName rawCtorName grandFree grandDone
+              c.addNiceGrandRec i lp grandRecName niceRecName rawCtorName grandFree grandDone
           if big then
             grandDone := grandDone.push i
           else unless b.members[i]!.isProp do
-            let split := c.addNiceRec i lp rawRecName (recName i) rawCtorName
+            let split := c.addNiceRec i lp rawRecName (niceRecName i) rawCtorName
             if optional then
               discard <| attempted `Mumi.indind
                 s!"`{recName i}` does not restate over the originals" split
@@ -7282,7 +7306,8 @@ def emit (p : Plan) : TermElabM Unit := do
         k := k + 1
       let cases := written.filterMap fun m =>
         if env.contains (m.name ++ `casesOn) then some (m.name ++ `casesOn) else none
-      addTripRules b.numParams trips recs cases
+      let joints := if joint then (Array.range b.size).map jointName else #[]
+      addTripRules b.numParams trips recs cases joints
 
 /-! ## The entry point -/
 

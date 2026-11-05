@@ -718,7 +718,7 @@ forgotten field costs. -/
 
 namespace Kept
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T

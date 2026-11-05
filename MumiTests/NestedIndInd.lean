@@ -229,7 +229,7 @@ entered at four places. -/
 
 /-- `depth`, entered at the tree. -/
 def depthT : Tree RecWFTree → Nat :=
-  nested_Tree_2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+  rec_2 (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     (motive_3 := fun _ => Nat) (motive_4 := fun _ _ _ => True)
     (motive_5 := fun _ _ _ _ => True)
     (fun _ ih => ih + 1) (fun _ _ ih _ => ih) 0
@@ -239,7 +239,7 @@ def depthT : Tree RecWFTree → Nat :=
 
 /-- `depth`, entered at the well-formed tree. -/
 def depthW : WFTree RecWFTree → Nat :=
-  nested_WFTree_1.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
+  rec_1 (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat)
     (motive_3 := fun _ => Nat) (motive_4 := fun _ _ _ => True)
     (motive_5 := fun _ _ _ _ => True)
     (fun _ ih => ih + 1) (fun _ _ ih _ => ih) 0
@@ -265,7 +265,7 @@ example : depthW (.mk (leaf bottom) (leafWF bottom)) = 1 := rfl
 
 /-- `rebuild`, entered at the tree. -/
 def rebuildT : Tree RecWFTree → Tree RecWFTree :=
-  nested_Tree_2.rec
+  rec_2
     (motive_1 := fun _ => RecWFTree) (motive_2 := fun _ => WFTree RecWFTree)
     (motive_3 := fun _ => Tree RecWFTree)
     (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
@@ -284,7 +284,7 @@ example : depthT (rebuildT (leaf (wrap bottom))) = 2 := rfl
 /-- The same recursion entered at the proposition, which is what it proves about. -/
 theorem rebuildT_wf {a : Tree RecWFTree} (h : Tree.WF RecWFTree a) :
     Tree.WF RecWFTree (rebuildT a) :=
-  nested_WF_3.rec
+  rec_3
     (motive_1 := fun _ => RecWFTree) (motive_2 := fun _ => WFTree RecWFTree)
     (motive_3 := fun _ => Tree RecWFTree)
     (motive_4 := fun _ ih _ => Tree.WF RecWFTree ih)
@@ -340,7 +340,7 @@ Nothing above needs these -- the recursor is stated over the originals, so a
 recursion never meets a copy.  They are here because the bridge is what makes
 that restatement legitimate, and an equivalence that is only claimed is worth
 less than one that is checked.  The recursion below is the raw one, whose
-motives are over the copies; `nested_Tree_2.rec` is the restatement. -/
+motives are over the copies; `rec_2` is the restatement. -/
 
 theorem ofOrig_toOrig (a : nested_Tree_2) : nested_Tree_2.ofOrig a.toOrig = a :=
   nested_Tree_2._nested_rec
@@ -664,8 +664,7 @@ info: @LocalsII.Ok.rec : ∀ {motive_1 : LocalsII → Sort u_1} {motive_2 : (n :
   (mk_2 : (n : Nat) → (a : LocalsII) → motive_1 a → motive_3 n (Fam.mk a))
   (mk_3 : ∀ (n : Nat) (a : LocalsII) (a_ih : motive_1 a), motive_4 n (Fam.mk a) (mk_2 n a a_ih) ⋯)
   (mk_4 : ∀ (n : Nat) (x : OkFam LocalsII n) (x_ih : motive_2 n x), motive_5 n x x_ih ⋯) {n : Nat}
-  {a : OkFam LocalsII n} (t : LocalsII.Ok n a),
-  motive_5 n a (LocalsII.nested_OkFam_1.rec tip mk mk_1 mk_2 mk_3 mk_4 a) t
+  {a : OkFam LocalsII n} (t : LocalsII.Ok n a), motive_5 n a (LocalsII.rec_1 tip mk mk_1 mk_2 mk_3 mk_4 a) t
 -/
 #guard_msgs in
 #check @LocalsII.Ok.rec

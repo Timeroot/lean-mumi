@@ -4185,7 +4185,7 @@ namespace SubAtProp
 -- the subtype's binder `m` is unused on purpose: the point is the `Ok2 v`
 set_option linter.unusedVariables false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Vec2 : Type where
   | nil : Vec2
@@ -4195,8 +4195,8 @@ inductive Ok2 : Vec2 → Prop where
 end
 
 def vlen : Vec2 → Nat :=
-  Vec2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ => Nat)
-    0 (fun _ _ ih k => ih + k) (fun _ val _ _ => val)
+  Vec2.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => True) (motive_3 := fun _ _ => Nat)
+    0 (fun _ _ ih k => ih + k) trivial (fun _ val _ _ _ => val)
 
 example : vlen Vec2.nil = 0 := rfl
 example (v : Vec2) (n : { m : Nat // Ok2 v }) : vlen (Vec2.cons v n) = vlen v + n.val := rfl
@@ -4410,12 +4410,16 @@ end
 -- the copy is nowhere in it: the second motive is over `PL`, and the third and
 -- fourth minors are `PL.nil` and `PL.cons`
 /--
-info: @Ok.rec : ∀ {motive_1 : (a : T) → Ok a → Prop} {motive_2 : (t : T) → PL (Ok t) 0 → Prop},
-  motive_1 T.tip Ok.tip →
-    (∀ (t : T) (h : PL (Ok t) 0), motive_2 t h → motive_1 t.node (Ok.node t h)) →
-      (∀ (t : T), motive_2 t PL.nil) →
-        (∀ (t : T) (a : Ok t) (r : PL (Ok t) 0), motive_1 t a → motive_2 t r → motive_2 t (PL.cons a r)) →
-          ∀ {a : T} (h : Ok a), motive_1 a h
+info: @Ok.rec : ∀ {motive_1 : T → Sort u_1} {motive_2 : (a : T) → motive_1 a → Ok a → Prop}
+  {motive_3 : (t : T) → motive_1 t → PL (Ok t) 0 → Prop} (tip : motive_1 T.tip)
+  (node : (t : T) → motive_1 t → motive_1 t.node) (tip_1 : motive_2 T.tip tip Ok.tip)
+  (node_1 :
+    ∀ (t : T) (h : PL (Ok t) 0) (t_ih : motive_1 t), motive_3 t t_ih h → motive_2 t.node (node t t_ih) (Ok.node t h))
+  (nil : ∀ (t : T) (t_ih : motive_1 t), motive_3 t t_ih PL.nil)
+  (cons :
+    ∀ (t : T) (a : Ok t) (r : PL (Ok t) 0) (t_ih : motive_1 t),
+      motive_2 t t_ih a → motive_3 t t_ih r → motive_3 t t_ih (PL.cons a r))
+  {a : T} (t : Ok a), motive_2 a (T.rec tip node tip_1 node_1 nil cons a) t
 -/
 #guard_msgs in
 set_option pp.proofs true in
@@ -4436,7 +4440,7 @@ theorem all_ok : ∀ t : T, Ok t := by
 -- and the recursion runs both ways round: rebuilding the proof puts the list
 -- back together out of the minors for `PL`
 theorem ok_id {t : T} (h : Ok t) : Ok t :=
-  Ok.rec (motive_1 := fun t _ => Ok t) (motive_2 := fun t _ => PL (Ok t) 0)
+  Ok.induct (motive_1 := fun t _ => Ok t) (motive_2 := fun t _ => PL (Ok t) 0)
     Ok.tip (fun t _ ih => Ok.node t ih)
     (fun _ => PL.nil) (fun _ _ _ iha ihr => PL.cons iha ihr) h
 
@@ -4912,7 +4916,7 @@ recurses along with it, and its constructor's index is built out of the copy's
 own constructor rather than being pinned to a closed term.  Everything the writer
 named still comes out over `List LTree`. -/
 
-mumi_spec (simp := [LTree.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [LTree.casesOn_node, LTree.rec_node, LTree.rec_1_cons])
 mutual
 inductive LTree : Type where
   | node : (cs : List LTree) → LOk cs → LTree
@@ -4946,12 +4950,12 @@ example : (LTree.node [LTree.node [] LOk.nil] (LOk.cons _ _ LOk.nil)).size = 2 :
 /-- And so does the proposition's, on both of its constructors. -/
 example {p : (l : List LTree) → LOk l → Prop} (hn : p [] LOk.nil)
     (hc : (t : LTree) → (ts : List LTree) → (h : LOk ts) → p ts h → p (t :: ts) (LOk.cons t ts h)) :
-    LOk.rec (motive := p) hn hc LOk.nil = hn := rfl
+    LOk.induct (motive := p) hn hc LOk.nil = hn := rfl
 
 example {p : (l : List LTree) → LOk l → Prop} (hn : p [] LOk.nil)
     (hc : (t : LTree) → (ts : List LTree) → (h : LOk ts) → p ts h → p (t :: ts) (LOk.cons t ts h))
     (t : LTree) (ts : List LTree) (h : LOk ts) :
-    LOk.rec (motive := p) hn hc (LOk.cons t ts h) = hc t ts h (LOk.rec (motive := p) hn hc h) := rfl
+    LOk.induct (motive := p) hn hc (LOk.cons t ts h) = hc t ts h (LOk.induct (motive := p) hn hc h) := rfl
 
 /-! ## A proposition over a nesting, in the shapes a writer would have
 
@@ -4970,7 +4974,7 @@ them as parameters of its own, and the proposition's arity comes back reading
 `List (PTree α)` at the parameter the writer gave it rather than at whatever the
 copy was made to take. -/
 
-mumi_spec (simp := [PTree.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [PTree.casesOn_node, PTree.rec_node, PTree.rec_1_cons])
 mutual
 inductive PTree (α : Type u) : Type u where
   | node : (cs : List (PTree α)) → POk α cs → PTree α
@@ -5000,7 +5004,7 @@ to be stated over.  Their own recursors come out as the pair they are: either
 name asks for both motives and both sets of minors, and hands back the one it is
 named for. -/
 
-mumi_spec (simp := [QTree.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [QTree.casesOn_node, QTree.rec_node, QTree.rec_1_cons])
 mutual
 inductive QTree : Type where
   | node : (cs : List QTree) → QA cs → QB cs → QTree
@@ -5020,7 +5024,7 @@ grows two members rather than one, and the recursion gets a motive and a pair of
 minors for each -- `motive_2` at `List (List ATree)` and `motive_3` at
 `List ATree`.  The proposition is indexed by the outer one. -/
 
-mumi_spec (simp := [ATree.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [ATree.casesOn_node, ATree.rec_node, ATree.rec_1_cons, ATree.rec_2_cons])
 mutual
 inductive ATree : Type where
   | node : (cs : List (List ATree)) → AOk cs → ATree
@@ -5031,10 +5035,10 @@ end
 
 /-- Both layers compute. -/
 def ATree.size (t : ATree) : Nat :=
-  ATree.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ => Nat)
-    (motive_4 := fun _ _ _ => True)
-    (fun _ _ n _ => n + 1) 0 (fun _ _ a b => a + b) 0 (fun _ _ a b => a + b)
-    trivial (fun _ _ _ _ _ _ => trivial) t
+  ATree.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ _ _ => True)
+    (motive_4 := fun _ => Nat)
+    (fun _ _ n _ => n + 1) 0 (fun _ _ a b => a + b)
+    trivial (fun _ _ _ _ _ _ => trivial) 0 (fun _ _ a b => a + b) t
 
 example : (ATree.node [] AOk.nil).size = 1 := rfl
 
@@ -5050,7 +5054,7 @@ put beside it.  `DTy` is indexed by `DCtx`, which is the rule the erasure lifts;
 is the case worth having, and the two data members each get the recursion over
 the whole block. -/
 
-mumi_spec (simp := [DTy.casesOn_pack]) (xfail := [rec, casesOn])
+mumi_spec (simp := [DTy.casesOn_pack, DTy.rec_pack, DCtx.rec_1_cons])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -5079,7 +5083,7 @@ itself, which is the constructor built out of the copy's own. -/
 example {p : (l : List DCtx) → DOk l → Prop} (hn : p [] DOk.nil)
     (hc : ∀ Γ Γs h, p Γs h → p (Γ :: Γs) (DOk.cons Γ Γs h)) (Γ : DCtx) (Γs : List DCtx)
     (h : DOk Γs) :
-    DOk.rec (motive := p) hn hc (DOk.cons Γ Γs h) = hc Γ Γs h (DOk.rec (motive := p) hn hc h) :=
+    DOk.induct (motive := p) hn hc (DOk.cons Γ Γs h) = hc Γ Γs h (DOk.induct (motive := p) hn hc h) :=
   rfl
 
 end CtxTyNested
@@ -5091,7 +5095,7 @@ index.  The copy is indexed by that index as well -- `List (EVec n)` is a family
 in `n` -- so the recursion carries it through both the copy's motive and the
 proposition's. -/
 
-mumi_spec (simp := [EVec.casesOn_cons]) (xfail := [rec, casesOn])
+mumi_spec (simp := [EVec.casesOn_cons, EVec.rec_cons, EVec.rec_1_cons])
 mutual
 inductive EVec : Nat → Type where
   | nil  : EVec 0
@@ -5103,13 +5107,13 @@ end
 
 example {p : (n : Nat) → (a : List (EVec n)) → EOk n a → Prop} (hn : ∀ n, p n [] (EOk.nil n))
     (hc : ∀ n t ts h, p n ts h → p n (t :: ts) (EOk.cons n t ts h)) (n : Nat) :
-    EOk.rec (motive := p) hn hc (EOk.nil n) = hn n := rfl
+    EOk.induct (motive := p) hn hc (EOk.nil n) = hn n := rfl
 
 example {p : (n : Nat) → (a : List (EVec n)) → EOk n a → Prop} (hn : ∀ n, p n [] (EOk.nil n))
     (hc : ∀ n t ts h, p n ts h → p n (t :: ts) (EOk.cons n t ts h))
     (n : Nat) (t : EVec n) (ts : List (EVec n)) (h : EOk n ts) :
-    EOk.rec (motive := p) hn hc (EOk.cons n t ts h)
-      = hc n t ts h (EOk.rec (motive := p) hn hc h) := rfl
+    EOk.induct (motive := p) hn hc (EOk.cons n t ts h)
+      = hc n t ts h (EOk.induct (motive := p) hn hc h) := rfl
 
 end IndexedNested
 
@@ -5119,7 +5123,7 @@ namespace HeteroNested
 nesting and the proposition.  `FBig` holds a `Type` and so lives in `Type 1`;
 `FOk` is a proposition; the copy follows `FBig`. -/
 
-mumi_spec (simp := [FBig.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [FBig.casesOn_node, FBig.rec_node, FBig.rec_1_cons])
 mutual
 inductive FBig : Type 1 where
   | ty   : Type → FBig
@@ -5190,7 +5194,7 @@ inductive Bag (α : Type u) : Type u where
   | none : Bag α
   | two  : α → α → Bag α
 
-mumi_spec (simp := [UTree.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [UTree.casesOn_node, UTree.rec_node])
 mutual
 inductive UTree : Type where
   | node : (cs : Bag UTree) → UOk cs → UTree
@@ -5208,7 +5212,7 @@ of its own, and the proposition is over only the first of them -- which is what
 makes this worth pinning, since the recursion has to know which copy the
 proposition's motive stands on. -/
 
-mumi_spec (simp := [VTree.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [VTree.casesOn_node, VTree.rec_node, VTree.rec_1_cons])
 mutual
 inductive VTree : Type where
   | node : (cs : List VTree) → (o : Option VTree) → VOk cs → VTree
@@ -5250,7 +5254,7 @@ split recursor; `YGood` is over a member and gets the recursion over the whole
 block, concluding at the motive taken at what the data recursion returned.  The
 two sit side by side without either one deciding for the other. -/
 
-mumi_spec (simp := [YTm.casesOn_app]) (xfail := [rec, casesOn])
+mumi_spec (simp := [YTm.casesOn_app, YTm.rec_app, YTm.rec_1_cons])
 mutual
 inductive YTm : Type where
   | app : (ts : List YTm) → YOk ts → YTm
@@ -5276,7 +5280,7 @@ bridge with it, so these are pinned as much as a regression as for the shape. -/
 
 namespace TwoIndices
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (a b : List T) → Ok a b → T
@@ -5292,8 +5296,8 @@ example {p : (a b : List T) → Ok a b → Prop} (hn : p [] [] Ok.nil)
     (hl : ∀ t a b h, p a b h → p (t :: a) b (Ok.consL t a b h))
     (hr : ∀ t a b h, p a b h → p a (t :: b) (Ok.consR t a b h))
     (t : T) (a b : List T) (h : Ok a b) :
-    Ok.rec (motive := p) hn hl hr (Ok.consR t a b h)
-      = hr t a b h (Ok.rec (motive := p) hn hl hr h) := rfl
+    Ok.induct (motive := p) hn hl hr (Ok.consR t a b h)
+      = hr t a b h (Ok.induct (motive := p) hn hl hr h) := rfl
 
 end TwoIndices
 
@@ -5301,7 +5305,7 @@ namespace MixedIndices
 
 /-! Three indices, at two nesting types, one of them a nesting of a nesting. -/
 
-mumi_spec (simp := [U.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [U.casesOn_node, U.rec_node, U.rec_1_cons, U.rec_2_cons])
 mutual
 inductive U : Type where
   | node : (a : List U) → (b : List (List U)) → (c : Option U) → Ok a b c → U
@@ -5315,8 +5319,8 @@ example {p : (a : List U) → (b : List (List U)) → (c : Option U) → Ok a b 
     (hn : p [] [] none Ok.nil)
     (hc : ∀ t a b c h, p a b c h → p a (t :: b) c (Ok.cons t a b c h))
     (t : List U) (a : List U) (b : List (List U)) (c : Option U) (h : Ok a b c) :
-    Ok.rec (motive := p) hn hc (Ok.cons t a b c h)
-      = hc t a b c h (Ok.rec (motive := p) hn hc h) := rfl
+    Ok.induct (motive := p) hn hc (Ok.cons t a b c h)
+      = hc t a b c h (Ok.induct (motive := p) hn hc h) := rfl
 
 end MixedIndices
 
@@ -5408,7 +5412,7 @@ that is itself indexed. -/
 
 namespace MaxUniverse
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T (α : Type u) (β : Type v) : Type (max u v) where
   | node : (a : α) → (b : β) → (cs : List (T α β)) → Ok α β cs → T α β
@@ -5420,8 +5424,8 @@ end
 example {α : Type u} {β : Type v} {p : (ts : List (T α β)) → Ok α β ts → Prop}
     (hn : p [] Ok.nil) (hc : ∀ t ts h, p ts h → p (t :: ts) (Ok.cons t ts h))
     (t : T α β) (ts : List (T α β)) (h : Ok α β ts) :
-    Ok.rec (motive := p) hn hc (Ok.cons t ts h)
-      = hc t ts h (Ok.rec (motive := p) hn hc h) := rfl
+    Ok.induct (motive := p) hn hc (Ok.cons t ts h)
+      = hc t ts h (Ok.induct (motive := p) hn hc h) := rfl
 
 end MaxUniverse
 
@@ -5431,7 +5435,7 @@ namespace PhantomUniverse
 there only in the result, so every occurrence of the block carries it explicitly
 and there is no second way to arrive at it. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T (α : Type u) : Type (max u v) where
   | node : (a : α) → (cs : List (T.{u, v} α)) → Ok.{u, v} α cs → T α
@@ -5469,7 +5473,7 @@ whole of it.  Both get copies, so the block gains two members the writer did not
 write, and the proposition's `cons` indexes at a pair rather than at a bare
 member. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List ((_ : Nat) × T)) → Ok cs → T
@@ -5482,8 +5486,8 @@ end
 example {p : (cs : List ((_ : Nat) × T)) → Ok cs → Prop} (hn : p [] Ok.nil)
     (hc : ∀ c cs h, p cs h → p (c :: cs) (Ok.cons c cs h))
     (c : (_ : Nat) × T) (cs : List ((_ : Nat) × T)) (h : Ok cs) :
-    Ok.rec (motive := p) hn hc (Ok.cons c cs h)
-      = hc c cs h (Ok.rec (motive := p) hn hc h) := rfl
+    Ok.induct (motive := p) hn hc (Ok.cons c cs h)
+      = hc c cs h (Ok.induct (motive := p) hn hc h) := rfl
 
 end SigmaNest
 
@@ -5494,7 +5498,7 @@ being one of them: `V.cons` at `n` lands in `V (n + n)`.  The nesting is indexed
 as well -- `List (V n)` is a copy carrying an `n` of its own -- so the copy, the
 proposition and the constructor all have to be standing at the same one. -/
 
-mumi_spec (simp := [V.casesOn_cons]) (xfail := [rec, casesOn])
+mumi_spec (simp := [V.casesOn_cons, V.rec_cons, V.rec_1_cons])
 mutual
 inductive V : Nat → Type where
   | nil  : V 0
@@ -5508,8 +5512,8 @@ example {p : (n : Nat) → (ts : List (V n)) → Ok n ts → Prop}
     (hn : ∀ n, p n [] (Ok.nil n))
     (hc : ∀ n t ts h, p n ts h → p n (t :: ts) (Ok.cons n t ts h))
     (n : Nat) (t : V n) (ts : List (V n)) (h : Ok n ts) :
-    Ok.rec (motive := p) hn hc (Ok.cons n t ts h)
-      = hc n t ts h (Ok.rec (motive := p) hn hc h) := rfl
+    Ok.induct (motive := p) hn hc (Ok.cons n t ts h)
+      = hc n t ts h (Ok.induct (motive := p) hn hc h) := rfl
 
 end ComputedIndex
 
@@ -5521,7 +5525,7 @@ the whole block read at a different conclusion, so the proposition's minors
 appear in `Ctx.rec` and `Tm.rec` alike -- and `Ok.rec`, which is over the
 nesting rather than over a member, stays the split one the writer can state. -/
 
-mumi_spec (simp := [Tm.casesOn_pack]) (xfail := [rec, casesOn])
+mumi_spec (simp := [Tm.casesOn_pack, Tm.rec_pack, Ctx.rec_1_cons])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5697,7 +5701,7 @@ it -- so `h : t = t` is no reason to take `Same` out of the block, and `Same`
 keeps the recursion over the whole of it.  `Eq` is a nesting here, so the
 recursor carries its motive too. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5924,7 +5928,7 @@ None of the three leaves the block the way a peeled proposition does -- `Watch`
 names `Big`, so they are still what the block is stated with, and they share the
 one erased recursion. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5966,7 +5970,7 @@ reach for when there is no data to produce -- and taken by hand it wants every
 proposition's motive at once, which is what sharing one erased recursion means. -/
 
 theorem Ok.elim {cs : List T} (h : Ok cs) : cs = [] ∨ cs ≠ [] :=
-  Ok.rec (motive_2 := fun _ _ => True) (motive_3 := fun _ _ => True)
+  Ok.induct (motive_2 := fun _ _ => True) (motive_3 := fun _ _ => True)
     (motive_1 := fun cs _ => cs = [] ∨ cs ≠ [])
     (.inl rfl) (fun t ts _ _ => .inr (by simp))
     (fun _ _ _ _ => trivial) trivial (fun _ _ _ => trivial) h

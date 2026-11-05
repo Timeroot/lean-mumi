@@ -258,8 +258,77 @@ theorem hfunext_of_heq {α : Sort u} {β β' : α → Sort v} {f : (a : α) → 
   subst hβ
   exact heq_of_eq (funext fun a => eq_of_heq (h a))
 
+/-- The recursors over a block's copies whose rules hold by `rfl` in the kernel, for
+a block with this many parameters.  Meta has no business unfolding them: what they
+compute it reaches a long way down, through the graph and the recursions they are
+built from (`Mumi.Displayed`), when the answer is known. -/
+structure JointRecs where
+  numParams : Nat := 0
+  names : Array Name := #[]
+  deriving Inhabited
+
+/-- What `e`, one of the joint recursors at a constructor, reduces to: its minor
+premise at the fields and at the recursors at those fields.  Never compared in
+Meta: the kernel checks it when the proof is declared. -/
+private def jointStep? (joints : JointRecs) (e : Expr) : MetaM (Option Expr) := do
+  let .const n us := e.getAppFn | return none
+  unless joints.names.contains n do return none
+  let info ← getConstInfo n
+  let args := e.getAppArgs
+  let np := joints.numParams
+  forallTelescope (info.instantiateTypeLevelParams us) fun xs concl => do
+    unless args.size == xs.size do return none
+    if ← isProp concl then return none
+    -- the motives lead, then the minors, then the indices and the major
+    let mut nMot := 0
+    for x in xs.extract np xs.size do
+      unless ← forallTelescope (← inferType x) fun _ c => pure c.isSort do break
+      nMot := nMot + 1
+    let motives := xs.extract np (np + nMot)
+    let mut minors := #[]
+    for x in xs.extract (np + nMot) xs.size do
+      unless ← forallTelescope (← inferType x) fun _ c => pure (motives.contains c.getAppFn) do break
+      minors := minors.push x
+    let front := xs.extract 0 (np + nMot + minors.size)
+    -- the major premise as a constructor of the block, as far as it unfolds to one
+    let ctorOfMinor (m : Expr) : MetaM (Option Name) := do
+      forallTelescope (← inferType m) fun _ c =>
+        pure (c.getAppArgs.back?.bind (·.getAppFn.constName?))
+    let names ← minors.mapM ctorOfMinor
+    let mut major := args.back!
+    let mut found := none
+    for _ in [:16] do
+      major ← whnfCore major
+      if let .const c _ := major.getAppFn then
+        if let some i := names.findIdx? (· == some c) then
+          found := some i
+          break
+      let some m' ← unfoldDefinition? major | return none
+      major := m'
+    let some i := found | return none
+    let fields := major.getAppArgs.extract np major.getAppNumArgs
+    -- which recursor concludes at which motive
+    let recAt (q : Nat) : MetaM (Option Name) := joints.names.findM? fun r => do
+      forallTelescope (← getConstInfo r).type fun ys c =>
+        return (ys.extract np ys.size).idxOf? c.getAppFn == some q
+    let ms := minors[i]!
+    let template : Expr ← forallTelescope (← inferType ms) fun zs _ => do
+      unless fields.size ≤ zs.size do throwError "`{n}` at a constructor with too many fields"
+      let fs := zs.extract 0 fields.size
+      let vals ← (zs.extract fields.size zs.size).mapM fun h => do
+        forallTelescope (← inferType h) fun ws c => do
+          let some q := motives.idxOf? c.getAppFn | throwError "a hypothesis not at a motive"
+          let some r ← recAt q | throwError "no recursor at motive {q}"
+          let tgt := c.getAppArgs.back!
+          let tty ← inferType tgt
+          let idx := tty.getAppArgs.extract np tty.getAppNumArgs
+          mkLambdaFVars ws (mkAppN (mkConst r us) (front ++ idx.push tgt))
+      mkLambdaFVars (front ++ fs) (mkAppN ms (fs ++ vals))
+    return some (template.beta (args.extract 0 front.size ++ fields)).headBeta
+
 /-- One step of unfolding at the head, at the default transparency. -/
-private def unfoldStep (e : Expr) : MetaM (Option Expr) := do
+private def unfoldStep (joints : JointRecs) (e : Expr) : MetaM (Option Expr) := do
+  if let some r ← jointStep? joints e then return some r
   let e' ← whnfCore e
   if e' != e then return some e'
   unfoldDefinition? e
@@ -290,9 +359,9 @@ private partial def castOf? (a : Expr) (fuel : Nat := 4) : MetaM (Option (Expr �
 /--
 `HEq a b`, for two terms equal up to casts and round trips through the copies
 whose `toOrig_ofOrig` lemmas are `trips`. -/
-partial def heqUpToTrips (trips : Array Name) (used : IO.Ref Bool) (a b : Expr)
+partial def heqUpToTrips (trips : Array Name) (joints : JointRecs) (used : IO.Ref Bool) (a b : Expr)
     (fuel : Nat := 40) : MetaM Expr := do
-  let heqUpToTrips := fun a b fuel => heqUpToTrips trips used a b fuel
+  let heqUpToTrips := fun a b fuel => heqUpToTrips trips joints used a b fuel
   if fuel == 0 then
     throwError "the two sides do not meet:{indentExpr a}\nand{indentExpr b}"
   let fuel := fuel - 1
@@ -383,8 +452,8 @@ partial def heqUpToTrips (trips : Array Name) (used : IO.Ref Bool) (a b : Expr)
   let full : MetaM Bool := do
     return (← isDefEq (← inferType a) (← inferType b)) && (← isDefEq a b)
   if !(mentions a || mentions b) && (← full) then return ← mkHEqRefl a
-  if let some a' ← unfoldStep a then return ← heqUpToTrips a' b fuel
-  if let some b' ← unfoldStep b then return ← heqUpToTrips a b' fuel
+  if let some a' ← unfoldStep joints a then return ← heqUpToTrips a' b fuel
+  if let some b' ← unfoldStep joints b then return ← heqUpToTrips a b' fuel
   if ← full then return ← mkHEqRefl a
   throwError "the two sides do not meet:{indentExpr a}\nand{indentExpr b}"
 
@@ -393,13 +462,14 @@ private def ruleNameOf (base c : Name) : Name :=
   base.getPrefix ++ Name.mkSimple (base.getString! ++ "_" ++ c.eraseMacroScopes.getString!)
 
 /-- Add `name : ∀ xs, lhs = rhs`, proved up to round trips, as a `@[simp]` lemma. -/
-private def addTripRule (trips : Array Name) (lps : List Name) (name : Name)
+private def addTripRule (trips : Array Name) (joints : JointRecs) (lps : List Name) (name : Name)
     (xs : Array Expr) (lhs rhs : Expr) : MetaM Unit := do
   if (← getEnv).contains name then return
+  withCurrHeartbeats do
   -- a rule whose proof crosses no round trip is one `rfl` proves already
   let used ← IO.mkRef false
   let a ← whnfCore lhs
-  let prf ← mkEqOfHEq (← heqUpToTrips trips used a rhs)
+  let prf ← mkEqOfHEq (← heqUpToTrips trips joints used a rhs)
   unless ← used.get do return
   let type ← mkForallFVars xs (← mkEq lhs rhs)
   let value ← instantiateMVars (← mkLambdaFVars xs (← mkExpectedTypeHint prf (← mkEq lhs rhs)))
@@ -413,12 +483,16 @@ does not prove, as `@[simp]` lemmas, for a block with `numParams` parameters
 whose copies' round trips are `trips`.  A recursor's rule at a constructor is its
 minor premise at the fields and at the recursion's value at each field that
 takes a hypothesis; a case split's is its minor premise at the fields. -/
-def addTripRules (numParams : Nat) (trips : Array Name) (recs cases : Array Name) :
-    TermElabM Unit := do
+def addTripRules (numParams : Nat) (trips : Array Name) (recs cases : Array Name)
+    (joints : Array Name := #[]) : TermElabM Unit :=
+  withCanUnfoldPred (fun cfg info => do
+      if joints.contains info.name then return false
+      canUnfoldDefault cfg info) do
+  let joints : JointRecs := { numParams, names := joints }
   for r in recs do
     let ci ← getConstInfo r
     let us := ci.levelParams.map Level.param
-    discard <| MultiuniverseInductive.attempt? `Mumi m!"no rules for `{r}`" do
+    discard <| MultiuniverseInductive.attempt? `Mumi m!"no rules for `{r}`" <| withCurrHeartbeats do
     forallTelescope ci.type fun xs concl => do
       let ps := xs.extract 0 numParams
       -- the motives lead, then the minors, then the indices and the major
@@ -470,10 +544,10 @@ def addTripRules (numParams : Nat) (trips : Array Name) (recs cases : Array Name
             | none => fields := fields.push z
           let lhs ← callAt r c
           let rhs := mkAppN m (fields ++ ihVals)
-          addTripRule trips ci.levelParams name (front ++ fields) lhs rhs
+          addTripRule trips joints ci.levelParams name (front ++ fields) lhs rhs
   for cs in cases do
     let ci ← getConstInfo cs
-    discard <| MultiuniverseInductive.attempt? `Mumi m!"no rules for `{cs}`" do
+    discard <| MultiuniverseInductive.attempt? `Mumi m!"no rules for `{cs}`" <| withCurrHeartbeats do
     forallTelescope ci.type fun xs _ => do
       let ps := xs.extract 0 numParams
       let motive := xs[numParams]!
@@ -491,7 +565,7 @@ def addTripRules (numParams : Nat) (trips : Array Name) (recs cases : Array Name
           let args := ms.extract 0 (ms.size - minors.size)
           unless ← isDefEq cc c do throwError "`{cs}` does not conclude at{indentExpr c}"
           let lhs ← instantiateMVars (mkAppN f (args ++ minors))
-          addTripRule (trips) ci.levelParams name (ps ++ #[motive] ++ minors ++ fields) lhs
+          addTripRule trips joints ci.levelParams name (ps ++ #[motive] ++ minors ++ fields) lhs
             (mkAppN m fields)
 
 /-! ## A block of aliased inductives, joined
