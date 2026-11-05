@@ -5581,7 +5581,7 @@ goes through the ordinary handlers rather than through the subtype. -/
 
 namespace PeelUnpinned
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5611,7 +5611,7 @@ PeelUnpinned.Big.leaf : Big T.leaf
 
 example {p : (t : T) → Big t → Prop} (hn : ∀ cs hs h, p _ (Big.node cs hs h))
     (hl : p _ Big.leaf) (cs hs : List T) (h : Ok cs) :
-    Big.rec (motive := p) hn hl (Big.node cs hs h) = hn cs hs h := rfl
+    Big.induct (motive := p) hn hl (Big.node cs hs h) = hn cs hs h := rfl
 
 /-- The tactics an ordinary inductive answers to, which nothing that goes
 through the erasure does. -/
@@ -5635,7 +5635,7 @@ the block like any other, and `Ok` above is indexed by it and comes back fine --
 so what peels `Long` is `extra` again.  Once it is out, its index really is a
 `List T`, since a peeled member is not denested and has nothing rewritten. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5658,7 +5658,7 @@ at all.  `Inhab` is the shape that made this worth doing -- a witness that
 some type over `Γ` exists is the natural thing to write, and `A` is exactly the
 field the conclusion cannot mention. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -5677,7 +5677,7 @@ namespace PeelMutual
 and each is named by the other, so the peel keeps them as the one mutual group
 they were written as and their recursors share both motives. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5797,7 +5797,7 @@ namespace PeelLeavesNested
 denests it: the recursor is stated over `List T` with a motive for the list, and
 no copy of the list is made under a name of ours. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T : Type where
   | node : List T → T
@@ -5830,7 +5830,7 @@ any other to be indexed by.
 
 What stays is the entangled pair, with the recursion over both of them intact. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -5852,11 +5852,12 @@ PeelPropOnProp.Sub.id : ∀ {Γ : Ctx} {A : Ty Γ}, Sub Γ A
 
 /-! `Sub` is indexed by a member that came back from the erasure as a subtype
 and by one that stayed a proposition, and it is an inductive over both.  Its
-recursor is the real one, so it eliminates into `Type` -- `Sub` has the one
-constructor and no data in it -- and the iota rule holds by `rfl`. -/
+recursor `Sub.induct` is the real one, so it eliminates into `Type` -- `Sub` has the
+one constructor and no data in it -- and the iota rule holds by `rfl`.  `Sub.rec` is
+the block's, into `Prop`. -/
 
 noncomputable def Sub.tag {Γ : Ctx} {A : Ty Γ} (h : Sub Γ A) : Nat :=
-  Sub.rec (motive := fun _ _ _ => Nat) 0 h
+  Sub.induct (motive := fun _ _ _ => Nat) 0 h
 
 example {Γ : Ctx} {A : Ty Γ} : (Sub.id (Γ := Γ) (A := A)).tag = 0 := rfl
 
@@ -5876,7 +5877,7 @@ indexed by a proposition and so leaves on the rule above.  What is left is a
 single ordinary `Prop`, which is Lean's to read, and the peeled members follow
 it one group at a time. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive P : Prop where
   | mk : P
@@ -5909,26 +5910,22 @@ end PeelAllProps
 A data field that a `Prop` constructor's conclusion does not reach is a field
 with no well-formedness in reach to put it back at its subtype with: the
 constructor carries no `_wf` of its own, and its own type says nothing about
-where the field came from.  What rescues it is that such a field is exactly what
-stops the proposition from being a subsingleton, so the recursor eliminates only
-into `Prop` and every minor premise for it is a proof.  Two proofs of one
-proposition are definitionally equal, so any element of the field's type serves
-as well as the one that was meant, and the recursion is stated with whichever one
-the search behind `Inhabited` turns up.
+where the field came from.  So such a proposition stays out of the erasure: it
+leaves the block as an ordinary inductive, and the block's recursion takes it back
+with a hypothesis at every field, `hs` included, because the recursion has a value
+at any datum and computing that value never needed the proposition.
 -/
 
 namespace Forgotten
 
 /-! `Big` is the member with the forgotten field: `hs` is a `List T` its
-conclusion says nothing about.  `Watch` recurses into `Big`, so it would go down
-with it.  Both keep their recursors, and so does `Ok`, which recurses into
-nothing but itself.
+conclusion says nothing about.  `Watch` recurses into `Big`.  `Ok`, which recurses
+into nothing but itself, is what `T` is stated with, and stays.
 
-None of the three leaves the block the way a peeled proposition does -- `Watch`
-names `Big`, so they are still what the block is stated with, and they share the
-one erased recursion. -/
+`Big` leaves the block as a peeled proposition does, and `Watch`, stated over it,
+goes along with it: nothing that stays is stated with either. -/
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T
@@ -5945,16 +5942,15 @@ end
 
 /-! `Big` and `Watch` get the recursor over the whole block, the one whose `Prop`
 motives can mention the value the recursion produced at the data member.  Its
-minor for `Big.node` binds `hs` and offers no `hs_ih`: that is the one thing the
-forgotten field costs. -/
+minor for `Big.node` binds `hs` and offers `hs_ih` like any other: the block's
+recursion has a value there, and nothing in it needed `Big` to compute that. -/
 
 /-! The data member and the constructors are untouched by any of this. -/
 
 /-! The recursors are the ones the tactics reach for, so `induction` and `cases`
 work on the member with the forgotten field.  Both bind it -- it is a field like
-any other to whoever is taking the constructor apart; what the recursion cannot
-do is hand back an induction hypothesis at it, and neither does Lean's own
-recursor for such a proposition. -/
+any other to whoever is taking the constructor apart.  These drive the kernel's
+own recursor (`Big.induct`), which has no hypothesis at a datum; `Big.rec` has. -/
 
 theorem Big.elim {t : T} (h : Big t) : t = .leaf ∨ ∃ cs, ∃ hc : Ok cs, t = .node cs hc := by
   induction h with
@@ -5965,15 +5961,13 @@ theorem Watch.toBig {t : T} (h : Watch t) : Big t := by
   induction h with
   | mk t hb => exact hb
 
-/-! `Ok` keeps the recursion over the propositions alone, which is the one to
-reach for when there is no data to produce -- and taken by hand it wants every
-proposition's motive at once, which is what sharing one erased recursion means. -/
+/-! `Ok` keeps the recursion over the propositions that stayed, which is the one to
+reach for when there is no data to produce: with `Big` and `Watch` gone, that is
+`Ok` alone. -/
 
 theorem Ok.elim {cs : List T} (h : Ok cs) : cs = [] ∨ cs ≠ [] :=
-  Ok.induct (motive_2 := fun _ _ => True) (motive_3 := fun _ _ => True)
-    (motive_1 := fun cs _ => cs = [] ∨ cs ≠ [])
-    (.inl rfl) (fun t ts _ _ => .inr (by simp))
-    (fun _ _ _ _ => trivial) trivial (fun _ _ _ => trivial) h
+  Ok.induct (motive := fun cs _ => cs = [] ∨ cs ≠ [])
+    (.inl rfl) (fun t ts _ _ => .inr (by simp)) h
 
 end Forgotten
 

@@ -654,27 +654,24 @@ well-formedness obligation to state it with, and a `Prop` constructor carries
 none of its own -- it has only what its indices bring it, and this field is at
 no index.
 
-What that costs is the propositions' place in the recursion over the *whole
-block*.  Every proposition here is peeled out instead and given a recursion over
-the propositions alone; with no joint recursion left to hold the name, that one
-*is* `rec`.  The control at the end of the section is the same block with `hs`
-deleted, where `Big.rec` carries a motive per member and the proposition's takes
-the value the recursion over `T` produced -- the thing section 4 turns on.  The
-difference between the two `Big.rec`s is the whole of the cost, and it falls on
-every proposition in the block, not only on the one that forgot a field.
+So `Big` stays out of the erasure.  It leaves the block as an ordinary inductive,
+which nothing in the block mentions, and that is also why it costs nothing: the
+recursion over `T` never needs `Big` to compute, so `T.rec` just takes `Big`'s motive
+and minors as well, and `Big.rec` is Lean's recursor over `Big` into a motive at what
+`T.rec` computes.  It has a hypothesis at every field, `hs_ih` included.  The control
+at the end of the section is the same block with `hs` deleted, whose `Big.rec` has
+the same shape.
 
-Nothing else goes.  The types are as written, the data member is untouched,
-`induction` and `cases` work and bind the field, and the surviving recursion is
-no worse than the one Lean gives such a proposition standing alone: `hs` bound
-in the minor premise for `Big.node`, and no `hs_ih`, because a field the
-conclusion never mentions is exactly what stops the proposition from being a
-subsingleton.
+The caveat is the one `T` brings with it, nesting through `List`: `T.rec`'s rules
+hold by `simp` with their lemmas, not by `rfl`.  The types are as written, the data
+member is untouched, and `induction` and `cases` work and bind the field, driving
+Lean's own recursor, kept as `Big.induct`, which has no hypothesis at a datum.
 
-*Verdict: works, with a caveat -- and the caveat is no known way.* -/
+*Verdict: works, with a caveat.* -/
 
 namespace Forgotten
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node (cs : List T) (h : Ok cs) : T
@@ -687,9 +684,8 @@ inductive Big : T → Prop where
   | leaf : Big .leaf
 end
 
-/-! `Big.rec` is the recursion over the propositions alone: one motive, `hs`
-bound in the minor premise for `Big.node`, and no `hs_ih`.  `Ok` did not forget
-anything and is peeled out all the same. -/
+/-! `Big.rec` has a motive per target, and `hs` and `hs_ih` in the minor premise for
+`Big.node`.  `Ok` did not forget anything and stays in the block. -/
 
 /-! `induction` and `cases` reach for those, so both work on the member with the
 forgotten field, and both bind it. -/
@@ -711,10 +707,9 @@ example : count .leaf = 1 := rfl
 #guard_msgs in
 #eval count (.node [.leaf] (.cons .leaf [] .nil))
 
-/-! The control: the same block with `hs` deleted.  Now the propositions stay in
-the block's recursion, and `motive_2` takes `motive_1 a` -- the value the
-recursion over `T` produced -- alongside the proof.  That argument is what the
-forgotten field costs. -/
+/-! The control: the same block with `hs` deleted, where `Big` stays in the block.
+Its motive is the same either way: it takes `motive_1 a`, the value the recursion
+over `T` produced, alongside the proof. -/
 
 namespace Kept
 

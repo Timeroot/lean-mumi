@@ -168,10 +168,15 @@ where `⟨Γ.val, Γ.property⟩ ≡ Γ` closes it.  See `addPropRecs`.
   induction-inductive, or no recursor of ours is left to widen, and what leaves
   must not be induction-inductive among itself.
 
+  A proposition stated over one that leaves goes along with it, provided that one
+  is not stated over it in turn and nothing that stays needs it.
+
   A member that leaves gains `match`, and with it the equation compiler,
-  `injection` and `contradiction`.  The block loses nothing:
-  `widenWithPeeled` puts the departed motive back into every recursor.  A *data*
-  member that leaves is declared as `X._ind`, with the writer's name a definition
+  `injection` and `contradiction`.  The block loses nothing: `widenWithPeeled` puts
+  a departed data member's motive back into every recursor, and `addWidenedRecs` a
+  departed proposition's, its own `X.rec` being the kernel's into a displayed motive
+  at what the block's recursion computes (the kernel's itself stays as `X.induct`).
+  A member that leaves is declared as `X._ind`, with the writer's name a definition
   unfolding to it (see `peelIndName`), the kernel writing `X.rec` for whatever it
   is handed as an inductive `X`.  Its constructors keep the writer's names, and
   `X._ind.c` is aliased to `X.c` so dot-notation resolves against either head.
@@ -1536,7 +1541,41 @@ def markPeeled (r : Raw) : TermElabM Raw := do
       if next.size == c.size then break
       c := next
     return c
+  -- a proposition stated over one that wants out goes with it, wanting nothing for
+  -- itself, unless the block still needs it, and then neither can go
+  -- ... so long as that one is not stated over it in turn: the two would be
+  -- induction-inductive among themselves, which only the erasure can take
+  let reaches (j i : Nat) : Bool := Id.run do
+    let mut seen := #[j]
+    let mut todo := #[j]
+    while !todo.isEmpty do
+      let x := todo.back!
+      todo := todo.pop
+      for y in *...r.names.size do
+        if !seen.contains y && mentions x y then
+          seen := seen.push y
+          todo := todo.push y
+    return seen.contains i
+  let wanting := cand.filter (isProp[·]!)
+  let mut grown := true
+  while grown do
+    grown := false
+    for i in *...r.names.size do
+      if isProp[i]! && !cand.contains i && cand.any (fun j => isProp[j]! && mentions i j)
+          && !cand.any (fun j => isProp[j]! && mentions i j && reaches j i) then
+        cand := cand.push i
+        grown := true
   cand := close cand
+  -- and one that was only going along has nothing to go along with if that one stayed
+  let mut carried := cand.filter wanting.contains
+  grown := true
+  while grown do
+    grown := false
+    for i in cand do
+      if !carried.contains i && carried.any (mentions i ·) then
+        carried := carried.push i
+        grown := true
+  cand := cand.filter fun i => !isProp[i]! || carried.contains i
   let kept (c : Array Nat) : Array Nat := (Array.range r.names.size).filter (!c.contains ·)
   -- a data member is peeled to gain it something, not to take the block apart:
   -- if what stays is no longer induction-inductive, the staying members lose the
@@ -6727,8 +6766,12 @@ def emit (p : Plan) : TermElabM Unit := do
     | .sort u => u.normalize != Level.zero
     | _ => false
   let widen := !p.peeled.isEmpty && b.propIdxs.isEmpty && peeledAllData
+  -- a proposition that left is a real inductive nothing here mentions, so what
+  -- stays is built as it would be and put under its name afterwards, with the motive
+  -- of what left among its own (`addWidenedRecs`)
+  let widenProps := !p.peeled.isEmpty && !widen
   let recName (i : Nat) : Name :=
-    if widen then Name.mkStr b.members[i]!.name "_core_rec" else pubRecName i
+    if widen || widenProps then Name.mkStr b.members[i]!.name "_core_rec" else pubRecName i
   -- the recursor over the whole block states a `Prop` member's motive at the
   -- value the data recursion returned, which the `induction` tactic cannot read.
   -- The split recursor concludes at the motive itself, so it keeps a name of its
@@ -6938,8 +6981,8 @@ def emit (p : Plan) : TermElabM Unit := do
   if jointWanted then
     let members := b.members.mapIdx fun i m =>
       let scope := if m.isProp then ((propRecs.find? (·.kIdxs.contains i)).map (·.kIdxs)).getD #[] else dIdxs
-      ({ name := m.name, prop := m.isProp, ctors := m.ctors.map (·.name), source := rawRecName i, scope }
-        : Mumi.Displayed.Member)
+      ({ name := m.name, prop := m.isProp, ctors := m.ctors.map (·.name), source := rawRecName i, scope,
+         out := recName i } : Mumi.Displayed.Member)
     let ok ← if propBuilt && b.propIdxs.all fun j => propRecs.any (·.kIdxs.contains j) then
         Mumi.Displayed.buildJoint { numParams := b.numParams, members, internal := "" }
       else pure false
@@ -6948,18 +6991,18 @@ def emit (p : Plan) : TermElabM Unit := do
     let fallback (i : Nat) : Name :=
       if grand && !(b.members[i]!.isProp && grandFree.contains i) then grandRecName i else rawRecName i
     if ok then
-      for i in *...b.size do markElabAsElim (pubRecName i)
+      for i in *...b.size do markElabAsElim (recName i)
     else
       for i in dIdxs ++ b.propIdxs do
         let some info := (← getEnv).find? (fallback i) | continue
         let rawRecName := fallback
         if info.isTheorem then
           let value := mkConst (rawRecName i) (info.levelParams.map Level.param)
-          addDecl (.thmDecl { name := pubRecName i, levelParams := info.levelParams, type := info.type, value })
+          addDecl (.thmDecl { name := recName i, levelParams := info.levelParams, type := info.type, value })
         else
-          addDef (pubRecName i) info.levelParams info.type
+          addDef (recName i) info.levelParams info.type
             (mkConst (rawRecName i) (info.levelParams.map Level.param))
-        markElabAsElim (pubRecName i)
+        markElabAsElim (recName i)
 
   -- the same in a block with copies, over the copies, where the copies are the
   -- block's members like any other: the bridge restates it over the originals
@@ -7039,7 +7082,8 @@ def emit (p : Plan) : TermElabM Unit := do
         -- block's first member's `rec_k`, numbered as the kernel numbers them
         let niceRecName (i : Nat) : Name :=
           match c.copyAt? i with
-          | some k => Name.mkStr b.members[0]!.name s!"rec_{k + 1}"
+          | some k => Name.mkStr b.members[0]!.name
+              (if widenProps then s!"_core_rec_{k + 1}" else s!"rec_{k + 1}")
           | none => recName i
         for i in dIdxs ++ b.propIdxs do
           -- a copy is one of the writer's own types under a name of ours, so the
@@ -7120,7 +7164,69 @@ def emit (p : Plan) : TermElabM Unit := do
   -- ordinary inductive types they already were.  After the bridge, because what
   -- they are stated over is the block the writer reads
   unless p.peeled.isEmpty do
-    if !widen then
+    if widenProps then
+      let names := p.peeled.map (·.name)
+      let uses := p.peeled.map fun t =>
+        let cs := t.ctors.foldl (fun acc c => acc ++ c.type.getUsedConstants) t.type.getUsedConstants
+        (Array.range names.size).filter fun j => cs.contains names[j]!
+      let mut groups : Array (Array Nat) := #[]
+      let mut done : Array Nat := #[]
+      while done.size < p.peeled.size do
+        let rest := (Array.range p.peeled.size).filter (!done.contains ·)
+        let ready := rest.filter fun a => uses[a]!.all fun c => c == a || done.contains c
+        if ready.isEmpty then
+          groups := groups.push rest
+          done := done ++ rest
+        else
+          for a in ready do groups := groups.push #[a]
+          done := done ++ ready
+      for g in groups do
+        MultiuniverseInductive.addAliasedInds b.us b.numParams (g.map (p.peeled[·]!))
+      -- the block as the writer has it, for the order of the motives
+      let total := b.size + p.peeled.size
+      let keptAt := (Array.range total).filter (!p.peeledIdxs.contains ·)
+      let written := (Array.range total).filterMap fun o =>
+        match p.peeledIdxs.idxOf? o with
+        | some k => some p.peeled[k]!.name
+        | none =>
+          let n := b.members[(keptAt.idxOf? o).getD 0]!.name
+          if copyNames.contains n then none else some n
+      let mut cores : Array (Name × Name) := #[]
+      for i in *...b.size do
+        if copyNames.contains b.members[i]!.name then continue
+        if (← getEnv).contains (recName i) then cores := cores.push (recName i, pubRecName i)
+      let first := b.members[0]!.name
+      let mut k := 1
+      while (← getEnv).contains (Name.mkStr first s!"_core_rec_{k}") do
+        cores := cores.push (Name.mkStr first s!"_core_rec_{k}", Name.mkStr first s!"rec_{k}")
+        k := k + 1
+      let trips := if mumi.roundTripRules.get (← getOptions) then
+          copyNames.map (· ++ `toOrig_ofOrig)
+        else #[]
+      let trips ← trips.filterM fun t => return (← getEnv).contains t
+      let joints := if joint then (Array.range b.size).map jointName else #[]
+      let ok ← attempted `Mumi.indind "the members that left do not go back into the recursion" <|
+        addWidenedRecs b.numParams written cores names (groups.flatMap id) trips joints
+      unless ok do
+        -- the block's recursion as it stands, and the kernel's for what left
+        for (c, w) in cores do
+          let info ← getConstInfo c
+          if info.isTheorem then
+            addDecl (.thmDecl { name := w, levelParams := info.levelParams, type := info.type,
+                                value := mkConst c (info.levelParams.map Level.param) })
+          else
+            addDef w info.levelParams info.type (mkConst c (info.levelParams.map Level.param))
+              (compile := false)
+          markElabAsElim w
+        for n in names do
+          restateKernelRec n (n ++ `rec)
+      -- the kernel's recursion is the one `induction` can drive, at full strength
+      for n in names do
+        restateKernelRec n (n ++ `induct)
+        unless (← getEnv).contains (n ++ `recD) do
+          restateKernelRec n (n ++ `recD)
+      publishAliased b.numParams names
+    else if !widen then
       addInd b.us b.numParams p.peeled
     else
       -- the inductive is declared one name over and the writer's name is given
@@ -7577,9 +7683,12 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
             elabCommand (aliasedGroupCommand elems g)
           liftTermElabM <| addPublicAliases (g.map (names[·]!))
         liftTermElabM do
-          addJointRecs names (groups.flatMap id)
           let np ← names.foldlM (init := 1000000) fun a n => do
             return min a (← getConstInfoInduct (MultiuniverseInductive.aliasIndName n)).numParams
+          let overNested ← names.anyM fun n =>
+            return (← getConstInfoInduct (MultiuniverseInductive.aliasIndName n)).isNested
+          if overNested then addWidenedOverNested np names groups
+          else addJointRecs names (groups.flatMap id)
           publishAliased np names
       if let some why ← tentatively? joined then
         set s
