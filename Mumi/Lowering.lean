@@ -477,11 +477,13 @@ private def Block.computeUserTargets (b : Block) : MetaM (Array Expr) := do
 
 /-! ## Small helpers -/
 
-/-- Overwrite the binder annotations of the first `bis.size` `∀`-binders. -/
+/-- Overwrite the binder annotations of the first `bis.size` `∀`-binders, keeping
+instance ones: an instance parameter is one on the recursor too. -/
 private partial def forceBinderInfos (e : Expr) (bis : Array BinderInfo) (i : Nat := 0) : Expr :=
   if h : i < bis.size then
     match e with
-    | .forallE n d b _ => .forallE n d (forceBinderInfos b bis (i + 1)) bis[i]
+    | .forallE n d b bi =>
+      .forallE n d (forceBinderInfos b bis (i + 1)) (if bi.isInstImplicit then bi else bis[i])
     | _ => e
   else e
 

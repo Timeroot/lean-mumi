@@ -1493,7 +1493,7 @@ def memberLevels (names : Array Name) (arities : Array Expr) :
 Mark the members that leave the block rather than being erased with it: a
 proposition when the erasure has nothing to offer it, a data member when it has
 nothing to offer the erasure. -/
-def markPeeled (r : Raw) : TermElabM Raw := do
+def markPeeled (r : Raw) (free := false) : TermElabM Raw := do
   let (isProp, _) ← memberLevels r.names r.arities
   -- a block of nothing but propositions gives the erasure nothing to keep, but
   -- the peel is not the erasure: the propositions that leave may be all that was
@@ -1505,6 +1505,9 @@ def markPeeled (r : Raw) : TermElabM Raw := do
   -- a constructor field whose type is the block's data, at a position the
   -- conclusion does not bind: the shape the erasure cannot state a minor for
   let wants (i : Nat) : TermElabM Bool := do
+    -- or, if asked, a proposition the block has nothing to do with at all: indexed by
+    -- none of it (it may still be named by others, and then it stays)
+    if free && !r.arities[i]!.getUsedConstants.any r.names.contains then return true
     -- or an arity indexed by another of the block's propositions
     if r.arities[i]!.getUsedConstants.any fun c => c != r.names[i]! && propNames.contains c then
       return true
@@ -1565,6 +1568,13 @@ def markPeeled (r : Raw) : TermElabM Raw := do
           && !cand.any (fun j => isProp[j]! && mentions i j && reaches j i) then
         cand := cand.push i
         grown := true
+  -- what leaves must not be induction-inductive among itself: members stated over
+  -- each other, one of them in its arity, are what the erasure is for
+  let entangled (c : Array Nat) : Array Nat := c.filter fun i => c.any fun j =>
+    i != j && reaches i j && reaches j i &&
+      (r.arities[i]!.getUsedConstants.contains r.names[j]! ||
+        r.arities[j]!.getUsedConstants.contains r.names[i]!)
+  cand := cand.filter (!(entangled cand).contains ·)
   cand := close cand
   -- and one that was only going along has nothing to go along with if that one stayed
   let mut carried := cand.filter wanting.contains
@@ -7637,22 +7647,26 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
           if let some order := separationOrder? r then
             split.set (some (order.map (#[·])))
             throwError "this block is Lean's to read"
-        let r ← if peel then markPeeled r else pure r
+        let r ← if peel then markPeeled r (free := true) else pure r
         peeled.set (!r.peeled.isEmpty)
-        -- what stays may no longer be induction-inductive at all: the arity
-        -- that named a sibling can have been the peeled member's own
-        unless r.peeled.isEmpty do
-          let core := (Array.range views.size).filter (!r.peeled.contains ·)
-          unless viewsAreInductionInductive (core.map (views[·]!)) do
-            split.set (some #[core, r.peeled])
-            throwError "this block is Lean's to read"
         let env0 ← getEnv
-        let r ← try denestRaw r catch ex => do
+        let denested ← try pure (some (← denestRaw r)) catch ex => do
           -- the scan throws before anything is stubbed, but a later step might not
           setEnv env0
           trace[Mumi.indind] "lowering this block without denesting it: {ex.toMessageData}"
-          pure r
-        prepareCore r)
+          pure none
+        -- what stays may no longer be induction-inductive at all: the arity
+        -- that named a sibling can have been the peeled member's own.  Denesting
+        -- may be what makes it so
+        unless r.peeled.isEmpty do
+          let core := (Array.range views.size).filter (!r.peeled.contains ·)
+          let viaCopies := denested.any fun d => (Array.range d.names.size).any fun i =>
+            !d.peeled.contains i && d.names.size != r.names.size &&
+              mentionsNames d.names d.arities[i]!
+          unless viewsAreInductionInductive (core.map (views[·]!)) || viaCopies do
+            split.set (some #[core, r.peeled])
+            throwError "this block is Lean's to read"
+        prepareCore (denested.getD r))
       addViewDocStrings views
     applyDeriving views requireDeriving
   -- peeling is an improvement and not a requirement, so a block it does not
@@ -7664,7 +7678,10 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       set s
       go false
   catch ex =>
-    match ← split.get with
+    -- a split has to leave every group smaller than the block.  What is not gets
+    -- elaborated as the block it already is, under `X._ind`, which would peel the same
+    -- way and split again, with nothing to stop it
+    match (← split.get).filter (·.all (·.size < views.size)) with
     | some groups =>
       set s
       -- in dependency order, since a later group is stated over an earlier one.
@@ -7688,6 +7705,7 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
           let overNested ← names.anyM fun n =>
             return (← getConstInfoInduct (MultiuniverseInductive.aliasIndName n)).isNested
           if overNested then addWidenedOverNested np names groups
+          else if ← nestsOverComponent names then addJointRecsOverComponents names
           else addJointRecs names (groups.flatMap id)
           publishAliased np names
       if let some why ← tentatively? joined then
@@ -7712,6 +7730,9 @@ def elabNestedInductive (elems : Array Syntax) (requireBridge := false)
   -- pointing at a constant that never made it into the environment
   runTermElabM fun vars => do
     let p ← withRaw views vars fun r => do
+      -- only propositions leave here: what is being denested is the data
+      let (isProp, _) ← memberLevels r.names r.arities
+      let r ← if isProp.any id then markPeeled r (free := true) else pure r
       let r ← denestRaw r
       if r.names.size == views.size then
         throwError "This inductive has no nested occurrence to denest"

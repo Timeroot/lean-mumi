@@ -284,9 +284,10 @@ retry catches that too: lowering fails, and the same induction-inductive path
 takes the block whole.
 
 The data members get the recursion over the copies.  The `Prop` member is not
-indexed by a data member, so it is not part of that recursion and gets a
-recursor of its own -- one motive, exactly Lean's own shape, and registered as
-the `induction` tactic's default.
+indexed by a data member, so it leaves the block as an ordinary inductive and is
+put back into that recursion: a motive of its own in `A.rec`, and `P.rec` over the
+whole block.  Lean's own recursor, one motive, stays as `P.induct` and is what the
+`induction` tactic runs on.
 -/
 
 namespace FreeProp
@@ -294,7 +295,7 @@ namespace FreeProp
 -- one declaration at a time
 set_option mumi.separate false
 
-mumi_spec (simp := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [A.casesOn_mk, A.rec_mk, A.rec_1_mk, A.rec_2_node])
 mutual
 inductive A : Type where
   | tip
@@ -327,7 +328,7 @@ the routing. -/
 namespace FreePropField
 set_option mumi.separate false
 
-mumi_spec (simp := [A.casesOn_mk]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [A.casesOn_mk, A.rec_mk, A.rec_1_mk, A.rec_2_node])
 mutual
 inductive A : Type where
   | tip
@@ -376,14 +377,14 @@ end BigSmall
 
 `B` does not mention `A`, so the three blocks above all separate.  Lean reads
 `B` first and `A` after it, and by then `WFTree B` is the real `WFTree` at a
-type that already exists: an ordinary nested inductive, denested by the kernel.
-No copy is made, `A.rec` is Lean's own with the one motive, and neither erasure
-nor lowering runs.
+type that already exists, nothing for the kernel to denest.  No copy is made, and
+neither erasure nor lowering runs.  `A.rec` is still the block's: a motive at
+`WFTree B` and at what it brings with it, out of `WFTree.rec` at `B` and the others.
 -/
 
 namespace Separates
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | tip
@@ -549,17 +550,18 @@ end LowerNest
 and `B` are not mutually recursive -- `B` does not mention `A` -- so the block
 separates, `B` is declared first and on its own, and by the time `A` is
 declared `B` is an ordinary type that happens to be in scope.  There is no
-nesting left to denest, and `A.rec` is a plain one-motive recursor.
+nesting left for the kernel to denest.
 
 The universe difference is what brings the block here at all: `A : Type 1` and
-`B : Type` cannot be declared together by Lean, so the block is ours, and it is
-`Mumi.Lowering` that splits it.  `A.mutualRec` still ranges over both members,
-because that is the recursor the written block asks for.
+`B : Type` cannot be declared together by Lean, so the block is ours, and it comes
+apart into its components.  `A.rec` still ranges over all of it, as the recursor the
+written block asks for: a motive at `A`, at `B` and at `List B`, the last filled by
+`List.rec` at `B`.
 -/
 
 namespace ListBig
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | tip
@@ -567,14 +569,6 @@ inductive A : Type 1 where
 inductive B : Type where
   | tip
 end
-
-/--
-info: @A.mutualRec : {motive_1 : A → Sort u_2} →
-  {motive_2 : B → Sort u_1} →
-    motive_1 A.tip → ((x : List B) → motive_1 (A.mk x)) → motive_2 B.tip → (t : A) → motive_1 t
--/
-#guard_msgs in
-#check @A.mutualRec
 
 /-! A `List B` goes into the constructor and a `List B` comes back out of a
 match, with nothing to convert on either side. -/

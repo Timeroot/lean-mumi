@@ -3867,7 +3867,7 @@ state it at, and denesting would hand back a `Ty14` indexed by a name nobody
 wrote.  Neither has to happen.  `Ctx14` does not mention `Ty14`, so the block
 separates and Lean reads the two declarations in turn. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx14 : Type where
   | nil : Ctx14
@@ -3942,6 +3942,11 @@ example (Γ : Ctx6) (A A' : Ty6 Γ) : Sub6 Γ A = Sub6 Γ A' := rfl
 -- work on -- and the arity rule it would be lifting is `Prop` on `Prop` again.
 -- `AP7` naming `AQ7` is what keeps them together: a chain of propositions comes
 -- apart under the peel instead, which is `PeelAllProps` below.
+/-! Two propositions stated over each other cannot leave the block, even though nothing
+stays behind them.  A peel of everything is no split: handed back under `X._ind` it is
+the same block, which would peel the same way, for ever.  So this has to be an error
+and not a hang, and the same beside data that could have stayed. -/
+
 /--
 error: Every member of this induction-inductive block is a proposition; there is nothing for the erasure to keep
 -/
@@ -3952,6 +3957,26 @@ inductive AP7 : Prop where
 inductive AQ7 : AP7 → Prop where
   | mk : AQ7 h
 end
+
+namespace EntangledBeside
+
+/--
+error: The arity of `EntangledBeside.AQ` mentions `EntangledBeside.AP`, which is another proposition of the block, and `EntangledBeside.AP` cannot be declared first: the two are induction-inductive with each other.  Erasure sends the data members to one mutual inductive and the propositions to a series of them, so a proposition may be indexed by the block's data and by any proposition that can be declared before it -- but the erasure buys one crossing, from the data to the propositions, and not a second from the propositions to themselves
+-/
+#guard_msgs in
+mutual
+inductive T : Type where
+  | leaf : T
+  | node : (t : T) → Ok t → T
+inductive Ok : T → Prop where
+  | leaf : Ok .leaf
+inductive AP : Prop where
+  | mk : (h : AP) → AQ h → AP
+inductive AQ : AP → Prop where
+  | mk : AQ h
+end
+
+end EntangledBeside
 
 -- a recursive field that *binds* a member: there is no way back from the
 -- pre-world without a well-formedness proof, so `f` could not be applied
@@ -5904,6 +5929,51 @@ theorem R.elim {h : P} {q : Q h} (r : R h q) : ∃ h' q', r = R.mk h' q' := by
   | mk => exact ⟨h, q, rfl⟩
 
 end PeelAllProps
+
+/-! ## A known gap: no course-of-values recursion over a copy
+
+Native Lean gives a nested inductive `T.below` and `T.brecOn`, and the equation
+compiler recurses structurally through them.  Here `emitBRecOn` fails on a block with
+a copy, whether or not anything was peeled (`set_option trace.Mumi.indind true` shows
+the kernel's complaint), and nothing in `mumi_spec` asks for either name.  A recursive
+definition still goes through, by well-founded recursion, and that is what costs:
+axioms the structural definition would not use.  These are pinned so that closing the
+gap has to change them. -/
+
+namespace NoBRecOn
+
+mumi_spec (simp := [T.rec_node, T.rec_1_cons, T.casesOn_node])
+mutual
+inductive T : Type where
+  | node : (cs : List T) → Ok cs → T
+  | leaf : T
+inductive Ok : List T → Prop where
+  | nil  : Ok []
+  | cons : (t : T) → (ts : List T) → Ok ts → Ok (t :: ts)
+end
+
+/-- error: Unknown constant `NoBRecOn.T.brecOn` -/
+#guard_msgs in
+#check @T.brecOn
+
+/-- error: Unknown constant `NoBRecOn.T.below` -/
+#guard_msgs in
+#check @T.below
+
+mutual
+def size : T → Nat
+  | .node cs _ => 1 + sizes cs
+  | .leaf => 1
+def sizes : List T → Nat
+  | [] => 0
+  | t :: ts => size t + sizes ts
+end
+
+/-- info: 'NoBRecOn.size' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms size
+
+end NoBRecOn
 
 /-! ## A proposition whose constructor forgets one of its fields
 

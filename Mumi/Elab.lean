@@ -222,6 +222,46 @@ private def withElaboratedHeadersHet (vars : Array Expr) (elabs : Array Inductiv
       k vars elabs rs scopeLevelNames
 
 /--
+Whether the block comes apart with a member nested over an earlier one: no two members
+depend on each other, and some field is at an inductive that is no member, applied to
+one (`A.mk (x : List B)` beside `B`).  Lowering would read that as an ordinary type and
+owe no motive there; declaring the components one by one can be owed it. -/
+private def nestsOverEarlierMember (inp : MultiuniverseInductive.Input) : MetaM Bool := do
+  let n := inp.memberFVars.size
+  let namesAny (e : Expr) (m : Nat) : Bool := e.containsFVar inp.memberFVars[m]!.fvarId!
+  let uses (i j : Nat) : Bool :=
+    i != j && (namesAny inp.memberTypes[i]! j || inp.ctorTypes[i]!.any (namesAny · j))
+  let reach ← pure <| (Array.range n).map fun i => Id.run do
+    let mut seen := #[i]
+    let mut todo := #[i]
+    while !todo.isEmpty do
+      let x := todo.back!
+      todo := todo.pop
+      for y in *...n do
+        if !seen.contains y && uses x y then
+          seen := seen.push y
+          todo := todo.push y
+    return seen
+  for i in *...n do
+    for j in *...n do
+      if i != j && reach[i]!.contains j && reach[j]!.contains i then return false
+  for i in *...n do
+    for c in inp.ctorTypes[i]! do
+      let hit ← forallTelescope c fun fs _ => do
+        for f in fs do
+          let t ← forallTelescope (← inferType f) fun _ t => instantiateMVars t
+          let .const h _ := t.getAppFn | continue
+          let some (.inductInfo info) := (← getEnv).find? h | continue
+          -- a proposition is taken whole, and lowering has its own way with one
+          if ← Meta.isProp t then continue
+          let args := t.getAppArgs.extract 0 info.numParams
+          if args.any (fun a => namesAny a i) then continue
+          if args.any (fun a => (Array.range n).any (namesAny a)) then return true
+        return false
+      if hit then return true
+  return false
+
+/--
 `Lean.Elab.Command.elabInductiveViews`, but lowering the block instead of adding
 it as one mutual inductive declaration. -/
 private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars : Array Expr)
@@ -243,6 +283,9 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
             ctorTypes   := indTypes.map (·.ctors.toArray.map (·.type))
             isClass     := view0.isClass
           }
+          if mumi.separate.get (← getOptions) then
+            if ← nestsOverEarlierMember inp then
+              throwError "This block comes apart with a member nested over another: it is                 declared one component at a time"
           -- a block with no nested occurrence comes back from `denest` unchanged
           MultiuniverseInductive.denest inp fun inp => do
             if requireHeterogeneous && !(← inp.isHeterogeneous) && !inp.localIndices then
@@ -256,6 +299,11 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
           let env ← getEnv
           if written.any (env.contains <| MultiuniverseInductive.aliasIndName ·) then
             Mumi.publishOverOriginals written
+            Mumi.publishAliased context.numParams written
+          -- a block of nothing but propositions has no aliases, and is owed the same
+          -- eliminators: its members are their shadows
+          else if written.any fun w => env.contains (MultiuniverseInductive.shadowName w)
+              && !env.contains (w ++ `casesOn) then
             Mumi.publishAliased context.numParams written
           buildFinalizeContext context.elabs' context.levelParams context.vars context.params
             context.views context.indFVars context.rs)

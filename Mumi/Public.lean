@@ -1237,13 +1237,17 @@ def addWidenedRecs (np : Nat) (written : Array Name) (cores : Array (Name × Nam
             idx := idx.push (← instantiateMVars z)
         return some (.core q, idx)
     return none
+  let peeledIsProp ← peeled.mapM fun m => do
+    forallTelescope (← getConstInfo m).type fun _ s => pure s.isProp
   let isDataTarget : WideTarget → Bool
     | .core q => !coreIsProp[q]!
-    | .peeled _ => false
+    | .peeled k => !peeledIsProp[k]!
+  -- the universe of the recursion, the first of a core's
+  let elimU := recUs.headD levelZero
   let idxTy (k : Nat) : MetaM Expr := do instantiateForall (← getConstInfo peeled[k]!).type ps
   let peeledShown ← (Array.range peeled.size).mapM fun k => do
     forallTelescope (← idxTy k) fun idx _ => idx.mapM fun i => do
-      return ((← targetOf (← inferType i)).map (·.1)).any isDataTarget
+      return peeledIsProp[k]! && ((← targetOf (← inferType i)).map (·.1)).any isDataTarget
   let shown : WideTarget → Array Bool
     | .core q => coreShown[q]!
     | .peeled k => peeledShown[k]!
@@ -1265,6 +1269,7 @@ def addWidenedRecs (np : Nat) (written : Array Name) (cores : Array (Name × Nam
       return (Array.range oldMot.size).filterMap fun r =>
         if ty.containsFVar oldMot[r]!.fvarId! then some (.core r) else none
     | .peeled k => do
+      if !peeledIsProp[k]! then return #[]
       forallTelescope (← idxTy k) fun idx _ => do
         let mut out := #[]
         for i in idx do
@@ -1315,7 +1320,8 @@ def addWidenedRecs (np : Nat) (written : Array Name) (cores : Array (Name × Nam
             for i in *...idx.size do
               binders := binders.push idx[i]!
               if let some q := decls.findIdx? (·.1 == i) then binders := binders.push vs[q]!
-            mkForallFVars (binders.push x) (mkSort .zero))
+            mkForallFVars (binders.push x)
+              (mkSort (if peeledIsProp[k]! then .zero else elimU)))
   withLocalDecls motiveDecls fun motives => do
   let coreMotives := (Array.range oldMot.size).map fun q => motives[pos (.core q)]!
   -- the minors, in target order; `some i` is the core's `i`th
@@ -1443,7 +1449,8 @@ def addWidenedRecs (np : Nat) (written : Array Name) (cores : Array (Name × Nam
       withNewBinderInfos (idx.map (·.fvarId!, BinderInfo.implicit)) do
       withLocalDeclD `t (mkAppN (pub k) (ps ++ idx)) fun t => do
         let concl ← motiveApp motives (.peeled k) idx callAt t
-        let elim := if kr.levelParams.length == ii.levelParams.length + 1 then [Level.zero] else []
+        let elim := if kr.levelParams.length == ii.levelParams.length + 1 then
+            [if peeledIsProp[k]! then Level.zero else elimU] else []
         let kUs := elim ++ ii.levelParams.map Level.param
         let mut e := mkAppN (mkConst kr.name kUs) ps
         for gm in group do
@@ -1499,21 +1506,24 @@ def addWidenedRecs (np : Nat) (written : Array Name) (cores : Array (Name × Nam
         let app := mkAppN e (idx.push t)
         let all := front ++ idx ++ #[t]
         return (← mkForallFVars all concl, ← mkLambdaFVars all app)
-    addDecl (.thmDecl { name := m ++ `rec, levelParams := recLps, type, value })
+    if peeledIsProp[k]! then
+      addDecl (.thmDecl { name := m ++ `rec, levelParams := recLps, type, value })
+    else
+      addDef (m ++ `rec) recLps type value (compile := false)
     markElabAsElim (m ++ `rec)
 
 /--
-The same for a block that came apart into data the kernel denested and propositions
-over it (`T.node : List T → T` beside `Ok : T → Prop`): the kernel's recursion over the
-data, `X.rec_k` included, is the recursion the propositions are put back into. `groups`
-are the components as declared, the data first, indexing `members`. -/
+The same for a block that came apart into data the kernel denested and whatever else
+(`T.node : List T → T` beside `Ok : T → Prop`): the kernel's recursion over the data,
+`X.rec_k` included, is the recursion the others are put back into. `groups` are the
+components as declared, the denested data first, indexing `members`. -/
 def addWidenedOverNested (np : Nat) (members : Array Name) (groups : Array (Array Nat)) :
     TermElabM Unit := do
   let isPropM ← members.mapM fun m => do
     forallTelescope (← getConstInfo m).type fun _ s => pure s.isProp
   let data := groups[0]!
-  unless data.all (!isPropM[·]!) && (groups.extract 1 groups.size).all (·.all (isPropM[·]!)) do
-    throwError "not data the kernel denested, then propositions"
+  unless data.all (!isPropM[·]!) do
+    throwError "not data the kernel denested first"
   unless (← getConstInfoInduct (aliasIndName members[data[0]!]!)).isNested do
     throwError "the data was not denested"
   let mut cores : Array (Name × Name) := #[]
@@ -1527,9 +1537,309 @@ def addWidenedOverNested (np : Nat) (members : Array Name) (groups : Array (Arra
     restate (Name.mkStr (aliasIndName first) s!"rec_{k}") (Name.mkStr first s!"_core_rec_{k}")
     cores := cores.push (Name.mkStr first s!"_core_rec_{k}", Name.mkStr first s!"rec_{k}")
     k := k + 1
-  let propOrder := (groups.extract 1 groups.size).flatMap id
-  addWidenedRecs np members cores (propOrder.map (members[·]!))
-    (Array.range propOrder.size) #[] #[]
+  let rest := (groups.extract 1 groups.size).flatMap id
+  addWidenedRecs np members cores (rest.map (members[·]!))
+    (Array.range rest.size) #[] #[]
+
+/-! ## A block that came apart, nested over an earlier component
+
+`A.mk (x : List B)` beside `B`: `B` is declared first, and to `A`'s component `List B`
+is an ordinary type, so the kernel denests nothing.  The block is still owed a motive
+at `List B`, and it has the recursion to fill it with: `List.rec` at `B`, a hypothesis
+at a field of type `B` being `B`'s own recursion.  So the nested targets are components
+like any other, each with a kernel recursor already in the environment. -/
+
+/-- A target of a block that came apart. -/
+private structure ExtTarget where
+  /-- The type former at the block's parameters: `A ps` or `List B`. -/
+  app : Expr
+  /-- What its recursion is called. -/
+  recName : Name
+  info : InductiveVal
+  /-- The inductive's parameters, as the kernel's recursor takes them. -/
+  kparams : Array Expr
+  /-- The levels of the kernel's constants. -/
+  us : List Level
+  /-- Its constructors, at the kernel's name and as the writer reads them, at `kparams`. -/
+  ctors : Array (Name × Expr)
+  isProp : Bool
+  deriving Inhabited
+
+/-- The inductive application `ty` nests a member in, as the kernel would take it. -/
+private def externalAt (members : Array Name) (ps : Array Expr) (ty : Expr) :
+    MetaM (Option (Name × List Level × Array Expr)) := do
+  forallTelescope ty fun ys t => do
+    let t ← instantiateMVars t
+    let .const i us := t.getAppFn | return none
+    if members.any (fun m => m == i || aliasIndName m == i) then return none
+    let some (.inductInfo info) := (← getEnv).find? i | return none
+    let args := t.getAppArgs.extract 0 info.numParams
+    unless args.any (fun a => members.any fun m =>
+        (a.find? fun e => e.isConstOf m || e.isConstOf (aliasIndName m)).isSome) do return none
+    -- at a field or an index of its own: not this construction's to state
+    if args.any (fun a => (a.find? fun e => e.isFVar && !ps.contains e).isSome) then
+      throwError "a nesting at a local"
+    let _ := ys
+    return some (i, us, args)
+
+/--
+Whether the block `members`, its components declared as aliased inductives, is nested
+over an earlier component: some field of a member at an inductive that is no member,
+applied to one. -/
+def nestsOverComponent (members : Array Name) : MetaM Bool := do
+  let infos ← members.mapM fun m => getConstInfoInduct (aliasIndName m)
+  let np := infos.foldl (fun a i => min a i.numParams) infos[0]!.numParams
+  forallBoundedTelescope (← getConstInfo members[0]!).type np fun ps _ => do
+    for ii in infos do
+      for c in ii.ctors do
+        let ci ← getConstInfo c
+        let cty ← instantiateForall ci.type ps
+        let hit ← forallTelescope cty fun fs _ => do
+          for f in fs do
+            if ((← externalAt members ps (← inferType f)).isSome) then return true
+          return false
+        if hit then return true
+    return false
+
+/--
+`X.rec` and `X.rec_k` for a block whose components were declared as aliased inductives,
+where a member nests over an earlier component (see above). -/
+def addJointRecsOverComponents (members : Array Name) : TermElabM Unit := do
+  let infos ← members.mapM fun m => getConstInfoInduct (aliasIndName m)
+  if infos.any (·.isNested) then throwError "a component the kernel denested"
+  let np := infos.foldl (fun a i => min a i.numParams) infos[0]!.numParams
+  if infos.any (·.numParams != np) then
+    throwError "a component took one of the block's indices as a parameter"
+  let mut lps : List Name := []
+  for i in infos do
+    for l in i.levelParams do
+      unless lps.contains l do lps := lps ++ [l]
+  let elimName := elimLevelName lps
+  let u := Level.param elimName
+  let recLps := elimName :: lps
+  let recUs := recLps.map Level.param
+  forallBoundedTelescope (← getConstInfo members[0]!).type np fun ps _ => do
+  -- the members, then what they nest, in the order met: an inductive of a mutual
+  -- block brings that block's others with it
+  let isPropOf (ty : Expr) : MetaM Bool := forallTelescope ty fun _ s => pure s.isProp
+  let mut targets : Array ExtTarget := #[]
+  for k in *...members.size do
+    let ii := infos[k]!
+    let us := ii.levelParams.map Level.param
+    targets := targets.push
+      { app := mkAppN (mkConst members[k]! us) ps, recName := members[k]! ++ `rec, info := ii,
+        kparams := ps, us
+        ctors := ii.ctors.toArray.map fun c =>
+          (c, mkAppN (mkConst (Name.str members[k]! c.getString!) us) ps)
+        isProp := ← isPropOf (← instantiateForall ii.type ps) }
+  let scan (t : ExtTarget) : MetaM (Array (Name × List Level × Array Expr)) := do
+    let mut out := #[]
+    for (c, _) in t.ctors do
+      let cty ← instantiateForall ((← getConstInfo c).instantiateTypeLevelParams t.us) t.kparams
+      out := out ++ (← forallTelescope cty fun fs _ => do
+        let mut acc := #[]
+        for f in fs do
+          if let some e ← externalAt members ps (← inferType f) then acc := acc.push e
+        return acc)
+    return out
+  let mut nExt := 0
+  let mut i := 0
+  let mut todo : Array Nat := (Array.range members.size).filter (!targets[·]!.isProp) ++
+    (Array.range members.size).filter (targets[·]!.isProp)
+  while i < todo.size do
+    let t := targets[todo[i]!]!
+    i := i + 1
+    for (n, us, args) in ← scan t do
+      let app := mkAppN (.const n us) args
+      if targets.any (·.app == app) then continue
+      let ii ← getConstInfoInduct n
+      if ii.isNested then throwError "`{n}` is itself nested"
+      for j in ii.all do
+        let jj ← getConstInfoInduct j
+        nExt := nExt + 1
+        todo := todo.push targets.size
+        targets := targets.push
+          { app := mkAppN (.const j us) args
+            recName := Name.mkStr members[0]! s!"rec_{nExt}", info := jj, kparams := args, us
+            ctors := jj.ctors.toArray.map fun c => (c, mkAppN (.const c us) args)
+            isProp := ← isPropOf
+              (← instantiateForall (jj.type.instantiateLevelParams jj.levelParams us) args) }
+  let idxTy (t : ExtTarget) : MetaM Expr :=
+    instantiateForall (t.info.type.instantiateLevelParams t.info.levelParams t.us) t.kparams
+  -- the target a type is at, and its indices
+  let targetOf (ty : Expr) : MetaM (Option (Nat × Array Expr)) := do
+    let ty ← instantiateMVars ty
+    let .const n _ := ty.getAppFn | return none
+    for q in *...targets.size do
+      let t := targets[q]!
+      let hd := t.app.getAppFn.constName!
+      unless n == hd || n == t.info.name do continue
+      let np' := t.kparams.size
+      unless ty.getAppNumArgs ≥ np' do continue
+      let here := mkAppN (mkConst hd t.us) (ty.getAppArgs.extract 0 np')
+      if here == t.app || (← isDefEq here t.app) then
+        return some (q, ty.getAppArgs.extract np' ty.getAppNumArgs)
+    return none
+  -- which of a target's indices its motive shows a value at
+  let shownOf ← targets.mapM fun t => do
+    forallTelescope (← idxTy t) fun idx _ => idx.mapM fun x => do
+      unless t.isProp do return false
+      let some (j, _) ← targetOf (← inferType x) | return false
+      return !targets[j]!.isProp
+  -- the order: as written, a proposition after the data it shows
+  let deps ← (Array.range targets.size).mapM fun q => do
+    let t := targets[q]!
+    forallTelescope (← idxTy t) fun idx _ => do
+      let mut out : Array Nat := #[]
+      for x in idx do
+        if let some (j, _) ← targetOf (← inferType x) then
+          if t.isProp && !targets[j]!.isProp then out := out.push j
+      return out
+  let mut order : Array Nat := #[]
+  while order.size < targets.size do
+    let mut next := none
+    for q in *...targets.size do
+      if !order.contains q && deps[q]!.all order.contains then
+        next := some q
+        break
+    let some q := next | throwError "no order of the targets settles their motives"
+    order := order.push q
+  let pos (q : Nat) : Nat := (order.idxOf? q).getD 0
+  let sortOf (t : ExtTarget) : Expr := if t.isProp then mkSort .zero else mkSort u
+  let motiveApp (motives : Array Expr) (q : Nat) (idx : Array Expr)
+      (value : Expr → MetaM Expr) (major : Expr) : MetaM Expr := do
+    let mut out := #[]
+    for j in *...idx.size do
+      out := out.push idx[j]!
+      if shownOf[q]![j]?.getD false then out := out.push (← value idx[j]!)
+    return mkAppN motives[pos q]! (out.push major)
+  let motiveDecls : Array (Name × BinderInfo × (Array Expr → TermElabM Expr)) :=
+    order.mapIdx fun at_ q => (Name.mkSimple s!"motive_{at_ + 1}", BinderInfo.implicit,
+    fun (prev : Array Expr) => do
+      let t := targets[q]!
+      forallTelescope (← idxTy t) fun idx _ => do
+        let mut decls : Array (Nat × Expr) := #[]
+        for j in *...idx.size do
+          if shownOf[q]![j]! then
+            let some (r, args) ← targetOf (← inferType idx[j]!) | throwError "no target"
+            decls := decls.push (j, mkAppN prev[pos r]! (args.push idx[j]!))
+        let v ← mkFreshUserName `v
+        withLocalDeclsD (decls.map fun (_, ty) => (v, fun _ => pure ty)) fun vs => do
+        withLocalDeclD `t (mkAppN t.app idx) fun x => do
+          let mut binders := #[]
+          for j in *...idx.size do
+            binders := binders.push idx[j]!
+            if let some r := decls.findIdx? (·.1 == j) then binders := binders.push vs[r]!
+          mkForallFVars (binders.push x) (sortOf t))
+  withLocalDecls motiveDecls fun motives => do
+  -- the minors, in target order
+  let mut minorOf : Array (Nat × Nat) := #[]
+  for q in order do
+    for c in *...targets[q]!.ctors.size do
+      minorOf := minorOf.push (q, c)
+  let ctorHead (q c : Nat) : Name := targets[q]!.ctors[c]!.2.getAppFn.constName!
+  let minorCtor := minorOf.map fun (q, c) => ctorHead q c
+  let minorDecls : Array (Name × BinderInfo × (Array Expr → TermElabM Expr)) :=
+    minorOf.map fun (q, c) =>
+      (Name.mkSimple (ctorHead q c).getString!, BinderInfo.default, fun (prev : Array Expr) => do
+        let t := targets[q]!
+        let pubC := t.ctors[c]!.2
+        forallTelescope (← inferType pubC) fun fs res => do
+          let rec bind (i : Nat) (hyps : Array (Expr × Expr)) : TermElabM Expr := do
+            if h : i < fs.size then
+              let x := fs[i]
+              let ihTy? ← forallTelescope (← inferType x) fun ys body => do
+                let some (j, idx) ← targetOf body | return none
+                return some (← mkForallFVars ys
+                  (← motiveApp motives j idx (wideValueOf np minorCtor prev hyps) (mkAppN x ys)))
+              match ihTy? with
+              | none => bind (i + 1) hyps
+              | some ty =>
+                withLocalDeclD ((← x.fvarId!.getUserName).appendAfter "_ih") ty fun ih =>
+                  bind (i + 1) (hyps.push (x, ih))
+            else
+              let idx := res.getAppArgs.extract t.kparams.size res.getAppNumArgs
+              let body ← motiveApp motives q idx (wideValueOf np minorCtor prev hyps)
+                (mkAppN pubC fs)
+              mkForallFVars (fs ++ hyps.map (·.2)) body
+          bind 0 #[])
+  withLocalDecls minorDecls fun minors => do
+  let front := ps ++ motives ++ minors
+  -- the recursion at a value of a target
+  let callAt (x : Expr) : MetaM Expr := do
+    let some (q, idx) ← targetOf (← inferType x) | throwError "no recursion at{indentExpr x}"
+    return mkAppN (mkConst targets[q]!.recName recUs) (front ++ idx.push x)
+  -- what a target's recursion calls outside its own mutual group
+  let groupOf (q : Nat) : Array Nat := (Array.range targets.size).filter fun r =>
+    targets[q]!.info.all == targets[r]!.info.all && targets[q]!.kparams == targets[r]!.kparams
+  let callsOf ← (Array.range targets.size).mapM fun q => do
+    let t := targets[q]!
+    let mut out := deps[q]!
+    for (_, pubC) in t.ctors do
+      out := out ++ (← forallTelescope (← inferType pubC) fun fs _ => do
+        let mut acc : Array Nat := #[]
+        for f in fs do
+          if let some (j, _) ← forallTelescope (← inferType f) fun _ b => targetOf b then
+            acc := acc.push j
+        return acc)
+    return out
+  let mut done : Array Nat := #[]
+  while done.size < targets.size do
+    let mut ready : Option Nat := none
+    for q in *...targets.size do
+      if done.contains q then continue
+      let g := groupOf q
+      if g.all fun r => callsOf[r]!.all fun c => g.contains c || done.contains c then
+        ready := some q
+        break
+    let some q0 := ready | throwError "the targets' recursions call each other across components"
+    let group := groupOf q0
+    for q in group do
+      let t := targets[q]!
+      let kr ← getConstInfoRec (t.info.name ++ `rec)
+      let (type, value) ← forallTelescope (← idxTy t) fun idx _ => do
+        withNewBinderInfos (idx.map (·.fvarId!, BinderInfo.implicit)) do
+        withLocalDeclD `t (mkAppN t.app idx) fun x => do
+          let concl ← motiveApp motives q idx callAt x
+          let elim := if kr.levelParams.length == t.info.levelParams.length + 1 then
+              [if t.isProp then Level.zero else u] else []
+          let mut e := mkAppN (mkConst kr.name (elim ++ t.us)) t.kparams
+          for gm in group do
+            let ty ← whnf (← inferType e)
+            let .forallE _ mty _ _ := ty | throwError "`{kr.name}` takes fewer motives"
+            let mot ← forallTelescope mty fun zs _ => do
+              mkLambdaFVars zs (← motiveApp motives gm zs.pop callAt zs.back!)
+            e := mkApp e mot
+          for gm in group do
+            for c in *...targets[gm]!.ctors.size do
+              let ty ← whnf (← inferType e)
+              let .forallE _ mty _ _ := ty | throwError "`{kr.name}` takes fewer minors"
+              let mq := (minorOf.findIdx? (· == (gm, c))).getD 0
+              let nf := (← getConstInfoCtor targets[gm]!.ctors[c]!.1).numFields
+              let minor ← forallTelescope mty fun zs _ => do
+                let fields := zs.extract 0 nf
+                let kihs := zs.extract nf zs.size
+                let mut taken := 0
+                let mut ihs : Array Expr := #[]
+                for f in fields do
+                  let ih? ← forallTelescope (← inferType f) fun ys body => do
+                    let some (j, _) ← targetOf body | return none
+                    return some (j, ← mkLambdaFVars ys (← callAt (mkAppN f ys)))
+                  let some (j, v) := ih? | continue
+                  if group.contains j then
+                    ihs := ihs.push kihs[taken]!
+                    taken := taken + 1
+                  else ihs := ihs.push v
+                mkLambdaFVars zs (mkAppN minors[mq]! (fields ++ ihs))
+              e := mkApp e minor
+          let all := front ++ idx ++ #[x]
+          return (← mkForallFVars all concl, ← mkLambdaFVars all (mkAppN e (idx.push x)))
+      if t.isProp then
+        addDecl (.thmDecl { name := t.recName, levelParams := recLps, type, value })
+      else
+        addDef t.recName recLps type value (compile := false)
+      markElabAsElim t.recName
+    done := done ++ group
 
 /-- A member that left, its kernel recursion under the writer's names. -/
 def restateKernelRec (m : Name) (to : Name) : TermElabM Unit := do

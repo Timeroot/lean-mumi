@@ -288,7 +288,7 @@ example (α : Type) (h : Nonempty (P α)) : P α := P.ghost h
 #guard_msgs in
 #check @P.nested_Nonempty_1.eq_orig
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 /-- An instance parameter is an instance parameter on the other side too. -/
 inductive PI (α : Type) [Inhabited α] : Type where
   | leaf : α → PI α
@@ -1257,7 +1257,7 @@ def Xp1.count : Xp1 → Nat
 /-! Three universes are no different from two, and `deriving` still runs on the
 block that comes out. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive Xu1 : Type 2 where
   | tip : Xu1
@@ -1273,6 +1273,21 @@ end
 #guard_msgs in
 #check (inferInstance : Inhabited Xu1)
 
+/-! The same block with no `deriving` takes a different route: `Xu1` comes apart into
+components, and this one is lowered whole.  The recursor has to come out the same
+either way. -/
+
+mumi_spec
+mutual
+inductive XuPlain1 : Type 2 where
+  | tip : XuPlain1
+  | mk : Xrose XuPlain1 → XuPlain1
+inductive XuPlain2 : Type 1 where
+  | b : XuPlain2
+inductive XuPlain3 : Type where
+  | c : XuPlain3
+end
+
 /-! ## Nesting over a type this elaborator lowered
 
 A member of a block `lower` took over is a reducible alias for a shadow
@@ -1287,7 +1302,7 @@ inductive SList (α : Sort u) : Sort (max 1 u) where
   | nil : SList α
   | cons : α → SList α → SList α
 
-mumi_spec (xfail := [recOn, casesOn])
+mumi_spec
 /-- `Sp` is itself a rescued nesting: `SList (Sp α)` is data and `Sp α` is a
 proposition, so the block the kernel would have built is heterogeneous. -/
 inductive Sp (α : Type u) : Prop where

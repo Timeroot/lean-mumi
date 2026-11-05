@@ -90,6 +90,60 @@ inductive Never : Prop
 mumi_spec
 inductive Gap (n : Nat) : Nat → Type
 
+/-! An inductive met in a nesting brings its whole mutual block with it, in that block's
+order, before anything found inside it: `FamRose (FamForest X)` brings `FamForest
+(FamForest X)` next, and only then what `FamRose`'s constructors name. -/
+
+namespace Siblings
+
+universe u
+
+mutual
+inductive FamRose (α : Type u) : Type u where
+  | node : α → FamForest α → FamRose α
+inductive FamForest (α : Type u) : Type u where
+  | nil : FamForest α
+  | cons : FamRose α → FamForest α → FamForest α
+end
+
+mutual
+inductive MA (α : Type u) : Type u where
+  | a : α → List (MB α) → MA α
+inductive MB (α : Type u) : Type u where
+  | b : MA α → MB α
+  | b0 : MB α
+end
+
+mumi_spec
+mutual
+inductive Mu7A : Type 1 where
+  | tip : Mu7A
+  | mk : FamRose (FamForest Mu7A) → Mu7A
+inductive Mu7B : Type 1 where
+  | b : Mu7B
+end
+
+mumi_spec
+mutual
+inductive Nn5 : Type 1 where
+  | tip : Nn5
+  | mk : MA Nn5 → Nn5
+inductive Nn6 : Type 1 where
+  | b : Nn6
+end
+
+mumi_spec
+mutual
+inductive Mu6A : Type 1 where
+  | tip : Mu6A
+  | one : FamRose Mu6A → Mu6A
+  | two : FamRose (List Mu6A) → Mu6A
+inductive Mu6B : Type 1 where
+  | b : Mu6B
+end
+
+end Siblings
+
 end Native
 
 namespace Marks
