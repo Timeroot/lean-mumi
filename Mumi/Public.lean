@@ -9,6 +9,7 @@ public import Mumi.Lowering
 public import Mumi.View
 import all Lean.Meta.Injective
 import Lean.Meta.Tactic.Simp.Main
+import all Lean.Elab.PreDefinition.Eqns
 
 public section
 
@@ -1845,5 +1846,223 @@ def addJointRecsOverComponents (members : Array Name) : TermElabM Unit := do
 def restateKernelRec (m : Name) (to : Name) : TermElabM Unit := do
   restate (aliasIndName m ++ `rec) to
   markElabAsElim to
+
+/-! ## Equations of a definition over a member
+
+A `match` on a viewed member goes through `X.view`, and at a constructor with a
+copy-typed field `X.view` is not definitionally its value: the field comes back through
+a round trip.  Left alone, Lean's equation generator keeps what it could not settle:
+
+```
+size.eq_1 : ∀ cs a, (T.node cs a).view = T.View.node cs a → size (T.node cs a) = 1 + sizes cs
+```
+
+which names an internal and stops `simp [size]` and `rw [size]` at the constructor.  The
+view's rule at a constructor (`X.view_c`) is a theorem, so the hypothesis can be
+discharged, and that is all this does: the statements are Lean's own (`mkEqnTypes`) with
+such hypotheses dropped and a lowered member's constructors read under the writer's
+names, and each proof is Lean's own (`mkEqnProof`) at the view's rule.  A definition with
+nothing of this to settle is left to Lean, as is one where anything here does not go
+through: the worst this can do is what Lean would have done. -/
+
+/-- `X.view` at each constructor: `X.view_c`, for a block some of whose rules have no
+`rfl`.  By the case split's rule where it has one, and by `rfl` where it does not, so
+that `simp` can settle a `match` on any constructor of the member and not only the ones
+with a copy-typed field. -/
+def addViewRules (numParams : Nat) (mem : Name) (ctors : Array Name) : TermElabM Unit := do
+  let viewN := viewFnName mem
+  let some (.defnInfo info) := (← getEnv).find? viewN | return
+  let vlvls := info.levelParams.map Level.param
+  for c in ctors do
+    let rule := ruleNameOf (mem ++ `casesOn) (Name.mkSimple c.getString!)
+    let name := Name.mkStr mem s!"view_{c.getString!}"
+    let cIdx := ctors.idxOf c
+    discard <| attempt? `Mumi m!"no rule of `{viewN}` at `{c}`" do
+      lambdaTelescope info.value fun xs body => do
+        let .const elim us := body.getAppFn | throwError "`{viewN}` is not a case split"
+        let bargs := body.getAppArgs
+        let ps := xs.extract 0 numParams
+        let nIdx := xs.size - numParams - 1
+        let front := bargs.extract 0 (numParams + 1 + ctors.size)
+        let elimInfo ← getConstInfo elim
+        -- the minor premise's type says what the constructor is at its fields
+        let afterMotive ← instantiateForall (elimInfo.instantiateTypeLevelParams us)
+          (bargs.extract 0 (numParams + 1))
+        let some minorTy ← (do
+            let mut ty := afterMotive
+            let mut out := none
+            for q in *...ctors.size do
+              let .forallE _ d b _ ← whnf ty | break
+              if q == cIdx then out := some d
+              ty := b.instantiate1 bargs[numParams + 1 + q]!
+            return out) | throwError "`{elim}` has no minor at `{c}`"
+        let (type, value) ← forallTelescope minorTy fun fs concl => do
+          let cargs := concl.headBeta.getAppArgs
+          let at_ := cargs.extract (cargs.size - nIdx - 1) cargs.size
+          let vl := mkAppN (mkConst viewN vlvls) (ps ++ at_)
+          let rhs := (mkAppN bargs[numParams + 1 + cIdx]! fs).headBeta
+          let all := ps ++ fs
+          let proof ← if (← getEnv).contains rule then pure (mkAppN (mkConst rule us) (front ++ fs))
+            else mkEqRefl vl
+          return (← mkForallFVars all (← mkEq vl rhs), ← mkLambdaFVars all proof)
+        addDecl (.thmDecl { name, levelParams := info.levelParams, type, value })
+        let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
+        simpAttr.add name default .global
+
+/-- Whether `e` names a view function, or a constructor of a member behind an alias. -/
+private def namesViewOrAlias (env : Environment) (e : Expr) : Bool :=
+  (e.find? fun x => match x with
+    | .const n _ =>
+      (match n with
+        | .str p "view" => (viewedMembers env).contains p
+        | _ => false) || (publicName? env n).isSome
+    | _ => false).isSome
+
+/-- A proof of `(X.c …).view = X.View.c …`, a hypothesis Lean's generator left, if it is one. -/
+private def viewRuleProof? (ty : Expr) : MetaM (Option Expr) := do
+  let some (_, lhs, rhs) := ty.eq? | return none
+  let .const (.str mem "view") _ := lhs.getAppFn | return none
+  unless (viewedMembers (← getEnv)).contains mem do return none
+  let .const (.str _ c) _ := rhs.getAppFn | return none
+  let rule := Name.mkStr mem s!"view_{c}"
+  if (← getEnv).contains rule then
+    let thm ← mkConstWithFreshMVarLevels rule
+    let (ms, _, concl) ← forallMetaTelescope (← inferType thm)
+    if ← isDefEq concl ty then
+      return some (← instantiateMVars (mkAppN thm ms))
+    return none
+  -- a constructor with no copy-typed field holds by `rfl`
+  let refl ← mkEqRefl lhs
+  return if ← isDefEq lhs rhs then some refl else none
+
+/-- Whether `ty` is `x.view ≍ …` or `x.view = …`: a premise a side condition has only
+because the `match` went through the view. -/
+private def isViewPremise (ty : Expr) : MetaM Bool := do
+  let lhs? : Option Expr :=
+    if ty.isAppOfArity ``Eq 3 then some ty.appFn!.appArg!
+    else if ty.isAppOfArity ``HEq 4 then some ty.appFn!.appFn!.appArg!
+    else none
+  let some lhs := lhs? | return false
+  let .const (.str mem "view") _ := lhs.getAppFn | return false
+  return (viewedMembers (← getEnv)).contains mem
+
+/-- A side condition ending in `False`, its view premises taken out: what it says of the
+fields is all a reader has to prove, and the original follows by ignoring the rest. -/
+private def tidySideCondition? (ty : Expr) : MetaM (Option Expr) := do
+  forallTelescope ty fun ys concl => do
+    unless concl.isFalse do return none
+    let mut kept : Array Expr := #[]
+    for y in ys do
+      unless ← isViewPremise (← inferType y) do kept := kept.push y
+    if kept.size == ys.size then return none
+    -- a view premise nothing else may mention
+    for k in kept do
+      for y in ys do
+        if !kept.contains y && (← inferType k).containsFVar y.fvarId! then return none
+    return some (← mkForallFVars kept concl)
+
+/-- The original side condition `ty`, out of a proof `h` of the tidied one. -/
+private def sideConditionFrom (ty h : Expr) : MetaM Expr := do
+  forallTelescope ty fun ys _ => do
+    let mut kept : Array Expr := #[]
+    for y in ys do
+      unless ← isViewPremise (← inferType y) do kept := kept.push y
+    mkLambdaFVars ys (mkAppN h kept)
+
+/-- A statement of Lean's generator and its proof, tidied; `none` if there is nothing to
+tidy, or it cannot be done. -/
+private def tidyEqn (type cond : Expr) : MetaM (Option (Expr × Expr)) := do
+  forallTelescope type fun xs body => do
+    -- for each binder, what discharges it, or the statement it keeps
+    let mut decls : Array (Name × BinderInfo × Expr) := #[]
+    let mut proofs : Array (Option Expr) := #[]
+    let mut tidied : Array Bool := #[]
+    let mut changed := false
+    for x in xs do
+      let ty ← instantiateMVars (← inferType x)
+      if let some p ← viewRuleProof? ty then
+        proofs := proofs.push (some (← instantiateMVars p))
+        tidied := tidied.push false
+        changed := true
+        continue
+      proofs := proofs.push none
+      let d ← x.fvarId!.getDecl
+      if let some ty' ← tidySideCondition? ty then
+        decls := decls.push (d.userName, d.binderInfo, ty')
+        tidied := tidied.push true
+        changed := true
+      else
+        decls := decls.push (d.userName, d.binderInfo, ty)
+        tidied := tidied.push false
+    let body' ← publicize body
+    unless changed || body' != body do return none
+    let keptX := (Array.range xs.size).filterMap fun i =>
+      if proofs[i]!.isNone then some xs[i]! else none
+    let droppedX := (Array.range xs.size).filterMap fun i =>
+      if proofs[i]!.isSome then some xs[i]! else none
+    let names (e : Expr) := droppedX.any fun d => e.containsFVar d.fvarId!
+    if names body' || decls.any (fun (_, _, t) => names t) then return none
+    -- the same binders over themselves: a later one's statement names an earlier
+    let newLocals : Array (Name × BinderInfo × (Array Expr → MetaM Expr)) :=
+      decls.map fun (n, bi, t) =>
+        (n, bi, fun prev => pure (t.replaceFVars (keptX.extract 0 prev.size) prev))
+    withLocalDecls newLocals fun ys => do
+      let mut args : Array Expr := #[]
+      let mut q := 0
+      for i in *...xs.size do
+        if let some p := proofs[i]! then
+          args := args.push (p.replaceFVars keptX ys)
+        else
+          let ty := (← inferType xs[i]!).replaceFVars keptX ys
+          let v ← if tidied[i]! then sideConditionFrom ty ys[q]! else pure ys[q]!
+          args := args.push v
+          q := q + 1
+      return some (← mkForallFVars ys (body'.replaceFVars keptX ys),
+        ← mkLambdaFVars ys (mkAppN cond args))
+
+/-- The equations of `declName`, where there is something of ours to settle in them. -/
+private def mumiEqns (declName : Name) : MetaM (Option (Array Name)) := do
+  let some (.defnInfo info) := (← getEnv).find? declName | return none
+  unless backward.eqns.nonrecursive.get (← getOptions) || (← isRecursiveDefinition declName) do
+    return none
+  try
+    withOptions (tactic.hygienic.set · false) do
+    let target ← Lean.Elab.Eqns.unfoldThmType declName
+    -- a lowered member's constructors are in the `match`'s own type, not the definition's
+    let env ← getEnv
+    let aliased := target.getUsedConstants.any fun n => Id.run do
+      unless (Lean.Meta.Match.Extension.getMatcherInfo? env n).isSome do return false
+      let some ci := env.find? n | return false
+      return namesViewOrAlias env ci.type
+    unless namesViewOrAlias env target || aliased do return none
+    let declNames := if ← isRecursiveDefinition declName then info.all.toArray else #[]
+    let types ← withNewMCtxDepth <|
+      forallTelescope (cleanupAnnotations := true) target fun _ target => do
+        let goal ← mkFreshExprSyntheticOpaqueMVar target
+        withReducible do Lean.Elab.Eqns.mkEqnTypes declNames goal.mvarId!
+    -- proved before anything is declared, so that a failure leaves it all to Lean
+    let mut decls : Array (Name × Expr × Expr) := #[]
+    let mut any := false
+    for h : i in *...types.size do
+      let name := mkEqLikeNameFor (← getEnv) declName s!"{eqnThmSuffixBasePrefix}{i + 1}"
+      let cond ← instantiateMVars (← Lean.Elab.Eqns.mkEqnProof declName types[i])
+      -- Lean's own leftovers first, as it would have removed them
+      let (t, v) ← Lean.Elab.Eqns.removeUnusedEqnHypotheses types[i] cond
+      match ← tidyEqn t v with
+      | some (t', v') =>
+        any := true
+        let (t', v') ← Lean.Elab.Eqns.removeUnusedEqnHypotheses t' (← instantiateMVars v')
+        decls := decls.push (name, t', v')
+      | none => decls := decls.push (name, t, v)
+    unless any do return none
+    for (name, type, value) in decls do
+      realizeConst declName name do
+        addDecl (.thmDecl { name, levelParams := info.levelParams, type, value })
+    return some (decls.map (·.1))
+  catch ex =>
+    trace[Mumi] "the equations of `{declName}` are left to Lean: {ex.toMessageData}"
+    return none
+
+initialize registerGetEqnsFn mumiEqns
 
 end Mumi

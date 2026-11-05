@@ -5930,15 +5930,19 @@ theorem R.elim {h : P} {q : Q h} (r : R h q) : ∃ h' q', r = R.mk h' q' := by
 
 end PeelAllProps
 
-/-! ## A known gap: no course-of-values recursion over a copy
+/-! ## Known gaps in recursion over a copy
 
-Native Lean gives a nested inductive `T.below` and `T.brecOn`, and the equation
-compiler recurses structurally through them.  Here `emitBRecOn` fails on a block with
-a copy, whether or not anything was peeled (`set_option trace.Mumi.indind true` shows
-the kernel's complaint), and nothing in `mumi_spec` asks for either name.  A recursive
-definition still goes through, by well-founded recursion, and that is what costs:
-axioms the structural definition would not use.  These are pinned so that closing the
-gap has to change them. -/
+Lean's structural recursion reads its groups off the kernel's inductives: here it sees
+`T._sub`, with nothing nested in it, and `List T`, and they are not one group, so a
+definition over both goes by well-founded recursion.  No `T.brecOn` could change that,
+and Lean gives none to a block with a `Prop` nesting anyway (`MumiTests.Spec.SelfTest`).
+The axioms that costs are the ones any well-founded definition has.
+
+What must not differ from Lean is the equations.  A `match` goes through `T.view`, and
+`T.view` at a constructor with a copy-typed field is not definitionally its value,
+because of the round trip, so Lean's generator would leave `(T.node cs a).view = …` as a
+hypothesis, and `simp` and `rw` would stop at the constructor.  `T.view_node` settles it
+(`Mumi.Public`): the lemmas read as Lean's, and only `rfl` is out of reach. -/
 
 namespace NoBRecOn
 
@@ -5956,9 +5960,22 @@ end
 #guard_msgs in
 #check @T.brecOn
 
-/-- error: Unknown constant `NoBRecOn.T.below` -/
+/--
+error: failed to infer structural recursion:
+Skipping arguments of type T._sub, as NoBRecOn.sizesS has no compatible argument.
+Skipping arguments of type List T, as NoBRecOn.sizeS has no compatible argument.
+-/
 #guard_msgs in
-#check @T.below
+mutual
+def sizeS : T → Nat
+  | .node cs _ => 1 + sizesS cs
+  | .leaf => 1
+termination_by structural t => t
+def sizesS : List T → Nat
+  | [] => 0
+  | t :: ts => sizeS t + sizesS ts
+termination_by structural t => t
+end
 
 mutual
 def size : T → Nat
@@ -5973,7 +5990,169 @@ end
 #guard_msgs in
 #print axioms size
 
+/-- info: size.eq_1 : ∀ (cs : List T) (a : Ok cs), size (T.node cs a) = 1 + sizes cs -/
+#guard_msgs in
+#check @size.eq_1
+
+example (cs : List T) (h : Ok cs) : size (.node cs h) = 1 + sizes cs := by simp [size]
+example (cs : List T) (h : Ok cs) : size (.node cs h) = 1 + sizes cs := by rw [size]
+example (cs : List T) (h : Ok cs) : size (.node cs h) = 1 + sizes cs := size.eq_1 cs h
+example : size .leaf = 1 := by simp [size]
+example : size (.node [.leaf] (.cons _ _ .nil)) = 2 := by simp [size, sizes]
+
+theorem size_pos (t : T) : 0 < size t := by
+  cases t <;> simp [size] <;> omega
+
+/-- info: T.view_node : ∀ (cs : List T) (a : Ok cs), (T.node cs a).view = T.View.node cs a -/
+#guard_msgs in
+#check @T.view_node
+
+/-- info: 'NoBRecOn.T.view_node' does not depend on any axioms -/
+#guard_msgs in
+#print axioms T.view_node
+
+def isLeaf : T → Bool
+  | .node _ _ => false
+  | .leaf => true
+
+/-- info: isLeaf.eq_1 : ∀ (cs : List T) (a : Ok cs), isLeaf (T.node cs a) = false -/
+#guard_msgs in
+#check @isLeaf.eq_1
+
+example (c : List T) (h : Ok c) : isLeaf (.node c h) = false := by simp [isLeaf]
+example (c : List T) (h : Ok c) : isLeaf (.node c h) = false := by rw [isLeaf]
+example : isLeaf .leaf = true := rfl
+
+/-- info: 'NoBRecOn.isLeaf' does not depend on any axioms -/
+#guard_msgs in
+#print axioms isLeaf
+
+/-! Nested patterns and overlapping alternatives: Lean's side conditions, with no view
+in them, and nothing left over from the way the `match` was compiled. -/
+
+def firstLeaf : T → Bool
+  | .node (.leaf :: _) _ => true
+  | .node _ _ => false
+  | .leaf => true
+
+/-- info: firstLeaf.eq_1 : ∀ (tail : List T) (a_3 : Ok (T.leaf :: tail)), firstLeaf (T.node (T.leaf :: tail) a_3) = true -/
+#guard_msgs in
+#check @firstLeaf.eq_1
+
+/--
+info: firstLeaf.eq_2 : ∀ (tail : List T) (x : T) (a : Ok (x :: tail)),
+  (∀ (a_1 : Ok (T.leaf :: tail)), x = T.leaf → a ≍ a_1 → False) → firstLeaf (T.node (x :: tail) a) = false
+-/
+#guard_msgs in
+#check @firstLeaf.eq_2
+
+example (ts : List T) (h : Ok (T.leaf :: ts)) : firstLeaf (.node (.leaf :: ts) h) = true := by
+  simp [firstLeaf]
+
 end NoBRecOn
+
+/-! The same with no proposition in the block, and without a copy. -/
+
+namespace EqnsDataOnly
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | ext : (Γ : Ctx) → List (Ty Γ) → Ctx
+inductive Ty : Ctx → Type where
+  | base : (Γ : Ctx) → Ty Γ
+end
+
+def len : Ctx → Nat
+  | .nil => 0
+  | .ext _ ts => ts.length
+
+/-- info: len.eq_2 : ∀ (Γ : Ctx) (ts : List (Ty Γ)), len (Γ.ext ts) = ts.length -/
+#guard_msgs in
+#check @len.eq_2
+
+example (g : Ctx) (ts : List (Ty g)) : len (.ext g ts) = ts.length := by simp [len]
+
+end EqnsDataOnly
+
+/-! An indexed member, its index left implicit as Lean leaves it. -/
+
+namespace EqnsIndexed
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | ext : (Γ : Ctx) → List (Ty Γ) → Ctx
+inductive Ty : Ctx → Type where
+  | base : (Γ : Ctx) → Ty Γ
+  | wrap : (Γ : Ctx) → List (Ty Γ) → Ty Γ
+end
+
+def tn {Γ : Ctx} : Ty Γ → Nat
+  | .base _ => 0
+  | .wrap _ ts => ts.length
+
+/-- info: @tn.eq_2 : ∀ {Γ : Ctx} (ts : List (Ty Γ)), tn (Ty.wrap Γ ts) = ts.length -/
+#guard_msgs in
+#check @tn.eq_2
+
+example (g : Ctx) (ts : List (Ty g)) : tn (.wrap g ts) = ts.length := by simp [tn]
+
+end EqnsIndexed
+
+namespace EqnsNoCopy
+
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | snoc : (Γ : Ctx) → Ty Γ → Ctx
+inductive Ty : Ctx → Type where
+  | base : (Γ : Ctx) → Ty Γ
+end
+
+def len : Ctx → Nat
+  | .nil => 0
+  | .snoc g _ => len g + 1
+
+/-- info: len.eq_2 : ∀ (g : Ctx) (a : Ty g), len (g.snoc a) = len g + 1 -/
+#guard_msgs in
+#check @len.eq_2
+
+example (g : Ctx) (t : Ty g) : len (.snoc g t) = len g + 1 := by simp [len]
+
+end EqnsNoCopy
+
+/-! A lowered block's equations name the writer's constructors, not the aliased ones
+(`n U.z`, never `n U._ind.z`). -/
+
+namespace EqnsLowered
+
+mutual
+inductive U : Type 1 where
+  | z : U
+  | s : List U → V → U
+inductive V : Type where
+  | v : V
+end
+
+def n : U → Nat
+  | .z => 0
+  | .s us _ => us.length
+
+/-- info: n.eq_1 : n U.z = 0 -/
+#guard_msgs in
+#check @n.eq_1
+
+/-- info: n.eq_2 : ∀ (us : List U) (a : V), n (U.s us a) = us.length -/
+#guard_msgs in
+#check @n.eq_2
+
+example : n .z = 0 := n.eq_1
+example : n .z = 0 := by simp [n]
+example (us : List U) (w : V) : n (.s us w) = us.length := by simp [n]
+example (us : List U) (w : V) : n (.s us w) = us.length := by rw [n]
+
+end EqnsLowered
 
 /-! ## A proposition whose constructor forgets one of its fields
 

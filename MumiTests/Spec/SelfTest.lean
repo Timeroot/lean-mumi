@@ -144,6 +144,60 @@ end
 
 end Siblings
 
+/-! What Lean gives a nested type for recursion, which is what the tests of blocks it
+rejects are measured against.  `below` and `brecOn` take every motive.  A block with a
+`Prop` nesting has neither.  A definition forced through well-founded recursion costs
+`propext` and `Quot.sound` whatever it is over, and its equation is still unconditional. -/
+
+namespace ForRecursion
+
+inductive R where
+  | node : List R → R
+  | leaf : R
+
+/-- info: @R.below : {motive_1 : R → Sort u_1} → {motive_2 : List R → Sort u_1} → R → Sort (max 1 u_1) -/
+#guard_msgs in
+#check @R.below
+
+/-- info: @R.below_1 : {motive_1 : R → Sort u_1} → {motive_2 : List R → Sort u_1} → List R → Sort (max 1 u_1) -/
+#guard_msgs in
+#check @R.below_1
+
+mutual
+def size : R → Nat
+  | .node cs => 1 + sizes cs
+  | .leaf => 1
+termination_by t => sizeOf t
+def sizes : List R → Nat
+  | [] => 0
+  | t :: ts => size t + sizes ts
+termination_by t => sizeOf t
+end
+
+/-- info: 'Native.ForRecursion.size' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms size
+
+/-- info: size.eq_1 : ∀ (cs : List R), size (R.node cs) = 1 + sizes cs -/
+#guard_msgs in
+#check @size.eq_1
+
+example (cs : List R) : size (.node cs) = 1 + sizes cs := by simp [size]
+
+inductive PI where
+  | leaf : Nat → PI
+  | ghost : Nonempty PI → PI
+
+/-- error: Unknown constant `Native.ForRecursion.PI.below` -/
+#guard_msgs in
+#check @PI.below
+
+/-- error: Unknown constant `Native.ForRecursion.PI.brecOn` -/
+#guard_msgs in
+#check @PI.brecOn
+
+end ForRecursion
+
 end Native
 
 namespace Marks

@@ -7424,6 +7424,9 @@ def emit (p : Plan) : TermElabM Unit := do
         if env.contains (m.name ++ `casesOn) then some (m.name ++ `casesOn) else none
       let joints := if joint then (Array.range b.size).map jointName else #[]
       addTripRules b.numParams trips recs cases joints
+      -- and the same of a view, which is what a `match`'s equations are stuck on
+      for m in written do
+        addViewRules b.numParams m.name (m.ctors.map (·.name))
 
 /-! ## The entry point -/
 
