@@ -915,7 +915,7 @@ end
 /-! One family at two different parameters is two denestings, not one: what
 they share is the whole nested application, not just its head. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Mu6A : Type 1 where
   | tip : Mu6A
@@ -942,7 +942,7 @@ def Mu6A.count : Mu6A → Nat
 denestings of two members each, the outer one over the types the inner one
 introduced. -/
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Mu7A : Type 1 where
   | tip : Mu7A
@@ -1108,7 +1108,7 @@ inductive MB (α : Type u) : Type u where
   | b0 : MB α
 end
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Nn5 : Type 1 where
   | tip : Nn5

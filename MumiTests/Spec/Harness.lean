@@ -17,6 +17,7 @@ were the restriction lifted:
   nested target, `X.rec_k`, owed by name only where a displayed motive mentions
   it): motives for the data
   members in the order written, then each nested application in the order met,
+  an inductive of a mutual block bringing the block's others with it as the kernel does,
   then the `Prop` members (`motive` alone when there is one).  A `Prop` member's
   motive is *displayed*: at each index of data type it takes the value the data
   recursion produced there, and into `Prop` unless Lean would let it eliminate
@@ -1192,12 +1193,18 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
               unless args[j]! == params[j]! do v := min v j
         pure v
       uniform := min uniform vary
+  -- an inductive met in a nesting comes with its whole mutual block, in the order
+  -- that block has it, as the kernel takes it: `FamForest X` brings `FamRose X` first
+  let withSiblings (a : Expr) : TermElabM (Array Expr) := lambdaTelescope a fun ls n => do
+    let .const ind lvls := n.getAppFn | return #[a]
+    let some (.inductInfo info) := (← getEnv).find? ind | return #[a]
+    info.all.toArray.mapM fun j => mkLambdaFVars ls (mkAppN (.const j lvls) n.getAppArgs)
   -- the targets: data members, nested applications in the order met, `Prop` members
   let mut nested : Array Expr := #[]
   for k in data ++ props do
     for c in members[k]!.decl[4].getArgs do
       for n in ← elabCtor members[k]! params c fun fields _ => nestedIn params fields do
-        unless nested.contains n do nested := nested.push n
+        unless nested.contains n do nested := nested ++ (← withSiblings n).filter (!nested.contains ·)
   let mut i := 0
   while i < nested.size do
     let a := nested[i]!
@@ -1209,7 +1216,7 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
         let cty ← instantiateForall ((← getConstInfo ctor).instantiateTypeLevelParams lvls) n.getAppArgs
         forallTelescope cty fun fields _ => nestedIn params fields
     for m in found do
-      unless nested.contains m do nested := nested.push m
+      unless nested.contains m do nested := nested ++ (← withSiblings m).filter (!nested.contains ·)
   let b : Block := { members, tys, params, uniform }
   -- a `Prop` member alone eliminates as Lean lets it; beside others, into
   -- `Prop`, as a `mutual` of more than one type does
