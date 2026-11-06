@@ -1849,7 +1849,7 @@ mumi_spec
 inductive LocRose (α : Type) (n : Nat) where
   | node (a : α) (cs : List (LocRose α n))
 
-mumi_spec (unproven := [LocNest.casesOn_mk]) (xfail := [rec, injEq])
+mumi_spec (simp := [LocNest.rec_mk, LocNest.rec_1_node, LocNest.rec_2_cons, LocNest.casesOn_mk])
 inductive LocNest where
   | tip
   | mk (n : Nat) (r : LocRose LocNest n) : LocNest

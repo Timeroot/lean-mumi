@@ -2684,7 +2684,9 @@ private def emitLowerPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandE
             let nested := (← args.mapM text).any fun t => (t.splitOn "_ir_sub_").length > 1
             -- the sub-node's decode does not reduce there: its semantics is
             -- rewritten by the constructors' semantic rules, a layer at a time
-            let hs := if nested then "(by repeat' (first | with_reducible rfl | with_reducible exact HEq.rfl | simp only [" ++
+            -- (leaving `rfl` to close what it comes to: `simp` would do so by `propext`,
+            -- and `conv` asks the unifier about these terms, which it cannot answer)
+            let hs := if nested then "(by repeat' (first | with_reducible rfl | with_reducible exact HEq.rfl | simp only [-eq_self, " ++
                 String.intercalate ", " pubsems.toList ++ "] | congr 1))" else "rfl"
             raw := raw.push (← lambda f.domain (withParams b (goodName b.members[j]! ++ ".coh") #[par v ++ ".property", hs]))
             unless f.hiddenArg do gargs := gargs.push raw.back!
@@ -3253,9 +3255,10 @@ encoding, declared in one `mutual` with the others, which Lean never lets
 eliminate large; so the member is declared once more on its own after the
 block, its *shadow* `_ir_P_Large`, with the same constructor at the public
 types, and Lean's kernel decides.  Where it allows it, the two are equivalent
-(`P.toLarge`, `P.ofLarge`, each by the other's recursor into `Prop`) and the
-public `P.rec` and `P.casesOn` are the shadow's, at the motive read through
-`P.ofLarge`: proof irrelevance makes that the motive at the proof itself.  Its
+(`P.toLarge`, `P.ofLarge`, each by the other's recursor into `Prop`) and
+`P.induct` and `P.casesD` are the shadow's, at the motive read through `P.ofLarge`:
+proof irrelevance makes that the motive at the proof itself, and `P.rec` is the
+block's one recursion, into `Prop`, as a `mutual` of more than one type has it.  Its
 rule at the constructor is an equation.  A decoder over a `Prop` member is
 defined after the block by that recursor, and is refused over any other
 member: equal proofs could decode differently. -/
@@ -3328,10 +3331,10 @@ private def emitLarge (b : Block) (j : Nat) : CommandElabM Unit := do
   let minorName := propMinor b j 0
   let recMinor := untypedLambda (fieldNames c ++ ihNames) (app ("@" ++ minorName) (ofFields ++ ihNames))
   let toMajor := app (m.name.toString ++ ".toLarge") #["_ir_self"]
-  emitDef "@[elab_as_elim, induction_eliminator] " (elimName (b.forProp false) m "rec" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++
+  emitDef (elimAttrs (b.forProp false) "@[elab_as_elim, induction_eliminator] ") (elimName (b.forProp false) m "rec" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++
     (← propMinorPub b j 0 true "motive") ++ " " ++ arityI ++ " " ++ self ++ " : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++
     app ("@" ++ sh ++ ".rec") (pa ++ #[back, recMinor] ++ idx ++ #[toMajor]))
-  emitDef "@[elab_as_elim, cases_eliminator] " (elimName (b.forProp false) m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arityI ++ " " ++ self ++ " " ++
+  emitDef (elimAttrs (b.forProp false) "@[elab_as_elim, cases_eliminator] ") (elimName (b.forProp false) m "casesOn" ++ " " ++ pubPs ++ " " ++ mot ++ " " ++ arityI ++ " " ++ self ++ " " ++
     (← propMinorPub b j 0 false "motive") ++ " : " ++ app "motive" (idx ++ #["_ir_self"]) ++ " := " ++
     app ("@" ++ sh ++ ".casesOn") (pa ++ #[back] ++ idx ++ #[toMajor, untypedLambda (fieldNames c) (app ("@" ++ minorName) ofFields)]))
   -- the rule: the shadow's at the constructor, the major a proof of it like any other
@@ -3383,7 +3386,7 @@ private def emitPropDecoders (b : Block) (j : Nat) : CommandElabM Unit := do
     let name := d.name.toString ++ "_" ++ c.name.toString
     emit ("theorem " ++ name ++ " " ++ ps ++ " " ++ (← fieldsDecl c) ++ " : " ++
       app ("@" ++ d.name.toString) (dargs ++ result ++ #[ctorApp b j 0 (fieldNames c)]) ++ " = " ++ par (← text d.clauses[0]!) ++
-      " := by\n  simp only [" ++ d.name.toString ++ ", _root_." ++ ((← getCurrNamespace) ++ (elimName (b.forProp false) m "rec" ++ "_" ++ c.name.toString).toName).toString ++ "]")
+      " := by\n  conv => lhs; simp only [" ++ d.name.toString ++ ", _root_." ++ ((← getCurrNamespace) ++ (elimName (b.forProp false) m "rec" ++ "_" ++ c.name.toString).toName).toString ++ "]")
 
 /-- Large elimination for the block's `Prop` member, where Lean allows it, and
 the decoders over it, which need it; what has to come before the member's own
@@ -3407,11 +3410,12 @@ private def finishLarge (b : Block) : CommandElabM Unit := do
 which the encoding's are not: a block with a `Prop` member, whose proofs the
 encoding recurses over apart, or with carriers at several universes, whose
 recursions it splits; but not a nested one's denesting (whose eliminators are
-restated over the originals) nor one whose `Prop` member may eliminate into any
-sort. -/
+restated over the originals).  A `Prop` member that may eliminate into any sort joins
+the one recursion like any other, as a `mutual` of more than one type has it, and its
+large recursor goes by `P.induct`. -/
 private def internalFor (b : Block) (deferred : Bool) : Bool :=
   let levels := (b.members.filter (!·.prop)).map (·.level)
-  b.elimPrefix.isEmpty && (largeCandidate b).isNone &&
+  b.elimPrefix.isEmpty &&
     (deferred || b.members.any (·.prop) || levels.any (· != levels[0]!))
 
 /-- The block's public eliminators, out of the encoding's own. -/
@@ -3428,6 +3432,20 @@ private def publishJoint (b : Block) : CommandElabM Unit := do
     catch e =>
       set saved
       trace[Mumi] "no induction over everything: {e.toMessageData}"
+  -- the large recursion of a `Prop` member keeps a name of its own, which is what
+  -- `induction` and `cases` run on
+  unless b.propPrefix.isEmpty do
+    if let some j := largeCandidate b then
+      let m := b.members[j]!
+      let large (s : String) : Name := ns ++ m.name ++ Name.mkSimple ("_ir_elim_" ++ s)
+      let pub (s : String) : Name := ns ++ m.name ++ Name.mkSimple s
+      liftTermElabM do
+        Mumi.restate (large "rec") (pub "induct")
+        Lean.Elab.MultiuniverseInductive.markElabAsElim (pub "induct") (induction := true)
+        Mumi.restate (large "casesOn") (pub "casesD")
+        Lean.Elab.MultiuniverseInductive.markElabAsElim (pub "casesD") (induction := false)
+        for c in m.ctors do
+          Mumi.restate (large s!"rec_{c.name}") (pub s!"induct_{c.name}")
   let members := b.members.mapIdx fun k m =>
     { name := ns ++ m.name, prop := m.prop, ctors := m.ctors.map (ns ++ m.name ++ ·.name),
       scope := b.recs[k]?.getD #[] : Mumi.Displayed.Member }

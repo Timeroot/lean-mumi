@@ -216,17 +216,53 @@ where
 private def rhsOf? (e : Expr) : MetaM (Option Expr) := do
   return (← instantiateMVars e).eq?.map (·.2.2)
 
-/-- What Lean reckons the size of `cn`'s result to be, as a sum over its fields. -/
-private def ctorSizeSum (cn : Name) (fields : Array Expr) : MetaM Expr := do
-  if (← getEnv).contains (cn ++ `sizeOf_spec) then
-    try
-      if let some rhs ← rhsOf? (← inferType (← mkAppM (cn ++ `sizeOf_spec) fields)) then return rhs
-    catch _ => pure ()
+/-- What Lean states of the size of `app`, a constructor `cn` applied, if it does. -/
+private def ctorSizeSpec? (cn : Name) (app : Expr) : MetaM (Option Expr) := do
+  unless (← getEnv).contains (cn ++ `sizeOf_spec) do return none
+  try
+    let f ← mkConstWithFreshMVarLevels (cn ++ `sizeOf_spec)
+    let (ms, _, body) ← forallMetaTelescope (← inferType f)
+    let some (_, lhs, _) := body.eq? | return none
+    unless ← isDefEq lhs (← mkAppM ``SizeOf.sizeOf #[app]) do return none
+    let spec ← instantiateMVars (mkAppN f ms)
+    return if spec.hasMVar then none else some spec
+  catch _ => return none
+
+/-- What Lean reckons the size of `app`, a constructor `cn` applied, to be, as a sum
+over its fields. -/
+private def ctorSizeSum (cn : Name) (app : Expr) (fields : Array Expr) : MetaM Expr := do
+  if let some spec ← ctorSizeSpec? cn app then
+    if let some rhs ← rhsOf? (← inferType spec) then return rhs
   let mut rhs ← mkNumeral (mkConst ``Nat) 1
   for f in fields do
     if (← isProof f) || (← whnf (← inferType f)).isForall then continue
     rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
   return rhs
+
+/-- `ofOrig t` of the copy beside `copy` that takes `t`, and that copy: `copy` if it
+does, else whichever `root.nested_C_k` there is of the inductive `t` is a type of. -/
+private def copyTaking? (copy : Name) (t : Expr) : MetaM (Option (Name × Expr)) := do
+  let tryCopy (c : Name) : MetaM (Option (Name × Expr)) := do
+    let f ← mkConstWithFreshMVarLevels (c ++ `ofOrig)
+    let (ms, _, _) ← forallMetaTelescope (← inferType f)
+    let some m := ms.back? | return none
+    unless ← isDefEq (← inferType m) (← inferType t) do return none
+    return some (c, ← instantiateMVars (mkApp (mkAppN f ms.pop) t))
+  if let some r ← tryCopy copy then return some r
+  let .const (.str _ short) _ := (← whnf (← inferType t)).getAppFn | return none
+  let root := copy.getPrefix
+  -- the suffix counts the block's copies, of whatever inductive
+  let mut k := 1
+  let mut misses := 0
+  while misses < 64 do
+    let c := root ++ Name.mkSimple s!"nested_{short}_{k}"
+    k := k + 1
+    if (← getEnv).contains (c ++ `ofOrig) then
+      misses := 0
+      if let some r ← tryCopy c then return some r
+    else
+      misses := misses + 1
+  return none
 
 mutual
 
@@ -234,7 +270,13 @@ mutual
 `sizeOf (X.nested_C_k.ofOrig a).val = sizeOf a`: a denested copy of a container
 measures the same as the container it copies.  The two agree on a constructor by
 computation apart from the recursive positions, which is what the induction
-supplies. -/
+supplies.
+
+The induction is the container's own recursor.  Where the container is itself nested
+or mutual that recursor has a motive for each of its block's types, and each of those
+says the same of the copy taking that type: `Rose RT`'s says it of the copy of
+`Rose RT`, and the motive for its `List (Rose RT)` of the copy of that.  A type of the
+block with no copy is one nothing here reaches, so its motive claims nothing. -/
 partial def addOfOrigSizeOf (copy : Name) : MetaM Unit := do
   let thmName := copy ++ `sizeOf_ofOrig
   if (← getEnv).contains thmName then return
@@ -254,63 +296,68 @@ partial def addOfOrigSizeOf (copy : Name) : MetaM Unit := do
     let idxs := args.extract rv.numParams (rv.numParams + rv.numIndices)
     -- a copy is taken at one index at a time, so the index is a binder of
     -- `ofOrig`, and the statement is what that binder is generalised over
-    let mut at? := #[]
     for i in idxs do
-      let some k := bs.findIdx? (· == i) | throwError "`{ofOrig}` copies at a fixed index"
-      at? := at?.push k
-    let places := at?
-    -- the copy of `t`, taken at indices `is`
-    let copyAt (is : Array Expr) (t : Expr) : Expr := Id.run do
-      let mut bs' := bs
-      for k in *...places.size do bs' := bs'.set! places[k]! is[k]!
-      return mkAppN (mkConst ofOrig us) (bs'.push t)
-    -- what is claimed of `t`, at indices `is`
-    let goalAt (is : Array Expr) (t : Expr) : MetaM Expr := do
-      mkEq (← mkAppM ``SizeOf.sizeOf #[← preOf (copyAt is t)]) (← mkAppM ``SizeOf.sizeOf #[t])
+      unless bs.contains i do throwError "`{ofOrig}` copies at a fixed index"
+    let sizeEq (app t : Expr) : MetaM Expr := do
+      mkEq (← mkAppM ``SizeOf.sizeOf #[← preOf app]) (← mkAppM ``SizeOf.sizeOf #[t])
     let recFn := mkConst (orig ++ `rec)
       (if rv.levelParams.length == ii.levelParams.length + 1 then Level.zero :: origLvls
        else origLvls)
-    let motive ← mkLambdaFVars ((places.map (bs[·]!)).push a) (← goalAt idxs a)
-    let mut app := mkAppN recFn (params.push motive)
-    for cn in ii.ctors do
-      let .ctorInfo cv ← getConstInfo cn | throwError "`{cn}` is not a constructor"
+    let motiveTys ← forallBoundedTelescope (← instantiateForall (← inferType recFn) params)
+      rv.numMotives fun ms _ => ms.mapM inferType
+    -- the copies this induction speaks of; any other has a lemma of its own
+    let mut here := #[copy]
+    let mut motives := #[]
+    for ty in motiveTys do
+      let (m, c?) ← forallTelescope ty fun ys _ => do
+        let some t := ys.back? | throwError "`{orig}.rec` has a motive of no major"
+        match ← copyTaking? copy t with
+        | some (c, app) => return (← mkLambdaFVars ys (← sizeEq app t), some c)
+        | none => return (← mkLambdaFVars ys (mkConst ``True), none)
+      motives := motives.push m
+      if let some c := c? then
+        unless here.contains c do here := here.push c
+    let group := here
+    let mut app := mkAppN recFn (params ++ motives)
+    for _ in *...rv.numMinors do
       let .forallE _ minorTy _ _ ← whnf (← inferType app)
-        | throwError "`{orig}` takes fewer cases than it has constructors"
-      app := mkApp app <| ← forallTelescope minorTy fun ys _ => do
+        | throwError "`{orig}.rec` takes fewer cases than it has constructors"
+      app := mkApp app <| ← forallTelescope minorTy fun ys concl => do
+        let concl := concl.headBeta
+        if concl.isConstOf ``True then return ← mkLambdaFVars ys (mkConst ``True.intro)
+        let some (_, lhs, rhs) := concl.eq?
+          | throwError "`{orig}.rec` has a case of something else"
+        let ctorApp := rhs.appArg!
+        let .const cn _ := ctorApp.getAppFn | throwError "`{orig}.rec` has a case of no constructor"
+        let cv ← getConstInfoCtor cn
         let fields := ys.extract 0 cv.numFields
-        let ctorApp := mkAppN (mkConst cn origLvls) (params ++ fields)
-        let cIdxs := (← whnf (← inferType ctorApp)).getAppArgs.extract rv.numParams
-          (rv.numParams + rv.numIndices)
-        let pre ← whnf (← preOf (copyAt cIdxs ctorApp))
-        let proof ← rewriteBack (← ctorSizeSum cn fields)
-          (← transportsIn pre (ys.extract cv.numFields ys.size) copy)
-        let goal ← goalAt cIdxs ctorApp
-        unless ← isDefEq (← inferType proof) goal do
+        let pre ← whnf lhs.appArg!
+        let eqs := ys.extract cv.numFields ys.size ++ (← transportsIn pre group)
+        let proof ← rewriteBack (← ctorSizeSum cn ctorApp fields) eqs
+        -- the container's own measure of a nested constructor is a sum only by Lean's lemma
+        let proof ← match ← ctorSizeSpec? cn ctorApp with
+          | some spec => mkEqTrans proof (← mkEqSymm spec)
+          | none => pure proof
+        unless ← isDefEq (← inferType proof) concl do
           throwError "the copy `{copy}` does not measure `{cn}` the way `{orig}` does"
-        mkLambdaFVars ys (← mkExpectedTypeHint proof goal)
+        mkLambdaFVars ys (← mkExpectedTypeHint proof concl)
     addDecl <| .thmDecl {
       name        := thmName
       levelParams := oi.levelParams
-      type        := ← mkForallFVars xs (← goalAt idxs a)
+      type        := ← mkForallFVars xs (← sizeEq (mkAppN (mkConst ofOrig us) xs) a)
       value       := ← mkLambdaFVars xs (mkAppN app (idxs.push a))
     }
 
 /--
-An equation `sizeOf (ofOrig ..) = sizeOf ..` for every copy `pre` was built
-through: the induction hypothesis in `ihs` for a copy of `self`, and the copy's
-own lemma, emitted on demand, for any other. -/
-partial def transportsIn (pre : Expr) (ihs : Array Expr) (self : Name) :
-    MetaM (Array Expr) := do
+An equation `sizeOf (ofOrig ..) = sizeOf ..` for every copy `pre` was built through
+other than those in `here`, which the induction in progress answers for: the copy's
+own lemma, emitted on demand. -/
+partial def transportsIn (pre : Expr) (here : Array Name) : MetaM (Array Expr) := do
   let mut out := #[]
   for app in ofOrigApps pre do
     let some n := app.getAppFn.constName? | continue
     let copy := n.getPrefix
-    if copy == self then
-      for ih in ihs do
-        let some b ← rhsOf? (← inferType ih) | continue
-        unless b.isApp do continue
-        if ← isDefEq b.appArg! app.appArg! then out := out.push ih
-    else
+    unless here.contains copy do
       addOfOrigSizeOf copy
       out := out.push <|
         mkAppN (mkConst (copy ++ `sizeOf_ofOrig) app.getAppFn.constLevels!) app.getAppArgs
@@ -352,7 +399,7 @@ def addSizeOfSpec (numParams : Nat) (levelParams : List Name) (mem c : Name) : M
         rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
       let mut proof ← mkEqRefl rhs
       unless ← isDefEq lhs rhs do
-        proof ← rewriteBack rhs (← transportsIn pre #[] .anonymous)
+        proof ← rewriteBack rhs (← transportsIn pre #[])
         let some (_, lhs', _) := (← instantiateMVars (← inferType proof)).eq?
           | throwError "`sizeOf` of `{c}` is not the sum of its fields'"
         unless ← isDefEq lhs lhs' do

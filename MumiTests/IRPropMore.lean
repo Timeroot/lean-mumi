@@ -170,12 +170,13 @@ end RelLower
 
 `Pos a` says a code's decode is inhabited, and a code may be built only at such
 a one.  It is a subsingleton -- one constructor; its field `a` is its index, `h`
-a proof -- so it eliminates into any sort, as Lean's would. -/
+a proof -- so it eliminates into any sort, as Lean's would, by `Pos.induct`, which is
+what the tactics run on.  `Pos.rec` is the block's one recursion, into `Prop`. -/
 
 namespace Large
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn, axioms])
+mumi_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -192,9 +193,17 @@ def Wit : (a : U) → Pos a → Type
 end
 
 -- a definition by a large recursor is `noncomputable`, as one by `Acc.rec` is
-noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
+noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.induct (motive := fun _ _ => Nat) (fun _ _ => 7) p
 example (a : U) (h : Nonempty (El a)) : tag a (.mk a h) = 7 := by
-  simp only [tag, Pos.rec_mk]
+  simp only [tag, Pos.induct_mk]
+
+example (a : U) (p : Pos a) : Nonempty (El a) := by
+  induction p with
+  | mk _ h => exact h
+
+example (a : U) (p : Pos a) : Nonempty (El a) := by
+  cases p with
+  | mk _ h => exact h
 
 end Large
 
@@ -202,7 +211,7 @@ namespace LargeLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -217,9 +226,9 @@ def El : U → Type
 end
 
 -- a definition by a large recursor is `noncomputable`, as one by `Acc.rec` is
-noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.rec (motive := fun _ _ => Nat) (fun _ _ => 7) p
+noncomputable def tag (a : U) (p : Pos a) : Nat := Pos.induct (motive := fun _ _ => Nat) (fun _ _ => 7) p
 example (a : U) (h : Nonempty (El a)) : tag a (.mk a h) = 7 := by
-  simp only [tag, Pos.rec_mk]
+  simp only [tag, Pos.induct_mk]
 
 end LargeLower
 
@@ -231,7 +240,7 @@ relation.  Its recursion is well-founded recursion on codes, into any sort. -/
 namespace LargeAcc
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive U : Type where
   | nat : U
@@ -245,7 +254,7 @@ def El : U → Type
   | .boxed a h => El a
 end
 
-noncomputable def count (a : U) (h : Fin' a) : Nat := Fin'.rec (motive := fun _ _ => Nat) (fun _ _ _ => 0) h
+noncomputable def count (a : U) (h : Fin' a) : Nat := Fin'.induct (motive := fun _ _ => Nat) (fun _ _ _ => 0) h
 
 end LargeAcc
 

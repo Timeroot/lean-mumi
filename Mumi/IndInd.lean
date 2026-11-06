@@ -4261,7 +4261,7 @@ def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Arra
   let idxs := jdxs.extract cp.numLocals jdxs.size
   let ge ← c.groupElim grp cp params lvls fun k' jdxs' major => do
     mkEq (← c.backLhs k' jdxs' major) major
-  let minors ← ge.minors fun _ mp args _ => do
+  let minors ← ge.minors fun _ mp args concl => do
     let cn := mp.ctor
     let nf := mp.numFields
     let fields := args.extract 0 nf
@@ -4317,7 +4317,11 @@ def backValue (c : BridgeCtx) (grp : Array Nat) (k : Nat) (wanted : IO.Ref (Arra
     -- a field a later field's type mentions cannot be moved on its own, so
     -- the congruence is taken heterogeneously: at such a field the two
     -- sides are of two different types, and only a `Prop` one is reachable
-    let ct ← mkHCongrWithArity (mkAppN (mkConst cn lvls) params) nf
+    -- the constructor as the goal has it: of a nested original's own nesting it is not at
+    -- the original's universes and parameters (`List.cons`, in a copy of `Rose`)
+    let some (_, _, built) := concl.headBeta.eq? | throwError "not an equation at `{cn}`"
+    let ctorAt := mkAppN built.getAppFn (built.getAppArgs.extract 0 (built.getAppNumArgs - nf))
+    let ct ← mkHCongrWithArity ctorAt nf
     let mut prf := ct.proof
     let mut cty := ct.type
     let mut done : Array Expr := #[]

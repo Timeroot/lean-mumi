@@ -1202,8 +1202,11 @@ private def publishAround (inp : Input) : MetaM Unit := do
       addMajorFirst inp.numParams m.name (m.name ++ `rec) (m.name ++ `recOn)
     tagElim (m.name ++ `recOn)
     if m.prop then
+      -- the one into `Prop`, where the frontend's own eliminates into any sort
+      let small := m.name ++ Name.mkSimple (inp.internal ++ "_prop_casesOn")
+      let cases := if (← getEnv).contains small then small else inp.elim k "casesOn"
       discard <| attempt? `Mumi m!"no `casesOn` for `{m.name}`" <|
-        addMajorFirst inp.numParams m.name (inp.elim k "casesOn") (m.name ++ `casesOn)
+        addMajorFirst inp.numParams m.name cases (m.name ++ `casesOn)
       markElabAsElim (m.name ++ `casesOn) (induction := false)
     else
       let motive? ← motiveNameOf? inp.numParams m.name

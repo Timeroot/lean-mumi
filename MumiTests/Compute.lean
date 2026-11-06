@@ -361,4 +361,128 @@ something the encoding adds. -/
 #guard_msgs in
 #print axioms tsize'
 
+/-! ## Termination through a container that is itself nested or mutual
+
+A copy of `Rose RT` measures the same as `Rose RT`, but neither `Rose.rec`'s case nor
+the copy's says so on its own: `Rose`'s field `cs : List (Rose α)` needs the same fact
+of `List (Rose RT)`, and that one of `Rose RT` again.  The proof is `Rose.rec`, with the
+motive for each type of `Rose`'s block speaking of the copy that takes it.  Without it
+the block had no `sizeOf_spec`, and a definition as plain as `RT.count` failed its
+termination check. -/
+
+namespace SizeThrough
+
+inductive Rose (α : Type) : Type where
+  | node (a : α) (cs : List (Rose α))
+
+mutual
+inductive EvenT (α : Type) where
+  | nil
+  | cons (a : α) (o : OddT α)
+inductive OddT (α : Type) where
+  | cons (a : α) (e : EvenT α)
+end
+
+inductive Vec (α : Type) : Nat → Type where
+  | nil : Vec α 0
+  | cons {n} (a : α) (v : Vec α n) : Vec α (n + 1)
+
+mutual
+inductive RT : Type where
+  | tip
+  | mk (r : Rose RT) (t : RT) (h : RP t) : RT
+inductive RP : RT → Prop where
+  | tip : RP .tip
+end
+
+/-- info: RT.mk.sizeOf_spec : ∀ (r : Rose RT) (t : RT) (h : RP t), sizeOf (RT.mk r t h) = 1 + sizeOf r + sizeOf t + sizeOf h -/
+#guard_msgs in
+#check @RT.mk.sizeOf_spec
+
+/-- info: RT.nested_Rose_1.sizeOf_ofOrig : ∀ (x : Rose RT), sizeOf (RT.nested_Rose_1.ofOrig x).val = sizeOf x -/
+#guard_msgs in
+#check @RT.nested_Rose_1.sizeOf_ofOrig
+
+mutual
+def RT.count : RT → Nat
+  | .tip => 1
+  | .mk r t _ => countR r + t.count
+def countR : Rose RT → Nat
+  | .node a cs => a.count + countL cs
+def countL : List (Rose RT) → Nat
+  | [] => 0
+  | r :: rs => countR r + countL rs
+end
+
+/-- info: 3 -/
+#guard_msgs in
+#eval RT.count (.mk (.node .tip [.node .tip []]) .tip .tip)
+
+-- the container's list straight in a field: its copy goes through `List.rec`, and
+-- from there to the lemma of the copy of `Rose`
+mutual
+inductive LT : Type where
+  | mk (l : List (Rose LT)) (ts : List LT) (h : LP l) : LT
+inductive LP : List (Rose LT) → Prop where
+  | nil : LP []
+end
+
+/-- info: LT.mk.sizeOf_spec : ∀ (l : List (Rose LT)) (ts : List LT) (h : LP l),
+  sizeOf (LT.mk l ts h) = 1 + sizeOf l + sizeOf ts + sizeOf h -/
+#guard_msgs in
+#check @LT.mk.sizeOf_spec
+
+-- a mutual container: `EvenT.rec`'s second motive speaks of the copy of `OddT`
+mutual
+inductive MT : Type where
+  | tip
+  | mk (e : EvenT MT) (t : MT) (h : MP t) : MT
+inductive MP : MT → Prop where
+  | tip : MP .tip
+end
+
+mutual
+def MT.count : MT → Nat
+  | .tip => 1
+  | .mk e _ _ => countE e + 1
+def countE : EvenT MT → Nat
+  | .nil => 0
+  | .cons a o => a.count + countO o
+def countO : OddT MT → Nat
+  | .cons a e => a.count + countE e
+end
+
+/-- info: 1 -/
+#guard_msgs in
+#eval MT.count (.mk .nil .tip .tip)
+
+-- an indexed container, whose copy is taken at an index the constructor binds
+mutual
+inductive VT : Type where
+  | tip
+  | mk (n : Nat) (v : Vec VT n) (t : VT) (h : VP t) : VT
+inductive VP : VT → Prop where
+  | tip : VP .tip
+end
+
+/-- info: VT.mk.sizeOf_spec : ∀ (n : Nat) (v : Vec VT n) (t : VT) (h : VP t),
+  sizeOf (VT.mk n v t h) = 1 + sizeOf n + sizeOf v + sizeOf t + sizeOf h -/
+#guard_msgs in
+#check @VT.mk.sizeOf_spec
+
+/-! Where the writer is indexed the measure does differ, and this is pinned as a known
+gap: `RV`'s pre-term stores its index, so the copy's `nil` is `_pre.nil n`, of size
+`1 + sizeOf n`, where `[]` has size `1`.  `sizeOf_ofOrig` is false as stated, there is
+no `sizeOf_spec` to prove from it, and a recursion through such a nesting needs a
+`termination_by` of its own. -/
+
+inductive RV (α : Type) : Nat → Type where
+  | mk {n} (a : α) (cs : List (RV α n)) : RV α (n + 1)
+
+/-- error: Unknown constant `MumiTests.Compute.SizeThrough.RV.mk.sizeOf_spec` -/
+#guard_msgs in
+#check @RV.mk.sizeOf_spec
+
+end SizeThrough
+
 end MumiTests.Compute

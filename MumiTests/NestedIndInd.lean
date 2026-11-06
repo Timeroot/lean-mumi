@@ -467,7 +467,7 @@ mumi_spec
 inductive Rose (α : Type) : Type where
   | node (a : α) (cs : List (Rose α))
 
-mumi_spec (unproven := [RT.casesOn_mk]) (xfail := [rec, injEq])
+mumi_spec (simp := [RT.rec_mk, RT.rec_1_node, RT.rec_2_cons, RT.casesOn_mk])
 mutual
 inductive RT : Type where
   | tip
