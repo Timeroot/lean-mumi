@@ -46,7 +46,7 @@ namespace ImplicitTypeLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive U {α : Type} : Type where
   | base : U
@@ -67,7 +67,7 @@ end ImplicitTypeLower
 namespace NonUniform
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -93,7 +93,7 @@ namespace NonUniformSmall
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [sizeOf, discr])
 mutual
 inductive T (n : Nat) : Type where
   | leaf : T n
@@ -116,7 +116,7 @@ namespace NonUniformLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [sizeOf, discr])
 mutual
 inductive U (α : Type) : Type 1 where
   | atom (a : α) : U α
@@ -147,7 +147,7 @@ end
 namespace NonUniformMixed
 set_option mumi.mahlo false
 
-mumi_spec (simp := [U.rec_many, U.casesOn_many])
+mumi_spec (simp := [U.rec_many, U.casesOn_many]) (xfail := [sizeOf])
 mutual
 inductive U (β : Type) [Inhabited β] (n : Nat) : Type where
   | here (b : β) : U β n

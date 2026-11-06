@@ -29,6 +29,33 @@ example (a b n m) (e : T.node a n = T.node b m) : a = b := by
   injection e with h1 h2
 example (a b n m) (e : T.node a n = T.node b m) : a = b := by
   cases e; rfl
+-- the other ways in, each of which goes through here
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by injections
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by rcases e with ⟨⟩; rfl
+example (a n) (b : T) (e : T.node a n = b) : T.node a n = b := by rcases e with rfl; rfl
+example (a n) (b : T) (e : T.node a n = b) : T.node a n = b := by obtain rfl := e; rfl
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by obtain ⟨⟩ := e; rfl
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by cases e with | refl => rfl
+example (cs n) (h : T.leaf = T.node cs n) : False := by cases h with
+example (cs n) (h : T.leaf = T.node cs n) : False := by rcases h with ⟨⟩
+example (cs n) (h : T.leaf = T.node cs n) : False := by injections
+-- `cases` where an index is a constructor application, which it has to solve
+inductive At : T → Type where
+  | atLeaf : At .leaf
+  | atNode (cs n) : At (.node cs n)
+inductive PAt : T → Prop where
+  | leaf : PAt .leaf
+  | node (cs n) : PAt (.node cs n)
+example (a : At .leaf) : True := by cases a; trivial
+example (cs n) (a : At (.node cs n)) : True := by cases a; trivial
+example (cs n) (a : At (.node cs n)) : True := by cases a with | atNode => trivial
+example (h : PAt .leaf) : True := by cases h; trivial
+example (cs n) (h : PAt (.node cs n)) : True := by cases h; trivial
+example (cs n) (h : PAt (.node cs n)) : True := by cases h with | node => trivial
+example (cs n) (h : PAt (.node cs n)) : True := by rcases h with ⟨⟩; trivial
+-- and where the constructor at the index rules a case out
+example (a : At .leaf) : a = .atLeaf := by cases a; rfl
+example (cs n) (a : At (.node cs n)) : a = .atNode cs n := by cases a; rfl
 end TacticsAtCtors
 
 

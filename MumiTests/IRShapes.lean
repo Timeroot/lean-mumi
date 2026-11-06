@@ -62,7 +62,7 @@ namespace IRShapesLower
 set_option mumi.mahlo true
 
 universe u
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
   inductive Tree : Type u where
     | leaf (n : Nat) : Tree
@@ -74,7 +74,7 @@ mutual
     | .checked t h => width t
 end
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
   inductive Ty : Type where
     | nat : Ty

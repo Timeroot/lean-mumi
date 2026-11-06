@@ -31,6 +31,10 @@ were the restriction lifted:
 * `X.recOn` and `X.casesOn` as Lean derives them, `X.c.inj` and `X.c.injEq` as
   Lean states them;
 * `cases` on every member, and `induction` on a lone one;
+* of each data member's constructors, as Lean's own behave: `X.c.sizeOf_spec` as Lean
+  states it, `X.ctorIdx` by `rfl`, and the tactics on an equation between constructors --
+  at two different ones `contradiction`, `cases`, `simp` and `X.noConfusion` refute it, at one
+  `injection` and `cases` give the equations of its fields;
 * each decoder of an induction-recursion, as written, and its equations;
 * no axiom in any of it, but `propext` in an `injEq` and `IR.mahlo` under
   `mumi.mahlo`.
@@ -53,12 +57,14 @@ open Lean Elab Command Term Meta
 /-- The kinds of claim the specification makes: what a test marks known to fail. -/
 inductive Claim where
   | types | ctors | recursor | rules | recOnForm | casesOnForm | injEq | cases | induction | decoders | axioms | gap
+  | sizeOf | ctorIndex | discr | inject
   deriving BEq, Inhabited
 
 def Claim.all : Array (Name × Claim) :=
   #[(`types, .types), (`ctors, .ctors), (`rec, .recursor), (`rules, .rules), (`recOn, .recOnForm),
     (`casesOn, .casesOnForm), (`injEq, .injEq), (`cases, .cases), (`induction, .induction),
-    (`decoders, .decoders), (`axioms, .axioms), (`gap, .gap)]
+    (`decoders, .decoders), (`axioms, .axioms), (`gap, .gap),
+    (`sizeOf, .sizeOf), (`ctorIdx, .ctorIndex), (`discr, .discr), (`inject, .inject)]
 
 instance : ToString Claim where
   toString c := ((Claim.all.find? (·.2 == c)).map (·.1.toString)).getD "?"
@@ -817,6 +823,121 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
 
 /-! ## Injectivity -/
 
+/-! ## Constructors, as Lean's behave -/
+
+/-- Whether `tac` closes `goal`.  Nothing it says is kept, and it does not get to spend
+the block's whole budget: a tactic that loses itself in an encoding has failed. -/
+private def closes (goal : Expr) (tac : Syntax) : TermElabM Bool := do
+  let saved ← Core.getMessageLog
+  let ok ← withTheReader Core.Context (fun c => { c with maxHeartbeats := 100000 * 1000 }) do
+    withCurrHeartbeats do
+      tryCatchRuntimeEx
+        (do
+          let g ← mkFreshExprMVar goal
+          let rest ← Term.withoutErrToSorry <|
+            Lean.Elab.Tactic.run g.mvarId! (Lean.Elab.Tactic.evalTactic tac)
+          pure rest.isEmpty)
+        (fun _ => pure false)
+  Core.setMessageLog saved
+  return ok
+
+/-- `k` with an instance of `SizeOf` for each of `params` that is a type or a family of
+them, as the statement of Lean's `sizeOf_spec` takes them. -/
+private def withSizeOfInsts {α} (params : Array Expr) (k : Array Expr → TermElabM α) : TermElabM α :=
+  go 0 #[]
+where
+  go (i : Nat) (insts : Array Expr) : TermElabM α := do
+    if h : i < params.size then
+      let x := params[i]
+      let inst? ← forallTelescopeReducing (← inferType x) fun xs s => do
+        unless s.isSort do return none
+        return some (← mkForallFVars xs (← mkAppM ``SizeOf #[mkAppN x xs]))
+      match inst? with
+      | some ty => withLocalDecl (← mkFreshUserName `inst) .instImplicit ty fun y => go (i + 1) (insts.push y)
+      | none => go (i + 1) insts
+    else k insts
+  termination_by params.size - i
+
+/-- `X.c.sizeOf_spec`: one and the sum of the fields, a function counting for nothing. -/
+private def sizeOfSpec (r : Run) (m : Member) (params : Array Expr) (c : Syntax) : TermElabM Unit := do
+  let ctorName := m.name ++ c[3].getId
+  try
+    let ty ← elabCtor m params c fun fields _ => withSizeOfInsts params fun insts => do
+      let app := mkAppN (← mkConstWithLevelParams ctorName) (params ++ fields)
+      let mut rhs ← mkNumeral (mkConst ``Nat) 1
+      for f in fields do
+        if (← whnf (← inferType f)).isForall then continue
+        rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+      let stmt ← mkEq (← mkAppM ``SizeOf.sizeOf #[app]) rhs
+      withInfos params (fun bi => if bi == .default then .implicit else bi) do
+        mkForallFVars (params ++ insts ++ fields) stmt
+    discard <| checkConst r .sizeOf (ctorName ++ `sizeOf_spec) ty (innerNames := false)
+  catch e =>
+    problem r .sizeOf m!"`{ctorName}.sizeOf_spec` could not be stated: {e.toMessageData}"
+
+/-- `X.ctorIdx` at each constructor, by `rfl`. -/
+private def ctorIdxRules (r : Run) (m : Member) (params : Array Expr) : TermElabM Unit := do
+  let mut i := 0
+  for c in m.decl[4].getArgs do
+    let ctorName := m.name ++ c[3].getId
+    let ok ← try
+        let stmt ← elabCtor m params c fun fields _ => do
+          let app := mkAppN (← mkConstWithLevelParams ctorName) (params ++ fields)
+          let idx ← mkAppM (m.name ++ `ctorIdx) #[app]
+          mkForallFVars (params ++ fields) (← mkEq idx (mkNatLit i))
+        kernelRfl stmt
+      catch _ => pure false
+    unless ok do problem r .ctorIndex m!"`{m.name}.ctorIdx` is not {i} at `{ctorName}` by `rfl`"
+    i := i + 1
+
+/-- Two different constructors are refuted by each of the ways Lean has of refuting them.
+Each constructor is asked about against the next, where their types can agree at all. -/
+private def discrimination (r : Run) (m : Member) (params : Array Expr) : TermElabM Unit := do
+  let ctors := m.decl[4].getArgs.map fun c => m.name ++ c[3].getId
+  for h : i in [:ctors.size - 1] do
+    let c1 := ctors[i]!
+    let c2 := ctors[i + 1]!
+    try
+      let app1 := mkAppN (← mkConstWithLevelParams c1) params
+      let app2 := mkAppN (← mkConstWithLevelParams c2) params
+      let (ms1, _, t1) ← forallMetaTelescope (← inferType app1)
+      let (ms2, _, t2) ← forallMetaTelescope (← inferType app2)
+      unless ← withReducible (isDefEq t1 t2) do continue
+      let stmt ← mkArrow (← mkEq (mkAppN app1 ms1) (mkAppN app2 ms2)) (mkConst ``False)
+      let abs ← abstractMVars (← instantiateMVars stmt)
+      lambdaTelescope abs.expr fun _ goal => do
+        let conf := mkCIdent (m.name ++ `noConfusion)
+        unless ← closes goal (← `(tactic| (intro h; contradiction))) do
+          problem r .discr m!"`contradiction` does not refute `{c1} … = {c2} …`"
+        unless ← closes goal (← `(tactic| (intro h; cases h))) do
+          problem r .discr m!"`cases` does not refute `{c1} … = {c2} …`"
+        unless ← closes goal (← `(tactic| (intro h; simp at h))) do
+          problem r .discr m!"`simp` does not refute `{c1} … = {c2} …`"
+        -- an indexed member's takes an equation at each index first
+        unless ← closes goal (← `(tactic| first
+            | exact fun h => $conf h
+            | exact fun h => $conf rfl (heq_of_eq h)
+            | exact fun h => $conf rfl rfl (heq_of_eq h)
+            | exact fun h => $conf rfl rfl rfl (heq_of_eq h)
+            | exact fun h => $conf rfl HEq.rfl (heq_of_eq h)
+            | exact fun h => $conf rfl HEq.rfl HEq.rfl (heq_of_eq h)
+            | exact fun h => $conf rfl rfl HEq.rfl (heq_of_eq h))) do
+          problem r .discr m!"`{m.name}.noConfusion` does not refute `{c1} … = {c2} …`"
+    catch e =>
+      problem r .discr m!"`{c1} … = {c2} …` could not be stated: {e.toMessageData}"
+
+/-- What `X.c.inj` states, by the tactics: `injection` and `cases` at the equation give
+the equations of the fields.  `inj` is the statement, read from what `injectivity` built. -/
+private def injectionBehaves (r : Run) (ctorName : Name) (inj : Expr) : TermElabM Unit := do
+  forallTelescope inj fun xs ands => do
+    let some h := xs.back? | return
+    let goal ← mkArrow (← inferType h) ands
+    withErasedFVars #[h.fvarId!] do
+      unless ← closes goal (← `(tactic| (intro h; injection h; all_goals (and_intros <;> assumption)))) do
+        problem r .inject m!"`injection` at an equation of `{ctorName}` does not give those of its fields"
+      unless ← closes goal (← `(tactic| (intro h; cases h; all_goals (and_intros <;> first | rfl | exact HEq.rfl)))) do
+        problem r .inject m!"`cases` at an equation of `{ctorName}` does not give those of its fields"
+
 /-- `X.c.inj` and `X.c.injEq` as Lean states them: the fields that appear in the
 conclusion shared, the others twice, an equation (or `HEq`) at each that is
 not a proof, conjoined; none at all where there is none. -/
@@ -856,6 +977,7 @@ private def injectivity (r : Run) (m : Member) (params : Array Expr) (c : Syntax
     | return
   discard <| checkConst r .injEq (ctorName ++ `inj) injTy (levels := (← getConstInfo m.name).levelParams)
   discard <| checkConst r .injEq (ctorName ++ `injEq) injEqTy (levels := (← getConstInfo m.name).levelParams)
+  injectionBehaves r ctorName injTy
 
 /-! ## Tactics -/
 
@@ -1041,6 +1163,7 @@ private def targetOrder (members : Array Member) (tys params : Array Expr) (unif
     order := order.push q
   return order.map (written[·]!)
 
+set_option maxHeartbeats 1000000 in
 /-- The whole specification of the block, checked against what it declared. -/
 def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native : Bool) : TermElabM Unit := do
   let upper := !(mumi.mahlo.get (← getOptions))
@@ -1218,6 +1341,12 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
     for m in found do
       unless nested.contains m do nested := nested ++ (← withSiblings m).filter (!nested.contains ·)
   let b : Block := { members, tys, params, uniform }
+  -- the constructors, as Lean's behave
+  for k in data do
+    let m := members[k]!
+    for c in m.decl[4].getArgs do sizeOfSpec r m params c
+    ctorIdxRules r m params
+    discrimination r m params
   -- a `Prop` member alone eliminates as Lean lets it; beside others, into
   -- `Prop`, as a `mutual` of more than one type does
   let large ← if members.size == 1 then largeElim b props else pure false

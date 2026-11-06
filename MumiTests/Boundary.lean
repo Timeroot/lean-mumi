@@ -33,7 +33,7 @@ container of a member rather than a member is what this pins.
 
 namespace ListIdx
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec (xfail := [rec, recOn, sizeOf])
 mutual
 inductive Ctx : Type where
   | nil
@@ -59,7 +59,7 @@ motive is indexed by the context the list is at.
 
 namespace ListNest
 
-mumi_spec (simp := [Ctx.rec_many, Ty.rec_list, Ctx.rec_1_cons, Ctx.casesOn_many, Ty.casesOn_list])
+mumi_spec (simp := [Ctx.rec_many, Ty.rec_list, Ctx.rec_1_cons, Ctx.casesOn_many, Ty.casesOn_list]) (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil
@@ -81,7 +81,7 @@ other summand is unrelated.
 
 namespace OtherNests
 
-mumi_spec (simp := [Ctx.rec_maybe, Ctx.rec_either, Ctx.casesOn_maybe, Ctx.casesOn_either])
+mumi_spec (simp := [Ctx.rec_maybe, Ctx.rec_either, Ctx.casesOn_maybe, Ctx.casesOn_either]) (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil
@@ -113,7 +113,7 @@ inductive Vec (α : Type) : Nat → Type where
   | nil : Vec α 0
   | cons {n} (a : α) (v : Vec α n) : Vec α (n + 1)
 
-mumi_spec (simp := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc])
+mumi_spec (simp := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc]) (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil
@@ -226,7 +226,7 @@ treated as one the constructor built.
 
 namespace TwoIdx
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil

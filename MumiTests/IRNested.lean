@@ -22,7 +22,7 @@ set_option autoImplicit false
 namespace Codes
 set_option mumi.mahlo false
 
-mumi_spec (simp := [U.rec_tuple, U.rec_opt, U.casesOn_tuple, U.casesOn_opt])
+mumi_spec (simp := [U.rec_tuple, U.rec_opt, U.casesOn_tuple, U.casesOn_opt]) (xfail := [sizeOf])
 mutual
 inductive U : Type where
   | nat : U
@@ -75,7 +75,7 @@ namespace CodesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (simp := [U.rec_tuple, U.rec_opt, U.casesOn_tuple, U.casesOn_opt])
+mumi_spec (simp := [U.rec_tuple, U.rec_opt, U.casesOn_tuple, U.casesOn_opt]) (xfail := [sizeOf, discr])
 mutual
 inductive U : Type where
   | nat : U
@@ -122,7 +122,7 @@ set_option mumi.mahlo false
 
 -- one motive per nested application, in the order they are met: the inner
 -- `Option (U α)` last
-mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple])
+mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple]) (xfail := [sizeOf])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -158,7 +158,7 @@ namespace ShapesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple])
+mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple]) (xfail := [sizeOf, discr])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α
@@ -180,7 +180,7 @@ end ShapesLower
 namespace NamesTwice
 set_option mumi.mahlo false
 
-mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple])
+mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple]) (xfail := [sizeOf])
 mutual
 inductive U : Type where
   | nil : U

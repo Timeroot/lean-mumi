@@ -67,7 +67,7 @@ namespace DeepLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -108,7 +108,7 @@ it, which ties it into the block. -/
 namespace Rel
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -142,7 +142,7 @@ namespace RelLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -211,7 +211,7 @@ namespace LargeLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive U : Type where
   | nat : U
@@ -305,7 +305,7 @@ end
 namespace Mixed
 set_option mumi.mahlo false
 
-mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, sizeOf])
 mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n

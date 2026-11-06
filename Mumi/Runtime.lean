@@ -24,6 +24,23 @@ public section
 
 namespace Mumi
 
+/-- `Nat.beq_refl`, which core proves by `simp` at the cost of `propext`. -/
+theorem beq_self : (n : Nat) → Nat.beq n n = true
+  | 0 => rfl
+  | n + 1 => beq_self n
+
+/-- What `X.noConfusionType` is between two terms of one constructor, from the same thing
+in the case the indices are not yet known to agree. -/
+@[reducible] def condOfEq.{w} {C P : Sort w} {i j : Nat} (h : i = j) (c : C) :
+    cond (Nat.beq i j) C P :=
+  match j, h with
+  | _, rfl => @Eq.rec Bool true (fun r _ => cond r C P) c (Nat.beq i i) (beq_self i).symm
+
+/-- Two terms a function sends to different numerals are different. -/
+theorem ne_of_ctorIdx.{w} {α : Sort w} (f : α → Nat) {a b : α} {i j : Nat}
+    (ha : f a = i) (hb : f b = j) (hne : Nat.beq i j = false) : a ≠ b :=
+  fun h => Nat.ne_of_beq_eq_false hne (ha.symm.trans ((congrArg f h).trans hb))
+
 universe u v
 
 /-- Show `a` as whatever `f a` shows as.  This is the `Repr` that `Subtype` has. -/

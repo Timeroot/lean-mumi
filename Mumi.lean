@@ -18,4 +18,5 @@ public import Mumi.Rescue
 public import Mumi.Elab
 public import Mumi.Mutual
 public import Mumi.MatchView
+public import Mumi.CtorTactics
 public import Mumi.Declaration

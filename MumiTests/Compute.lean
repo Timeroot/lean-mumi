@@ -206,11 +206,11 @@ example (Γ : Ctx) : tsize Γ (.base Γ) = 1 := by simp [tsize]
 
 /-! What the seal costs is `rfl`, and `unseal` gives it back.  A well-founded
 recursion unfolds by counting its measure down, so what comes back is reduction
-on a term the measure can be read off: a closed one, or an equation with no
-recursive call to make. -/
+on a term the measure can be read off, which is a closed one: `sizeOf (.base Γ)` is
+`1 + sizeOf Γ`, as Lean counts it, and that is stuck at a variable `Γ`. -/
 
 unseal tsize in
-example (Γ : Ctx) : tsize Γ (.base Γ) = 1 := rfl
+example : tsize .nil (.base .nil) = 1 := rfl
 
 unseal tsize in
 example : tsize .nil (.up .nil (.base .nil) (.base _)) = 2 := rfl
@@ -231,7 +231,7 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (.snoc Γ A)) :
 def vec (Γ : Ctx) (A : Ty Γ) : Type := Vector Nat (tsize Γ A)
 
 unseal tsize in
-example (Γ : Ctx) : vec Γ (.base Γ) := #v[7]
+example : vec .nil (.base .nil) := #v[7]
 
 /-! ## Recursion through a nesting
 
@@ -526,6 +526,36 @@ inductive PT (α : Type) : Nat → Type where
 
 example (n : Nat) (cs : List (PT Nat n)) : sizeOf cs < sizeOf (PT.node cs) := by
   simp; omega
+
+/-! A recursion into an index.  A pre-term has no room for what an index already says, so
+`Γ` in `ITy.base Γ` is not in it, and a measure of pre-terms would call `ITy.base Γ` smaller
+than `Γ`.  The block's recursor has a hypothesis at every field, so the measure is that. -/
+
+mutual
+inductive ICtx : Type where
+  | nil
+  | snoc (Γ : ICtx) (A : ITy Γ)
+inductive ITy : ICtx → Type where
+  | base (Γ : ICtx) : ITy Γ
+  | pi (Γ : ICtx) (A : ITy Γ) (B : ITy (.snoc Γ A)) : ITy Γ
+end
+
+/-- info: ITy.base.sizeOf_spec : ∀ (Γ : ICtx), sizeOf (ITy.base Γ) = 1 + sizeOf Γ -/
+#guard_msgs in
+#check @ITy.base.sizeOf_spec
+
+mutual
+def ICtx.count : ICtx → Nat
+  | .nil => 0
+  | .snoc Γ A => Γ.count + A.count + 1
+def ITy.count {Γ : ICtx} : ITy Γ → Nat
+  | .base Γ => Γ.count
+  | .pi _ A B => A.count + B.count
+end
+
+/-- info: 3 -/
+#guard_msgs in
+#eval (ICtx.snoc (.snoc .nil (.base .nil)) (.base _)).count
 
 end SizeThrough
 

@@ -720,7 +720,8 @@ def addMajorFirst (numParams : Nat) (mem src dst : Name) : MetaM Unit := do
   setReducibleAttribute dst
   modifyEnv fun env => addProtected env dst
 
-/-- `X.ctorIdx`, which counts a constructor through the view. -/
+/-- `X.ctorIdx`: the pre-term's, which any constructor computes, its head being there
+whatever its fields' round trips do; through the view where there is no pre-term. -/
 def addCtorIdx (mem : Name) : MetaM Unit := do
   let dst := mem ++ `ctorIdx
   if (← getEnv).contains dst then return
@@ -728,13 +729,195 @@ def addCtorIdx (mem : Name) : MetaM Unit := do
   let us := mi.levelParams.map mkLevelParam
   forallTelescope mi.type fun bs _ =>
     withLocalDeclD `x (mkAppN (mkConst mem us) bs) fun x => do
-      let view := mkAppN (mkConst (viewFnName mem) us) (bs.push x)
-      let value ← appExplicit (← mkConstWithFreshMVarLevels (viewName mem ++ `ctorIdx)) #[view]
+      let preIdx := mem ++ `_pre ++ `ctorIdx
+      let value ← if (← getEnv).contains preIdx then
+          appExplicit (← mkConstWithFreshMVarLevels preIdx) #[← preOf x]
+        else
+          let view := mkAppN (mkConst (viewFnName mem) us) (bs.push x)
+          appExplicit (← mkConstWithFreshMVarLevels (viewName mem ++ `ctorIdx)) #[view]
       let xs := bs.push x
       addDef dst mi.levelParams
         (annotate (inferredBut (· == bs.size)) (← mkForallFVars xs (mkConst ``Nat)))
         (← mkLambdaFVars xs value)
       modifyEnv fun env => addProtected env dst
+
+/-- `X.ctorIdx_c : X.ctorIdx (X.c …) = i` for each constructor, by `rfl`: what says which
+constructor a term is, to whatever cannot tell by looking (`Mumi.CtorTactics`). -/
+def addCtorIdxRules (mem : Name) (ctors : Array Name) : MetaM Unit := do
+  let mut i := 0
+  for c in ctors do
+    let k := i
+    i := i + 1
+    let ci ← getConstInfo c
+    let us := ci.levelParams.map mkLevelParam
+    let name := Name.mkStr mem s!"ctorIdx_{c.getString!}"
+    if (← getEnv).contains name then continue
+    discard <| attempt? `Mumi.view m!"`{mem}.ctorIdx` does not compute at `{c}`" do
+      forallTelescope ci.type fun xs _ => do
+        let lhs ← mkAppM (mem ++ `ctorIdx) #[mkAppN (mkConst c us) xs]
+        addDecl <| .thmDecl {
+          name, levelParams := ci.levelParams
+          type := ← mkForallFVars xs (mkApp3 (mkConst ``Eq [1]) (mkConst ``Nat) lhs (mkNatLit k))
+          value := ← mkLambdaFVars xs (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs) }
+
+/-- The `ctorIdx` of what `x` wraps: down a wrapper's fields to the inductive with `n`
+constructors, whose head any constructor of the member builds. -/
+private partial def wrappedIdx? (x : Expr) (n : Nat) (depth : Nat := 6) : MetaM (Option Expr) := do
+  if depth == 0 then return none
+  let ty ← whnf (← inferType x)
+  let .const i _ := ty.getAppFn | return none
+  let some (.inductInfo ii) := (← getEnv).find? i | return none
+  -- what the encoding built: a `Nat` among a semantics' fields has two constructors too
+  let ours := i.components.any fun c => c.toString.startsWith "_ir_"
+  if ours && ii.ctors.length == n && (← getEnv).contains (i ++ `ctorIdx) then
+    return some (← appExplicit (← mkConstWithFreshMVarLevels (i ++ `ctorIdx)) #[x])
+  unless ii.ctors.length == 1 do return none
+  let .ctorInfo cv ← getConstInfo ii.ctors.head! | return none
+  for k in *...cv.numFields do
+    let f := Expr.proj i k x
+    let fty ← inferType f
+    if (← isProp fty) || (← whnf fty).isSort then continue
+    if let some r ← wrappedIdx? f n (depth - 1) then return some r
+  return none
+
+/-- `X.ctorIdx` for a member with no pre-term: of what it wraps where the head of that
+says, which holds at a constructor whatever its fields do; else by its own case split. -/
+def addCtorIdxByCases (mem : Name) (ctors : Array Name) : MetaM Unit := do
+  let dst := mem ++ `ctorIdx
+  if (← getEnv).contains dst then return
+  let mi ← getConstInfo mem
+  let us := mi.levelParams.map mkLevelParam
+  let wrapped ← forallTelescope mi.type fun bs _ =>
+    withLocalDeclD `x (mkAppN (mkConst mem us) bs) fun x => do
+      let some v ← wrappedIdx? x ctors.size | return false
+      let xs := bs.push x
+      addDef dst mi.levelParams
+        (annotate (inferredBut (· == bs.size)) (← mkForallFVars xs (mkConst ``Nat)))
+        (← mkLambdaFVars xs v)
+      modifyEnv fun env => addProtected env dst
+      return true
+  if wrapped then return
+  let casesOn ← getConstInfo (mem ++ `casesOn)
+  let f := mkConst (mem ++ `casesOn) (Level.succ .zero :: us)
+  forallTelescope mi.type fun bs _ =>
+    withLocalDeclD `x (mkAppN (mkConst mem us) bs) fun x => do
+      let (ms, _, _) ← forallMetaTelescope (← inferType f)
+      let names := casesOn.type.getForallBinderNames
+      let some tAt := names.idxOf? `t | throwError "`{mem}.casesOn` has no major"
+      let some mAt := names.findIdx? (·.toString.startsWith "motive")
+        | throwError "`{mem}.casesOn` has no motive"
+      unless ← isDefEq (← inferType ms[tAt]!) (← inferType x) do
+        throwError "`{mem}.casesOn` is not at `{mem}`"
+      ms[tAt]!.mvarId!.assign x
+      let motive ← forallTelescope (← instantiateMVars (← inferType ms[mAt]!)) fun ys _ =>
+        mkLambdaFVars ys (mkConst ``Nat)
+      ms[mAt]!.mvarId!.assign motive
+      for h : k in *...ctors.size do
+        let m := ms[ms.size - ctors.size + k]!
+        let v ← forallTelescope (← instantiateMVars (← inferType m)) fun ys _ =>
+          mkLambdaFVars ys (mkNatLit k)
+        m.mvarId!.assign v
+      let xs := bs.push x
+      addDef dst mi.levelParams
+        (annotate (inferredBut (· == bs.size)) (← mkForallFVars xs (mkConst ``Nat)))
+        (← mkLambdaFVars xs (← instantiateMVars (mkAppN f ms)))
+      -- this case split reaches an encoding Meta's unifier can spend for ever in, outside
+      -- any heartbeat limit, so it does not get to look: the kernel computes it, and what
+      -- is wanted of it is said by `X.ctorIdx_c`
+      setIrreducibleAttribute dst
+      modifyEnv fun env => addProtected env dst
+
+/--
+A measure of data members with no pre-term, by the block's own recursor: at a constructor
+one and the sum of its fields, a recursive one by its hypothesis and a function counting
+for nothing, as Lean reckons.  `X.c.sizeOf_spec` then holds by that recursor's rule, which
+is `rfl` where the recursor computes; where it does not there is no lemma. -/
+def addMeasureByRec (numParams : Nat) (mem : Name) : MetaM Unit := do
+  let instName := mem ++ `_sizeOf_inst
+  if (← getEnv).contains instName then return
+  let mi ← getConstInfo mem
+  let ri ← getConstInfo (mem ++ `rec)
+  unless ri.levelParams.length == mi.levelParams.length + 1 do return
+  let us := mi.levelParams.map mkLevelParam
+  let fn := mem ++ `_measure
+  forallTelescope mi.type fun bs _ => do
+    let ps := bs.extract 0 numParams
+    let idx := bs.extract numParams bs.size
+    mkLocalInstances ps fun insts => do
+      let selfTy := mkAppN (mkConst mem us) bs
+      let mut app := mkAppN (mkConst (mem ++ `rec) (Level.succ .zero :: us)) ps
+      repeat
+        let .forallE n d _ bi ← whnfCore (← inferType app) | break
+        if n.toString.startsWith "motive" then
+          app := mkApp app <| ← forallTelescope d fun ys s =>
+            mkLambdaFVars ys (if s.isProp then mkConst ``True else mkConst ``Nat)
+        else if bi.isExplicit && n != `t then
+          app := mkApp app <| ← forallTelescope d fun ys concl => do
+            if concl.headBeta.isConstOf ``True then
+              return ← mkLambdaFVars ys (mkConst ``True.intro)
+            let named ← ys.mapM fun y => do return (← y.fvarId!.getUserName).eraseMacroScopes
+            let mut rhs ← mkNumeral (mkConst ``Nat) 1
+            for y in ys, nm in named do
+              if nm.isStr && nm.getString!.endsWith "_ih" then
+                let base := (nm.getString!.dropEnd 3).toString
+                if named.any (· == nm.getPrefix.str base) then continue
+              if (← whnf (← inferType y)).isForall then continue
+              let ihName := nm.appendAfter "_ih"
+              let ih? ← (named.idxOf? ihName).bindM fun j => do
+                let ih := ys[j]!
+                return if (← inferType ih).isConstOf ``Nat then some ih else none
+              rhs ← mkAdd rhs (← match ih? with
+                | some ih => pure ih
+                | none => mkAppM ``SizeOf.sizeOf #[y])
+            mkLambdaFVars ys rhs
+        else break
+      withLocalDeclD `x selfTy fun x => do
+        let all := ps ++ insts ++ idx.push x
+        addDecl <| .defnDecl {
+          name := fn, levelParams := mi.levelParams
+          type := ← mkForallFVars all (mkConst ``Nat)
+          value := ← mkLambdaFVars all (mkAppN app (idx.push x))
+          hints := .abbrev, safety := .safe }
+        let call ← mkLambdaFVars #[x] (mkAppN (mkConst fn us) all)
+        addDecl <| .defnDecl {
+          name := instName, levelParams := mi.levelParams
+          type := ← mkForallFVars (ps ++ insts ++ idx) (← mkAppM ``SizeOf #[selfTy])
+          value := ← mkLambdaFVars (ps ++ insts ++ idx) (← mkAppOptM ``SizeOf.mk #[selfTy, call])
+          hints := .abbrev, safety := .safe }
+        registerInstance instName .global (eval_prio default)
+
+/-- `X.c.sizeOf_spec` for a member `addMeasureByRec` measured, once its siblings are too. -/
+def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := do
+  unless (← getEnv).contains (mem ++ `_measure) do return
+  let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
+  for c in ctors do
+    let ci ← getConstInfo c
+    let name := c ++ `sizeOf_spec
+    discard <| attempt? `Mumi.view m!"no `sizeOf` lemma for `{c}`" do
+      forallTelescope ci.type fun xs _ => do
+        let cps := xs.extract 0 numParams
+        let fields := xs.extract numParams xs.size
+        mkLocalInstances cps fun insts => do
+          let lhs ← mkAppM ``SizeOf.sizeOf #[mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs]
+          let mut rhs ← mkNumeral (mkConst ``Nat) 1
+          for f in fields do
+            if (← whnf (← inferType f)).isForall then continue
+            rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+          let all := cps ++ insts ++ fields
+          addDecl <| .thmDecl {
+            name, levelParams := ci.levelParams
+            type := ← mkForallFVars all (mkApp3 (mkConst ``Eq [1]) (mkConst ``Nat) lhs rhs)
+            value := ← mkLambdaFVars all (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs) }
+      simpAttr.add name default .global
+
+/-- `Nat.beq (X.ctorIdx t) (X.ctorIdx t')`. -/
+private def mkBeqIdx (mem : Name) (t t' : Expr) : MetaM Expr := do
+  return mkApp2 (mkConst ``Nat.beq) (← mkAppM (mem ++ `ctorIdx) #[t]) (← mkAppM (mem ++ `ctorIdx) #[t'])
+
+/-- `cond c x y`, at a sort. -/
+private def mkCond (c x y : Expr) : MetaM Expr := do
+  let α ← inferType x
+  return mkApp4 (mkConst ``cond [← getLevel α]) α c x y
 
 /--
 `X.noConfusionType` and `X.noConfusion` from the view's.  Two elements of `X`
@@ -769,20 +952,25 @@ def addNoConfusion (mem : Name) : TermElabM Unit := do
         (inferredBut keep i nm bi).2)
     let major (i : Nat) : Bool := i == 0 || i == n + 1 || i == 2 * n + 2
     unless (← getEnv).contains dType do
-      let value ← appExplicit (← mkConstWithFreshMVarLevels vType)
+      -- two different constructors are told apart by their `ctorIdx`, which computes
+      -- at any, where a view need not
+      let core ← appExplicit (← mkConstWithFreshMVarLevels vType)
         #[p, view bs t, view bs' t']
+      let value ← mkCond (← mkBeqIdx mem t t') core p
       addDef dType lps (annotate (shape major) (← mkForallFVars xs (mkSort (.param w))))
         (← mkLambdaFVars xs value) (hints := .abbrev) (compile := false)
       setReducibleAttribute dType
       modifyEnv fun env => addProtected env dType
     if (← getEnv).contains dConf then return
     let goal ← appExplicit (mkConst dType (lps.map mkLevelParam)) #[p, t, t']
+    let coreGoal ← appExplicit (← mkConstWithFreshMVarLevels vType)
+      #[p, view bs t, view bs' t']
     -- what equations the view is confused by, and hence what this one is: the
     -- view's last one is about the views themselves and is discharged here, the
     -- ones before it are about the member and become the binders
     let (tys, vGoal) ← do
       let (mvs, bis, concl) ← forallMetaTelescope (← getConstInfo vConf).type
-      unless ← isDefEq concl goal do throwError "`{vConf}` does not conclude at `{dType}`"
+      unless ← isDefEq concl coreGoal do throwError "`{vConf}` does not conclude at `{dType}`"
       let mut given := #[]
       for i in *...mvs.size do
         if bis[i]!.isExplicit then given := given.push mvs[i]!
@@ -799,13 +987,90 @@ def addNoConfusion (mem : Name) : TermElabM Unit := do
               | exact HEq.rfl
               | (cases $last:ident; first | exact rfl | exact HEq.rfl))
       let all := xs ++ hs
+      let idxEq ← mkEq (← mkAppM (mem ++ `ctorIdx) #[t]) (← mkAppM (mem ++ `ctorIdx) #[t'])
+      let idxProof ← proveBy idxEq <| ←
+        `(Lean.Parser.Tactic.tacticSeq|
+            try subst_vars
+            first
+              | exact rfl
+              | (cases $last:ident; exact rfl))
+      let core ← appExplicit (← mkConstWithFreshMVarLevels vConf) (hs.push proof) coreGoal
       addDef dConf lps
         (annotate (shape (· ≥ xs.size)) (← mkForallFVars all goal))
-        (← mkLambdaFVars all
-          (← appExplicit (← mkConstWithFreshMVarLevels vConf) (hs.push proof) goal))
+        (← mkLambdaFVars all (← mkAppOptM `Mumi.condOfEq #[none, p, none, none, idxProof, core]))
         (hints := .abbrev) (compile := false)
       setReducibleAttribute dConf
       modifyEnv fun env => addProtected env dConf
+
+/--
+`X.noConfusionType` and `X.noConfusion` for a member with no view.  Two different
+constructors are refuted through `X.ctorIdx`; at one constructor there are no fields'
+equations to offer, as a view has them, so what it gives is the equation itself, and
+`X.c.inj` is what takes it apart. -/
+def addNoConfusionByIdx (numParams : Nat) (mem : Name) : TermElabM Unit := do
+  let dType := mem ++ `noConfusionType
+  let dConf := mem ++ `noConfusion
+  if (← getEnv).contains dType then return
+  let mi ← getConstInfo mem
+  let us := mi.levelParams.map mkLevelParam
+  let w := (`w : Name)
+  let lps := w :: mi.levelParams
+  forallTelescope mi.type fun bs _ => do
+  let ps := bs.extract 0 numParams
+  let is₁ := bs.extract numParams bs.size
+  -- the indices again, the parameters being the one
+  let ty' ← instantiateForall mi.type ps
+  forallTelescope ty' fun is₂ _ =>
+  withLocalDeclD `P (mkSort (.param w)) fun p =>
+  withLocalDeclD `t (mkAppN (mkConst mem us) (ps ++ is₁)) fun t =>
+  withLocalDeclD `t' (mkAppN (mkConst mem us) (ps ++ is₂)) fun t' => do
+    let same ← mkEqHEq t t'
+    let core ← mkArrow (← mkArrow same p) p
+    let value ← mkCond (← mkBeqIdx mem t t') core p
+    let xs := #[p] ++ ps ++ is₁ ++ #[t] ++ is₂ ++ #[t']
+    let implicitBut (keep : Nat → Bool) (i : Nat) (nm : Name) (bi : BinderInfo) : Name × BinderInfo :=
+      (nm, (inferredBut keep i nm bi).2)
+    addDef dType lps (annotate (implicitBut fun i => i == 0 || i == ps.size + is₁.size + 1 || i == xs.size - 1)
+        (← mkForallFVars xs (mkSort (.param w))))
+      (← mkLambdaFVars xs value) (hints := .abbrev) (compile := false)
+    setReducibleAttribute dType
+    modifyEnv fun env => addProtected env dType
+    let goal := mkAppN (mkConst dType (lps.map mkLevelParam)) xs
+    -- as Lean takes them: an equation at each index, and then the two terms
+    let mut hyps : Array (Name × Expr) := #[]
+    for a in is₁, b in is₂ do
+      hyps := hyps.push (Name.mkSimple s!"mumiEq{hyps.size}", ← mkEqHEq a b)
+    hyps := hyps.push (Name.mkSimple s!"mumiEq{hyps.size}", same)
+    withLocalDeclsDND hyps fun hs => do
+      let last := mkIdent (Name.mkSimple s!"mumiEq{hs.size - 1}")
+      let idxEq ← mkEq (← mkAppM (mem ++ `ctorIdx) #[t]) (← mkAppM (mem ++ `ctorIdx) #[t'])
+      let idxProof ← proveBy idxEq <| ←
+        `(Lean.Parser.Tactic.tacticSeq|
+            try subst_vars
+            first
+              | exact rfl
+              | (cases $last:ident; exact rfl))
+      let inner ← withLocalDeclD `k (← mkArrow same p) fun k => do
+        mkLambdaFVars #[k] (mkApp k hs.back!)
+      let all := xs ++ hs
+      addDef dConf lps
+        (annotate (implicitBut (· ≥ xs.size)) (← mkForallFVars all goal))
+        (← mkLambdaFVars all (← mkAppOptM `Mumi.condOfEq #[none, p, none, none, idxProof, inner]))
+        (hints := .abbrev) (compile := false)
+      setReducibleAttribute dConf
+      modifyEnv fun env => addProtected env dConf
+
+/-- What a block with no pre-terms gets of what `addViews` gives the others: `X.ctorIdx`
+and its rules, and a measure.  Each member's own failure is its own. -/
+def addFactsOverRec (numParams : Nat) (members : Array (Name × Array Name)) : TermElabM Unit := do
+  for (mem, ctors) in members do
+    discard <| attempt? `Mumi.view m!"no `ctorIdx` for `{mem}`" <| addCtorIdxByCases mem ctors
+    addCtorIdxRules mem ctors
+    discard <| attempt? `Mumi.view m!"no `noConfusion` for `{mem}`" <| addNoConfusionByIdx numParams mem
+  for (mem, _) in members do
+    discard <| attempt? `Mumi.view m!"no measure for `{mem}`" <| addMeasureByRec numParams mem
+  for (mem, ctors) in members do
+    addMeasureSpecs numParams mem ctors
 
 /--
 Give every member encoded as a subtype a `SizeOf` instance, its specification
@@ -816,7 +1081,26 @@ def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElab
   let members ← members.filterM fun (_, ctors) => do
     let some c := ctors[0]? | return false
     return !((← getEnv).find? c).any (·.isCtor)
+  -- a pre-term has no room for what an index already says, so measuring by it leaves out a
+  -- field Lean counts, and a recursion into that field does not terminate.  The block's
+  -- recursor has a hypothesis at every field, so it measures what was written, where it
+  -- computes at every constructor; a copy of a container has to measure what the container
+  -- does, by its own lemma, and keeps the pre-term's
+  let byRec ← if members.any (fun (m, _) => m.getString!.startsWith "nested_") then pure false
+    else
+      let env ← getEnv
+      try
+        for (mem, _) in members do addMeasureByRec numParams mem
+        for (mem, ctors) in members do addMeasureSpecs numParams mem ctors
+        let all ← members.allM fun (_, ctors) => ctors.allM fun c =>
+          return (← getEnv).contains (c ++ `sizeOf_spec)
+        unless all do setEnv env
+        pure all
+      catch _ =>
+        setEnv env
+        pure false
   for (mem, _) in members do
+    if byRec then break
     if (← getEnv).contains (mem ++ `_pre) then
       discard <| attempt? `Mumi.view m!"no measure of `{mem}`" <| addPreMeasure (mem ++ `_pre)
   for (mem, _) in members do
@@ -828,12 +1112,13 @@ def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElab
         addSizeOfSpec numParams lps mem c
   for (mem, ctors) in members do
     discard <| attempt? `Mumi.view m!"no view for `{mem}`" <| addView numParams mem ctors
-  for (mem, _) in members do
+  for (mem, ctors) in members do
     discard <| attempt? `Mumi.view m!"no `casesOn` for `{mem}`" <|
       addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `casesOn)
     discard <| attempt? `Mumi.view m!"no `recOn` for `{mem}`" <|
       addMajorFirst numParams mem (mem ++ `rec) (mem ++ `recOn)
     discard <| attempt? `Mumi.view m!"no `ctorIdx` for `{mem}`" <| addCtorIdx mem
+    addCtorIdxRules mem ctors
     discard <| attempt? `Mumi.view m!"no `noConfusion` for `{mem}`" <| addNoConfusion mem
 
 /--

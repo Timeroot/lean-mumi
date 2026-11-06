@@ -55,6 +55,8 @@ namespace Mumi
 declared as definitions, read back through each member's `casesOn`. -/
 meta def publishIRInjs (elems : Array Syntax) : CommandElabM Unit := do
   let ns ← getCurrNamespace
+  let mut data : Array (Name × Array Name) := #[]
+  let mut params := 0
   for e in elems do
     unless e[1].isOfKind ``Lean.Parser.Command.«inductive» do continue
     let mem := ns ++ e[1][1][0].getId
@@ -62,6 +64,10 @@ meta def publishIRInjs (elems : Array Syntax) : CommandElabM Unit := do
     unless (env.find? mem).any (·.isDefinition) do continue
     let ctors := e[1][4].getArgs.map fun c => mem ++ c[3].getId
     unless ctors.all env.contains && env.contains (mem ++ `casesOn) do continue
+    if ← liftTermElabM do
+        Meta.forallTelescope (← getConstInfo mem).type fun _ s => pure !s.isProp then
+      data := data.push (mem, ctors)
+      params := ← liftTermElabM (casesParams mem)
     liftTermElabM do
       if ← Meta.forallTelescope (← getConstInfo mem).type fun _ s => pure s.isProp then return
       let np ← casesParams mem
@@ -74,6 +80,7 @@ meta def publishIRInjs (elems : Array Syntax) : CommandElabM Unit := do
         if (← getConstInfo c).isCtor then continue
         discard <| MultiuniverseInductive.attempt? `Mumi m!"no injectivity for `{c}`" <|
           addInjViaCases np mem c ctors
+  liftTermElabM <| addFactsOverRec params data
 
 /-- Shared interception point for every Mumi `mutual` translation.  A mixed
 `inductive`/`def` block tries stock Lean first and falls to the IR frontend; an

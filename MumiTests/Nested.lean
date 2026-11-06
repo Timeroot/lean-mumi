@@ -17,7 +17,7 @@ Everything here is a declaration Lean rejects.  The cases Lean *accepts* are in
 `T` together with a copy of `Nonempty` specialised to `T` -- is heterogeneous.
 -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive T : Type where
   | mk1 : T
   | mkT : Nonempty T → T
@@ -183,7 +183,7 @@ The rescued type is an ordinary inductive: it pattern-matches, it recurses
 structurally, and it runs.
 -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive U : Type where
   | leaf : Nat → U
   | node : U → U → U
@@ -215,7 +215,7 @@ Any inductive `Prop` nests the same way; `Nonempty` is not special.  `Exists`
 mentions the member inside a binder's domain rather than as a bare parameter.
 -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive V : Type where
   | mk0 : V
   | mkE : (∃ _ : V, True) → V
@@ -224,7 +224,7 @@ mumi_spec
 inductive Box (α : Type) : Prop where
   | intro : α → Box α
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive W : Type where
   | mk0 : Nat → W
   | mkB : Box W → W
@@ -247,7 +247,7 @@ inductive Two (α : Type) : Prop where
   | l : α → Two α
   | r : Nat → α → Two α
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive X2 : Type where
   | mk0 : X2
   | mkT : Two X2 → X2
@@ -265,7 +265,7 @@ rescuing the block has to leave it that way -- it decides whether the
 constructor is written `P.ghost h` or `P.ghost α h`.
 -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive P (α : Type) : Type where
   | leaf : α → P α
   | ghost : Nonempty (P α) → P α
@@ -288,7 +288,7 @@ example (α : Type) (h : Nonempty (P α)) : P α := P.ghost h
 #guard_msgs in
 #check @P.nested_Nonempty_1.eq_orig
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 /-- An instance parameter is an instance parameter on the other side too. -/
 inductive PI (α : Type) [Inhabited α] : Type where
   | leaf : α → PI α
@@ -303,7 +303,7 @@ the universes do line up: *nested inductive datatypes parameters cannot contain
 local variables*.
 -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive Ix : Nat → Type where
   | base : Ix 0
   | step : (n : Nat) → Nonempty (Ix n) → Ix (n + 1)
@@ -328,7 +328,7 @@ example (n : Nat) (h : Nonempty (Ix n)) : Ix (n + 1) :=
 -- its original the same way
 example : Ix 1 := Ix.step 0 ⟨Ix.base⟩
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 /-- Two occurrences that differ only in which local they mention share a member. -/
 inductive Iy : Nat → Type where
   | base : Iy 0
@@ -546,7 +546,7 @@ example (t : D9B) : D9B.tag t = D9B.tag t := by
 
 /-! ## Nesting inside nesting -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive N : Type where
   | mk0 : N
   | mkL : Nonempty (List N) → N
@@ -681,7 +681,7 @@ def T3.count : T3 → Nat
 occurrence, so which hypothesis belongs to which field has to be read off the
 recursor rather than guessed from a field's head. -/
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive V3 : Type 1 where
   | tip : V3
@@ -730,7 +730,7 @@ inductive Vek3 (α : Type) : Nat → Type where
   | nil : Vek3 α 0
   | cons : (n : Nat) → α → Vek3 α n → Vek3 α (n + 1)
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive A3 : Type 1 where
   | tip : A3
@@ -832,7 +832,7 @@ inductive FamPB (α : Type u) : Prop where
   | cons : FamPA α → FamPB α → FamPB α
 end
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Mu2A : Type 1 where
   | tip : Mu2A
@@ -1210,7 +1210,7 @@ mumi_spec
 inductive Xbox (α : Sort u) : Sort (max 1 u) where
   | mk : α → Xbox α
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf])
 mutual
 inductive Xs1 : Type 1 where
   | tip : Xs1
@@ -1309,7 +1309,7 @@ inductive Sp (α : Type u) : Prop where
   | nil : Sp α
   | mk : α → SList (Sp α) → Sp α
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec (xfail := [rec, recOn, sizeOf])
 mutual
 inductive St1 : Type 1 where
   | tip : St1
@@ -1336,7 +1336,7 @@ inductive WrapP (α : Type u) : Prop where
   | p : WrapP α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf])
 mutual
 inductive St3 : Type 1 where
   | tip : St3
@@ -1942,7 +1942,7 @@ own and `Nonempty`'s both. -/
 
 namespace NamesTwice
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive TI : Type where
   | intro : TI
   | mkT : Nonempty TI → TI

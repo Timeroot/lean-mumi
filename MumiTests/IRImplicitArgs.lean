@@ -42,7 +42,7 @@ namespace InstLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive U (α : Type) [BEq α] : Type where
   | base : U α
@@ -67,7 +67,7 @@ index of type `Ty (.snoc Γ A)` stands for `.base (.snoc Γ A)`. -/
 namespace Fields
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -107,7 +107,7 @@ namespace FieldsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ctx : Type where
   | nil : Ctx

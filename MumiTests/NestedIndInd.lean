@@ -724,7 +724,7 @@ Lean binds them. -/
 
 namespace NamesTwice
 
-mumi_spec (simp := [NTy.rec_tup, NCtx.rec_1_cons, NTy.casesOn_tup])
+mumi_spec (simp := [NTy.rec_tup, NCtx.rec_1_cons, NTy.casesOn_tup]) (xfail := [sizeOf])
 mutual
 inductive NCtx : Type where
   | nil : NCtx

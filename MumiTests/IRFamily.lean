@@ -22,7 +22,7 @@ field out of a constructor. -/
 
 namespace CtxTy
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -90,7 +90,7 @@ that its constructors fill with `size` of their fields. -/
 
 namespace ByValue
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Code : Type where
   | one : Code

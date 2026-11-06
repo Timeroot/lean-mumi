@@ -59,7 +59,7 @@ namespace NotationsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive U : Type where
   | base : U
@@ -94,7 +94,7 @@ end NotationsLower
 namespace Implicit
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -126,7 +126,7 @@ namespace ImplicitLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -160,7 +160,7 @@ a decoder call writes the ones its declaration binds explicitly. -/
 namespace Params
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -192,7 +192,7 @@ namespace ParamsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X

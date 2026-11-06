@@ -368,38 +368,16 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (P : Sort u) :
 
 example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := Ctx.noConfusion h
 
-/-! ### What is missing
+/-! `injection` and `contradiction` reduce the type in hand until they reach an inductive,
+and what they reach is the wrapper, so `Mumi.CtorTactics` looks first at an equation between
+two constructors of a member. -/
 
-`injection` and `contradiction` reduce the type in hand until they reach an
-inductive, and what they reach is the wrapper.  So `injection` leaves a goal
-about pre-terms, and `contradiction` sees the wrapper's one constructor on both
-sides and gives up.  `Ctx.noConfusion`, `Ctx.snoc.inj` and `simp` state the same
-things about the member. -/
-
-/--
-error: unsolved goals
-Γ Δ : Ctx
-A : Ty Γ
-B : Ty Δ
-val_eq✝ : Γ.val.snoc A.val = Δ.val.snoc B.val
-⊢ Γ = Δ
--/
-#guard_msgs in
 example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ := by
   injection h
 
 example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (h : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ :=
   (Ctx.snoc.inj h).1
 
-/--
-error: Tactic `contradiction` failed
-
-Γ : Ctx
-A : Ty Γ
-h : Ctx.nil = Γ.snoc A
-⊢ False
--/
-#guard_msgs in
 example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by contradiction
 
 example (Γ : Ctx) (A : Ty Γ) (h : Ctx.nil = Ctx.snoc Γ A) : False := by simp at h
@@ -819,7 +797,7 @@ them and a delaborator shows the original.
 
 namespace NestProp
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 inductive T : Type where
   | mk1 : T
   | mkT (h : Nonempty T) : T
@@ -869,7 +847,7 @@ inductive BoxP (α : Type u) : Prop where
   | p : BoxP α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq])
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf])
 mutual
 inductive St : Type 1 where
   | tip : St
@@ -1153,16 +1131,15 @@ inductive Z : Type where
 
 end QuotNest
 
-/-! ## Equations between constructors: known gaps
+/-! ## Equations between constructors
 
 Lean's tactics read an equation between constructors off the constructors, and here a
-constructor is a definition unfolding to a subtype's.  So `contradiction`, `injection`
-and `cases` at the equation do not do what they do natively (the `Native` section of
-`MumiTests/Spec/SelfTest.lean`).  `cases` on the equation of two different constructors
-works, as does `X.c.inj`, which is the way around these for now.  Each
-`fail_if_success` below is a gap, and will say so when it closes. -/
+constructor is a definition unfolding to a wrapper's.  `Mumi.CtorTactics` gives
+`contradiction`, `injection`, `cases` and `simp` what Lean's own have
+(`MumiTests/Spec/SelfTest.lean`, its `Native` section), on each kind of encoded member,
+with nothing internal in what they leave. -/
 
-namespace CtorEqGaps
+namespace CtorEqs
 
 mutual
 inductive Ctx : Type where
@@ -1173,15 +1150,38 @@ inductive Ty : Ctx → Type where
   | pi {Γ} (A : Ty Γ) (B : Ty (.snoc Γ A)) : Ty Γ
 end
 
-example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := by
-  intro h
-  fail_if_success contradiction
-  cases h
+example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := by intro h; contradiction
+example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := by intro h; cases h
 example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := fun e => Ctx.noConfusion e
+example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := by simp
 example (Γ Γ' A A') (e : Ctx.snoc Γ A = Ctx.snoc Γ' A') : Γ = Γ' := by
-  fail_if_success injection e with h1 h2
-  fail_if_success cases e
-  exact (Ctx.snoc.inj e).1
+  injection e with h1 h2
+example (Γ Γ' A A') (e : Ctx.snoc Γ A = Ctx.snoc Γ' A') : A ≍ A' := by
+  injection e with h1 h2
+example (Γ Γ' A A') (e : Ctx.snoc Γ A = Ctx.snoc Γ' A') : Γ = Γ' := by
+  cases e; rfl
+
+-- what `injection` leaves is about the fields
+/--
+error: unsolved goals
+Γ Γ' : Ctx
+A : Ty Γ
+A' : Ty Γ'
+h1 : Γ = Γ'
+h2 : A ≍ A'
+⊢ True ∧ True
+-/
+#guard_msgs in
+example (Γ Γ' A A') (e : Ctx.snoc Γ A = Ctx.snoc Γ' A') : True ∧ True := by
+  injection e with h1 h2
+
+-- one equation deep inside another
+example (Γ A B B') (e : Ctx.snoc (Ctx.snoc Γ A) B = Ctx.snoc (Ctx.snoc Γ A) B') : B = B' := by
+  cases e; rfl
+
+/-- info: 'MumiTests.Demo.CtorEqs.Ctx.noConfusion' does not depend on any axioms -/
+#guard_msgs in
+#print axioms Ctx.noConfusion
 
 mutual
 inductive T : Type where
@@ -1191,16 +1191,157 @@ inductive Ok : List T → Prop where
   | nil : Ok []
 end
 
-example (cs h) : T.leaf ≠ T.node cs h := by
-  intro e
-  fail_if_success contradiction
-  fail_if_success exact T.noConfusion e
-  cases e
+-- `h` is a proof, so `cs` is the one equation, as Lean has it
+example (cs h) : T.leaf ≠ T.node cs h := by intro e; contradiction
+example (cs h) : T.leaf ≠ T.node cs h := by intro e; cases e
+example (cs h) : T.leaf ≠ T.node cs h := fun e => T.noConfusion e
 example (a b h h') (e : T.node a h = T.node b h') : a = b := by
-  fail_if_success injection e with h1 h2
-  fail_if_success cases e
-  exact T.node.inj e
+  injection e with h1
+example (a b h h') (e : T.node a h = T.node b h') : a = b := by
+  cases e; rfl
+example (a b h h') (e : T.node a h = T.node b h') : a = b := T.node.inj e
 
-end CtorEqGaps
+-- induction-recursion, whose `X.ctorIdx` and measure come from the recursion
+mutual
+inductive U : Type where
+  | base : U
+  | pi (a : U) (b : El a → U) : U
+def El : U → Type
+  | .base => Nat
+  | .pi a b => (x : El a) → El (b x)
+end
+
+example (x b) : U.base ≠ U.pi x b := by intro h; contradiction
+example (x b) : U.base ≠ U.pi x b := by intro h; cases h
+example (x b) : U.base ≠ U.pi x b := fun h => U.noConfusion h
+example (x b) : U.base ≠ U.pi x b := by simp
+example (x x' b b') (e : U.pi x b = U.pi x' b') : x = x' := by
+  injection e with h1 h2
+example (x x' b b') (e : U.pi x b = U.pi x' b') : x = x' := by
+  cases e; rfl
+example : U.ctorIdx .base = 0 := rfl
+
+/-- info: U.pi.sizeOf_spec : ∀ (a : U) (b : El a → U), sizeOf (a.pi b) = 1 + sizeOf a -/
+#guard_msgs in
+#check @U.pi.sizeOf_spec
+
+-- at one constructor `U`'s `noConfusion` offers the equation itself, not its fields'
+example (P : Sort _) (x b) : U.noConfusionType P (U.pi x b) (U.pi x b) = ((U.pi x b = U.pi x b → P) → P) := rfl
+
+/-! ### The other ways into such an equation
+
+What Lean does with each of these is in `MumiTests/Spec/SelfTest.lean`, where every one goes
+through.  Here `Mumi.CtorTactics` covers `cases h` written bare, and nothing else reaches it,
+so what the following record is today's state: an example that stands goes through, and each
+`fail_if_success` is a gap, which will say so when it closes. -/
+
+section Ways
+
+/-- A goal `tac` must leave closed: `injections` alone can stop short without complaint. -/
+local macro "closes_by " tac:tactic : tactic => `(tactic| ($tac; done))
+
+-- `rfl` patterns against a variable are a substitution, which works
+example (Γ A) (b : Ctx) (e : Ctx.snoc Γ A = b) : Ctx.snoc Γ A = b := by rcases e with rfl; rfl
+example (Γ A) (b : Ctx) (e : Ctx.snoc Γ A = b) : Ctx.snoc Γ A = b := by obtain rfl := e; rfl
+example (a h) (b : T) (e : T.node a h = b) : T.node a h = b := by rcases e with rfl; rfl
+example (a h) (b : T) (e : T.node a h = b) : T.node a h = b := by obtain rfl := e; rfl
+example (a b) (c : U) (e : U.pi a b = c) : U.pi a b = c := by rcases e with rfl; rfl
+example (a b) (c : U) (e : U.pi a b = c) : U.pi a b = c := by obtain rfl := e; rfl
+
+-- two different constructors, by what the wrapper's own unifier can still see
+example (Γ A) (h : Ctx.nil = Ctx.snoc Γ A) : False := by cases h with
+example (Γ A) (h : Ctx.nil = Ctx.snoc Γ A) : False := by rcases h with ⟨⟩
+example (Γ A) (h : Ctx.nil = Ctx.snoc Γ A) : False := by injections
+example (cs h) (e : T.leaf = T.node cs h) : False := by cases e with
+example (cs h) (e : T.leaf = T.node cs h) : False := by rcases e with ⟨⟩
+example (cs h) (e : T.leaf = T.node cs h) : False := by injections
+
+-- gap: an induction-recursion's constructors differ only past what the unifier can reach
+example (a b) (e : U.base = U.pi a b) : False := by
+  fail_if_success (cases e with)
+  fail_if_success rcases e with ⟨⟩
+  fail_if_success closes_by injections
+  contradiction
+
+-- gap: one constructor on both sides, by anything but `cases h` written bare
+example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ := by
+  fail_if_success closes_by injections
+  fail_if_success rcases e with ⟨⟩
+  fail_if_success obtain ⟨⟩ := e
+  fail_if_success cases e with | refl => rfl
+  cases e; rfl
+example (a b h h') (e : T.node a h = T.node b h') : a = b := by
+  fail_if_success closes_by injections
+  fail_if_success rcases e with ⟨⟩
+  fail_if_success obtain ⟨⟩ := e
+  fail_if_success cases e with | refl => rfl
+  cases e; rfl
+example (a a' b b') (e : U.pi a b = U.pi a' b') : a = a' := by
+  fail_if_success closes_by injections
+  fail_if_success rcases e with ⟨⟩
+  fail_if_success obtain ⟨⟩ := e
+  fail_if_success cases e with | refl => rfl
+  cases e; rfl
+
+/-! `cases` where an index is a constructor of a member.  Lean has to solve that index against
+each case, by the unifier these constructors defeat.  A constructor with no fields reduces to
+something it can settle; one with fields does not. -/
+
+inductive CtxAt : Ctx → Type where
+  | atNil : CtxAt .nil
+  | atSnoc (Γ A) : CtxAt (.snoc Γ A)
+inductive CtxPAt : Ctx → Prop where
+  | nil : CtxPAt .nil
+  | snoc (Γ A) : CtxPAt (.snoc Γ A)
+inductive TAt : T → Type where
+  | atLeaf : TAt .leaf
+  | atNode (cs h) : TAt (.node cs h)
+inductive TPAt : T → Prop where
+  | leaf : TPAt .leaf
+  | node (cs h) : TPAt (.node cs h)
+inductive UAt : U → Type 1 where
+  | atBase : UAt .base
+  | atPi (a b) : UAt (.pi a b)
+inductive UPAt : U → Prop where
+  | base : UPAt .base
+  | pi (a b) : UPAt (.pi a b)
+
+example (a : CtxAt .nil) : True := by cases a; trivial
+example (h : CtxPAt .nil) : True := by cases h; trivial
+example (a : TAt .leaf) : True := by cases a; trivial
+example (h : TPAt .leaf) : True := by cases h; trivial
+
+-- gap: at a constructor with fields
+example (Γ A) (a : CtxAt (.snoc Γ A)) : True := by
+  fail_if_success cases a
+  fail_if_success cases a with | atSnoc => trivial
+  trivial
+example (Γ A) (h : CtxPAt (.snoc Γ A)) : True := by
+  fail_if_success cases h
+  fail_if_success cases h with | snoc => trivial
+  fail_if_success rcases h with ⟨⟩
+  trivial
+example (cs h) (a : TAt (.node cs h)) : True := by
+  fail_if_success cases a
+  fail_if_success cases a with | atNode => trivial
+  trivial
+example (cs h) (p : TPAt (.node cs h)) : True := by
+  fail_if_success cases p
+  fail_if_success cases p with | node => trivial
+  fail_if_success rcases p with ⟨⟩
+  trivial
+example (x b) (a : UAt (.pi x b)) : True := by
+  fail_if_success cases a
+  fail_if_success cases a with | atPi => trivial
+  trivial
+example (x b) (p : UPAt (.pi x b)) : True := by
+  fail_if_success cases p
+  fail_if_success cases p with | pi => trivial
+  fail_if_success rcases p with ⟨⟩
+  trivial
+
+end Ways
+
+end CtorEqs
 
 end MumiTests.Demo

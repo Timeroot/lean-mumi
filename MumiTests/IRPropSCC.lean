@@ -77,7 +77,7 @@ the well-formedness sits on top of them. -/
 namespace PropIdx
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -129,7 +129,7 @@ namespace PropSCCLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive U : Type where
   | base : U
@@ -176,7 +176,7 @@ namespace PropIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -279,7 +279,7 @@ namespace SeveralLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 /-- codes over `α` -/
 inductive U (α : Type) : Type where
@@ -304,7 +304,7 @@ theorem Good.t (α : Type) (u : U α) (g : Good α u) : True :=
 theorem Fine.c (α : Type) (u : U α) (g : Fine α u) : True := by
   cases g with | base => trivial | pi a b h h' hb => trivial
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive T : Type where
   | base : T
@@ -327,7 +327,7 @@ clauses: given their full names when the block is read. -/
 namespace NestedProp
 set_option mumi.mahlo false
 
-mumi_spec
+mumi_spec (xfail := [sizeOf])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -363,7 +363,7 @@ namespace NestedPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
@@ -430,7 +430,7 @@ namespace SeveralFunLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec
+mumi_spec (xfail := [discr])
 mutual
 inductive T : Type where
   | base : T
