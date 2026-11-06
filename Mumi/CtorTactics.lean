@@ -636,10 +636,38 @@ private def dropUnasked (discrs : Array Syntax) (at_ : Nat) (rows : Array Row) :
   let at_' := keep.idxOf at_
   return (keep.map (discrs[·]!), at_', rows.map fun r => { r with pats := keep.map (r.pats[·]!) })
 
+/-- Without the discriminants every row only names, each name a `let` in its right-hand side:
+a `match` on them would rebind what the split's fields are typed by. -/
+private def letNamed (discrs : Array Syntax) (at_ : Nat) (rows : Array Row) :
+    TermElabM (Array Syntax × Nat × Array Row) := do
+  let mut keep : Array Nat := #[]
+  let mut named : Array Nat := #[]
+  for i in *...discrs.size do
+    if i != at_ && !discrs[i]![0].isNone then
+      keep := keep.push i
+    else if i == at_ then
+      keep := keep.push i
+    else if ← rows.allM fun r => bindsOnly r.pats[i]! then
+      named := named.push i
+    else
+      keep := keep.push i
+  let mut out : Array Row := #[]
+  for r in rows do
+    let mut rhs := r.rhs
+    for i in named.reverse do
+      let p := r.pats[i]!
+      if p.isIdent then
+        rhs := (← `(let $(⟨p⟩):ident := $(⟨discrs[i]![1]⟩):term; $(⟨rhs⟩):term)).raw
+    out := out.push { pats := keep.map (r.pats[·]!), rhs }
+  return (keep.map (discrs[·]!), keep.idxOf at_, out)
+
 /-- `rhs`, without the `clear% x` an equation-style definition wraps it in: `cases` has taken
 `x` already. -/
 private partial def withoutClear (x : Syntax) (rhs : Syntax) : Syntax :=
-  if rhs.isOfKind ``Parser.Term.clear && rhs[1].getId == x.getId then withoutClear x rhs[3] else rhs
+  if rhs.isOfKind ``Parser.Term.clear then
+    if rhs[1].getId == x.getId then withoutClear x rhs[3]
+    else rhs.setArg 3 (withoutClear x rhs[3])
+  else rhs
 
 /-- The rows of `alts`, one to a pattern list. -/
 private def rowsOf (alts : Array Syntax) (numDiscrs : Nat) (x : Syntax) : Option (Array Row) := Id.run do
@@ -661,6 +689,7 @@ def elabMatchAtIndex : Term.TermElab := fun stx expectedType? => do
   let alts := stx[5][0].getArgs
   let some rows := rowsOf alts discrs.size t | throwUnsupportedSyntax
   let (discrs, at_, rows) := dropUnasked discrs at_ rows
+  let (discrs, at_, rows) ← letNamed discrs at_ rows
   let others := (discrs.eraseIdx! at_)
   let leaf (rhs : Syntax) : TermElabM Syntax := do
     `(Lean.Parser.Tactic.tacticSeq| exact $(⟨rhs⟩):term)

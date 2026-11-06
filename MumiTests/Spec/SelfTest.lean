@@ -123,6 +123,11 @@ def rlen (cs n) : R (.node cs n) → Nat
   | .stop _ _ => 0
   | .go _ _ r => rlen cs n r + 1
 example (cs n r) : rlen cs n (.go cs n r) = rlen cs n r + 1 := by simp [rlen]
+-- and with an argument that changes along it, the measure is found
+def racc (cs n) (k : Nat) : R (.node cs n) → Nat
+  | .stop _ _ => k
+  | .go _ _ r => racc cs n (k + 1) r
+example (cs n k r) : racc cs n k (.go cs n r) = racc cs n (k + 1) r := by simp [racc]
 -- an index no unifier solves is refused by Lean too: a block's `matching` mark can be this
 inductive C : Nat → Type where
   | nil : C 0

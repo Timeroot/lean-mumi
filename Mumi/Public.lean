@@ -2065,11 +2065,116 @@ private def tidyEqn (type cond : Expr) : MetaM (Option (Expr × Expr)) := do
       return some (← mkForallFVars ys (body'.replaceFVars keptX ys),
         ← mkLambdaFVars ys (mkAppN cond args))
 
+/-- Whether `e` is headed by what a case split at a concrete constructor reduces away: a case
+split of an inductive, or the casts `cases` leaves behind it. -/
+private def headsReduction (e : Expr) : MetaM Bool := do
+  let .const n _ := e.getAppFn | return false
+  if n == ``Eq.rec || n == ``Eq.ndrec || n == ``Eq.recOn || n == ``Eq.casesOn ||
+      n == ``HEq.rec || n == ``HEq.casesOn || n == ``cast || n == ``Eq.mpr then return true
+  return isCasesOnRecursor (← getEnv) n
+
+/-- `e`, reduced as far as a case split and its casts go at its head. -/
+private partial def reduceSplit (e : Expr) : MetaM Expr := do
+  let e' ← whnfCore e
+  unless ← headsReduction e' do return e'
+  let some u ← unfoldDefinition? e' | return e'
+  reduceSplit u
+
+/-- `e` with every case split and cast in it reduced where it can be. -/
+private def reduceSplits (e : Expr) : MetaM Expr :=
+  Meta.transform e (pre := fun x => do
+    if ← headsReduction x then
+      let x' ← reduceSplit x
+      unless x' == x do return .visit x'
+    return .continue)
+
+/--
+The equations of a recursive definition that is a case split on one argument, one to a
+constructor that argument's type can be at.  A `match` where an index is a constructor of an
+encoded member is compiled as `cases` (`Mumi.CtorTactics`), which is no matcher for Lean's
+generator to read, and all it would state is the unfolding, `f x = …`, which `simp` loops on.
+At a constructor that term comes down to the right-hand side as written: the case split picks
+its branch, and the casts are at `rfl`.  The kernel checks that against the unfolding. -/
+private def splitEqns (declName : Name) (info : DefinitionVal) : MetaM (Option (Array Name)) := do
+  -- only what that `match` can have compiled: reducing anything else, a decoder of a lowered
+  -- block say, is a long way into an encoding for nothing
+  let env ← getEnv
+  let atEncoded := (info.type.find? fun x => match x with
+    | .const (.str mem s) _ => env.contains (Name.mkStr mem s!"ctorIdx_{s}")
+    | _ => false).isSome
+  unless atEncoded do return none
+  let target ← Lean.Elab.Eqns.unfoldThmType declName
+  let stated? ← forallTelescope target fun xs eq => do
+    let some (_, lhs, body) := eq.eq? | return none
+    let .const casesOn ls := body.getAppFn | return none
+    let .str ind "casesOn" := casesOn | return none
+    unless isCasesOnRecursor (← getEnv) casesOn do return none
+    let .inductInfo ii ← getConstInfo ind | return none
+    let majorAt := ii.numParams + 1 + ii.numIndices
+    let some major := body.getAppArgs[majorAt]? | return none
+    unless major.isFVar && xs.contains major do return none
+    let others := xs.filter (· != major)
+    for o in others do
+      if (← inferType o).containsFVar major.fvarId! then return none
+    let majorTy ← inferType major
+    let args := majorTy.getAppArgs
+    unless majorTy.getAppFn.isConstOf ind do return none
+    let lvls := ls.drop (ls.length - ii.levelParams.length)
+    let ps := args.extract 0 ii.numParams
+    let some unfold ← getUnfoldEqnFor? declName (nonRec := true) | return none
+    let unfoldC := mkConst unfold (info.levelParams.map mkLevelParam)
+    let mut out : Array (Expr × Expr) := #[]
+    for c in ii.ctors do
+      let ci ← getConstInfo c
+      let cty ← instantiateForall (ci.instantiateTypeLevelParams lvls) ps
+      let (ms, _, res) ← forallMetaTelescope cty
+      -- a constructor the index rules out has no equation
+      unless ← withReducible (isDefEq res majorTy) do continue
+      -- what the constructor's fields leave open are the equation's variables, and real ones:
+      -- Lean does not reduce a cast whose equation still has a metavariable in it
+      let names := cty.getForallBinderNames
+      let rec withOpen (k : Nat) (fs : Array Expr) : MetaM (Expr × Expr) := do
+        if h : k < ms.size then
+          if ← ms[k].mvarId!.isAssigned then return ← withOpen (k + 1) fs
+          let ty ← instantiateMVars (← inferType ms[k])
+          withLocalDeclD (names.getD k `x) ty fun y => do
+            ms[k].mvarId!.assign y
+            withOpen (k + 1) (fs.push y)
+        else
+          let app ← instantiateMVars (mkAppN (mkAppN (mkConst c lvls) ps) ms)
+          let lhs' := lhs.replaceFVar major app
+          let rhs ← reduceSplits (body.replaceFVar major app)
+          -- the recursion's own `have`s are nothing that was written
+          let rhs ← zetaReduce rhs
+          let stmt ← mkEq lhs' rhs
+          let all := others ++ fs
+          let value := mkApp2 (mkConst ``id [0]) stmt
+            (mkAppN unfoldC (xs.map (·.replaceFVar major app)))
+          return (← mkForallFVars all stmt, ← mkLambdaFVars all value)
+        termination_by ms.size - k
+      out := out.push (← withOpen 0 #[])
+    return some out
+  let some stated := stated? | return none
+  if stated.isEmpty then return none
+  let mut names := #[]
+  for h : i in *...stated.size do
+    let (type, value) := stated[i]
+    let name := mkEqLikeNameFor (← getEnv) declName s!"{eqnThmSuffixBasePrefix}{i + 1}"
+    realizeConst declName name do
+      addDecl (.thmDecl { name, levelParams := info.levelParams, type, value })
+    names := names.push name
+  return some names
+
 /-- The equations of `declName`, where there is something of ours to settle in them. -/
 private def mumiEqns (declName : Name) : MetaM (Option (Array Name)) := do
   let some (.defnInfo info) := (← getEnv).find? declName | return none
   unless backward.eqns.nonrecursive.get (← getOptions) || (← isRecursiveDefinition declName) do
     return none
+  try
+    if ← isRecursiveDefinition declName then
+      if let some names ← splitEqns declName info then return some names
+  catch ex =>
+    trace[Mumi] "the equations of `{declName}` as a case split did not go through: {ex.toMessageData}"
   try
     withOptions (tactic.hygienic.set · false) do
     let target ← Lean.Elab.Eqns.unfoldThmType declName

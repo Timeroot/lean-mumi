@@ -1473,10 +1473,9 @@ r✝ : CtxR (Γ.snoc A)
 #guard_msgs in
 example (Γ A) : CtxR (.snoc Γ A) → Nat | .stop _ _ => 0
 
-/-! Gap: recursion through such a `match` compiles and computes, but it is the `cases` above
-rather than a matcher, so its equations do not come apart.  `simp [rlen]`, which works for
-Lean's own (`SelfTest`), loops here until it hits the recursion limit; `rw [rlen]` unfolds it
-once, and `cases` on the term then finishes. -/
+/-! Recursion through such a `match`.  It is the `cases` above rather than a matcher, so Lean's
+generator could only state the unfolding, which `simp` loops on; `Mumi.splitEqns` states one
+equation to a constructor, as Lean's own are (`SelfTest`). -/
 
 def rlen (Γ A) : CtxR (.snoc Γ A) → Nat
   | .stop _ _ => 0
@@ -1484,9 +1483,64 @@ def rlen (Γ A) : CtxR (.snoc Γ A) → Nat
 /-- info: 1 -/
 #guard_msgs in
 #eval rlen .nil .base (.go .nil .base (.stop .nil .base))
-example (Γ A r) : rlen Γ A (.go Γ A r) = rlen Γ A r + 1 := by
-  fail_if_success rfl
-  rw [rlen]
+
+/-- info: rlen.eq_1 : ∀ (Γ : Ctx) (A : Ty Γ), rlen Γ A (CtxR.stop Γ A) = 0 -/
+#guard_msgs in
+#check @rlen.eq_1
+/-- info: rlen.eq_2 : ∀ (Γ : Ctx) (A : Ty Γ) (r : CtxR (Γ.snoc A)), rlen Γ A (CtxR.go Γ A r) = rlen Γ A r + 1 -/
+#guard_msgs in
+#check @rlen.eq_2
+
+example (Γ A) : rlen Γ A (.stop Γ A) = 0 := by simp [rlen]
+example (Γ A r) : rlen Γ A (.go Γ A r) = rlen Γ A r + 1 := by simp [rlen]
+example (Γ A r) : rlen Γ A (.go Γ A r) = rlen Γ A r + 1 := by simp only [rlen]
+example (Γ A r) : rlen Γ A (.go Γ A r) = rlen Γ A r + 1 := by rw [rlen]
+-- by induction, as one would
+example (Γ A) (r : CtxR (.snoc Γ A)) : rlen Γ A (.go Γ A (.go Γ A r)) = rlen Γ A r + 2 := by
+  simp [rlen]
+
+-- rows that take a further `match`
+inductive CtxS : Ctx → Type where
+  | stop (Γ A) (o : Option Nat) : CtxS (.snoc Γ A)
+  | go (Γ A) (r : CtxS (.snoc Γ A)) : CtxS (.snoc Γ A)
+def slen (Γ A) : CtxS (.snoc Γ A) → Nat
+  | .stop _ _ none => 0
+  | .stop _ _ (some k) => k
+  | .go _ _ r => slen Γ A r + 1
+example (Γ A r) : slen Γ A (.go Γ A r) = slen Γ A r + 1 := by simp [slen]
+example (Γ A) : slen Γ A (.stop Γ A none) = 0 := by simp [slen]
+example (Γ A k) : slen Γ A (.stop Γ A (some k)) = k := by simp [slen]
+
+-- what the index is made of, named by the patterns: each a `let`
+def snamed : (Γ : Ctx) → (A : Ty Γ) → CtxS (.snoc Γ A) → Nat
+  | _, _, .stop _ _ _ => 0
+  | Γ, A, .go _ _ r => snamed Γ A r + 1
+example (Γ A r) : snamed Γ A (.go Γ A r) = snamed Γ A r + 1 := by simp [snamed]
+
+-- a further discriminant after it
+def safter (Γ A) : CtxS (.snoc Γ A) → Nat → Nat
+  | .stop _ _ _, k => k
+  | .go _ _ r, k => safter Γ A r (k + 1)
+termination_by x => sizeOf x
+example (Γ A r k) : safter Γ A (.go Γ A r) k = safter Γ A r (k + 1) := by simp [safter]
+
+/-! Gap: with an argument that changes along the recursion, Lean's guess at a measure goes
+wrong on what `cases` leaves, where Lean's own needs no help (`SelfTest`).  Saying the measure
+is all it takes. -/
+
+def sacc (Γ A) (k : Nat) (x : CtxS (.snoc Γ A)) : Nat := match x with
+  | .stop _ _ _ => k
+  | .go _ _ r => sacc Γ A (k + 1) r
+termination_by sizeOf x
+example (Γ A k r) : sacc Γ A k (.go Γ A r) = sacc Γ A (k + 1) r := by simp [sacc]
+
+#guard_msgs (drop error) in
+def saccGuess (Γ A) (k : Nat) : CtxS (.snoc Γ A) → Nat
+  | .stop _ _ _ => k
+  | .go _ _ r => saccGuess Γ A (k + 1) r
+/-- info: 'MumiTests.Demo.CtorEqs.saccGuess' depends on axioms: [sorryAx] -/
+#guard_msgs in
+#print axioms saccGuess
 
 /-! `match` on a `Prop` member that is a definition.  Its constructors are theorems, so Lean's
 `match` has no patterns to elaborate, and the same rewrite gives it the case split. -/
