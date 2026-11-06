@@ -33,8 +33,9 @@ were the restriction lifted:
 * `cases` on every member, and `induction` on a lone one;
 * of each data member's constructors, as Lean's own behave: `X.c.sizeOf_spec` as Lean
   states it, `X.ctorIdx` by `rfl`, and the tactics on an equation between constructors --
-  at two different ones `contradiction`, `cases`, `simp` and `X.noConfusion` refute it, at one
-  `injection` and `cases` give the equations of its fields;
+  at two different ones `contradiction`, `cases`, `rcases`, `obtain`, `injections`, `simp`
+  and `X.noConfusion` refute it, at one
+  `injection`, `injections`, `cases`, `rcases` and `obtain` give the equations of its fields;
 * each decoder of an induction-recursion, as written, and its equations;
 * no axiom in any of it, but `propext` in an `injEq` and `IR.mahlo` under
   `mumi.mahlo`.
@@ -913,6 +914,14 @@ private def discrimination (r : Run) (m : Member) (params : Array Expr) : TermEl
           problem r .discr m!"`cases` does not refute `{c1} … = {c2} …`"
         unless ← closes goal (← `(tactic| (intro h; simp at h))) do
           problem r .discr m!"`simp` does not refute `{c1} … = {c2} …`"
+        unless ← closes goal (← `(tactic| (intro h; cases h with))) do
+          problem r .discr m!"`cases … with` does not refute `{c1} … = {c2} …`"
+        unless ← closes goal (← `(tactic| (intro h; rcases h with ⟨⟩))) do
+          problem r .discr m!"`rcases` does not refute `{c1} … = {c2} …`"
+        unless ← closes goal (← `(tactic| (intro h; obtain ⟨⟩ := h))) do
+          problem r .discr m!"`obtain` does not refute `{c1} … = {c2} …`"
+        unless ← closes goal (← `(tactic| (intro h; injections))) do
+          problem r .discr m!"`injections` does not refute `{c1} … = {c2} …`"
         -- an indexed member's takes an equation at each index first
         unless ← closes goal (← `(tactic| first
             | exact fun h => $conf h
@@ -937,6 +946,14 @@ private def injectionBehaves (r : Run) (ctorName : Name) (inj : Expr) : TermElab
         problem r .inject m!"`injection` at an equation of `{ctorName}` does not give those of its fields"
       unless ← closes goal (← `(tactic| (intro h; cases h; all_goals (and_intros <;> first | rfl | exact HEq.rfl)))) do
         problem r .inject m!"`cases` at an equation of `{ctorName}` does not give those of its fields"
+      unless ← closes goal (← `(tactic| (intro h; injections; all_goals (and_intros <;> assumption)))) do
+        problem r .inject m!"`injections` at an equation of `{ctorName}` does not give those of its fields"
+      unless ← closes goal (← `(tactic| (intro h; cases h with | refl => (and_intros <;> first | rfl | exact HEq.rfl)))) do
+        problem r .inject m!"`cases … with` at an equation of `{ctorName}` does not give those of its fields"
+      unless ← closes goal (← `(tactic| (intro h; rcases h with ⟨⟩; all_goals (and_intros <;> first | rfl | exact HEq.rfl)))) do
+        problem r .inject m!"`rcases` at an equation of `{ctorName}` does not give those of its fields"
+      unless ← closes goal (← `(tactic| (intro h; obtain ⟨⟩ := h; all_goals (and_intros <;> first | rfl | exact HEq.rfl)))) do
+        problem r .inject m!"`obtain` at an equation of `{ctorName}` does not give those of its fields"
 
 /-- `X.c.inj` and `X.c.injEq` as Lean states them: the fields that appear in the
 conclusion shared, the others twice, an equation (or `HEq`) at each that is

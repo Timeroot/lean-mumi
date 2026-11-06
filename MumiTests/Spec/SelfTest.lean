@@ -56,6 +56,40 @@ example (cs n) (h : PAt (.node cs n)) : True := by rcases h with ⟨⟩; trivial
 -- and where the constructor at the index rules a case out
 example (a : At .leaf) : a = .atLeaf := by cases a; rfl
 example (cs n) (a : At (.node cs n)) : a = .atNode cs n := by cases a; rfl
+example (cs n) (a : At (.node cs n)) : a = .atNode cs n := by cases a with | atNode c m => rfl
+example (cs n) (a b : At (.node cs n)) : a = b := by cases a; cases b; rfl
+-- two such indices, one solved by the other's, and one ruling the only case out
+inductive Two : T → T → Prop where
+  | mk (cs n) : Two (.node cs n) (.node cs n)
+example (a b n m) (h : Two (.node a n) (.node b m)) : a = b := by cases h; rfl
+example (cs n) (h : Two .leaf (.node cs n)) : False := by cases h
+example (cs n) (h : Two .leaf (.node cs n)) : False := nomatch h
+example (x : T) (h : Two x x) : True := by cases h; trivial
+-- under another inductive's constructor
+inductive Deep : Option T → Prop where
+  | mk (cs n) : Deep (some (.node cs n))
+example (a n) (p : Deep (some (.node a n))) : True := by cases p; trivial
+example (a b n m) (e : some (T.node a n) = some (T.node b m)) : a = b := by cases e; rfl
+example (a b n m) (e : some (T.node a n) = some (T.node b m)) : a = b := by injections
+-- naming the fields, and `match`, at such an index
+inductive V : T → Type where
+  | atNode (cs n) (m : Nat) : V (.node cs n)
+inductive W : T → Type where
+  | l : W .leaf
+  | n (cs k) (w : W .leaf) : W (.node cs k)
+example (cs n) (v : V (.node cs n)) : Nat := by rcases v with ⟨c, k, m⟩; exact m
+example (cs n) (v : V (.node cs n)) : True := by obtain ⟨c, k, m⟩ := v; trivial
+example (cs n) (v : V (.node cs n)) : Nat := match v with | .atNode _ _ m => m
+example (cs n) : V (.node cs n) → Nat | .atNode _ _ m => m
+example (cs n) (v : W (.node cs n)) : True := by match v with | .n _ _ _ => trivial
+example (cs n) (v : W (.node cs n)) : True := by cases v with | n c k x => cases x; trivial
+-- these Lean refuses of its own, so they owe nothing elsewhere
+example (cs n) (v : W (.node cs n)) : True := by
+  fail_if_success induction v with | l => trivial | n => trivial
+  trivial
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by
+  fail_if_success subst e
+  cases e; rfl
 end TacticsAtCtors
 
 

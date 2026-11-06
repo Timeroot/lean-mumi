@@ -1230,62 +1230,69 @@ example (P : Sort _) (x b) : U.noConfusionType P (U.pi x b) (U.pi x b) = ((U.pi 
 
 /-! ### The other ways into such an equation
 
-What Lean does with each of these is in `MumiTests/Spec/SelfTest.lean`, where every one goes
-through.  Here `Mumi.CtorTactics` covers `cases h` written bare, and nothing else reaches it,
-so what the following record is today's state: an example that stands goes through, and each
-`fail_if_success` is a gap, which will say so when it closes. -/
+Each goes through as it does for Lean's own (`MumiTests/Spec/SelfTest.lean`).  The harness asks
+these of every block; what follows is what it has no way of asking, needing a type of its own. -/
 
 section Ways
 
-/-- A goal `tac` must leave closed: `injections` alone can stop short without complaint. -/
-local macro "closes_by " tac:tactic : tactic => `(tactic| ($tac; done))
-
--- `rfl` patterns against a variable are a substitution, which works
+-- `rfl` patterns against a variable are a substitution, which is Lean's
 example (Γ A) (b : Ctx) (e : Ctx.snoc Γ A = b) : Ctx.snoc Γ A = b := by rcases e with rfl; rfl
 example (Γ A) (b : Ctx) (e : Ctx.snoc Γ A = b) : Ctx.snoc Γ A = b := by obtain rfl := e; rfl
-example (a h) (b : T) (e : T.node a h = b) : T.node a h = b := by rcases e with rfl; rfl
-example (a h) (b : T) (e : T.node a h = b) : T.node a h = b := by obtain rfl := e; rfl
-example (a b) (c : U) (e : U.pi a b = c) : U.pi a b = c := by rcases e with rfl; rfl
-example (a b) (c : U) (e : U.pi a b = c) : U.pi a b = c := by obtain rfl := e; rfl
+-- and between two constructors are the case split
+example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ := by rcases e with rfl; rfl
+example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ := by obtain rfl := e; rfl
 
--- two different constructors, by what the wrapper's own unifier can still see
-example (Γ A) (h : Ctx.nil = Ctx.snoc Γ A) : False := by cases h with
-example (Γ A) (h : Ctx.nil = Ctx.snoc Γ A) : False := by rcases h with ⟨⟩
-example (Γ A) (h : Ctx.nil = Ctx.snoc Γ A) : False := by injections
-example (cs h) (e : T.leaf = T.node cs h) : False := by cases e with
-example (cs h) (e : T.leaf = T.node cs h) : False := by rcases e with ⟨⟩
-example (cs h) (e : T.leaf = T.node cs h) : False := by injections
+-- what `injections` leaves is about the fields, not the wrapper
+/--
+error: unsolved goals
+Γ Δ : Ctx
+A : Ty Γ
+B : Ty Δ
+h1 : Γ = Δ
+h2 : A ≍ B
+⊢ True ∧ True
+-/
+#guard_msgs in
+example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : True ∧ True := by
+  injections h1 h2
 
--- gap: an induction-recursion's constructors differ only past what the unifier can reach
-example (a b) (e : U.base = U.pi a b) : False := by
-  fail_if_success (cases e with)
-  fail_if_success rcases e with ⟨⟩
-  fail_if_success closes_by injections
-  contradiction
+-- too many names is said as Lean says it
+/--
+error: Tactic `injections` failed: too many identifiers provided, unused: [h3]
 
--- gap: one constructor on both sides, by anything but `cases h` written bare
+Γ Δ : Ctx
+A : Ty Γ
+B : Ty Δ
+h1 : Γ = Δ
+h2 : A ≍ B
+⊢ True
+-/
+#guard_msgs in
+example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : True := by
+  injections h1 h2 h3
+
+-- a mistake in an alternative is reported as that, not as an equation not solved
+/--
+error: Type mismatch
+  1
+has type
+  Nat
+of sort `Type` but is expected to have type
+  Γ = Γ
+of sort `Prop`
+-/
+#guard_msgs in
 example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ := by
-  fail_if_success closes_by injections
-  fail_if_success rcases e with ⟨⟩
-  fail_if_success obtain ⟨⟩ := e
-  fail_if_success cases e with | refl => rfl
-  cases e; rfl
-example (a b h h') (e : T.node a h = T.node b h') : a = b := by
-  fail_if_success closes_by injections
-  fail_if_success rcases e with ⟨⟩
-  fail_if_success obtain ⟨⟩ := e
-  fail_if_success cases e with | refl => rfl
-  cases e; rfl
-example (a a' b b') (e : U.pi a b = U.pi a' b') : a = a' := by
-  fail_if_success closes_by injections
-  fail_if_success rcases e with ⟨⟩
-  fail_if_success obtain ⟨⟩ := e
-  fail_if_success cases e with | refl => rfl
-  cases e; rfl
+  cases e with | refl => exact (1 : Nat)
 
-/-! `cases` where an index is a constructor of a member.  Lean has to solve that index against
-each case, by the unifier these constructors defeat.  A constructor with no fields reduces to
-something it can settle; one with fields does not. -/
+-- several goals: the others are not disturbed
+example (Γ Δ A B) (e : Ctx.snoc Γ A = Ctx.snoc Δ B) : Γ = Δ ∧ True := by
+  constructor
+  · cases e with | refl => rfl
+  · trivial
+
+/-! `cases` where an index is a constructor of a member, which it has to solve against each
+case. -/
 
 inductive CtxAt : Ctx → Type where
   | atNil : CtxAt .nil
@@ -1306,39 +1313,104 @@ inductive UPAt : U → Prop where
   | base : UPAt .base
   | pi (a b) : UPAt (.pi a b)
 
-example (a : CtxAt .nil) : True := by cases a; trivial
+example (a : CtxAt .nil) : a = .atNil := by cases a; rfl
 example (h : CtxPAt .nil) : True := by cases h; trivial
-example (a : TAt .leaf) : True := by cases a; trivial
-example (h : TPAt .leaf) : True := by cases h; trivial
+example (Γ A) (a : CtxAt (.snoc Γ A)) : a = .atSnoc Γ A := by cases a; rfl
+example (Γ A) (a : CtxAt (.snoc Γ A)) : a = .atSnoc Γ A := by cases a with | atSnoc G B => rfl
+example (Γ A) (a b : CtxAt (.snoc Γ A)) : a = b := by cases a; cases b; rfl
+example (Γ A) (h : CtxPAt (.snoc Γ A)) : True := by cases h; trivial
+example (Γ A) (h : CtxPAt (.snoc Γ A)) : True := by cases h with | snoc => trivial
+example (Γ A) (h : CtxPAt (.snoc Γ A)) : True := by rcases h with ⟨⟩; trivial
+example (Γ A) (h : CtxPAt (.snoc Γ A)) : True := by obtain ⟨⟩ := h; trivial
 
--- gap: at a constructor with fields
-example (Γ A) (a : CtxAt (.snoc Γ A)) : True := by
-  fail_if_success cases a
-  fail_if_success cases a with | atSnoc => trivial
+example (a : TAt .leaf) : a = .atLeaf := by cases a; rfl
+example (h : TPAt .leaf) : True := by cases h; trivial
+example (cs h) (a : TAt (.node cs h)) : a = .atNode cs h := by cases a; rfl
+example (cs h) (a : TAt (.node cs h)) : a = .atNode cs h := by cases a with | atNode c k => rfl
+example (cs h) (p : TPAt (.node cs h)) : True := by cases p; trivial
+example (cs h) (p : TPAt (.node cs h)) : True := by cases p with | node => trivial
+example (cs h) (p : TPAt (.node cs h)) : True := by rcases p with ⟨⟩; trivial
+
+example (a : UAt .base) : a = .atBase := by cases a; rfl
+example (x b) (a : UAt (.pi x b)) : a = .atPi x b := by cases a; rfl
+example (x b) (a : UAt (.pi x b)) : a = .atPi x b := by cases a with | atPi y c => rfl
+example (x b) (p : UPAt (.pi x b)) : True := by cases p; trivial
+example (x b) (p : UPAt (.pi x b)) : True := by cases p with | pi => trivial
+example (x b) (p : UPAt (.pi x b)) : True := by rcases p with ⟨⟩; trivial
+
+-- two indices, one solved by the other's, and a case ruled out
+inductive Two : Ctx → Ctx → Prop where
+  | mk (Γ A) : Two (.snoc Γ A) (.snoc Γ A)
+example (Γ A Δ B) (h : Two (.snoc Γ A) (.snoc Δ B)) : Γ = Δ := by cases h; rfl
+example (Γ A) (h : Two .nil (.snoc Γ A)) : False := by cases h
+example (Γ A) (h : Two .nil (.snoc Γ A)) : False := nomatch h
+example (x : Ctx) (h : Two x x) : True := by cases h; trivial
+
+-- under another inductive's constructor
+inductive Deep : Option T → Prop where
+  | mk (cs h) : Deep (some (.node cs h))
+example (a h) (p : Deep (some (T.node a h))) : True := by cases p; trivial
+example (a b h k) (e : some (T.node a h) = some (T.node b k)) : a = b := by cases e; rfl
+example (a b h k) (e : some (T.node a h) = some (T.node b k)) : a = b := by injections
+
+-- naming the fields, by `cases` and by a pattern
+inductive CtxV : Ctx → Type where
+  | atSnoc (Γ A) (m : Nat) : CtxV (.snoc Γ A)
+inductive CtxW : Ctx → Type where
+  | l : CtxW .nil
+  | n (Γ A) (w : CtxW .nil) : CtxW (.snoc Γ A)
+example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := by rcases v with ⟨c, k, m⟩; exact m
+example (Γ A) (v : CtxV (.snoc Γ A)) : True := by obtain ⟨c, k, m⟩ := v; trivial
+example (Γ A) (v : CtxW (.snoc Γ A)) : True := by cases v with | n c k x => cases x; trivial
+
+-- `simp` at such an equation, and `nomatch`
+example (a b A B) (e : Ctx.snoc a A = Ctx.snoc b B) : a = b := by simp at e; exact e.1
+example (a n) (e : Ctx.nil = Ctx.snoc a n) : False := nomatch e
+example (a b A B) : Ctx.snoc a A = Ctx.snoc b B ↔ a = b ∧ HEq A B := by simp
+
+-- a member itself, at its sibling's constructor, which is the member's own case split
+example (Γ A) (t : Ty (.snoc Γ A)) : True := by cases t <;> trivial
+example (t : Ty .nil) : True := by cases t <;> trivial
+example (Γ A) (t : Ty (.snoc Γ A)) : True := by cases t with | base => trivial | pi => trivial
+example (Γ A) : Ty (.snoc Γ A) → Nat
+  | .base => 0
+  | .pi _ _ => 1
+
+-- what Lean refuses of its own (`SelfTest`), it refuses here
+example (Γ A) (t : Ty (.snoc Γ A)) : True := by
+  fail_if_success induction t with | base => trivial | pi => trivial
   trivial
-example (Γ A) (h : CtxPAt (.snoc Γ A)) : True := by
-  fail_if_success cases h
-  fail_if_success cases h with | snoc => trivial
-  fail_if_success rcases h with ⟨⟩
-  trivial
-example (cs h) (a : TAt (.node cs h)) : True := by
-  fail_if_success cases a
-  fail_if_success cases a with | atNode => trivial
-  trivial
-example (cs h) (p : TPAt (.node cs h)) : True := by
-  fail_if_success cases p
-  fail_if_success cases p with | node => trivial
-  fail_if_success rcases p with ⟨⟩
-  trivial
-example (x b) (a : UAt (.pi x b)) : True := by
-  fail_if_success cases a
-  fail_if_success cases a with | atPi => trivial
-  trivial
-example (x b) (p : UPAt (.pi x b)) : True := by
-  fail_if_success cases p
-  fail_if_success cases p with | pi => trivial
-  fail_if_success rcases p with ⟨⟩
-  trivial
+example (a b A B) (e : Ctx.snoc a A = Ctx.snoc b B) : a = b := by
+  fail_if_success subst e
+  cases e; rfl
+
+/-! Gap: `match` where an index is a constructor of a member with fields.  Lean's match
+compiler solves that index by its own `cases`, which no tactic here reaches, and stops at the
+wrapper.  `cases` is the way around it for now.  These say so until they go through. -/
+
+/--
+error: Tactic `cases` failed with a nested error:
+Dependent elimination failed: Failed to solve equation
+  Γ.1 = Γ✝.1
+at case `CtxV.atSnoc` after processing
+  _
+the dependent pattern matcher can solve the following kinds of equations
+- <var> = <term> and <term> = <var>
+- <term> = <term> where the terms are definitionally equal
+- <constructor> = <constructor>, examples: List.cons x xs = List.cons y ys, and List.cons x xs = List.nil
+-/
+#guard_msgs in
+example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := match v with | .atSnoc _ _ m => m
+
+-- nothing internal in any of these proofs' axioms
+theorem casesAtIndex (Γ A) (a b : CtxAt (.snoc Γ A)) : a = b := by cases a; cases b; rfl
+theorem casesDeep (a b h k) (e : some (T.node a h) = some (T.node b k)) : a = b := by cases e; rfl
+/-- info: 'MumiTests.Demo.CtorEqs.casesAtIndex' does not depend on any axioms -/
+#guard_msgs in
+#print axioms casesAtIndex
+/-- info: 'MumiTests.Demo.CtorEqs.casesDeep' does not depend on any axioms -/
+#guard_msgs in
+#print axioms casesDeep
 
 end Ways
 
