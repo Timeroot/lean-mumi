@@ -1153,4 +1153,54 @@ inductive Z : Type where
 
 end QuotNest
 
+/-! ## Equations between constructors: known gaps
+
+Lean's tactics read an equation between constructors off the constructors, and here a
+constructor is a definition unfolding to a subtype's.  So `contradiction`, `injection`
+and `cases` at the equation do not do what they do natively (the `Native` section of
+`MumiTests/Spec/SelfTest.lean`).  `cases` on the equation of two different constructors
+works, as does `X.c.inj`, which is the way around these for now.  Each
+`fail_if_success` below is a gap, and will say so when it closes. -/
+
+namespace CtorEqGaps
+
+mutual
+inductive Ctx : Type where
+  | nil
+  | snoc (Γ : Ctx) (A : Ty Γ)
+inductive Ty : Ctx → Type where
+  | base {Γ} : Ty Γ
+  | pi {Γ} (A : Ty Γ) (B : Ty (.snoc Γ A)) : Ty Γ
+end
+
+example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := by
+  intro h
+  fail_if_success contradiction
+  cases h
+example (Γ A) : Ctx.nil ≠ Ctx.snoc Γ A := fun e => Ctx.noConfusion e
+example (Γ Γ' A A') (e : Ctx.snoc Γ A = Ctx.snoc Γ' A') : Γ = Γ' := by
+  fail_if_success injection e with h1 h2
+  fail_if_success cases e
+  exact (Ctx.snoc.inj e).1
+
+mutual
+inductive T : Type where
+  | leaf
+  | node (cs : List T) (h : Ok cs)
+inductive Ok : List T → Prop where
+  | nil : Ok []
+end
+
+example (cs h) : T.leaf ≠ T.node cs h := by
+  intro e
+  fail_if_success contradiction
+  fail_if_success exact T.noConfusion e
+  cases e
+example (a b h h') (e : T.node a h = T.node b h') : a = b := by
+  fail_if_success injection e with h1 h2
+  fail_if_success cases e
+  exact T.node.inj e
+
+end CtorEqGaps
+
 end MumiTests.Demo

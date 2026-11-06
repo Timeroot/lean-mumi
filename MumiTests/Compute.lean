@@ -470,18 +470,62 @@ end
 #guard_msgs in
 #check @VT.mk.sizeOf_spec
 
-/-! Where the writer is indexed the measure does differ, and this is pinned as a known
-gap: `RV`'s pre-term stores its index, so the copy's `nil` is `_pre.nil n`, of size
-`1 + sizeOf n`, where `[]` has size `1`.  `sizeOf_ofOrig` is false as stated, there is
-no `sizeOf_spec` to prove from it, and a recursion through such a nesting needs a
-`termination_by` of its own. -/
+/-! A copy taken at a local stores that local at every node, since its pre-type is
+indexed by it: as a copy `[]` at `n` is `_pre.nil n`.  Lean's measure of the pre-term
+would count `n` there, where the list `[]` has size `1`, so such a block is measured by
+what was written instead (`addPreMeasure`), and the copy measures what the list does. -/
 
 inductive RV (α : Type) : Nat → Type where
   | mk {n} (a : α) (cs : List (RV α n)) : RV α (n + 1)
 
-/-- error: Unknown constant `MumiTests.Compute.SizeThrough.RV.mk.sizeOf_spec` -/
+/--
+info: @RV.mk.sizeOf_spec : ∀ {α : Type} [inst : SizeOf α] {n : Nat} (a : α) (cs : List (RV α n)),
+  sizeOf (RV.mk a cs) = 1 + sizeOf n + sizeOf a + sizeOf cs
+-/
 #guard_msgs in
 #check @RV.mk.sizeOf_spec
+
+-- the measure at a list is the list's, whatever the local
+example {α : Type} [SizeOf α] {n : Nat} :
+    sizeOf (RV.nested_List_1.ofOrig (α := α) (n := n) []).val = 1 := rfl
+
+/-! Typed syntax, the shape this is for: `lam` varies the context, so it is a real index,
+and `app` nests at it.  (With no `lam` the context is fixed, Lean promotes it to a
+parameter, and there is no local to store.) -/
+
+inductive Term : List Nat → Type where
+  | var {Γ} (i : Nat) : Term Γ
+  | lam {Γ} (A : Nat) (b : Term (A :: Γ)) : Term Γ
+  | app {Γ} (f : Term Γ) (args : List (Term Γ)) : Term Γ
+
+/--
+info: @Term.app.sizeOf_spec : ∀ {Γ : List Nat} (f : Term Γ) (args : List (Term Γ)),
+  sizeOf (f.app args) = 1 + sizeOf Γ + sizeOf f + sizeOf args
+-/
+#guard_msgs in
+#check @Term.app.sizeOf_spec
+
+mutual
+def Term.size {Γ} : Term Γ → Nat
+  | .var _ => 1
+  | .lam _ b => b.size + 1
+  | .app f args => f.size + sizes args
+def sizes {Γ} : List (Term Γ) → Nat
+  | [] => 0
+  | t :: ts => t.size + sizes ts
+end
+
+/-- info: 4 -/
+#guard_msgs in
+#eval (Term.app (.lam 0 (.var 0)) [.var 1, .var 2] : Term []).size
+
+-- a type parameter's measure is the use's own, through the copy too
+inductive PT (α : Type) : Nat → Type where
+  | leaf (a : α) : PT α 0
+  | node {n} (cs : List (PT α n)) : PT α (n + 1)
+
+example (n : Nat) (cs : List (PT Nat n)) : sizeOf cs < sizeOf (PT.node cs) := by
+  simp; omega
 
 end SizeThrough
 

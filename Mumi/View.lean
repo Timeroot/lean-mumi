@@ -159,6 +159,102 @@ private def preOf (x : Expr) : MetaM Expr := do
     | throwError "`{← inferType x}` is not the wrapper a member unfolds to"
   return mkAppN (mkConst (n ++ `val) us) (ty.getAppArgs.push x)
 
+/-- How many of the copy's pre-type's indices are locals the copy is taken at, rather
+than indices of what it copies; `0` for anything that is not a copy. -/
+private def copyLocals (pre : Name) : MetaM Nat := do
+  let copy := pre.getPrefix
+  let some (.defnInfo oi) := (← getEnv).find? (copy ++ `ofOrig) | return 0
+  let .inductInfo pi ← getConstInfo pre | return 0
+  forallTelescope oi.type fun xs _ => do
+    let some a := xs.back? | return 0
+    let some orig := (← whnf (← inferType a)).getAppFn.constName? | return 0
+    let .inductInfo ii ← getConstInfo orig | return 0
+    return pi.numIndices - ii.numIndices
+
+/--
+A measure of a pre-block one of whose copies is taken at a local.  Such a copy's
+constructors store that local, since its pre-type is indexed by it, so Lean's measure
+counts it at every node: `[]` at `n` has size `1 + sizeOf n` as a copy and `1` as a list,
+and no statement of the copy's size at the original can be true.  This one counts what
+was written: Lean's sum over the fields, with what a copy stores for its locals left out.
+Registered after Lean's, it is the instance everything here finds.  A pre-block with no
+such copy keeps Lean's. -/
+def addPreMeasure (pre : Name) : MetaM Unit := do
+  let .inductInfo first ← getConstInfo pre | return
+  let inst (m : Name) : Name := m ++ `_measure_inst
+  if (← getEnv).contains (inst first.all.head!) then return
+  let locals ← first.all.toArray.mapM copyLocals
+  unless locals.any (· > 0) do return
+  let all := first.all.toArray
+  let .recInfo rv ← getConstInfo (pre ++ `rec) | return
+  let us := first.levelParams.map mkLevelParam
+  -- the recursor's level for the sort of the motive comes first, where it has one
+  let recLvls := if rv.levelParams.length == first.levelParams.length + 1 then
+    Level.succ .zero :: us else us
+  for h : k in *...all.size do
+    let m := all[k]
+    let mi ← getConstInfo m
+    forallTelescope mi.type fun binders _ => do
+      let ps := binders.extract 0 rv.numParams
+      let idxs := binders.extract rv.numParams binders.size
+      mkLocalInstances ps fun insts => do
+        let selfTy := mkAppN (mkConst m us) binders
+        let recFn := mkAppN (mkConst (m ++ `rec) recLvls) ps
+        let motiveTys ← forallBoundedTelescope (← inferType recFn) rv.numMotives
+          fun ms _ => ms.mapM inferType
+        let motives ← motiveTys.mapM fun ty =>
+          forallTelescope ty fun ys _ => mkLambdaFVars ys (mkConst ``Nat)
+        let mut app := mkAppN recFn motives
+        let ctors := (← all.mapM fun n => do
+          return ((← getConstInfoInduct n).ctors.toArray.map (n, ·))).flatMap id
+        for (owner, cn) in ctors do
+          let .forallE _ minorTy _ _ ← whnf (← inferType app)
+            | throwError "`{m}.rec` takes fewer cases than `{m}` has constructors"
+          let cv ← getConstInfoCtor cn
+          let nLocals := locals[all.idxOf owner]!
+          app := mkApp app <| ← forallTelescope minorTy fun ys _ => do
+            let fields := ys.extract 0 cv.numFields
+            let ihs := ys.extract cv.numFields ys.size
+            -- what this constructor stores for its member's locals
+            let concl ← forallBoundedTelescope (cv.type.instantiateLevelParams cv.levelParams
+              (us)) (rv.numParams + cv.numFields) fun zs c => do
+                return c.replaceFVars zs (ps ++ fields)
+            let stored := (concl.getAppArgs.extract rv.numParams
+              (rv.numParams + nLocals)).filter (·.isFVar)
+            let mut rhs ← mkNumeral (mkConst ``Nat) 1
+            let mut nextIh := 0
+            for f in fields do
+              let fty ← whnf (← inferType f)
+              let recursive := fty.getAppFn.constName?.any all.contains
+              let ih? := if recursive then ihs[nextIh]? else none
+              if recursive then nextIh := nextIh + 1
+              -- as Lean's measure does, a function counts for nothing
+              if fty.isForall then
+                if (← forallTelescope fty fun _ b => do
+                    return (← whnf b).getAppFn.constName?.any all.contains) then
+                  nextIh := nextIh + 1
+                continue
+              if stored.contains f then continue
+              rhs ← mkAdd rhs (← match ih? with
+                | some ih => pure ih
+                | none => mkAppM ``SizeOf.sizeOf #[f])
+            mkLambdaFVars ys rhs
+        -- the remaining minors are consumed above, so what is left is the major
+        let fnName := m ++ `_measure
+        withLocalDeclD `x selfTy fun x => do
+          let value := mkAppN app (idxs.push x)
+          let all' := ps ++ insts ++ idxs.push x
+          addDecl <| .defnDecl {
+            name := fnName, levelParams := mi.levelParams, type := ← mkForallFVars all' (mkConst ``Nat)
+            value := ← mkLambdaFVars all' value, hints := .abbrev, safety := .safe }
+          let fn ← mkLambdaFVars #[x] (mkAppN (mkConst fnName us) all')
+          let v ← mkLambdaFVars (ps ++ insts ++ idxs) (← mkAppOptM ``SizeOf.mk #[selfTy, fn])
+          addDecl <| .defnDecl {
+            name := inst m, levelParams := mi.levelParams
+            type := ← mkForallFVars (ps ++ insts ++ idxs) (← mkAppM ``SizeOf #[selfTy])
+            value := v, hints := .abbrev, safety := .safe }
+          registerInstance (inst m) .global (eval_prio default)
+
 /-- `SizeOf` for a member, measuring an element by the pre-term it wraps. -/
 def addSizeOfInst (numParams : Nat) (mem : Name) : MetaM Unit := do
   let mi ← getConstInfo mem
@@ -286,6 +382,8 @@ partial def addOfOrigSizeOf (copy : Name) : MetaM Unit := do
   forallTelescope oi.type fun xs _ => do
     let some a := xs.back? | throwError "`{ofOrig}` takes nothing to copy"
     let bs := xs.pop
+    -- a parameter is measured by whatever instance the use has for it
+    mkLocalInstances bs fun insts => do
     let origTy ← whnf (← inferType a)
     let some orig := origTy.getAppFn.constName? | throwError "`{ofOrig}` copies no inductive"
     let .inductInfo ii ← getConstInfo orig | throwError "`{orig}` is not an inductive"
@@ -344,8 +442,8 @@ partial def addOfOrigSizeOf (copy : Name) : MetaM Unit := do
     addDecl <| .thmDecl {
       name        := thmName
       levelParams := oi.levelParams
-      type        := ← mkForallFVars xs (← sizeEq (mkAppN (mkConst ofOrig us) xs) a)
-      value       := ← mkLambdaFVars xs (mkAppN app (idxs.push a))
+      type        := ← mkForallFVars (bs ++ insts ++ #[a]) (← sizeEq (mkAppN (mkConst ofOrig us) xs) a)
+      value       := ← mkLambdaFVars (bs ++ insts ++ #[a]) (mkAppN app (idxs.push a))
     }
 
 /--
@@ -359,8 +457,16 @@ partial def transportsIn (pre : Expr) (here : Array Name) : MetaM (Array Expr) :
     let copy := n.getPrefix
     unless here.contains copy do
       addOfOrigSizeOf copy
-      out := out.push <|
-        mkAppN (mkConst (copy ++ `sizeOf_ofOrig) app.getAppFn.constLevels!) app.getAppArgs
+      let thm := mkConst (copy ++ `sizeOf_ofOrig) app.getAppFn.constLevels!
+      let args := app.getAppArgs
+      -- the copy's binders, the instances for them as they are here, and the argument
+      let (ms, _, _) ← forallMetaTelescope (← inferType thm)
+      let nb := args.size - 1
+      for k in *...nb do ms[k]!.mvarId!.assign args[k]!
+      ms.back!.mvarId!.assign args.back!
+      for m in ms.extract nb (ms.size - 1) do
+        m.mvarId!.assign (← synthInstance (← instantiateMVars (← inferType m)))
+      out := out.push (← instantiateMVars (mkAppN thm ms))
   return out
 
 end
@@ -710,6 +816,9 @@ def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElab
   let members ← members.filterM fun (_, ctors) => do
     let some c := ctors[0]? | return false
     return !((← getEnv).find? c).any (·.isCtor)
+  for (mem, _) in members do
+    if (← getEnv).contains (mem ++ `_pre) then
+      discard <| attempt? `Mumi.view m!"no measure of `{mem}`" <| addPreMeasure (mem ++ `_pre)
   for (mem, _) in members do
     discard <| attempt? `Mumi.view m!"no `sizeOf` for `{mem}`" <| addSizeOfInst numParams mem
   for (mem, ctors) in members do

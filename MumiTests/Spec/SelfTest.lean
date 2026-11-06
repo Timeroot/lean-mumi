@@ -17,6 +17,21 @@ set_option autoImplicit false
 
 namespace Native
 
+/-! What Lean's tactics do with an equation between constructors, on a nested inductive.
+`MumiTests.Demo`'s last section pins where a block of ours does not do this yet. -/
+namespace TacticsAtCtors
+inductive T : Type where
+  | leaf
+  | node (cs : List T) (n : Nat)
+example (cs n) : T.leaf ≠ T.node cs n := by intro h; contradiction
+example (cs n) : T.leaf ≠ T.node cs n := fun e => T.noConfusion e
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by
+  injection e with h1 h2
+example (a b n m) (e : T.node a n = T.node b m) : a = b := by
+  cases e; rfl
+end TacticsAtCtors
+
+
 mumi_spec
 mutual
 inductive Ev : Nat → Type where
