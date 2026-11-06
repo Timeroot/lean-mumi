@@ -12,6 +12,8 @@ public meta import Lean.Elab.Tactic.Induction
 public meta import Lean.Meta.Tactic.Cases
 public meta import Lean.Meta.Tactic.Assert
 public meta import Lean.Meta.Tactic.Injection
+public meta import Lean.Meta.Tactic.Subst
+public meta import Lean.Elab.Match
 public meta import Lean.Meta.Tactic.Simp.Simproc
 
 /-!
@@ -32,7 +34,8 @@ through `X.ctorIdx`, which the kernel computes.
 `cases` meets those equations a second way: on a term whose index is such a constructor,
 `At (X.c …)`, it has to solve that index against each case, and stops where it reaches one.
 So it is done here in Lean's steps, with `peelEqs` doing the solving (`casesIndexed`).
-`rcases` and `obtain` take the same route where their pattern asks for nothing but that.
+`rcases` and `obtain` take the same route where their pattern asks for nothing but that, and
+so does `match`, whose compiler solves its indices the same way.
 
 These are `@[no_fallback]`.  Lean otherwise tries its own elaborator of the tactic when one
 fails, which here would answer about the wrapper, or report a mistake in a `| refl => …` as an
@@ -176,9 +179,12 @@ private def overNativeCtors (h : Expr) : MetaM Bool := do
 
 /-- Discharge the first `n` premises of `g`'s target, each an equation, as `cases` does
 one: between two different constructors the goal is gone, between one the fields'
-equations take its place, and anything else is Lean's. -/
-private partial def peelEqs (g : MVarId) (n : Nat) : MetaM (List MVarId) := do
-  if n == 0 then return [g]
+equations take its place, and anything else is Lean's.  `track` is what is wanted of each
+goal left: what those terms have become.  Against a variable of the context a variable of
+`track` is the one that goes, so the context keeps the names it had. -/
+private partial def peelEqs (g : MVarId) (n : Nat) (track : Array Expr := #[]) :
+    MetaM (List (MVarId × Array Expr)) := do
+  if n == 0 then return [(g, track)]
   let (h, g) ← g.intro1
   g.withContext do
     let hE := mkFVar h
@@ -193,7 +199,7 @@ private partial def peelEqs (g : MVarId) (n : Nat) : MetaM (List MVarId) := do
         let g' ← mkFreshExprSyntheticOpaqueMVar next (← g.getTag)
         g.assign (mkAppN g' (eqs.map (·.2)))
         let g'' ← g'.mvarId!.tryClear h
-        return ← peelEqs g'' (eqs.size + n - 1)
+        return ← peelEqs g'' (eqs.size + n - 1) track
     -- anything else is Lean's, as an equation where it can be one
     let (h, g) ← if (← h.getType).isHEq then
         try heqToEq g h catch _ => pure (h, g)
@@ -202,11 +208,18 @@ private partial def peelEqs (g : MVarId) (n : Nat) : MetaM (List MVarId) := do
     if ← g.withContext (overNativeCtors (mkFVar h)) then
       match ← injectionCore g h with
       | .solved => return []
-      | .subgoal g' numEqs => return ← peelEqs g' (numEqs + n - 1)
+      | .subgoal g' numEqs => return ← peelEqs g' (numEqs + n - 1) track
+    -- a field against a variable from outside: the field goes
+    let oriented ← g.withContext do
+      let some (_, a, b) := (← instantiateMVars (← h.getType)).eq? | return false
+      return a.isFVar && b.isFVar && track.contains a && !track.contains b
+    if oriented then
+      let (subst, g') ← substCore g h (symm := true)
+      return ← peelEqs g' (n - 1) (track.map subst.apply)
     let subs ← Cases.cases g h
     let mut out := []
     for s in subs do
-      out := out ++ (← peelEqs s.mvarId (n - 1))
+      out := out ++ (← peelEqs s.mvarId (n - 1) (track.map s.subst.apply))
     return out
 
 /-- The inductive `x` is of, if it is one with such a constructor at an index. -/
@@ -233,7 +246,24 @@ private def casesIndexed (g : MVarId) (major : FVarId) (ii : InductiveVal)
     for ix in s.indicesFVarIds do
       if let some (.fvar y) := sub.subst.find? ix then m ← m.tryClear y
       else m ← m.tryClear ix
-    out := out.push (c, ← peelEqs m s.numEqs)
+    -- a field that came out as something else keeps its name, for that
+    let names ← m.withContext do
+      sub.fields.mapM fun f => match f with
+        | .fvar y => y.getUserName
+        | _ => pure .anonymous
+    let left ← peelEqs m s.numEqs sub.fields
+    let given : List Name := (givenNames[out.size]?.map (·.varNames)).getD []
+    let left ← left.mapM fun (m, now) => do
+      let mut m := m
+      for f in sub.fields, v in now, nm in names do
+        -- only what was asked for by name, not everything a case happened to bind
+        unless f != v && given.contains nm do continue
+        let ty ← m.withContext (inferType v)
+        let m' ← m.define nm ty v
+        let (_, m') ← m'.intro1P
+        m := m'
+      return m
+    out := out.push (c, left)
   return out
 
 /-! An `inductionAlt`, read as Lean reads one, whose helpers are not exported. -/
@@ -297,7 +327,7 @@ private def casesHere (h : FVarId) (alts : Array Syntax) : TacticM Bool := withM
   if (← encodedSides? hE).isSome || (← overNativeCtors hE) then
     let (rev, g) ← g.revert #[h] (preserveOrder := true)
     let goals ← peelEqs g 1
-    let goals ← goals.mapM fun m => do
+    let goals ← goals.mapM fun (m, _) => do
       let (_, m) ← m.introNP (rev.size - 1)
       return m
     -- an equation has the one case
@@ -441,6 +471,232 @@ def evalInjectionsEncoded : Tactic := fun stx => withMainContext do
     unless ids.isEmpty do
       throwTacticEx `injections g m!"too many identifiers provided, unused: {ids}"
     if ← g.assumptionCore then replaceMainGoal [] else replaceMainGoal [g]
+
+/-! ## `match` where an index is such a constructor
+
+Lean's match compiler solves that index by its own `cases`, which nothing here reaches.  So
+such a `match` is not given to it: it is written as the `cases` above, each case's
+right-hand side elaborated where that `cases` leaves it, and what a pattern asks of a field
+left to a `match` on that field, which is Lean's or this again. -/
+
+/-- What a pattern asks of the discriminant being split. -/
+private inductive Head where
+  | ctor (short : Name) (args : Array Syntax)
+  | any
+
+/-- `p` as one of `ctors` and its explicit arguments as written, or `_`. -/
+private partial def headOfPat (ctors : List Name) (p : Syntax) : TermElabM (Option Head) := do
+  if p.isOfKind ``Parser.Term.paren then return ← headOfPat ctors p[1]
+  if p.isOfKind ``Parser.Term.hole then return some .any
+  let isCtor (s : Name) : Bool := ctors.any (·.getString! == s.toString)
+  let (f, args) := if p.isOfKind ``Parser.Term.app then (p[0], p[1].getArgs) else (p, #[])
+  let short? ← do
+    if f.isOfKind ``Parser.Term.dotIdent then
+      pure (some f[1].getId.eraseMacroScopes)
+    else if f.isIdent then
+      -- a variable is not a constructor, however it is spelled
+      let cands := (← resolveGlobalName f.getId).filter (·.2.isEmpty) |>.map (·.1)
+      pure ((cands.find? ctors.contains).map fun c => Name.mkSimple c.getString!)
+    else pure none
+  let some short := short? | return none
+  unless isCtor short do return none
+  if args.any (fun a => a.isOfKind ``Parser.Term.namedArgument) then return none
+  return some (.ctor short args)
+
+/-- How many explicit binders `c` has: its fields, a constructor's parameters being implicit. -/
+private def explicitFields (numParams : Nat) (c : Name) : MetaM Nat := do
+  let ci ← getConstInfo c
+  return (go ci.type numParams 0)
+where
+  go : Expr → Nat → Nat → Nat
+    | .forallE _ _ b bi, skip, acc =>
+      if skip > 0 then go b (skip - 1) acc
+      else go b 0 (if bi.isExplicit then acc + 1 else acc)
+    | _, _, acc => acc
+
+/-- What a `match` on a discriminant is split over: the constructors, and how many of their
+leading binders are parameters that are not the pattern's. -/
+private structure Split where
+  ctors : List Name
+  numParams : Nat
+
+/-- A pattern a field can be bound by, with no further `match`: `_`, or a name that is not a
+constructor's or a `[match_pattern]`'s, which is Lean's rule for a variable in a pattern. -/
+private def bindsOnly (p : Syntax) : TermElabM Bool := do
+  if p.isOfKind ``Parser.Term.hole then return true
+  unless p.isIdent do return false
+  let env ← getEnv
+  let cands := (← resolveGlobalName p.getId).filter (·.2.isEmpty) |>.map (·.1)
+  return !cands.any fun c => (env.find? c).any (·.isCtor) || hasMatchPatternAttribute env c
+
+/-- One row of a `match`: its patterns, in the order of the discriminants, and what it does. -/
+private structure Row where
+  pats : Array Syntax
+  rhs : Syntax
+  deriving Inhabited
+
+/-- `_`, as a pattern. -/
+private def holePat : Syntax := (mkHole .missing).raw
+
+/-- The cases of a `match` on `discrs`, split on the one at `at_`: for each constructor with a
+row, its fields' names and what to do there, which `leaf` writes for a row that binds them
+all and `inner` for what takes a `match`. -/
+private def splitRows (sp : Split) (others : Array Syntax) (at_ : Nat) (rows : Array Row)
+    (leaf : Syntax → TermElabM Syntax)
+    (inner : Array Syntax → Array Row → TermElabM Syntax) :
+    TermElabM (Option (Array Syntax)) := do
+  let mut alts := #[]
+  let mut shadowed : Array Syntax := #[]
+  let mut heads : Array Head := #[]
+  for r in rows do
+    let some h ← headOfPat sp.ctors r.pats[at_]! | return none
+    heads := heads.push h
+  for c in sp.ctors do
+    let short := Name.mkSimple c.getString!
+    let n ← explicitFields sp.numParams c
+    let mut here : Array Row := #[]
+    let mut named := false
+    for r in rows, h in heads do
+      let rest := r.pats.eraseIdx! at_
+      match h with
+      | .any =>
+        here := here.push { pats := (Array.replicate n holePat) ++ rest, rhs := r.rhs }
+      | .ctor s args =>
+        unless s == short do continue
+        named := true
+        -- `..` is as many `_` as it leaves out
+        let written := args.filter (!·.isOfKind ``Parser.Term.ellipsis)
+        if written.size > n then return none
+        let pad := Array.replicate (n - written.size) holePat
+        here := here.push { pats := written ++ pad ++ rest, rhs := r.rhs }
+    if here.isEmpty then continue
+    let _ := named
+    let first := here[0]!
+    let (vars, body) ← do
+      if others.isEmpty && (← first.pats.allM bindsOnly) then
+        -- it takes everything of this constructor, so no later row gets any
+        for r in here.extract 1 here.size do
+          shadowed := shadowed.push r.rhs
+        pure (first.pats, ← leaf first.rhs)
+      else
+        let ys ← (Array.range n).mapM fun _ => do
+          return (mkIdent (← mkFreshUserName `y)).raw
+        pure (ys, ← inner (ys ++ others) here)
+    let alt ← `(Lean.Parser.Tactic.inductionAlt| | $(mkIdent short):ident => skip)
+    let lhs := alt.raw[0][0].setArg 2 (mkNullNode vars)
+    let alt := alt.raw.setArg 0 (mkNullNode #[lhs])
+    let alt := alt.setArg 1 (alt[1].setArg 1 body)
+    alts := alts.push alt
+  -- as Lean says of a row no case reaches: one still in use for another constructor is not that
+  for r in rows, h in heads do
+    if shadowed.contains r.rhs then
+      match h with
+      | .ctor .. => logErrorAt r.pats[at_]! (Term.mkRedundantAlternativeMsg none none)
+      | .any => pure ()
+  return some alts
+
+/-- A `Prop` member that is a definition: its constructors, whose names its `casesOn` has for
+its cases.  Lean's `match` has nothing to elaborate its patterns against, `cases` does. -/
+private def propMember? (x : Expr) : MetaM (Option Split) := do
+  -- as written: one may be a reducible name for what it is built from
+  let ty ← instantiateMVars (← inferType x)
+  let .const m _ := ty.getAppFn | return none
+  let env ← getEnv
+  unless (env.find? m).any (·.isDefinition) do return none
+  unless ← isProp ty do return none
+  let some casesOn := env.find? (m ++ `casesOn) | return none
+  let names := casesOn.type.getForallBinderNames
+  let some tAt := names.idxOf? `t | return none
+  let ctors := (names.drop (tAt + 1)).map (m ++ ·)
+  unless ctors.all env.contains do return none
+  -- a constructor that is a pattern already is Lean's to compile
+  if ctors.any (hasMatchPatternAttribute env) then return none
+  return some { ctors, numParams := 0 }
+
+/-- The one discriminant to split at, if any: a local whose type is at such an index, or a
+`Prop` member. -/
+private def discrToSplit? (discrs : Array Syntax) : TermElabM (Option (Nat × Syntax × Split)) := do
+  for d in discrs, i in *...discrs.size do
+    unless d[0].isNone do continue
+    -- an equation-style definition's comes as `@x`
+    let t := if d[1].isOfKind ``Parser.Term.explicit then d[1][1] else d[1]
+    unless t.isIdent do continue
+    let some x := (← getLCtx).findFromUserName? t.getId | continue
+    if let some ii ← indexedAtEncoded? x.toExpr then
+      return some (i, t, { ctors := ii.ctors, numParams := ii.numParams })
+    if let some sp ← propMember? x.toExpr then return some (i, t, sp)
+  return none
+
+/-- Without the discriminants no row asks anything of: `match t, h with | _, .leaf => …` is
+about `h`, and splitting that takes `t` with it. -/
+private def dropUnasked (discrs : Array Syntax) (at_ : Nat) (rows : Array Row) :
+    Array Syntax × Nat × Array Row := Id.run do
+  let keep := (Array.range discrs.size).filter fun i =>
+    i == at_ || rows.any fun r => !r.pats[i]!.isOfKind ``Parser.Term.hole
+  let at_' := keep.idxOf at_
+  return (keep.map (discrs[·]!), at_', rows.map fun r => { r with pats := keep.map (r.pats[·]!) })
+
+/-- `rhs`, without the `clear% x` an equation-style definition wraps it in: `cases` has taken
+`x` already. -/
+private partial def withoutClear (x : Syntax) (rhs : Syntax) : Syntax :=
+  if rhs.isOfKind ``Parser.Term.clear && rhs[1].getId == x.getId then withoutClear x rhs[3] else rhs
+
+/-- The rows of `alts`, one to a pattern list. -/
+private def rowsOf (alts : Array Syntax) (numDiscrs : Nat) (x : Syntax) : Option (Array Row) := Id.run do
+  let mut rows := #[]
+  for alt in alts do
+    for pl in alt[1].getSepArgs do
+      let pats := pl.getSepArgs
+      unless pats.size == numDiscrs do return none
+      rows := rows.push { pats, rhs := withoutClear x alt[3] }
+  return some rows
+
+/-- `match` as a term, at such an index. -/
+@[term_elab Lean.Parser.Term.match]
+def elabMatchAtIndex : Term.TermElab := fun stx expectedType? => do
+  -- no motive of the writer's: this has none to put it in
+  unless stx[1].isNone && stx[2].isNone do throwUnsupportedSyntax
+  let discrs := stx[3].getSepArgs
+  let some (at_, t, sp) ← discrToSplit? discrs | throwUnsupportedSyntax
+  let alts := stx[5][0].getArgs
+  let some rows := rowsOf alts discrs.size t | throwUnsupportedSyntax
+  let (discrs, at_, rows) := dropUnasked discrs at_ rows
+  let others := (discrs.eraseIdx! at_)
+  let leaf (rhs : Syntax) : TermElabM Syntax := do
+    `(Lean.Parser.Tactic.tacticSeq| exact $(⟨rhs⟩):term)
+  let inner (ds : Array Syntax) (rs : Array Row) : TermElabM Syntax := do
+    let discrStx ← ds.mapM fun d => do
+      if d.isOfKind ``Parser.Term.matchDiscr then return d
+      return (← `(Lean.Parser.Term.matchDiscr| $(⟨d⟩):term)).raw
+    let alts ← rs.mapM fun r => do
+      let alt ← `(Lean.Parser.Term.matchAltExpr| | _ => $(⟨r.rhs⟩):term)
+      return alt.raw.setArg 1 (mkNullNode #[mkNullNode (mkSepArray r.pats (mkAtom ","))])
+    let m ← `(term| match x with | _ => x)
+    let m := m.raw.setArg 3 (mkNullNode (mkSepArray discrStx (mkAtom ",")))
+    let m := m.setArg 5 (m[5].setArg 0 (mkNullNode alts))
+    `(Lean.Parser.Tactic.tacticSeq| exact $(⟨m⟩):term)
+  let some caseAlts ← splitRows sp others at_ rows leaf inner | throwUnsupportedSyntax
+  let tac ← `(by cases $(⟨t⟩):ident with $(caseAlts.map (⟨·⟩)):inductionAlt*)
+  trace[Mumi.view] "a `match` at an index, by `cases`:{indentD m!"{tac}"}"
+  Term.elabTerm tac expectedType?
+
+/-- `match` as tactics, at such an index: each alternative's tactics run on what `cases`
+leaves of its case. -/
+@[tactic Lean.Parser.Tactic.match, no_fallback]
+def evalMatchAtIndex : Tactic := fun stx => withMainContext do
+  unless stx[1].isNone && stx[2].isNone do throwUnsupportedSyntax
+  let discrs := stx[3].getSepArgs
+  let some (at_, t, sp) ← discrToSplit? discrs | throwUnsupportedSyntax
+  let alts := stx[5][0].getArgs
+  let some rows := rowsOf alts discrs.size t | throwUnsupportedSyntax
+  let (discrs, at_, rows) := dropUnasked discrs at_ rows
+  let others := discrs.eraseIdx! at_
+  -- a field's pattern taking a `match` of its own is for a term's rewrite
+  let leaf (rhs : Syntax) : TermElabM Syntax := pure rhs
+  let inner (_ : Array Syntax) (_ : Array Row) : TermElabM Syntax := throwUnsupportedSyntax
+  let some caseAlts ← Term.withoutErrToSorry <| splitRows sp others at_ rows leaf inner
+    | throwUnsupportedSyntax
+  evalTactic (← `(tactic| cases $(⟨t⟩):ident with $(caseAlts.map (⟨·⟩)):inductionAlt*))
 
 /-- `(X.c₁ .. = X.c₂ ..) = False`, for two different constructors of an encoded member. -/
 simproc [simp] ctorIdxNoConfusion (_ = _) := fun e => do

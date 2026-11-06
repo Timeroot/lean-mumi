@@ -90,6 +90,49 @@ example (cs n) (v : W (.node cs n)) : True := by
 example (a b n m) (e : T.node a n = T.node b m) : a = b := by
   fail_if_success subst e
   cases e; rfl
+-- `match` at such an index, with what comes with it
+inductive Z : T → Type where
+  | l (k : Nat) : Z .leaf
+  | n (cs k) (w : Option Nat) : Z (.node cs k)
+inductive R : T → Type where
+  | stop (cs n) : R (.node cs n)
+  | go (cs n) (r : R (.node cs n)) : R (.node cs n)
+-- a field has both its names
+example (cs n) (v : V (.node cs n)) : List T := match v with | .atNode c _ _ => c
+example (cs n) (v : V (.node cs n)) : List T := match v with | .atNode _ _ _ => cs
+-- a name that is a constructor is that constructor
+def zval (cs n) (z : Z (.node cs n)) : Nat := match z with
+  | .n _ _ none => 0
+  | .n _ _ (some k) => k
+example (cs n) : zval cs n (.n cs n (some 3)) = 3 := rfl
+example (cs n) (z : Z (.node cs n)) (b : Bool) : Nat := match z, b with
+  | .n _ _ none, true => 0
+  | .n _ _ none, false => 1
+  | .n _ _ (some k), _ => k
+example (cs n) (z : Z (.node cs n)) : Nat := match z with | _ => 7
+example (cs n) (z : Z (.node cs n)) : Nat := match z with | .n .. => 7
+-- what is wrong is said
+/--
+error: Missing cases:
+(Z.n _ _ (some _))
+-/
+#guard_msgs (error, drop warning) in
+example (cs n) (z : Z (.node cs n)) : Nat := match z with | .n _ _ none => 0
+-- and recursion, which even here is well-founded, so `simp` has its equations and `rfl` not
+def rlen (cs n) : R (.node cs n) → Nat
+  | .stop _ _ => 0
+  | .go _ _ r => rlen cs n r + 1
+example (cs n r) : rlen cs n (.go cs n r) = rlen cs n r + 1 := by simp [rlen]
+-- an index no unifier solves is refused by Lean too: a block's `matching` mark can be this
+inductive C : Nat → Type where
+  | nil : C 0
+  | join (n m : Nat) (x : C n) (y : C m) : C (n + m)
+inductive CAt : {n : Nat} → C n → Prop where
+  | nil : CAt .nil
+  | join (n m x y) : CAt (.join n m x y)
+example (h : CAt .nil) : True := by
+  fail_if_success cases h
+  trivial
 end TacticsAtCtors
 
 

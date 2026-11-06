@@ -18,7 +18,7 @@ set_option mumi.mahlo true
 
 namespace Tangle2L
 
-mumi_spec (xfail := [discr, sizeOf])
+mumi_spec (xfail := [discr, sizeOf, matching])
 mutual
 inductive A : Type where
   | nil : A

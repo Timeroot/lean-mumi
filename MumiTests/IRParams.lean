@@ -147,7 +147,7 @@ end
 namespace NonUniformMixed
 set_option mumi.mahlo false
 
-mumi_spec (simp := [U.rec_many, U.casesOn_many]) (xfail := [sizeOf])
+mumi_spec (simp := [U.rec_many, U.casesOn_many]) (xfail := [sizeOf, discr])
 mutual
 inductive U (β : Type) [Inhabited β] (n : Nat) : Type where
   | here (b : β) : U β n

@@ -228,8 +228,8 @@ Its restrictions, beyond the general ones below:
   carrier and not for a mutual family; it is then `noncomputable`, and so is
   what is defined through it.  When `Mumi.IndInd` declares the block, it
   compiles.
-- An indexed carrier gets no view, no `match` on its constructors, and no
-  `deriving` yet; recursive consumers go through `X.rec` and `X.recD`.
+- A carrier gets a view from its `X.casesOn` (`Mumi.addViewByCases`), so `match` runs
+  through it.  An indexed carrier has no `deriving` yet.
 
 ## Components, and members in different universes
 

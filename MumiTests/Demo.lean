@@ -847,7 +847,7 @@ inductive BoxP (α : Type u) : Prop where
   | p : BoxP α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf])
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf, matching])
 mutual
 inductive St : Type 1 where
   | tip : St
@@ -1225,8 +1225,8 @@ example : U.ctorIdx .base = 0 := rfl
 #guard_msgs in
 #check @U.pi.sizeOf_spec
 
--- at one constructor `U`'s `noConfusion` offers the equation itself, not its fields'
-example (P : Sort _) (x b) : U.noConfusionType P (U.pi x b) (U.pi x b) = ((U.pi x b = U.pi x b → P) → P) := rfl
+-- at one constructor `U`'s `noConfusion` offers its fields' equations, through its view
+example (P : Sort _) (x x' b b') : U.noConfusionType P (U.pi x b) (U.pi x' b') = ((x = x' → b ≍ b' → P) → P) := rfl
 
 /-! ### The other ways into such an equation
 
@@ -1384,23 +1384,156 @@ example (a b A B) (e : Ctx.snoc a A = Ctx.snoc b B) : a = b := by
   fail_if_success subst e
   cases e; rfl
 
-/-! Gap: `match` where an index is a constructor of a member with fields.  Lean's match
-compiler solves that index by its own `cases`, which no tactic here reaches, and stops at the
-wrapper.  `cases` is the way around it for now.  These say so until they go through. -/
+/-! `match` where an index is a constructor of a member.  Lean's match compiler solves that
+index by its own `cases`, so `Mumi.CtorTactics` writes such a `match` as the `cases` above. -/
 
+inductive CtxZ : Ctx → Type where
+  | l (k : Nat) : CtxZ .nil
+  | n (Γ A) (w : Option Nat) : CtxZ (.snoc Γ A)
+
+example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := match v with | .atSnoc _ _ m => m
+example (Γ A) : CtxV (.snoc Γ A) → Nat | .atSnoc _ _ m => m
+example (Γ A) (v : CtxW (.snoc Γ A)) : True := by match v with | .n _ _ _ => trivial
+example (v : CtxW .nil) : True := by match v with | .l => trivial
+
+-- it reduces, where the case split does
+def vval (Γ A) (v : CtxV (.snoc Γ A)) : Nat := match v with | .atSnoc _ _ m => m
+example (Γ A) : vval Γ A (.atSnoc Γ A 5) = 5 := rfl
+/-- info: 5 -/
+#guard_msgs in
+#eval vval .nil .base (.atSnoc .nil .base 5)
+
+-- a field has both its names, the pattern's and the context's, and they agree
+def vfst (Γ A) (v : CtxV (.snoc Γ A)) : Ctx := match v with | .atSnoc G _ _ => G
+example (Γ A) (v : CtxV (.snoc Γ A)) : Ctx := match v with | .atSnoc _ _ _ => Γ
+example (Γ A) (v : CtxV (.snoc Γ A)) : vfst Γ A v = Γ := by cases v; rfl
+-- a result that depends on it
+example (Γ A) (v : CtxV (.snoc Γ A)) : Ty Γ := match v with | .atSnoc _ B _ => B
+
+-- `none` here is the constructor, not a variable that matches everything
+def zval (Γ A) (z : CtxZ (.snoc Γ A)) : Nat := match z with
+  | .n _ _ none => 0
+  | .n _ _ (some k) => k
+/-- info: 3 -/
+#guard_msgs in
+#eval zval .nil .base (.n .nil .base (some 3))
+/-- info: 0 -/
+#guard_msgs in
+#eval zval .nil .base (.n .nil .base none)
+/-- info: 'MumiTests.Demo.CtorEqs.zval' does not depend on any axioms -/
+#guard_msgs in
+#print axioms zval
+
+-- several discriminants, a wildcard, `..`
+def zpair (Γ A) (z : CtxZ (.snoc Γ A)) (b : Bool) : Nat := match z, b with
+  | .n _ _ none, true => 0
+  | .n _ _ none, false => 1
+  | .n _ _ (some k), _ => k
+/-- info: 1 -/
+#guard_msgs in
+#eval zpair .nil .base (.n .nil .base none) false
+example (Γ A) (z : CtxZ (.snoc Γ A)) : Nat := match z with | _ => 7
+example (Γ A) (z : CtxZ (.snoc Γ A)) : Nat := match z with | .n .. => 7
+
+-- what is wrong is said
 /--
-error: Tactic `cases` failed with a nested error:
-Dependent elimination failed: Failed to solve equation
-  Γ.1 = Γ✝.1
-at case `CtxV.atSnoc` after processing
-  _
-the dependent pattern matcher can solve the following kinds of equations
-- <var> = <term> and <term> = <var>
-- <term> = <term> where the terms are definitionally equal
-- <constructor> = <constructor>, examples: List.cons x xs = List.cons y ys, and List.cons x xs = List.nil
+error: Missing cases:
+_, _, (some _)
 -/
 #guard_msgs in
-example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := match v with | .atSnoc _ _ m => m
+example (Γ A) (z : CtxZ (.snoc Γ A)) : Nat := match z with | .n _ _ none => 0
+
+/-- error: Redundant alternative: Any expression matching this pattern will match one of the preceding alternatives -/
+#guard_msgs in
+example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := match v with | .atSnoc _ _ m => m | .atSnoc _ _ k => k
+
+/--
+error: Type mismatch
+  G
+has type
+  Ctx
+but is expected to have type
+  Nat
+-/
+#guard_msgs in
+example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := match v with | .atSnoc G _ _ => G
+
+-- a case left out, where two are possible
+inductive CtxR : Ctx → Type where
+  | stop (Γ A) : CtxR (.snoc Γ A)
+  | go (Γ A) (r : CtxR (.snoc Γ A)) : CtxR (.snoc Γ A)
+/--
+error: unsolved goals
+case go
+Γ : Ctx
+A : Ty Γ
+r✝ : CtxR (Γ.snoc A)
+⊢ Nat
+-/
+#guard_msgs in
+example (Γ A) : CtxR (.snoc Γ A) → Nat | .stop _ _ => 0
+
+/-! Gap: recursion through such a `match` compiles and computes, but it is the `cases` above
+rather than a matcher, so its equations do not come apart.  `simp [rlen]`, which works for
+Lean's own (`SelfTest`), loops here until it hits the recursion limit; `rw [rlen]` unfolds it
+once, and `cases` on the term then finishes. -/
+
+def rlen (Γ A) : CtxR (.snoc Γ A) → Nat
+  | .stop _ _ => 0
+  | .go _ _ r => rlen Γ A r + 1
+/-- info: 1 -/
+#guard_msgs in
+#eval rlen .nil .base (.go .nil .base (.stop .nil .base))
+example (Γ A r) : rlen Γ A (.go Γ A r) = rlen Γ A r + 1 := by
+  fail_if_success rfl
+  rw [rlen]
+
+/-! `match` on a `Prop` member that is a definition.  Its constructors are theorems, so Lean's
+`match` has no patterns to elaborate, and the same rewrite gives it the case split. -/
+
+mutual
+inductive PT : Type where
+  | leaf
+  | node (t : PT) (h : POk t)
+inductive POk : PT → Prop where
+  | leaf : POk .leaf
+  | node (t) (h : POk t) : POk (.node t h)
+end
+
+example (t) (h : POk t) : True := match h with | .leaf => trivial | .node _ _ => trivial
+example (t) (h : POk t) : True := by match h with | .leaf => trivial | .node _ _ => trivial
+example (t) (h : POk t) : True := match h with | POk.leaf .. => trivial | POk.node .. => trivial
+example (t) : POk t → True | .leaf => trivial | .node _ _ => trivial
+-- the index is the case's, and asking nothing of it is what takes it
+theorem pokSelf (t) (h : POk t) : POk t := match t, h with
+  | _, .leaf => .leaf
+  | _, .node a b => .node a b
+/-- info: 'MumiTests.Demo.CtorEqs.pokSelf' does not depend on any axioms -/
+#guard_msgs in
+#print axioms pokSelf
+
+/-! `match` on a member of an induction-recursion, through its view. -/
+
+def uTag : U → Nat
+  | .base => 0
+  | .pi _ _ => 1
+example : uTag .base = 0 := rfl
+example (a b) : uTag (.pi a b) = 1 := rfl
+example (a b) : uTag (.pi a b) = 1 := by simp [uTag]
+def uSize : U → Nat
+  | .base => 1
+  | .pi a _ => uSize a + 1
+/-- info: 2 -/
+#guard_msgs in
+#eval uSize (.pi .base fun _ => .base)
+example (a b) : uSize (.pi a b) = uSize a + 1 := by simp [uSize]
+
+/-! What is left to Lean's compiler: a `match` with a motive of its own, on a term rather than
+a name, or a `h :` on the discriminant, stops at the wrapper as before. -/
+
+example (Γ A) (v : CtxV (.snoc Γ A)) : Nat := by
+  fail_if_success exact match h : v with | .atSnoc _ _ m => m
+  cases v with | atSnoc _ _ m => exact m
 
 -- nothing internal in any of these proofs' axioms
 theorem casesAtIndex (Γ A) (a b : CtxAt (.snoc Γ A)) : a = b := by cases a; cases b; rfl

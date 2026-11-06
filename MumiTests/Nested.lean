@@ -1210,7 +1210,7 @@ mumi_spec
 inductive Xbox (α : Sort u) : Sort (max 1 u) where
   | mk : α → Xbox α
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf])
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf, matching])
 mutual
 inductive Xs1 : Type 1 where
   | tip : Xs1
@@ -1336,7 +1336,7 @@ inductive WrapP (α : Type u) : Prop where
   | p : WrapP α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf])
+mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf, matching])
 mutual
 inductive St3 : Type 1 where
   | tip : St3

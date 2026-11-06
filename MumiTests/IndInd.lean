@@ -1720,7 +1720,7 @@ end DataOnDataLengthNest
 
 namespace DataOnDataLengthSum
 
-mumi_spec
+mumi_spec (xfail := [matching])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -2887,7 +2887,7 @@ and the block is refused only when two of them are.
 namespace RepeatedIdx
 set_option mumi.separate false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec (xfail := [sizeOf, matching])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4911,7 +4911,7 @@ mumi_spec
 inductive GWrap (α : Type) : Type where
   | mk : α → GWrap α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn, casesOn, matching])
 mutual
 inductive GVec : Type where
   | nil : GVec
@@ -5264,7 +5264,7 @@ copy, and the recursion filling in the `List` copy's step has a call at its own
 fields and none at what is inside them.  So `XTree.rec` recurses over the data
 and `XOk.rec` is the split one. -/
 
-mumi_spec (xfail := [gap])
+mumi_spec (xfail := [gap, matching])
 mutual
 inductive XTree : Type where
   | node : (cs : List (XTree × Nat)) → XOk cs → XTree
@@ -5483,7 +5483,7 @@ kernel refuses either -- so the proposition keeps `Nat → T` as its index and
 nothing is added to the block.  What the data recursion gains is the hypothesis
 at every argument the function could be applied to. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec (xfail := [rec, recOn, casesOn, matching])
 mutual
 inductive T : Type where
   | node : (f : Nat → T) → Ok f → T
@@ -5526,7 +5526,7 @@ being one of them: `V.cons` at `n` lands in `V (n + n)`.  The nesting is indexed
 as well -- `List (V n)` is a copy carrying an `n` of its own -- so the copy, the
 proposition and the constructor all have to be standing at the same one. -/
 
-mumi_spec (simp := [V.casesOn_cons, V.rec_cons, V.rec_1_cons])
+mumi_spec (simp := [V.casesOn_cons, V.rec_cons, V.rec_1_cons]) (xfail := [matching])
 mutual
 inductive V : Nat → Type where
   | nil  : V 0
@@ -5760,7 +5760,7 @@ mumi_spec
 inductive Wrap (p : Prop) : Prop where
   | mk : p → Wrap p
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn])
+mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn, matching])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T

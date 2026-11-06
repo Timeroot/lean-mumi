@@ -305,7 +305,7 @@ end
 namespace Mixed
 set_option mumi.mahlo false
 
-mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, sizeOf])
+mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, sizeOf, matching])
 mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n

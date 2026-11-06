@@ -614,8 +614,7 @@ view is a genuine inductive, so Lean generated its `noConfusion`.
 
 `injection` and `contradiction` are not among what this reaches.  Both reduce
 the type of the equation before they look for a `noConfusion`, so both arrive at
-`X._sub` and use its.  `simp` and `X.c.inj` state the same thing about the
-member.
+`X._sub` and use its.  `Mumi.CtorTactics` gives them, and others, the member's.
 -/
 
 /--
@@ -1060,13 +1059,71 @@ def addNoConfusionByIdx (numParams : Nat) (mem : Name) : TermElabM Unit := do
       setReducibleAttribute dConf
       modifyEnv fun env => addProtected env dConf
 
+/-- The view of a member with no `X.casesD`, by its `X.casesOn`, whatever order that takes
+its parameters, indices and cases in. -/
+def addViewByCases (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := do
+  let mi ← getConstInfo mem
+  let us := mi.levelParams.map mkLevelParam
+  let casesOn ← getConstInfo (mem ++ `casesOn)
+  let names := casesOn.type.getForallBinderNames
+  let some tAt := names.idxOf? `t | throwError "`{mem}.casesOn` has no major"
+  let some mAt := names.findIdx? (·.toString.startsWith "motive")
+    | throwError "`{mem}.casesOn` has no motive"
+  addView numParams mem ctors <| some fun binders x motive => do
+    let ps := binders.extract 0 numParams
+    let lvl ← forallTelescope (← inferType motive) fun ys s => do
+      let _ := ys
+      match s with
+      | .sort u => pure u
+      | _ => throwError "the motive of `{mem}`'s view is not to a sort"
+    let f := mkConst (mem ++ `casesOn) (lvl :: us)
+    let (ms, _, _) ← forallMetaTelescope (← inferType f)
+    unless ← isDefEq (← inferType ms[tAt]!) (← inferType x) do
+      throwError "`{mem}.casesOn` is not at `{mem}`"
+    ms[tAt]!.mvarId!.assign x
+    ms[mAt]!.mvarId!.assign motive
+    for h : k in *...ctors.size do
+      let m := ms[ms.size - ctors.size + k]!
+      let vc := ctors[k].replacePrefix mem (viewName mem)
+      let v ← forallTelescope (← instantiateMVars (← inferType m)) fun ys _ =>
+        mkLambdaFVars ys (mkAppN (mkConst vc us) (ps ++ ys))
+      m.mvarId!.assign v
+    instantiateMVars (mkAppN f ms)
+
+/-- `X.view_c : (X.c …).view = X.View.c …`, `@[simp]`, by `rfl` where the kernel has it, so
+that `simp` and the equation lemmas of a `match` need not ask Meta to reduce the encoding. -/
+def addViewRulesByRfl (mem : Name) (ctors : Array Name) : MetaM Unit := do
+  let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
+  for c in ctors do
+    let ci ← getConstInfo c
+    let us := ci.levelParams.map mkLevelParam
+    let name := Name.mkStr mem s!"view_{c.getString!}"
+    if (← getEnv).contains name then continue
+    discard <| attempt? `Mumi.view m!"`{mem}.view` does not compute at `{c}`" do
+      forallTelescope ci.type fun xs concl => do
+        let app := mkAppN (mkConst c us) xs
+        let lhs := mkAppN (mkConst (viewFnName mem) us) (concl.getAppArgs.push app)
+        let rhs := mkAppN (mkConst (c.replacePrefix mem (viewName mem)) us) xs
+        addDecl <| .thmDecl {
+          name, levelParams := ci.levelParams
+          type := ← mkForallFVars xs (← mkEq lhs rhs)
+          value := ← mkLambdaFVars xs (← mkEqRefl lhs) }
+      simpAttr.add name default .global
+
 /-- What a block with no pre-terms gets of what `addViews` gives the others: `X.ctorIdx`
 and its rules, and a measure.  Each member's own failure is its own. -/
 def addFactsOverRec (numParams : Nat) (members : Array (Name × Array Name)) : TermElabM Unit := do
   for (mem, ctors) in members do
     discard <| attempt? `Mumi.view m!"no `ctorIdx` for `{mem}`" <| addCtorIdxByCases mem ctors
     addCtorIdxRules mem ctors
-    discard <| attempt? `Mumi.view m!"no `noConfusion` for `{mem}`" <| addNoConfusionByIdx numParams mem
+    -- a view is what `match` runs through, and what gives `noConfusion` its fields' equations
+    let viewed ← attempted `Mumi.view m!"no view for `{mem}`" <| addViewByCases numParams mem ctors
+    if viewed then addViewRulesByRfl mem ctors
+    let conf ← if viewed then
+        attempted `Mumi.view m!"no `noConfusion` through the view of `{mem}`" <| addNoConfusion mem
+      else pure false
+    unless conf do
+      discard <| attempt? `Mumi.view m!"no `noConfusion` for `{mem}`" <| addNoConfusionByIdx numParams mem
   for (mem, _) in members do
     discard <| attempt? `Mumi.view m!"no measure for `{mem}`" <| addMeasureByRec numParams mem
   for (mem, ctors) in members do

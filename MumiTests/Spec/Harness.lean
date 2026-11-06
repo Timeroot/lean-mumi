@@ -36,6 +36,8 @@ were the restriction lifted:
   at two different ones `contradiction`, `cases`, `rcases`, `obtain`, `injections`, `simp`
   and `X.noConfusion` refute it, at one
   `injection`, `injections`, `cases`, `rcases` and `obtain` give the equations of its fields;
+* `match` on each member, as a term, a tactic and a `fun`; and `match` and `cases` on a term
+  whose index is a constructor of a data member, at a type the check declares for the purpose;
 * each decoder of an induction-recursion, as written, and its equations;
 * no axiom in any of it, but `propext` in an `injEq` and `IR.mahlo` under
   `mumi.mahlo`.
@@ -58,14 +60,14 @@ open Lean Elab Command Term Meta
 /-- The kinds of claim the specification makes: what a test marks known to fail. -/
 inductive Claim where
   | types | ctors | recursor | rules | recOnForm | casesOnForm | injEq | cases | induction | decoders | axioms | gap
-  | sizeOf | ctorIndex | discr | inject
+  | sizeOf | ctorIndex | discr | inject | matching
   deriving BEq, Inhabited
 
 def Claim.all : Array (Name × Claim) :=
   #[(`types, .types), (`ctors, .ctors), (`rec, .recursor), (`rules, .rules), (`recOn, .recOnForm),
     (`casesOn, .casesOnForm), (`injEq, .injEq), (`cases, .cases), (`induction, .induction),
     (`decoders, .decoders), (`axioms, .axioms), (`gap, .gap),
-    (`sizeOf, .sizeOf), (`ctorIdx, .ctorIndex), (`discr, .discr), (`inject, .inject)]
+    (`sizeOf, .sizeOf), (`ctorIdx, .ctorIndex), (`discr, .discr), (`inject, .inject), (`matching, .matching)]
 
 instance : ToString Claim where
   toString c := ((Claim.all.find? (·.2 == c)).map (·.1.toString)).getD "?"
@@ -1018,6 +1020,76 @@ private def tactic (r : Run) (claim : Claim) (b : Block) (k : Nat)
       pure ok
   unless ok do problem r claim m!"`{claim}` on a `{m.name}`, its alternatives named by the constructors, does not go through"
 
+/-! ## `match` -/
+
+/-- The tactic written `s`. -/
+private def tacticOf (s : String) : TermElabM Syntax :=
+  do ofExcept (Parser.runParserCategory (← getEnv) `tactic s)
+
+/-- A constructor's name as a pattern can have it, wherever the check is run from. -/
+private def patName (c : Name) : String :=
+  if isPrivateName c then s!"{privateToUserName c}" else s!"_root_.{c}"
+
+/-- `match` on a member at its indices: by a term, by `fun`, and by tactics. -/
+private def matching (r : Run) (m : Member) (params : Array Expr) (ty : Expr) : TermElabM Unit := do
+  let ctors := m.decl[4].getArgs.map fun c => m.name ++ c[3].getId
+  if ctors.isEmpty then return
+  let alts (rhs : String) := " ".intercalate (ctors.toList.map fun c => s!"| {patName c} .. => {rhs}")
+  forallTelescope ty fun idx _ => do
+    let major := mkAppN (← mkConstWithLevelParams m.name) (params ++ idx)
+    withLocalDeclD `_spec_t major fun _ => do
+      let check (goal : Expr) (how s : String) : TermElabM Unit := do
+        let ok ← try closes goal (← tacticOf s) catch _ => pure false
+        unless ok do
+          problem r .matching m!"`match` {how} on a `{m.name}` does not go through"
+      check (mkConst ``True) "as tactics" s!"match _spec_t with {alts "trivial"}"
+      if m.prop then
+        check (mkConst ``True) "as a term" s!"exact match _spec_t with {alts "trivial"}"
+      else
+        check (mkConst ``Nat) "as a term" s!"exact match _spec_t with {alts "0"}"
+        check (← mkArrow major (mkConst ``Nat)) "by `fun`" s!"exact fun {alts "0"}"
+
+/-- `match` and `cases` on a term whose index is a constructor of a data member, at
+`At : (x : X …) → Prop` with a constructor for each of `X`'s, which is declared here and goes
+when the check does. -/
+private def matchingAtIndex (r : Run) (m : Member) (params : Array Expr) (ty : Expr) : TermElabM Unit := do
+  let cs := m.decl[4].getArgs
+  if cs.isEmpty then return
+  let saved ← getEnv
+  try
+    let lps := (← getConstInfo m.name).levelParams
+    let us := lps.map mkLevelParam
+    let at_ := m.name ++ `_specAt
+    let atTy ← forallTelescope ty fun idx _ => do
+      let major := mkAppN (mkConst m.name us) (params ++ idx)
+      withLocalDeclD `x major fun x => do
+        instantiateMVars (← mkForallFVars (params ++ idx ++ #[x]) (mkSort .zero))
+    let atApp (idx : Array Expr) (x : Expr) := mkAppN (mkConst at_ us) (params ++ idx ++ #[x])
+    let ctorIdxOf (res : Expr) := res.getAppArgs.extract params.size res.getAppNumArgs
+    let ctors ← cs.mapM fun c => elabCtor m params c fun fields res => do
+      let app := mkAppN (mkConst (m.name ++ c[3].getId) us) (params ++ fields)
+      withInfos params (fun bi => if bi == .default then .implicit else bi) do
+        let type ← instantiateMVars (← mkForallFVars (params ++ fields) (atApp (ctorIdxOf res) app))
+        return ({ name := at_ ++ c[3].getId, type } : Constructor)
+    addDecl (.inductDecl lps params.size [{ name := at_, type := atTy, ctors := ctors.toList }] false)
+    mkCasesOn at_
+    for c in cs do
+      elabCtor m params c fun fields res => do
+        let app := mkAppN (mkConst (m.name ++ c[3].getId) us) (params ++ fields)
+        withLocalDeclD `_spec_h (atApp (ctorIdxOf res) app) fun _ => do
+          let alt := s!"| {patName (at_ ++ c[3].getId)} .. => trivial"
+          let check (how s : String) : TermElabM Unit := do
+            let ok ← try closes (mkConst ``True) (← tacticOf s) catch _ => pure false
+            unless ok do
+              problem r .matching m!"{how} at an index `{m.name ++ c[3].getId} …` does not go through"
+          check "`cases`" "cases _spec_h <;> trivial"
+          check "`match` as tactics" s!"match _spec_h with {alt}"
+          check "`match` as a term" s!"exact match _spec_h with {alt}"
+  catch e =>
+    problem r .matching m!"a type indexed by `{m.name}` could not be asked about: {e.toMessageData}"
+  finally
+    setEnv saved
+
 /-! ## Decoders -/
 
 /-- The identifiers of a pattern that name nothing: its variables. -/
@@ -1364,6 +1436,9 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
     for c in m.decl[4].getArgs do sizeOfSpec r m params c
     ctorIdxRules r m params
     discrimination r m params
+    matchingAtIndex r m params tys[k]!
+  for k in [:members.size] do
+    matching r members[k]! params tys[k]!
   -- a `Prop` member alone eliminates as Lean lets it; beside others, into
   -- `Prop`, as a `mutual` of more than one type does
   let large ← if members.size == 1 then largeElim b props else pure false
@@ -1452,8 +1527,10 @@ private def blockElems (cmd : Syntax) : Option (Array Syntax) :=
     let r := { r with partialRecs := mumi.partialRecursors.get (← getOptions) }
     -- the block's syntax elaborated again, but recorded nowhere: no linter sees it
     ctorTypes.set {}
-    withEnableInfoTree false <| runTermElabM fun vars => withCurrHeartbeats do
-      specify r elems vars native) cmd
+    -- the checks have a budget each, and a large block has many
+    withEnableInfoTree false <| runTermElabM fun vars =>
+      withTheReader Core.Context (fun c => { c with maxHeartbeats := 0 }) do
+        specify r elems vars native) cmd
   let stated ← r.stated.get
   for rule in simpRules ++ unproven do
     unless stated.contains rule do r.problems.modify (·.push (.rules, m!"`{rule}` is not a rule the specification states"))
