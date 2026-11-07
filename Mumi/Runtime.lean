@@ -53,6 +53,16 @@ def reprOfVal {α : Type u} {β : Type v} [Repr β] (f : α → β) : Repr α wh
 def hashableOfVal {α : Type u} {β : Type v} [Hashable β] (f : α → β) : Hashable α where
   hash a := hash (f a)
 
+/-- Compare `a` and `b` as `f a` and `f b` compare.  This is the `BEq` that `Subtype` has. -/
+@[instance_reducible]
+def beqOfVal {α : Type u} {β : Type v} [BEq β] (f : α → β) : BEq α where
+  beq a b := f a == f b
+
+/-- Order `a` and `b` as `f a` and `f b` are ordered. -/
+@[instance_reducible]
+def ordOfVal {α : Type u} {β : Type v} [Ord β] (f : α → β) : Ord α where
+  compare a b := compare (f a) (f b)
+
 /-- Decide `a = b` by deciding `f a = f b`, which is valid when `f` is injective.
 This is the `DecidableEq` that `Subtype` has, with `f` its `.val` and `ext` its
 `Subtype.ext`. -/

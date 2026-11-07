@@ -4806,10 +4806,9 @@ end
 #guard_msgs in
 #eval decide (DVec.nil = DVec.cons DVec.nil DOk.nil)
 
-/-! What `Repr` is handed is the pre-term, so that is what it prints: the
-proof field is gone and the constructors are the pre-type's. -/
+/-! What `Repr` shows is what was written: the member's constructors, a proof field `_`. -/
 
-/-- info: DVec._pre.cons (DVec._pre.nil) -/
+/-- info: DVec.cons (DVec.nil) _ -/
 #guard_msgs in
 #eval repr (DVec.cons DVec.nil DOk.nil)
 

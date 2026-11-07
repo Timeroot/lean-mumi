@@ -919,11 +919,73 @@ end
 
 example : DVec.nil ≠ DVec.cons DVec.nil DOk.nil := by decide
 
-/-! The pre-term is what `Repr` was handed, so the proof field is gone and the
-constructors are the pre-type's. -/
-/-- info: MumiTests.Demo.Derive.DVec._pre.cons (MumiTests.Demo.Derive.DVec._pre.nil) -/
+/-! `Repr` is written against the member, so what is shown is what was written: its
+constructors under their names, and a proof field as `_`, as Lean's own has it. -/
+/-- info: MumiTests.Demo.Derive.DVec.cons (MumiTests.Demo.Derive.DVec.nil) _ -/
 #guard_msgs in
 #eval repr (DVec.cons DVec.nil DOk.nil)
+
+/-! A mutual induction-induction, with everything an ordinary inductive derives.  What the
+pre-term erases, `Γ` here, is shown all the same. -/
+
+namespace Everything
+
+mutual
+inductive Ctx : Type where
+  | nil
+  | snoc (Γ : Ctx) (A : Ty Γ)
+  deriving Repr, BEq, DecidableEq, Inhabited, Hashable, Nonempty, Ord
+inductive Ty : Ctx → Type where
+  | base (Γ : Ctx) : Ty Γ
+  | pi (Γ : Ctx) (A : Ty Γ) : Ty Γ
+  deriving Repr, BEq, DecidableEq, Hashable
+end
+
+/--
+info: MumiTests.Demo.Derive.Everything.Ctx.snoc
+  (MumiTests.Demo.Derive.Everything.Ctx.nil)
+  (MumiTests.Demo.Derive.Everything.Ty.base (MumiTests.Demo.Derive.Everything.Ctx.nil))
+-/
+#guard_msgs in
+#eval Ctx.snoc .nil (.base .nil)
+/-- info: true -/
+#guard_msgs in
+#eval Ctx.nil == Ctx.nil
+/-- info: Ordering.eq -/
+#guard_msgs in
+#eval compare Ctx.nil Ctx.nil
+/-- info: true -/
+#guard_msgs in
+#eval (default : Ctx) == .nil
+example : Ctx.nil = Ctx.nil := by decide
+example : Ctx.nil ≠ Ctx.snoc .nil (.base .nil) := by decide
+example : Nonempty Ctx := inferInstance
+example (Γ) : DecidableEq (Ty Γ) := inferInstance
+
+end Everything
+
+/-! Through a nesting: the copy's pre-type goes with the member's, and what is shown of the
+field is the `List` it was written as. -/
+
+namespace Through
+
+mutual
+inductive T (α : Type) : Type where
+  | leaf (a : α)
+  | node (cs : List (T α)) (h : Ok α cs)
+  deriving Repr, BEq
+inductive Ok (α : Type) : List (T α) → Prop where
+  | nil : Ok α []
+end
+
+/-- info: MumiTests.Demo.Derive.Through.T.node [] _ -/
+#guard_msgs in
+#eval (T.node [] .nil : T Nat)
+/-- info: true -/
+#guard_msgs in
+#eval (T.node [] .nil : T Nat) == T.node [] .nil
+
+end Through
 
 /--
 error: failed to synthesize instance of type class

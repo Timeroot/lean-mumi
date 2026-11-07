@@ -6208,10 +6208,13 @@ def emitSub (b : Block) (i : Nat) : MetaM Unit := do
     let valFn := mkAppN (b.cst (n ++ `val)) ps
     let extFn := mkAppN (b.cst (n ++ `ext)) ps
     for (cls, args) in
-        [(``Repr, #[valFn]), (``Hashable, #[valFn]), (``DecidableEq, #[valFn, extFn])] do
+        [(``Repr, #[valFn]), (``Hashable, #[valFn]), (``BEq, #[valFn]), (``Ord, #[valFn]),
+         (``DecidableEq, #[valFn, extFn])] do
       let how := match cls with
         | ``Repr => ``Mumi.reprOfVal
         | ``Hashable => ``Mumi.hashableOfVal
+        | ``BEq => ``Mumi.beqOfVal
+        | ``Ord => ``Mumi.ordOfVal
         | _ => ``Mumi.decEqOfVal
       let name := Name.mkStr n ("inst" ++ cls.getString!)
       discard <| attempt? `Mumi.indind m!"`{name}`" do
@@ -7585,6 +7588,93 @@ def inhabitedFromCtor? (declName : Name) (ctors : Array Name) : MetaM (Option De
           hints := .abbrev, safety := .safe })
       return none
 
+/-- `Repr` for data members written against the members themselves: a `match` over each, which
+shows the constructors the writer named with every explicit field, where the pre-term's would
+show its own constructors and none of what it erased.  A field with nothing to show, a proof,
+a function or a type, is `_`, as Lean's own has it. -/
+private def deriveReprByMatch (views : Array InductiveView) : CommandElabM Unit := do
+  -- each member's binders, its type applied to them, and its function's name
+  let mut sigs : Array (String × String × String) := #[]
+  for v in views do
+    let n := v.declName
+    let (binds, argNames) ← liftTermElabM do
+      forallTelescope (← getConstInfo n).type fun xs _ => do
+        let mut bs : Array String := #[]
+        let mut ns : Array String := #[]
+        for x in xs, i in Array.range xs.size do
+          let nm := s!"x{i}"
+          -- a type among them is shown by the instance it comes with
+          let inst := if (← whnf (← inferType x)).isSort then s!" [Repr {nm}]" else ""
+          bs := bs.push (s!"\{{nm} : _}" ++ inst)
+          ns := ns.push nm
+        return (bs, ns)
+    sigs := sigs.push (" ".intercalate binds.toList,
+      "(" ++ " ".intercalate ([s!"_root_.{n}"] ++ argNames.toList) ++ ")",
+      -- as the namespace has it: `_root_` does not reach a function from inside its own definition
+      s!"{n.replacePrefix (← getCurrNamespace) .anonymous}._reprAux")
+  -- every body sees an instance of every member, which is the recursion
+  let haves := "".intercalate (sigs.toList.zipIdx.map fun ((sig, self, aux), k) =>
+    let ty := if sig.isEmpty then s!"Repr {self}" else s!"∀ {sig}, Repr {self}"
+    s!"  have _spec_r{k} : {ty} := ⟨{aux}⟩\n")
+  let mut defs : Array String := #[]
+  let mut insts : Array String := #[]
+  for v in views, (sig, self, aux) in sigs do
+    let mut alts : Array String := #[]
+    for c in v.ctors do
+      let cn := c.declName
+      let parts ← liftTermElabM <| forallTelescope (← getConstInfo cn).type fun xs _ => do
+        let mut ps : Array (String × String) := #[]
+        for x in xs, k in Array.range xs.size do
+          unless (← x.fvarId!.getBinderInfo).isExplicit do continue
+          let ty ← inferType x
+          let silent := (← isProp ty) || (← whnf ty).isForall || (← whnf ty).isSort
+          ps := ps.push (s!"f{k}", if silent then "\"_\"" else s!"reprArg f{k}")
+        return ps
+      let pat := " ".intercalate (["." ++ cn.getString!] ++ parts.toList.map (·.1))
+      let body := " ++ Std.Format.line ++ ".intercalate ([s!"\"{cn}\""] ++ parts.toList.map (·.2))
+      alts := alts.push
+        s!"  | {pat}, prec => Repr.addAppParen (Std.Format.group (Std.Format.nest 2 ({body}))) prec"
+    defs := defs.push (s!"partial def {aux} {sig} (t : {self}) (p : Nat) : Std.Format :=\n{haves}" ++
+      s!"  match t, p with\n" ++ "\n".intercalate alts.toList)
+    insts := insts.push s!"instance {sig} : Repr {self} := ⟨{aux}⟩"
+  let text := "mutual\n" ++ "\n".intercalate defs.toList ++ "\nend\n" ++ "\n".intercalate insts.toList
+  trace[Mumi.indind] "`Repr` by `match`:\n{text}"
+  let ictx := Parser.mkInputContext text "<Repr>"
+  let pmctx : Parser.ParserModuleContext :=
+    { env := ← getEnv, options := ← getOptions, currNamespace := ← getCurrNamespace,
+      openDecls := ← getOpenDecls }
+  let mut pst : Parser.ModuleParserState := {}
+  let mut msgs : MessageLog := {}
+  repeat
+    let (cmd, pst', msgs') := Parser.parseCommand ictx pmctx pst msgs
+    pst := pst'
+    msgs := msgs'
+    if Parser.isTerminalCommand cmd then break
+    if msgs.hasErrors then
+      throwError "`Repr` could not be written: {← msgs.toList.mapM (·.toString)}\n{text}"
+    elabCommand cmd
+
+/-- `instance {x…} [C xᵢ]… : C (X x…)`, with an instance of `C` for each binder that is a type,
+through what `X` unfolds to. -/
+private def instanceThroughDelta (cls n : Name) : CommandElabM Unit := do
+  let (binds, args) ← liftTermElabM do
+    forallTelescope (← getConstInfo n).type fun xs _ => do
+      let mut bs : Array String := #[]
+      let mut ns : Array String := #[]
+      for x in xs, i in Array.range xs.size do
+        let nm := s!"x{i}"
+        let inst := if (← whnf (← inferType x)).isSort then s!" [_root_.{cls} {nm}]" else ""
+        bs := bs.push (s!"\{{nm} : _}" ++ inst)
+        ns := ns.push nm
+      return (bs, ns)
+  let self := " ".intercalate ([s!"_root_.{n}"] ++ args.toList)
+  let text := s!"instance {" ".intercalate binds.toList} : _root_.{cls} ({self}) := " ++
+    s!"by delta _root_.{n}; exact inferInstance"
+  let env ← getEnv
+  match Parser.runParserCategory env `command text "<deriving>" with
+  | .ok stx => elabCommand stx
+  | .error e => throwError "`{cls}` for `{n}` could not be written: {e}"
+
 /-- `deriving` on an induction-inductive block, asked for twice over. -/
 private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool) :
     CommandElabM Unit := do
@@ -7615,8 +7705,19 @@ private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool)
         unless peeled.isEmpty do
           withRef classView.ref <| classView.applyHandlers (peeled.filterMap peelOf)
         if declNames.isEmpty then continue
-        let pres := declNames.filterMap fun n =>
-          if env.contains (preName n) then some (preName n) else none
+        -- what is shown is what was written, not its pre-term
+        if className == ``Repr then
+          let written := views.filter fun v => declNames.contains v.declName
+          match ← tentatively? (deriveReprByMatch written) with
+          | none => continue
+          | some why => trace[Mumi.indind] "`Repr` by `match` did not go through: {why}"
+        -- with the rest of a pre-type's block, which a copy's is in: a handler wants the family
+        let pres := (declNames.filterMap fun n =>
+            if env.contains (preName n) then some (preName n) else none).flatMap fun p =>
+          match env.find? p with
+          | some (.inductInfo ii) => ii.all.toArray
+          | _ => #[p]
+        let pres := pres.foldl (fun acc p => if acc.contains p then acc else acc.push p) #[]
         -- all of them at once is what a handler wants for a family it can see is
         -- one, but a handler that cannot do one of them takes the rest down with
         -- it, so what it turns down as a group is offered again one at a time
@@ -7627,10 +7728,13 @@ private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool)
                 trace[Mumi.indind] "nothing to derive `{className}` for on `{p}`"
         -- a member a constructor can instance is instanced from it, and only
         -- what is left over goes the delta route
-        let declNames ← if className != ``Inhabited then pure declNames else
+        let declNames ← if className != ``Inhabited && className != ``Nonempty then pure declNames else
           declNames.filterM fun n => do
             let some view := views.find? (·.declName == n) | return true
             let ctors := view.ctors.map (·.declName)
+            -- `Nonempty` asks for the same thing, which `Inhabited` may have given already
+            if env.contains (n ++ `instInhabited) || (← getEnv).contains (n ++ `instInhabited) then
+              return false
             let some decl ← runTermElabM fun _ => inhabitedFromCtor? n ctors | return true
             liftCoreM <| addAndCompile decl
             -- `registerInstance`, not `addInstance`: the former also sets the
@@ -7647,9 +7751,16 @@ private def applyDeriving (views : Array InductiveView) (requireDeriving : Bool)
         -- the delta route reports by logging as readily as by throwing, and a
         -- logged error is how a route declines, so a caller that has said it
         -- would rather have the block runs it where the log can be undone
-        let delta (ns : Array Name) : CommandElabM Unit :=
-          runTermElabM fun _ => for n in ns do
-            Term.processDefDeriving classView (← mkConstWithLevelParams n)
+        let delta (ns : Array Name) : CommandElabM Unit := do
+          -- a member with a type for a parameter takes the instance Lean's own would take for
+          -- it, which delta deriving, seeing a definition, does not
+          for n in ns do
+            let hasTypes ← liftTermElabM do
+              forallTelescope (← getConstInfo n).type fun xs _ =>
+                xs.anyM fun x => return (← whnf (← inferType x)).isSort
+            if hasTypes then instanceThroughDelta className n
+            else runTermElabM fun _ =>
+              do Term.processDefDeriving classView (← mkConstWithLevelParams n)
         withRef classView.ref do
           if requireDeriving then
             try delta declNames
