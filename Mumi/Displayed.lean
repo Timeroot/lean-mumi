@@ -162,6 +162,9 @@ private structure Ctx where
   minors : Array Expr
   /-- By member, by index: the data member a `Prop` member's index is of. -/
   displayAt : Array (Array (Option Nat))
+  /-- By member, by index: the data member an index is a function into.  `Ok : (Nat → T) → Prop`
+  has a motive that does not take values there, but `LEM` does, which is how it comes by them. -/
+  arrowAt : Array (Array (Option Nat)) := #[]
   /-- The data members with a `UNIQ`. -/
   uniq : Array Nat := #[]
 
@@ -287,7 +290,14 @@ private def withSpec {α} (inp : Input) (k : Ctx → MetaM α) : MetaM α := do
         !targets.contains q && displayAt[q]!.all fun j? => j?.all targets.contains
       | break
     targets := targets.push q
-  let c0 := { c0 with displayAt, targets }
+  let arrowAt ← (Array.range inp.members.size).mapM fun k => do
+    if !inp.members[k]!.prop then return #[]
+    forallTelescope (← c0.arity k) fun idx _ => idx.mapM fun i => do
+      forallTelescope (← inferType i) fun dom ty => do
+        if dom.isEmpty then return none
+        let .const n _ := (← instantiateMVars ty).getAppFn | return none
+        return (inp.members.findIdx? (·.name == n)).filter (!inp.members[·]!.prop)
+  let c0 := { c0 with displayAt, targets, arrowAt }
   let motiveName (t : Nat) := Name.mkSimple (if targets.size == 1 then "motive" else s!"motive_{t + 1}")
   -- the motives, each over those before it
   let rec motivesFrom (t : Nat) (c : Ctx) (k' : Ctx → MetaM α) : MetaM α := do
@@ -683,14 +693,35 @@ private partial def proveG (c : Ctx) (known : Array (Expr × Expr)) (w : Expr) :
           return given[n]!) mty kinds.toList #[]
   gap m!"no reading of `G` at {w}"
 
+/-- What `LEM` of member `j` is applied to, past its major premise: at each index in turn, the value
+its motive displays with its fact, or for a function into a data member the field's value and fact,
+which `fields` has per field. -/
+private def Ctx.lemArgs (c : Ctx) (known : Array (Expr × Expr)) (fields : Array (Expr × Expr × Expr))
+    (j : Nat) (idx vals : Array Expr) : MetaM (Array Expr × Array Expr) := do
+  let mut vs := #[]
+  let mut facts := #[]
+  let mut n := 0
+  for a in [:idx.size] do
+    if c.displayAt[j]![a]!.isSome then
+      vs := vs.push vals[n]!
+      facts := facts.push (← proveG c known vals[n]!)
+      n := n + 1
+    else if c.arrowAt[j]![a]!.isSome then
+      let some (_, y, fy) := fields.find? (·.1 == idx[a]!)
+        | gap m!"a function index that is no field: {idx[a]!}"
+      vs := vs.push y
+      facts := facts.push fy
+  return (vs, facts)
+
 /-- The proof of a displayed motive at a proof field: `LEM` at the values the
 hypothesis' type displays, with their facts. -/
-private def proofHyp (c : Ctx) (known : Array (Expr × Expr)) (j : Nat) (h d : Expr) : MetaM Expr :=
+private def proofHyp (c : Ctx) (known : Array (Expr × Expr)) (fields : Array (Expr × Expr × Expr))
+    (j : Nat) (h d : Expr) : MetaM Expr :=
   forallTelescope d fun dom body => do
     let args := body.getAppArgs
     let (idx, vals) := c.splitDisplayed j args.pop
-    let facts ← vals.mapM (proveG c known)
-    mkLambdaFVars dom (mkAppN (c.aux j "LEM") (idx ++ #[mkAppN h dom] ++ vals ++ facts))
+    let (vs, facts) ← c.lemArgs known fields j idx vals
+    mkLambdaFVars dom (mkAppN (c.aux j "LEM") (idx ++ #[mkAppN h dom] ++ vs ++ facts))
 
 /-- What `LEM` says of a proof `g` of `Prop` member `j`: `∀ vs, facts → motive (displayed) g`. -/
 private def Ctx.lemStmt (c : Ctx) (j : Nat) (idx : Array Expr) (g : Expr) : MetaM Expr := do
@@ -698,7 +729,15 @@ private def Ctx.lemStmt (c : Ctx) (j : Nat) (idx : Array Expr) (g : Expr) : Meta
   let rec go (a : Nat) (vals : Array (Option Expr)) (vs facts : Array Expr) : MetaM Expr := do
     if h : a < idx.size then
       match shown[a]! with
-      | none => go (a + 1) (vals.push none) vs facts
+      | none =>
+        let some k := c.arrowAt[j]![a]! | go (a + 1) (vals.push none) vs facts
+        -- not for the motive: for the minor premise, whose hypothesis at the field it is
+        let vty ← forallTelescope (← inferType idx[a]) fun dom ty => do
+          let ty := (← instantiateMVars ty).headBeta
+          let iargs := ty.getAppArgs.extract c.np ty.getAppNumArgs
+          mkForallFVars dom (mkAppN (c.motiveOf k) (iargs.push (mkAppN idx[a] dom)))
+        withLocalDeclD `v vty fun v => do
+          go (a + 1) (vals.push none) (vs.push v) (facts.push (← factAt c k vty v))
       | some k =>
         let ity ← instantiateMVars (← inferType idx[a])
         let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
@@ -711,6 +750,44 @@ private def Ctx.lemStmt (c : Ctx) (j : Nat) (idx : Array Expr) (g : Expr) : Meta
         else mkForallFVars (vs ++ hs) body
       bindFacts 0 #[]
   go 0 #[] #[] #[]
+
+/-- An element of `ty` made of the block's constructors and what instance search has, with no
+free variable of a constructor's in it, if there is one by `fuel` constructors.  The data members
+take no proofs on the way: what proves one is the recursion being built. -/
+private partial def Ctx.closedElem (c : Ctx) (ty : Expr) (fuel : Nat) : MetaM (Option Expr) := do
+  forallTelescope ty fun dom body => do
+    let body := (← instantiateMVars body).headBeta
+    let found? : Option Expr ← do
+      let k? : Option Nat := match body.getAppFn with
+        | .const n _ => c.inp.members.findIdx? fun (m : Member) => m.name == n
+        | _ => none
+      match k? with
+      | none =>
+
+        if ← isProp body then return none
+        match ← trySynthInstance (← mkAppM ``Inhabited #[body]) with
+        | .some inst => mkAppOptM ``Inhabited.default #[body, inst]
+        | _ => return none
+      | some k =>
+        if c.inp.members[k]!.prop || fuel == 0 then return none
+        -- the constructors' own conclusions say which index they are at, and none is compared
+        if body.getAppNumArgs != c.np then return none
+        let mut out := none
+        for ctor in c.inp.members[k]!.ctors do
+          let cst ← constAt ctor
+          let mut t ← instantiateForall (← inferType cst) c.ps
+          let mut vals := #[]
+          let mut ok := true
+          while t.isForall do
+            let .forallE _ d b _ := t | break
+            let some v ← c.closedElem d (fuel - 1) | ok := false; break
+            vals := vals.push v
+            t := b.instantiate1 v
+          if ok then
+            out := some (mkAppN cst (c.ps ++ vals))
+            break
+        pure out
+    return ← found?.mapM (mkLambdaFVars dom)
 
 /-- `LEM`'s minor premise at constructor `ci` of `Prop` member `j`, of type `mty`,
 at `fs` and the hypotheses `pihs` there: at the proofs of `props`, or, under
@@ -725,7 +802,8 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
     let nv := vhs.size / 2
     let vs := vhs.extract 0 nv
     let hs := vhs.extract nv vhs.size
-    let shownAt := (Array.range cidx.size).filter fun a => c.displayAt[j]![a]!.isSome
+    let shownAt := (Array.range cidx.size).filter fun a =>
+      c.displayAt[j]![a]!.isSome || c.arrowAt[j]![a]!.isSome
     -- the values at the data fields, read off `G` at the indices that name them
     let known ← IO.mkRef (#[] : Array (Expr × Expr × Expr))
     let disp ← IO.mkRef (#[] : Array (Expr × Option Expr))
@@ -733,9 +811,14 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
       if h : n < shownAt.size then
         let a := shownAt[n]
         let t := cidx[a]!
-        let k := c.displayAt[j]![a]!.get!
         let v := vs[n]!
         let hv := hs[n]!
+        if c.displayAt[j]![a]!.isNone then
+          -- a function into the data: nothing to display, only a field's value to learn
+          if t.isFVar && fs.contains t && !((← known.get).any (·.1 == t)) then
+            known.modify (·.push (t, v, hv))
+          return ← atIndex (n + 1)
+        let k := c.displayAt[j]![a]!.get!
         if t.isFVar && fs.contains t then
           match (← known.get).find? (·.1 == t) with
           | some (_, y, fy) =>
@@ -756,7 +839,15 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
           let tkinds ← kindsOf c.inp targs
           let hook (kd : Kind) (d x fact : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
             let a' := targs[kd.field]!
-            unless a'.isFVar && fs.contains a' do return none
+            unless a'.isFVar && fs.contains a' do
+              -- a term the conclusion pins the field at: what is read off `G` there is what the
+              -- minor premises give there, and the motive is displayed at that
+              unless c.uniq.contains kd.member do return none
+              let ks ← known.get
+              let some y ← valueOf c.inp c.minorOf (ks.map fun (t, y, _) => (t, y)) a' | return none
+              let fy ← proveG c (ks.map fun (_, y, fy) => (y, fy)) y
+              let args := (← whnfCore d).getAppArgs
+              return some (y, mkAppN (c.aux kd.member "UNIQ") (args ++ #[x, y, fact, fy]), fy)
             match (← known.get).find? (·.1 == a') with
             | some (_, y, fy) =>
               unless c.uniq.contains kd.member do gap m!"a field named twice, of `{c.inp.members[kd.member]!.name}`"
@@ -772,34 +863,37 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
         -- every datum of the constructor has its value: read off `G` at the
         -- indices that name them, or, of one none names, computed from the
         -- hypothesis there that all the proofs inside it are as they should be
-        let finish (ks : Array (Expr × Expr × Expr)) : MetaM Expr := do
+        let finish (ks : Array (Expr × Expr × Expr)) (standIn : Array (Expr × Expr) := #[]) : MetaM Expr := do
           let facts := ks.map fun (_, y, fy) => (y, fy)
           let mut hyps := #[]
-          let mut ty ← instantiateForall (← inferType c.minorOf[j]![ci]!) fs
+          let fsAt := fs.map fun x => ((standIn.find? (·.1 == x)).map (·.2)).getD x
+          let mut ty ← instantiateForall (← inferType c.minorOf[j]![ci]!) fsAt
           for kd in kinds do
             let .forallE _ d body _ := ty | throwError "a minor premise ended early"
             let v ← if kd.isData then
                 pure ((ks.find? (·.1 == fs[kd.field]!)).get!.2.1)
               else if !props.contains kd.member then
-                proofHyp c facts kd.member fs[kd.field]! d
+                proofHyp c facts ks kd.member fs[kd.field]! d
               else
                 let some (_, pih) := pihOf.find? (·.1 == kd.field) | throwError "no hypothesis at a proof"
                 -- the recursion's hypothesis there, at its values
                 forallTelescope d fun dom dbody => do
                   let dargs := dbody.getAppArgs
-                  let (_, vals) := c.splitDisplayed kd.member dargs.pop
-                  let vfacts ← vals.mapM (proveG c facts)
-                  mkLambdaFVars dom (mkAppN pih (dom ++ vals ++ vfacts))
+                  let (idx', vals) := c.splitDisplayed kd.member dargs.pop
+                  let (vs', vfacts) ← c.lemArgs facts ks kd.member idx' vals
+                  mkLambdaFVars dom (mkAppN pih (dom ++ vs' ++ vfacts))
             hyps := hyps.push v
             ty := body.instantiate1 v
-          let mut proof := mkAppN c.minorOf[j]![ci]! (fs ++ hyps)
+          let shownVs := (Array.range vs.size).filterMap fun n =>
+            if c.displayAt[j]![shownAt[n]!]!.isSome then some vs[n]! else none
+          let mut proof := mkAppN c.minorOf[j]![ci]! (fsAt ++ hyps)
           -- the displayed values carried over to the ones given
           let ds ← disp.get
           for i in [:ds.size] do
             let some e := ds[i]!.2 | continue
-            let before := (vs.extract 0 i).map some
+            let before := (shownVs.extract 0 i).map some
             let after := (ds.extract (i + 1) ds.size).map (some ·.1)
-            let vty ← inferType vs[i]!
+            let vty ← inferType shownVs[i]!
             let mot ← withLocalDeclD `x vty fun x => do
               let ws := before ++ #[some x] ++ after
               let mut vals := #[]
@@ -810,12 +904,35 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
                   wi := wi + 1
                 else vals := vals.push none
               mkLambdaFVars #[x] (c.motiveApp j cidx vals self)
-            proof ← ndrec vty ds[i]!.1 mot proof vs[i]! e
+            proof ← ndrec vty ds[i]!.1 mot proof shownVs[i]! e
           return proof
         let ks0 ← known.get
         let missing := kinds.filter fun kd => kd.isData && !(ks0.any (·.1 == fs[kd.field]!))
+        -- a datum nothing else in the constructor mentions: the proof is the proof whichever datum
+        -- it is at, so any element will do, one the minor premises give the value of
         if !all && !missing.isEmpty then
-          gap m!"a datum of `{c.inp.members[j]!.ctors[ci]!}` its conclusion does not name"
+          let mentioned (f : Expr) : MetaM Bool := do
+            let fv := f.fvarId!
+            if self.getAppArgs.any (fun a => a != f && a.hasAnyFVar (· == fv)) then return true
+            if cidx.any (·.hasAnyFVar (· == fv)) then return true
+            fs.anyM fun y => return (← inferType y).hasAnyFVar (· == fv)
+          let mut stands : Array (Expr × Expr) := #[]
+          let mut ks := ks0
+          for kd in missing do
+            let f := fs[kd.field]!
+            let fty ← inferType f
+            if ← mentioned f then
+              gap m!"a datum of `{c.inp.members[j]!.ctors[ci]!}` its conclusion does not name"
+            let some e ← c.closedElem fty 6
+              | gap m!"a datum of `{c.inp.members[j]!.ctors[ci]!}` its conclusion does not name, of a \
+                  type with no element to stand in for it"
+            let (val, fact) ← forallTelescope fty fun dom _ => do
+              let at_ := e.beta dom
+              let some v ← valueOf c.inp c.minorOf #[] at_ | gap m!"no value at {at_}"
+              return (← mkLambdaFVars dom v, ← mkLambdaFVars dom (← proveG c #[] v))
+            ks := ks.push (f, val, fact)
+            stands := stands.push (f, e)
+          return ← finish ks stands
         let rec named (i : Nat) (ks : Array (Expr × Expr × Expr)) : MetaM Expr := do
           if h : i < missing.size then
             let .data fi jm := missing[i] | throwError "not a datum"
@@ -880,6 +997,7 @@ private def Ctx.addValue (c : Ctx) (scope : Array Nat) : MetaM Unit := do
     let mty ← instantiateForall (← inferType m) fs
     -- each datum's value and fact: the recursion's, or `J'` across components
     let mut known := #[]
+    let mut fieldsAt := #[]
     let mut supplied := #[]
     let mut ty := mty
     for kd in kinds do
@@ -897,8 +1015,10 @@ private def Ctx.addValue (c : Ctx) (scope : Array Nat) : MetaM Unit := do
           pure (pair.1, some pair.2)
         else do
           let .proof f j := kd | unreachable!
-          pure (← proofHyp c known j fs[f]! d, none)
-      if let some fact := fact? then known := known.push (v, fact)
+          pure (← proofHyp c known fieldsAt j fs[f]! d, none)
+      if let some fact := fact? then
+        known := known.push (v, fact)
+        fieldsAt := fieldsAt.push (fs[kd.field]!, v, fact)
       supplied := supplied.push (v, fact?)
       ty := body.instantiate1 v
     let val := mkAppN m (fs ++ supplied.map (·.1))
@@ -1008,6 +1128,7 @@ private def Ctx.addValueQ (c : Ctx) (scope : Array Nat) : MetaM Unit := do
     let parts ← c.qAt fs kinds
     withLocalDeclD `q (conjOf parts) fun q => do
     let mut known := #[]
+    let mut fieldsAt := #[]
     let mut supplied := #[]
     let mut ty := mty
     for n in [:kinds.size] do
@@ -1031,11 +1152,13 @@ private def Ctx.addValueQ (c : Ctx) (scope : Array Nat) : MetaM Unit := do
           let .proof _ j := kd | unreachable!
           -- `LEM`'s statement is at hand: at the values the hypothesis displays
           let w ← forallTelescope d fun dom dbody => do
-            let (_, vals) := c.splitDisplayed j dbody.getAppArgs.pop
-            let facts ← vals.mapM (proveG c known)
-            mkLambdaFVars dom (mkAppN part (dom ++ vals ++ facts))
+            let (idx', vals) := c.splitDisplayed j dbody.getAppArgs.pop
+            let (vs', facts) ← c.lemArgs known fieldsAt j idx' vals
+            mkLambdaFVars dom (mkAppN part (dom ++ vs' ++ facts))
           pure (w, none)
-      if let some fact := fact? then known := known.push (v, fact)
+      if let some fact := fact? then
+        known := known.push (v, fact)
+        fieldsAt := fieldsAt.push (fs[kd.field]!, v, fact)
       supplied := supplied.push (v, fact?)
       ty := body.instantiate1 v
     let val := mkAppN m (fs ++ supplied.map (·.1))
@@ -1111,20 +1234,36 @@ private def Ctx.addRecs (c : Ctx) : MetaM Unit := do
         else
           let mut vals := #[]
           let mut facts := #[]
+          let mut extra := #[]
           for a in [:idx.size] do
             match c.displayAt[k]![a]! with
-            | none => vals := vals.push none
+            | none =>
+              vals := vals.push none
+              if let some j := c.arrowAt[k]![a]! then
+                let (v, fact) ← forallTelescope (← inferType idx[a]!) fun dom ty => do
+                  let ty := (← instantiateMVars ty).headBeta
+                  let iargs := ty.getAppArgs.extract c.np ty.getAppNumArgs
+                  let x := mkAppN idx[a]! dom
+                  let bound := iargs.push x
+                  let p := mkAppN (c.aux j "J") bound
+                  let α := mkAppN (c.motiveOf j) bound
+                  let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux j "G") (bound.push r))
+                  return (← mkLambdaFVars dom (mkAppN (mkConst (c.inp.out j) lvls) (c.pre ++ bound)),
+                    ← mkLambdaFVars dom (mkApp3 (mkConst ``PSigma.snd [c.uLvl, .zero]) α β p))
+                extra := extra.push v
+                facts := facts.push fact
             | some j =>
               let ity ← instantiateMVars (← inferType idx[a]!)
               let iargs := ity.getAppArgs.extract c.np ity.getAppNumArgs
               let recJ := mkAppN (mkConst (c.inp.out j) lvls) (c.pre ++ iargs.push idx[a]!)
               vals := vals.push (some recJ)
+              extra := extra.push recJ
               let p := mkAppN (c.aux j "J") (iargs.push idx[a]!)
               let α := mkAppN (c.motiveOf j) (iargs.push idx[a]!)
               let β ← withLocalDeclD `r α fun r => mkLambdaFVars #[r] (mkAppN (c.aux j "G") (iargs ++ #[idx[a]!, r]))
               facts := facts.push (mkApp3 (mkConst ``PSigma.snd [c.uLvl, .zero]) α β p)
           let concl := c.motiveApp k idx vals t
-          let v := mkAppN (c.aux k "LEM") (idx ++ #[t] ++ vals.filterMap id ++ facts)
+          let v := mkAppN (c.aux k "LEM") (idx ++ #[t] ++ extra ++ facts)
           return (← mkForallFVars (c.pre ++ idx.push t) concl, ← mkLambdaFVars (c.pre ++ idx.push t) v)
     let name := c.inp.out k
     if mem.prop then addDecl (.thmDecl { name, levelParams := c.lps, type, value })

@@ -4910,7 +4910,7 @@ mumi_spec
 inductive GWrap (α : Type) : Type where
   | mk : α → GWrap α
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive GVec : Type where
   | nil : GVec
@@ -5482,7 +5482,7 @@ kernel refuses either -- so the proposition keeps `Nat → T` as its index and
 nothing is added to the block.  What the data recursion gains is the hypothesis
 at every argument the function could be applied to. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn])
+mumi_spec
 mutual
 inductive T : Type where
   | node : (f : Nat → T) → Ok f → T

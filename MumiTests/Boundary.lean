@@ -33,7 +33,7 @@ container of a member rather than a member is what this pins.
 
 namespace ListIdx
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil

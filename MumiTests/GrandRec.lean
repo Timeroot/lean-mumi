@@ -455,11 +455,16 @@ inductive RecShort where
 info: @RecShort.rec : {motive_1 : RecShort → Sort u_1} →
   {motive_2 : Good RecShort → Sort u_1} →
     {motive_3 : Chain RecShort → Sort u_1} →
-      ((x : Good RecShort) → motive_2 x → motive_1 (RecShort.mk x)) →
-        ((c : Chain RecShort) → (h : Chain.Short RecShort c) → motive_3 c → motive_2 (Good.mk c h)) →
-          motive_3 Chain.nil →
-            ((a : RecShort) → (t : Chain RecShort) → motive_1 a → motive_3 t → motive_3 (Chain.cons a t)) →
-              (t : RecShort) → motive_1 t
+      {motive_4 : (a : Chain RecShort) → motive_3 a → Chain.Short RecShort a → Prop} →
+        ((x : Good RecShort) → motive_2 x → motive_1 (RecShort.mk x)) →
+          ((c : Chain RecShort) →
+              (h : Chain.Short RecShort c) → (c_ih : motive_3 c) → motive_4 c c_ih h → motive_2 (Good.mk c h)) →
+            (nil : motive_3 Chain.nil) →
+              (cons : (a : RecShort) → (t : Chain RecShort) → motive_1 a → motive_3 t → motive_3 (Chain.cons a t)) →
+                motive_4 Chain.nil nil ⋯ →
+                  (∀ (a : RecShort) (a_ih : motive_1 a),
+                      motive_4 (Chain.cons a Chain.nil) (cons a Chain.nil a_ih nil) ⋯) →
+                    (t : RecShort) → motive_1 t
 -/
 #guard_msgs in
 #check @RecShort.rec
@@ -472,8 +477,9 @@ def wrap (v : RecShort) : RecShort := .mk (.mk (.cons v .nil) (.cons v))
 
 def depth : RecShort → Nat :=
   RecShort.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ => Nat) (motive_3 := fun _ => Nat)
-    (fun _ ih => ih + 1) (fun _ _ ih => ih)
-    0 (fun _ _ iha iht => iha + iht)
+    (motive_4 := fun _ _ _ => True)
+    (fun _ ih => ih + 1) (fun _ _ ih _ => ih)
+    0 (fun _ _ iha iht => iha + iht) trivial (fun _ _ => trivial)
 
 example : depth (wrap (wrap bottom)) = 3 := rfl
 

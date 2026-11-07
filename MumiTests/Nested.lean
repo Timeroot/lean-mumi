@@ -1209,7 +1209,7 @@ mumi_spec
 inductive Xbox (α : Sort u) : Sort (max 1 u) where
   | mk : α → Xbox α
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive Xs1 : Type 1 where
   | tip : Xs1
