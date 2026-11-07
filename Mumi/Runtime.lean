@@ -70,4 +70,18 @@ def decEqOfVal {α : Sort u} {β : Sort v} [DecidableEq β] (f : α → β)
     (ext : ∀ {a b : α}, f a = f b → a = b) : DecidableEq α := fun a b =>
   if h : f a = f b then isTrue (ext h) else isFalse fun e => h (congrArg f e)
 
+/-- Two proofs of equal propositions, with no `propext`: what a rule at a constructor with a proof
+over a copy comes to, its index read through a round trip on one side. -/
+theorem heq_of_proofs {p q : Prop} (e : p = q) (a : p) (b : q) : HEq a b := by
+  subst e
+  exact HEq.rfl
+
+/-- A displayed motive at the same index and value by another road. -/
+theorem motive_along {α : Sort u} {β : α → Sort v} {R : α → Prop} (M : (a : α) → β a → R a → Prop)
+    {a' a : α} (e : a' = a) {v' : β a'} {v : β a} (h : HEq v' v) (r' : R a') (r : R a)
+    (p : M a' v' r') : M a v r := by
+  subst e
+  cases h
+  exact p
+
 end Mumi

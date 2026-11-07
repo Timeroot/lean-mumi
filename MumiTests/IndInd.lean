@@ -5817,11 +5817,10 @@ end EmptyNested
 
 namespace EmptyIndexedByNesting
 
-/-! What is still out of reach.  `R` is indexed by a nesting, which the encoding with the proofs in
-one `mutual` does not take, so this block stays with the erasure: `P` has no recursor, and a `T` could
-be had through the encoding that should not be there.  The writer's constructors cannot build one. -/
+/-! `R` indexed by a nesting as well.  It is declared over the copy, and `R` is that at `ofOrig`; its
+recursion concludes at the original through the round trip, and at what the nesting's computes. -/
 
-mumi_spec (simp := [T.casesOn_ls]) (xfail := [rec, recOn, casesOn, matching])
+mumi_spec (simp := [T.casesOn_ls, T.rec_ls])
 mutual
 inductive T : Type where
   | mk (p : P) : T
@@ -5831,6 +5830,21 @@ inductive P : Prop where
 inductive R : List T → Prop where
   | r (xs : List T) (p : P) : R xs
 end
+
+/-- info: R.r : ∀ (xs : List T), P → R xs -/
+#guard_msgs in
+#check @R.r
+
+/-- There is a `T` only from a `P`, a `P` only from a `T`, and an `R` only from a `P`. -/
+theorem T.empty (t : T) : False :=
+  T.rec (motive_1 := fun _ => False) (motive_2 := fun _ => False) (motive_3 := fun _ => PUnit)
+    (motive_4 := fun _ _ _ => False)
+    (fun _ ih => ih) (fun _ _ _ ih => ih) (fun _ ih => ih) PUnit.unit (fun _ _ _ _ => PUnit.unit)
+    (fun _ _ _ ih => ih) t
+
+/-- info: 'EmptyIndexedByNesting.T.empty' does not depend on any axioms -/
+#guard_msgs in
+#print axioms T.empty
 
 end EmptyIndexedByNesting
 

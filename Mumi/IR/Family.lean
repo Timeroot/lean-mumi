@@ -3715,6 +3715,9 @@ structure Denested where
   ctors : Array (Name × Name)
   /-- Each decoder over a nested application, declared as `_nested_d`, and the nesting. -/
   decoders : Array (Name × Nat)
+  /-- Each `Prop` member indexed by a nested application, declared as `_nested_P` over the copy; `P`
+  is that at `ofOrig`. -/
+  heldProps : Array Name := #[]
   deriving Inhabited
 
 
@@ -3806,6 +3809,9 @@ private partial def renameHidden (ctors : Array (Name × Name)) (decoders : Arra
   if s.isIdent then
     let n := s.getId
     if decoders.contains n then mkIdentFrom s (hidden n)
+    -- a constructor of a hidden member, with it
+    else if decoders.contains n.getPrefix then
+      mkIdentFrom s (hidden n.getPrefix ++ Name.mkSimple n.getString!)
     else match ctors.find? (fun (m, c) => n == m ++ c) with
       | some (m, c) => mkIdentFrom s (m ++ hidden c)
       | none => s
@@ -3846,8 +3852,17 @@ def denest (elems : Array Syntax) : CommandElabM (Option Denested) := do
   let table ← IO.mkRef (#[] : Array (String × Nesting))
   -- the constructors with a nested field, and the decoders over a nested application
   let mut ctors : Array (Name × Name) := #[]
+  -- a `Prop` member indexed by a nested application, where a block has no decoders to read it
+  let mut heldProps : Array Name := #[]
+  for e in inductives do
+    let (_, ty) ← signature e[1][2]
+    let (idx, res) ← telescope ty
+    if (← carriersHere.get) && (unparen res).isOfKind ``Parser.Term.prop then
+      if ← idx.anyM (fun x => return (← nestedApp? members x.type paramNames).isSome) then
+        heldProps := heldProps.push e[1][1][0].getId
   for e in inductives do
     let d := e[1]
+    if heldProps.contains d[1][0].getId then continue
     for c in d[4].getArgs do
       let (bs, result) ← signature c[4]
       let (tail, _) ← telescope result bs.size
@@ -3868,14 +3883,15 @@ def denest (elems : Array Syntax) : CommandElabM (Option Denested) := do
   for e in inductives do
     let (_, ty) ← signature e[1][2]
     let (idx, _) ← telescope ty
+    if heldProps.contains e[1][1][0].getId then continue
     for x in idx do
       if (← nestedApp? members x.type paramNames).isSome then
         throwErrorAt x.type "IR prototype does not yet take a carrier indexed by a nested application, as `{e[1][1][0].getId}` by `{← text x.type}`"
-  if ctors.isEmpty && decoders.isEmpty then return none
+  if ctors.isEmpty && decoders.isEmpty && heldProps.isEmpty then return none
   -- rewrite: names first, then the nested applications
   let mut out := #[]
   for e in elems do
-    let e := renameHidden ctors decoders e
+    let e := renameHidden ctors (decoders ++ heldProps) e
     -- the declared name itself
     let e := if e[1].isOfKind ``Parser.Command.«inductive» then
         let d := e[1]
@@ -3931,7 +3947,7 @@ def denest (elems : Array Syntax) : CommandElabM (Option Denested) := do
       | throwError "IR frontend generated an invalid copy:\n{src}"
     copies := copies.push stx
   return some { elems := out ++ copies, original := elems, nestings := (← table.get).map (·.2),
-                ctors, decoders := decoderNestings }
+                ctors, decoders := decoderNestings, heldProps }
 
 /-- Whether `c` may continue a name, a `.` included. -/
 private def qualChar (c : Char) : Bool := c.isAlphanum || c == '_' || c == '\'' || c == '.' || c.val > 127
@@ -3975,7 +3991,81 @@ private def deCopy (b : Block) (dn : Denested) (s : String) : CommandElabM Strin
     s := replaceName s (hidden c).toString c.toString
   for (d, _) in dn.decoders do
     s := replaceName s (hidden d).toString d.toString
+  for d in dn.heldProps do
+    s := replaceName s (hidden d).toString d.toString
   return s
+
+open Lean.Meta in
+/-- `e` read over the originals: `ofOrig` of a thing is the thing, a copy's constructor the
+original's, a hidden member the writer's, at its indices so read. -/
+private partial def heldReadBack (b : Block) (dn : Denested) (ns : Name) (ps : Array Expr) (e : Expr) : MetaM Expr := do
+  let go := heldReadBack b dn ns ps
+  match e with
+  | .app .. =>
+    let f := e.getAppFn
+    let args := e.getAppArgs
+    let .const n us := f | return mkAppN (← go f) (← args.mapM go)
+    let extra := args.extract ps.size args.size
+    -- `ofOrig ps x`
+    if dn.nestings.any (fun nest => ns ++ nest.copy ++ `ofOrig == n) then return ← go extra.back!
+    if let some nest := dn.nestings.find? (fun nest => ns ++ nest.copy == n.getPrefix) then
+      let cp ← getConstInfo (ns ++ nest.copy ++ `toOrig)
+      let orig ← forallTelescope cp.type fun xs o => mkLambdaFVars xs.pop o
+      let app := (orig.instantiateLevelParams cp.levelParams us).beta ps
+      let .const ind ivs := (← whnfR app).getAppFn | return mkAppN f (← args.mapM go)
+      return mkAppN (mkConst (ind ++ Name.mkSimple n.getString!) ivs)
+        ((← whnfR app).getAppArgs ++ (← extra.mapM go))
+    if let some d := dn.heldProps.find? (fun d => ns ++ hidden d == n) then
+      return mkAppN (mkConst (ns ++ d) us) (ps ++ (← extra.mapM go))
+    return mkAppN f (← args.mapM go)
+  | .forallE n d body bi => return .forallE n (← go d) (← go body) bi
+  | .lam n d body bi => return .lam n (← go d) (← go body) bi
+  | .mdata m x => return .mdata m (← go x)
+  | _ => return e
+
+open Lean.Meta in
+/-- A `Prop` member indexed by a nested application: `P` is the member over the copy at `ofOrig`, and
+its constructors what they are there.  The kernel takes each by unfolding. -/
+private partial def publishHeldProps (b : Block) (dn : Denested) (ns : Name) (first : Bool) : TermElabM Unit := do
+  let np := b.params.size
+  -- what a binder at a copy is at, with the old one standing for its `ofOrig`
+  let rec overOrig (ty : Expr) (news args : Array Expr) (k : Array Expr → Array Expr → Expr → MetaM (Expr × Expr)) :
+      MetaM (Expr × Expr) := do
+    match ty with
+    | .forallE n d body bi =>
+      let d' := d.headBeta
+      let cp? := dn.nestings.find? fun nest => d'.getAppFn.isConstOf (ns ++ nest.copy)
+      if let some nest := cp? then
+        let ofO := mkAppN (← mkConstWithLevelParams (ns ++ nest.copy ++ `ofOrig)) (args.extract 0 np)
+        let oty ← whnfCore (← inferType ofO)
+        let .forallE _ orig _ _ := oty | throwError "`ofOrig` takes nothing"
+        withLocalDecl n bi orig fun y =>
+          overOrig (body.instantiate1 (mkApp ofO y)) (news.push y) (args.push (mkApp ofO y)) k
+      else
+        let ps := args.extract 0 np
+        let shown ← if args.size < np then pure d' else heldReadBack b dn ns ps d'
+        withLocalDecl n bi shown fun y =>
+          overOrig (body.instantiate1 y) (news.push y) (args.push y) k
+    | _ => k news args ty
+  for d in dn.heldProps do
+    let raw := ns ++ hidden d
+    let info ← getConstInfo raw
+    unless first do
+      let (type, value) ← overOrig info.type #[] #[] fun news args _ => do
+        return (← mkForallFVars news (mkSort .zero),
+          ← mkLambdaFVars news (mkAppN (mkConst raw (info.levelParams.map mkLevelParam)) args))
+      Lean.Elab.MultiuniverseInductive.addDef (ns ++ d) info.levelParams type value (compile := false) (hints := .abbrev)
+      setReducibleAttribute (ns ++ d)
+    if first then
+      let some m := b.members.find? (·.name == hidden d) | continue
+      for c in m.ctors do
+        let cn := raw ++ c.name
+        let ci ← getConstInfo cn
+        let cst := mkConst cn (ci.levelParams.map mkLevelParam)
+        let (type, value) ← overOrig ci.type #[] #[] fun news args concl => do
+          return (← mkForallFVars news (← heldReadBack b dn ns (args.extract 0 np) concl),
+            ← mkLambdaFVars news (mkAppN cst args))
+        Lean.addDecl (.thmDecl { name := ns ++ d ++ c.name, levelParams := ci.levelParams, type, value })
 
 open Lean.Meta in
 /-- The public eliminators of a denested block with a `Prop` member.  Over the copies the block is
@@ -3990,25 +4080,32 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
   let writtenIdx := (Array.range b.members.size).filter fun k => (copyOfMember b.members[k]!).isNone
   let props := (Array.range b.members.size).filter fun k => b.members[k]!.prop
   let datas := (Array.range b.members.size).filter fun k => !b.members[k]!.prop
+  let heldOf (m : Member) : Option Name := dn.heldProps.find? (hidden · == m.name)
+  let publicName (m : Member) : Name := ns ++ (heldOf m).getD m.name
   let publicCtor (m : Member) (c : Ctor) : Name :=
     match dn.ctors.find? fun (mn, cn) => mn == m.name && hidden cn == c.name with
     | some (_, cn) => ns ++ m.name ++ cn
-    | none => ns ++ m.name ++ c.name
+    | none => publicName m ++ c.name
   let fallback : TermElabM Unit := do
     for k in writtenIdx do
       let m := b.members[k]!
       let n := ns ++ m.name
       let small := n ++ Name.mkSimple "_nested__prop_rec"
       let hasSmall := (← Lean.getEnv).contains small
-      let src := if !m.prop then n ++ `_data_rec else if hasSmall then small else n ++ `_nested_rec
-      Mumi.restate src (n ++ `rec)
-    for i in [:dn.nestings.size] do
-      Mumi.restate (first ++ Name.mkSimple s!"_data_rec_{i + 1}") (first ++ Name.mkSimple s!"rec_{i + 1}")
+      -- over a copy, and with no recursion over the originals: the raw one, as it is
+      let src := if !m.prop then (if dn.heldProps.isEmpty then n ++ `_data_rec else n ++ `_nested_rec)
+        else if hasSmall then small else n ++ `_nested_rec
+      Mumi.restate src (publicName m ++ `rec)
+    if dn.heldProps.isEmpty then
+      for i in [:dn.nestings.size] do
+        Mumi.restate (first ++ Name.mkSimple s!"_data_rec_{i + 1}") (first ++ Name.mkSimple s!"rec_{i + 1}")
   -- a `Prop` member's case split, under the binder names the writer's constructors give it
   let publishCases (motiveAt : Nat → Name) : TermElabM Unit := do
     for k in props do
       let m := b.members[k]!
       let n := ns ++ m.name
+      -- stated at the originals, a case split is cut out of the recursion
+      if (heldOf m).isSome then continue
       let env ← Lean.getEnv
       -- the one into `Prop`, where the encoding's own eliminates into any sort
       let small := n ++ Name.mkSimple "_nested__prop_casesOn"
@@ -4062,7 +4159,7 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
           let ty ← Lean.instantiateMVars (← inferType x)
           mkLambdaFVars xs.pop ty
       let targetsM ← written.mapM fun m => do
-        let n := ns ++ m.name
+        let n := publicName m
         let info ← Lean.getConstInfo n
         return ({ app := Lean.mkConst n (info.levelParams.map Lean.mkLevelParam), prop := m.prop
                   ctors := m.ctors.map (publicCtor m), out := n ++ `rec } : Mumi.Displayed.Target)
@@ -4106,17 +4203,54 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
       let ofO (cp : Name) (ps : Array Lean.Expr) (x : Lean.Expr) : Lean.MetaM Lean.Expr := do
         return Lean.mkAppN (← cst (cp ++ `ofOrig)) (ps.push x)
       -- the raw motives and minor premises, from the public ones
+      -- `h` at a type with each of `xs` read through its round trip
+      let aroundTrips (ps : Array Lean.Expr) (h : Lean.Expr) (xs : Array (Lean.Expr × Name)) : Lean.MetaM Lean.Expr := do
+        let mut out := h
+        for (x, cp) in xs do
+          let ty ← Lean.instantiateMVars (← inferType out)
+          unless ty.containsFVar x.fvarId! do continue
+          let there ← ofO cp ps (← toO cp ps x)
+          let xTy ← inferType x
+          let fam ← withLocalDeclD `y xTy fun y => mkLambdaFVars #[y] (ty.replaceFVar x y)
+          let e := Lean.mkAppN (← cst (cp ++ `ofOrig_toOrig)) (ps.push x)
+          let eq := Lean.mkApp6 (Lean.mkConst ``congrArg [← getLevel xTy, (Lean.mkLevelSucc .zero)]) xTy (Lean.mkSort .zero) x there fam
+            (← mkEqSymm e)
+          out := Lean.mkApp4 (Lean.mkConst ``Eq.mp [.zero]) ty (fam.beta #[there]) eq out
+        return out
+      let isHeldType (ty : Lean.Expr) : Bool :=
+        dn.heldProps.any fun d => ty.getAppFn.isConstOf (ns ++ hidden d)
       let rawAt (front : Array Lean.Expr) : Lean.Elab.TermElabM (Array Lean.Expr × Array Lean.Expr) := do
         let ps := front.extract 0 np
         let mots := front.extract np (np + nMotives)
         let mins := front.extract (np + nMotives) front.size
-        let rawMots ← order.mapIdxM fun q tgt => do
+        let mut motTy ← instantiateForall rawInfo.type ps
+        let mut rawMotsAcc : Array Lean.Expr := #[]
+        for q in [:order.size] do
+          let tgt := order[q]!
+          let .forallE _ d body _ := motTy | throwError "too few motives"
           let m := mots[q]!
-          if tgt < written.size then return m
-          let copy := copyName (tgt - written.size)
-          withLocalDeclD `c (Lean.mkAppN (← cst copy) ps) fun c => do
-            mkLambdaFVars #[c] (Lean.mkApp m (← toO copy ps c))
-        let mut remaining ← instantiateForall rawInfo.type (ps ++ rawMots)
+          let v ← if tgt < written.size then
+              if (heldOf written[tgt]!).isNone then pure m else
+              -- over a copy: the writer's at each index's original, the proof carried across
+              forallTelescope (← Core.betaReduce d) fun zs _ => do
+                let mut args := #[]
+                let mut across := #[]
+                for z in zs.pop do
+                  let zty ← Lean.instantiateMVars (← inferType z)
+                  match copyHead zty with
+                  | some cp =>
+                    args := args.push (← toO cp ps z)
+                    across := across.push (z, cp)
+                  | none => args := args.push z
+                mkLambdaFVars zs (Lean.mkAppN m (args.push (← aroundTrips ps zs.back! across)))
+            else
+              let copy := copyName (tgt - written.size)
+              withLocalDeclD `c (Lean.mkAppN (← cst copy) ps) fun c => do
+                mkLambdaFVars #[c] (Lean.mkApp m (← toO copy ps c))
+          rawMotsAcc := rawMotsAcc.push v
+          motTy := body.instantiate1 v
+        let rawMots := rawMotsAcc
+        let mut remaining := motTy
         let mut acc : Array Lean.Expr := #[]
         let mut mi := 0
         for tgt in order do
@@ -4129,15 +4263,22 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
               let ihs := args.extract nf args.size
               let mut vals := #[]
               let mut across := #[]
+              let mut proofsOver : Array Lean.Expr := #[]
               for f in fs do
-                match copyHead (← Lean.instantiateMVars (← inferType f)) with
+                let fty ← Lean.instantiateMVars (← inferType f)
+                match copyHead fty with
                 | some cp =>
                   vals := vals.push (← toO cp ps f)
                   across := across.push (f, cp)
-                | none => vals := vals.push f
+                | none =>
+                  if isHeldType fty then
+                    -- a proof over a copy, at the original the writer has its index at
+                    vals := vals.push (← aroundTrips ps f across)
+                    proofsOver := proofsOver.push f
+                  else vals := vals.push f
               let mut out := Lean.mkAppN mins[mi]! (vals ++ ihs)
               -- a member's constructor at a copy: along `ofOrig (toOrig x) = x`, a field at a time
-              if tgt < written.size then
+              if tgt < written.size && !m.prop then
                 let fam := concl.appFn!
                 let major := concl.appArg!
                 let mut done : Array Lean.Expr := #[]
@@ -4150,15 +4291,44 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
                     rest := rest.replaceFVar y (← ofO cq ps (← toO cq ps y))
                   let rest' := rest
                   let xTy ← inferType x
+                  let e := Lean.mkAppN (← cst (cp ++ `ofOrig_toOrig)) (ps.push x)
+                  let lA ← getLevel (Lean.mkApp fam major)
                   let famAt ← withLocalDeclD `y xTy fun y => do
                     mkLambdaFVars #[y] (Lean.mkApp fam (rest'.replaceFVar x y))
-                  let e := Lean.mkAppN (← cst (cp ++ `ofOrig_toOrig)) (ps.push x)
-                  let A := famAt.beta #[there]
-                  let B := famAt.beta #[x]
-                  let lA ← getLevel A
-                  let eq := Lean.mkApp6 (Lean.mkConst ``congrArg [← getLevel xTy, Lean.mkLevelSucc lA])
-                    xTy (Lean.mkSort lA) there x famAt e
-                  out := Lean.mkApp4 (Lean.mkConst ``cast [lA]) A B eq out
+                  let dependents ← proofsOver.filterM fun p => do
+                    return (← Lean.instantiateMVars (← inferType p)).containsFVar x.fvarId!
+                  if dependents.isEmpty then
+                    let A := famAt.beta #[there]
+                    let B := famAt.beta #[x]
+                    let eq := Lean.mkApp6 (Lean.mkConst ``congrArg [← getLevel xTy, Lean.mkLevelSucc lA])
+                      xTy (Lean.mkSort lA) there x famAt e
+                    out := Lean.mkApp4 (Lean.mkConst ``cast [lA]) A B eq out
+                  else
+                    -- a proof over this field follows it along, which the equation has to say
+                    let later := across.filter fun (z, _) => z != x && !done.contains z
+                    let atStage (y ey : Lean.Expr) : Lean.MetaM Lean.Expr := do
+                      let mut e' := rest'.replaceFVar x y
+                      for p in dependents do
+                        let pl ← aroundTrips ps p later
+                        let tyL ← Lean.instantiateMVars (← inferType pl)
+                        let pThere ← aroundTrips ps pl #[(x, cp)]
+                        let tyAt ← withLocalDeclD `z xTy fun z => mkLambdaFVars #[z] (tyL.replaceFVar x z)
+                        let eqTy := Lean.mkApp6 (Lean.mkConst ``congrArg [← getLevel xTy, (Lean.mkLevelSucc .zero)])
+                          xTy (Lean.mkSort .zero) there y tyAt ey
+                        e' := e'.replaceFVar p (Lean.mkApp4 (Lean.mkConst ``Eq.mp [.zero]) (tyAt.beta #[there]) (tyAt.beta #[y]) eqTy pThere)
+                      return Lean.mkApp fam e'
+                    let thereEqThere := Lean.mkApp2 (Lean.mkConst ``Eq.refl [← getLevel xTy]) xTy there
+                    let A ← atStage there thereEqThere
+                    let eqLvl := Lean.mkLevelSucc lA
+                    let motiveE ← withLocalDeclD `y xTy fun y => do
+                      let eTy ← mkEq there y
+                      withLocalDeclD `ey eTy fun ey => do
+                        let B' ← atStage y ey
+                        mkLambdaFVars #[y, ey] (Lean.mkApp3 (Lean.mkConst ``Eq [eqLvl]) (Lean.mkSort lA) A B')
+                    let refl := Lean.mkApp2 (Lean.mkConst ``Eq.refl [eqLvl]) (Lean.mkSort lA) A
+                    let eq := Lean.mkAppN (Lean.mkConst ``Eq.rec [.zero, ← getLevel xTy])
+                      #[xTy, there, motiveE, refl, x, e]
+                    out := Lean.mkApp4 (Lean.mkConst ``cast [lA]) A (Lean.mkApp fam (rest'.replaceFVar x x)) eq out
                   done := done.push x
               mkLambdaFVars args out
             remaining := body.instantiate1 v
@@ -4166,9 +4336,10 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
             mi := mi + 1
         return (rawMots, acc)
       -- the members
-      for t in [:written.size] do
+      -- the data's first: a proposition's statement displays what the nestings' compute
+      let addMember (t : Nat) : Lean.Elab.TermElabM Unit := do
         let m := written[t]!
-        let name := ns ++ m.name ++ `rec
+        let name := publicName m ++ `rec
         let value ← forallBoundedTelescope statements[t]! (np + nMotives + nMinors) fun front concl => do
           let (rawMots, rawMins) ← rawAt front
           forallTelescope concl fun majors _ => do
@@ -4179,6 +4350,8 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
         else
           Lean.Elab.MultiuniverseInductive.addDef name lps statements[t]! value (compile := false)
           Lean.modifyEnv (Lean.addNoncomputable · name)
+      for t in [:written.size] do
+        unless written[t]!.prop do addMember t
       -- where a target's minor premises start among the public ones
       let firstMinor (t : Nat) : Nat :=
         (order.foldl (init := ((0 : Nat), (none : Option Nat))) fun acc tgt =>
@@ -4241,8 +4414,13 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
         Lean.modifyEnv (Lean.addNoncomputable · name)
       -- what closes a goal at a minor premise's two readings, the fields' round trips and the
       -- agreements at them in the context
+      let proving (goal : Lean.Expr) (s : Lean.TSyntax ``Lean.Parser.Tactic.tacticSeq) : Lean.Elab.TermElabM Lean.Expr := do
+        try Lean.Elab.MultiuniverseInductive.proveBy goal s
+        catch e => throwError "{e.toMessageData}{indentExpr goal}"
       let script : Lean.TSyntax ``Lean.Parser.Tactic.tacticSeq ←
-        `(Lean.Parser.Tactic.tacticSeq| congr 1 <;> first | rfl | assumption | exact HEq.rfl)
+        `(Lean.Parser.Tactic.tacticSeq| congr 1 <;> first
+            | rfl | assumption | exact HEq.rfl
+            | exact Mumi.heq_of_proofs (by congr) _ _)
       -- the recursion over a copy agrees with the nesting's at `ofOrig`
       let agreeName (i : Nat) : Name := copyName i ++ `_joint_ofOrig
       -- the raw recursion's value at a field of a member or a copy
@@ -4251,6 +4429,14 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
         let some q := atOf ps fty | return none
         if q < written.size then
           let idx := fty.getAppArgs.extract np fty.getAppNumArgs
+          -- a member over a copy is at the copy's value of its index
+          let idx ← idx.mapM fun a => do
+            let aty ← Lean.instantiateMVars (← inferType a)
+            match atOf ps aty with
+            | some q' =>
+              if (heldOf written[q]!).isSome && q' ≥ written.size then ofO (copyName (q' - written.size)) ps a
+              else pure a
+            | none => pure a
           return some (Lean.mkAppN (Lean.mkConst (ns ++ written[q]!.name ++ `_nested_joint) us)
             (ps ++ rawMots ++ rawMins ++ idx.push f))
         else
@@ -4314,7 +4500,7 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
                     (Lean.mkAppN mins[start + w]! (fs ++ hyps2))
                   let decls := haveTys.map fun ty => (`_ir_h, fun (_ : Array Lean.Expr) => pure ty)
                   let pf ← withLocalDeclsD decls fun hs => do
-                    let p ← Lean.Elab.MultiuniverseInductive.proveBy goal script
+                    let p ← proving goal script
                     mkLambdaFVars hs p
                   mkLambdaFVars (fs ++ ihs) (Lean.mkAppN pf haveVals)
           forallTelescope concl fun majors _ => do
@@ -4323,6 +4509,56 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
               ← mkLambdaFVars (front ++ majors)
                 (Lean.mkAppN (Lean.mkConst (Lean.mkRecName ind) recVs) (args ++ #[motive] ++ kMin ++ majors)))
         Lean.addDecl (.thmDecl { name := agreeName i, levelParams := lps, type := stmtTy, value })
+      -- a proof over a copy: its index is the original's through the round trip, the value displayed
+      -- there what the nesting's recursion computes by the agreement
+      for t in [:written.size] do
+        let m := written[t]!
+        unless m.prop do continue
+        if (heldOf m).isNone then
+          addMember t
+          continue
+        let value ← forallBoundedTelescope statements[t]! (np + nMotives + nMinors) fun front concl => do
+          let ps := front.extract 0 np
+          let (rawMots, rawMins) ← rawAt front
+          forallTelescope concl fun majors body => do
+            let idx := majors.pop
+            let major := majors.back!
+            let mut rawIdx := #[]
+            let mut copyAt : Array (Nat × Nat) := #[]
+            for k in [:idx.size] do
+              let a := idx[k]!
+              let aty ← Lean.instantiateMVars (← inferType a)
+              match atOf ps aty with
+              | some q =>
+                if q ≥ written.size then
+                  rawIdx := rawIdx.push (← ofO (copyName (q - written.size)) ps a)
+                  copyAt := copyAt.push (k, q - written.size)
+                else rawIdx := rawIdx.push a
+              | none => rawIdx := rawIdx.push a
+            let proof := Lean.mkAppN (Lean.mkConst (ns ++ m.name ++ `_nested_joint) us)
+              (ps ++ rawMots ++ rawMins ++ rawIdx.push major)
+            let some (_, i) := copyAt[0]? | throwError "a member over a copy with no index at one"
+            unless copyAt.size == 1 && idx.size == 1 do
+              throwError "a proposition with more than one index, at a nesting"
+            let A ← Core.betaReduce (← inferType proof)
+            let a := idx[0]!
+            let aArgs := A.getAppArgs
+            let bArgs := body.getAppArgs
+            let e := Lean.mkAppN (← cst (copyName i ++ `toOrig_ofOrig)) (ps.push a)
+            let H := Lean.mkAppN (Lean.mkConst (agreeName i) us) (front.push a)
+            let α ← inferType a
+            let mot := body.getAppFn
+            -- `M : (a : α) → β a → R a → Prop`, read off the motive itself
+            let mTy ← inferType mot
+            let .forallE _ _ (.forallE _ β0 _ _) _ := mTy | throwError "not a displayed motive"
+            let β ← withLocalDeclD `z α fun z => mkLambdaFVars #[z] (β0.instantiate1 z)
+            let pubCst ← cst (publicName m)
+            let R ← withLocalDeclD `z α fun z => mkLambdaFVars #[z] (Lean.mkAppN pubCst (ps.push z))
+            let vTy ← inferType bArgs[1]!
+            let along := Lean.mkAppN (Lean.mkConst `Mumi.motive_along [← getLevel α, ← getLevel vTy])
+              #[α, β, R, mot, aArgs[0]!, a, e, aArgs[1]!, bArgs[1]!, H, aArgs[2]!, major, proof]
+            mkLambdaFVars (front ++ majors) along
+        Lean.addDecl (.thmDecl { name := publicName m ++ `rec, levelParams := lps, type := statements[t]!, value })
       -- the rule at a constructor with a field at a copy
       for t in [:written.size] do
         let m := written[t]!
@@ -4344,17 +4580,19 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
               unless hasCopy do return (Lean.Expr.const ``True [], none)
               let idx := res.getAppArgs.extract np res.getAppNumArgs
               let self := Lean.mkAppN (← cst pub) (ps ++ fs)
-              let lhs := Lean.mkAppN (Lean.mkConst (ns ++ m.name ++ `rec) us) (front ++ idx.push self)
+              let lhs := Lean.mkAppN (Lean.mkConst (publicName m ++ `rec) us) (front ++ idx.push self)
               let mut vals1 := #[]
               let mut hyps1 := #[]
               let mut hyps2 := #[]
               let mut rawFields := #[]
               let mut haveTys := #[]
               let mut haveVals := #[]
+              let mut fieldTysAcc : Array Lean.Expr := #[]
               for f in fs do
                 let fty ← Lean.instantiateMVars (← inferType f)
                 match atOf ps fty with
                 | some q =>
+                  fieldTysAcc := fieldTysAcc.push fty
                   let idxq := if q < written.size then fty.getAppArgs.extract np fty.getAppNumArgs else #[]
                   hyps1 := hyps1.push (← (rawValue front rawMots rawMins ps f)).get!
                   hyps2 := hyps2.push (Lean.mkAppN (Lean.mkConst targets[q]!.out us) (front ++ idxq.push f))
@@ -4372,23 +4610,99 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
                 | none =>
                   vals1 := vals1.push f
                   rawFields := rawFields.push f
+              let fieldTys := fieldTysAcc
               let mpub := mins[start + ci]!
               let rhs := Lean.mkAppN mpub (fs ++ hyps2)
               -- the value at the raw constructor is the raw minor premise, whose casts come off
               let rawMinor := rawMins[start + ci]!
               let reduced := (rawMinor.beta (rawFields ++ hyps1))
               let decls := haveTys.map fun ty => (`_ir_h, fun (_ : Array Lean.Expr) => pure ty)
-              let inner ← mkHEq (Lean.mkAppN mpub (vals1 ++ hyps1)) rhs
-              let pf ← withLocalDeclsD decls fun hs => do
-                let p ← Lean.Elab.MultiuniverseInductive.proveBy inner script
-                mkLambdaFVars hs p
-              let innerPf := Lean.mkAppN pf haveVals
               -- `cast` by `cast`, from the outside in
               let rec strip (e : Lean.Expr) (fuel : Nat) (acc : Array Lean.Expr) : Array Lean.Expr :=
                 match fuel, e.getAppFn.isConstOf ``cast, e.getAppNumArgs with
                 | fuel + 1, true, 4 => strip e.appArg! fuel (acc.push e)
                 | _, _, _ => acc
               let layers := strip reduced fs.size #[]
+              let innermost := (layers.back?.map (·.appArg!)).getD (Lean.mkAppN mpub (vals1 ++ hyps1))
+              let inner ← mkHEq innermost rhs
+              -- with proofs over a copy among the arguments, no congruence goes through them: the
+              -- minor premise at any arguments equal to these, each equation substituted away
+              let innerPf ← if dn.heldProps.isEmpty then
+                  let pf ← withLocalDeclsD decls fun hs => do
+                    let p ← proving inner script
+                    mkLambdaFVars hs p
+                  pure (Lean.mkAppN pf haveVals)
+                else do
+                  let lArgs := innermost.getAppArgs
+                  let rArgs := rhs.getAppArgs
+                  let mut eqs : Array Lean.Expr := #[]
+                  let mut heqs : Array Lean.Expr := #[]
+                  for i in [:haveVals.size] do
+                    if i % 2 == 0 then eqs := eqs.push haveVals[i]! else heqs := heqs.push haveVals[i]!
+                  -- what stands at each argument: kept, a proof, or moved by a witness
+                  let mut plan : Array (Option Lean.Expr × Bool) := #[]
+                  let mut eqAt := 0
+                  let mut heqAt := 0
+                  for i in [:rArgs.size] do
+                    let rArg := rArgs[i]!
+                    if ← isProp (← inferType rArg) then plan := plan.push (none, true)
+                    else if i < fs.size then
+                      if (← Lean.instantiateMVars (← inferType rArg)) |> (atOf ps ·) |>.any (· ≥ written.size) then
+                        plan := plan.push (some eqs[eqAt]!, false)
+                        eqAt := eqAt + 1
+                      else plan := plan.push (none, false)
+                    else
+                      let (some q) := atOf ps fieldTys[i - fs.size]! | throwError "a hypothesis at no target"
+                      if q ≥ written.size then
+                        plan := plan.push (some heqs[heqAt]!, false)
+                        heqAt := heqAt + 1
+                      else plan := plan.push (none, false)
+                  -- `∀ y e …, HEq (m y …) rhs`
+                  let plan' := plan
+                  let rec stmt (i : Nat) (ty : Lean.Expr) (acc binders : Array Lean.Expr) : Lean.MetaM Lean.Expr := do
+                    if h : i < plan'.size then
+                      let .forallE n d b _ := ← whnfCore ty | throwError "a minor premise too few"
+                      match plan'[i] with
+                      | (none, false) => stmt (i + 1) (b.instantiate1 rArgs[i]!) (acc.push rArgs[i]!) binders
+                      | (none, true) =>
+                        withLocalDeclD n d fun y => stmt (i + 1) (b.instantiate1 y) (acc.push y) (binders.push y)
+                      | (some _, _) =>
+                        withLocalDeclD n d fun y => do
+                          let eTy ← if ← isDefEq d (← inferType rArgs[i]!) then mkEq y rArgs[i]! else mkHEq y rArgs[i]!
+                          withLocalDeclD `_ir_e eTy fun e =>
+                            stmt (i + 1) (b.instantiate1 y) (acc.push y) (binders ++ #[y, e])
+                    else
+                      mkForallFVars binders (← mkHEq (Lean.mkAppN mpub acc) rhs)
+                  let stmtTy ← stmt 0 (← inferType mpub) #[] #[]
+                  let mv ← mkFreshExprSyntheticOpaqueMVar stmtTy
+                  let rec discharge (g : Lean.MVarId) (j : Nat) : Lean.MetaM Unit := g.withContext do
+                    if h : j < plan'.size then
+                      match plan'[j] with
+                      | (none, false) => discharge g (j + 1)
+                      | (none, true) =>
+                        let (_, g') ← g.intro1
+                        discharge g' (j + 1)
+                      | (some _, _) =>
+                        let (_, g1) ← g.intro1
+                        let (e, g2) ← g1.intro1
+                        let eTy ← g2.withContext do Lean.instantiateMVars (← e.getType)
+                        let (e, g3) ← if eTy.isHEq then do
+                            g2.withContext (Lean.Meta.heqToEq g2 e)
+                          else pure (e, g2)
+                        let (_, g4) ← g3.withContext (Lean.Meta.substCore g3 e (symm := false))
+                        discharge g4 (j + 1)
+                    else
+                      let tgt ← g.getType
+                      let some (_, a, _, _) := tgt.heq? | throwError "not a heterogeneous equation"
+                      g.assign (← mkHEqRefl a)
+                  discharge mv.mvarId! 0
+                  let mut applied ← Lean.instantiateMVars mv
+                  for i in [:plan'.size] do
+                    match plan'[i]! with
+                    | (none, false) => pure ()
+                    | (none, true) => applied := Lean.mkApp applied lArgs[i]!
+                    | (some w, _) => applied := Lean.mkApp2 applied lArgs[i]! w
+                  pure applied
               let mut proof := innerPf
               for layer in layers.reverse do
                 let args := layer.getAppArgs
@@ -4408,8 +4722,20 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
         let t := (writtenIdx.idxOf? k).getD 0
         Name.mkSimple s!"motive_{(order.idxOf? t).getD 0 + 1}"
       for k in props do
-        let n := ns ++ b.members[k]!.name
+        let n := publicName b.members[k]!
         Mumi.addMajorFirst np n (n ++ `rec) (n ++ `recOn)
+      -- stated at the originals, a case split is cut out of the recursion
+      unless dn.heldProps.isEmpty do
+        for m in written do
+          let n := publicName m
+          if (← Lean.getEnv).contains (n ++ `casesOn) then continue
+          let elim := (← Lean.getConstInfo (n ++ `rec)).levelParams.take 1
+          Lean.Elab.MultiuniverseInductive.addSoloElim np elim.toArray m.prop (n ++ `rec) (n ++ `casesD)
+            (forCases := true) (evenIfWeaker := true)
+          Mumi.addMajorFirst np n (n ++ `casesD) (n ++ `_casesOn_major)
+          Mumi.restate (n ++ `_casesOn_major) (n ++ `casesOn)
+            ((← Mumi.motiveNameOf? np n).map (np, ·))
+          Lean.Elab.MultiuniverseInductive.markElabAsElim (n ++ `casesOn) (induction := false)
     catch e =>
       Lean.setEnv env0
       trace[Mumi] "no recursion over the data and the proofs at once: {e.toMessageData}"
@@ -4500,6 +4826,7 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
     emit ("theorem " ++ C ++ ".ofOrig_toOrig " ++ pubPs ++ " (_ir_c : " ++ typeAt b k #[] ++ ") : " ++
       at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c := " ++
       app ("@" ++ free (elimName b m "recD")) (pa ++ #["(fun _ir_c => " ++ at_ (C ++ ".ofOrig") #[at_ (C ++ ".toOrig") #["_ir_c"]] ++ " = _ir_c)", "_ir_c"] ++ bs))
+  unless dn.heldProps.isEmpty do liftTermElabM (publishHeldProps b dn ns (first := false))
   -- the public constructors
   for (mn, cn) in dn.ctors do
     let some k := b.members.findIdx? (·.name == mn) | continue
@@ -4535,6 +4862,11 @@ def emitNestedPublic (dn : Denested) : CommandElabM Unit := do
       let name := (← dc d.name.toString) ++ "_" ++ (← dc c.name.toString)
       emitEquation b name (← dc (ps ++ " " ++ (← fieldsDecl c)))
         (← dc (app ("@" ++ d.name.toString) (dargs ++ result ++ #[ctorApp b k ci (fieldNames c)]) ++ " = " ++ par (← text d.clauses[ci]!)))
+  -- what is stated of a constructor at a proof over a copy is not moved across in text
+  unless dn.heldProps.isEmpty do
+    liftTermElabM (publishHeldProps b dn ns (first := true))
+    publishNestedJoint b dn ns
+    return
   -- the eliminators
   let common := pubPs ++ " " ++ motives ++ " " ++ minors
   let mut motivesC := #[]
