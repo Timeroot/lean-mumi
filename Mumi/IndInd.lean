@@ -7207,7 +7207,9 @@ def emit (p : Plan) : TermElabM Unit := do
           for a in ready do groups := groups.push #[a]
           done := done ++ ready
       for g in groups do
+        -- measured with the block, whose measures its fields need
         MultiuniverseInductive.addAliasedInds b.us b.numParams (g.map (p.peeled[·]!))
+          (genSizeOf := false)
       -- the block as the writer has it, for the order of the motives
       let total := b.size + p.peeled.size
       let keptAt := (Array.range total).filter (!p.peeledIdxs.contains ·)
@@ -7281,7 +7283,9 @@ def emit (p : Plan) : TermElabM Unit := do
       -- types the writer wrote, so that a pattern, a field and a goal all read
       -- the writer's names
       for g in groups do
+        -- measured with the block, whose measures its fields need
         MultiuniverseInductive.addAliasedInds b.us b.numParams (g.map (p.peeled[·]!))
+          (genSizeOf := false)
       let total := b.size + p.peeled.size
       let keptAt := (Array.range total).filter (!p.peeledIdxs.contains ·)
       let pubRec (o : Nat) : Name :=
@@ -7451,9 +7455,20 @@ def emit (p : Plan) : TermElabM Unit := do
       discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
         addInjViaCases b.numParams m.name c.name (m.ctors.map (·.name))
   -- 15. the measure, which the rules above are what proves where the recursor does not compute
-  addMeasures b.numParams <| b.dataIdxs.filterMap fun i =>
-    let m := b.members[i]!
-    if copyNames.contains m.name then none else some (m.name, m.ctors.map (·.name))
+  let peeledData ← p.peeled.filterM fun t => forallTelescope t.type fun _ s => pure !s.isProp
+  addMeasures b.numParams <| (b.dataIdxs.filterMap fun i =>
+      let m := b.members[i]!
+      if copyNames.contains m.name then none else some (m.name, m.ctors.map (·.name)))
+    ++ peeledData.map fun t => (t.name, t.ctors.toArray.map (·.name))
+  -- what is not measured by the recursion is Lean's, now the block's measures are there
+  for t in peeledData do
+    if (← getEnv).contains (t.name ++ `_sizeOf_inst) then continue
+    let ind := MultiuniverseInductive.aliasIndName t.name
+    discard <| attempt? `Mumi.view m!"no `sizeOf` for `{t.name}`" do
+      mkSizeOfInstances ind
+      for c in t.ctors do
+        discard <| attempt? `Mumi.view m!"no `sizeOf` lemma for `{c.name}`" <|
+          restate (Name.str ind c.name.getString! ++ `sizeOf_spec) (c.name ++ `sizeOf_spec) (simp := true)
 
 /-! ## The entry point -/
 

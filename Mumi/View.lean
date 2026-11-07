@@ -439,7 +439,7 @@ partial def addOfOrigSizeOf (copy : Name) : MetaM Unit := do
         unless ← isDefEq (← inferType proof) concl do
           throwError "the copy `{copy}` does not measure `{cn}` the way `{orig}` does"
         mkLambdaFVars ys (← mkExpectedTypeHint proof concl)
-    addDecl <| .thmDecl {
+    addDeclNow <| .thmDecl {
       name        := thmName
       levelParams := oi.levelParams
       type        := ← mkForallFVars (bs ++ insts ++ #[a]) (← sizeEq (mkAppN (mkConst ofOrig us) xs) a)
@@ -511,7 +511,7 @@ def addSizeOfSpec (numParams : Nat) (levelParams : List Name) (mem c : Name) : M
         unless ← isDefEq lhs lhs' do
           throwError "`sizeOf` of `{c}` is not the sum of its fields'"
       let thmParams := ps ++ insts ++ fields
-      addDecl <| .thmDecl {
+      addDeclNow <| .thmDecl {
         name        := thmName
         levelParams := ci.levelParams
         type        := ← mkForallFVars thmParams (← mkEq lhs rhs)
@@ -754,7 +754,7 @@ def addCtorIdxRules (mem : Name) (ctors : Array Name) : MetaM Unit := do
     discard <| attempt? `Mumi.view m!"`{mem}.ctorIdx` does not compute at `{c}`" do
       forallTelescope ci.type fun xs _ => do
         let lhs ← mkAppM (mem ++ `ctorIdx) #[mkAppN (mkConst c us) xs]
-        addDecl <| .thmDecl {
+        addDeclNow <| .thmDecl {
           name, levelParams := ci.levelParams
           type := ← mkForallFVars xs (mkApp3 (mkConst ``Eq [1]) (mkConst ``Nat) lhs (mkNatLit k))
           value := ← mkLambdaFVars xs (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs) }
@@ -1016,7 +1016,7 @@ private partial def addNestedMeasure (first : Name) (numParams : Nat) (k : Nat) 
           mkLambdaFVars ys (mkApp2 (mkConst ``id [0]) concl proof)
       let all := ps ++ insts ++ ls
       let stmt ← mkEq (mkAppN (mkAppN recC front) ls) (← mkAppM ``SizeOf.sizeOf #[t])
-      addDecl <| .thmDecl {
+      addDeclNow <| .thmDecl {
         name := thm, levelParams := mi.levelParams
         type := ← mkForallFVars all stmt
         value := ← mkLambdaFVars all (mkAppN app (oidx.push t)) }
@@ -1064,7 +1064,7 @@ def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) (first :
           let byRfl ← mkLambdaFVars all (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs)
           let env ← getEnv
           try
-            addDecl <| .thmDecl { name, levelParams := ci.levelParams, type, value := byRfl }
+            addDeclNow <| .thmDecl { name, levelParams := ci.levelParams, type, value := byRfl }
           catch _ =>
             setEnv env
             let us := ci.levelParams.map mkLevelParam
@@ -1081,7 +1081,7 @@ def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) (first :
                   (cps ++ insts ++ fapp.getAppArgs.extract front.size fapp.getAppNumArgs))
             let toSum ← rewriteBack rhs eqs
             let proof ← mkEqTrans ruleApp toSum
-            addDecl <| .thmDecl {
+            addDeclNow <| .thmDecl {
               name, levelParams := ci.levelParams, type
               value := ← mkLambdaFVars all proof }
       simpAttr.add name default .global
@@ -1281,7 +1281,7 @@ def addViewRulesByRfl (mem : Name) (ctors : Array Name) : MetaM Unit := do
         let app := mkAppN (mkConst c us) xs
         let lhs := mkAppN (mkConst (viewFnName mem) us) (concl.getAppArgs.push app)
         let rhs := mkAppN (mkConst (c.replacePrefix mem (viewName mem)) us) xs
-        addDecl <| .thmDecl {
+        addDeclNow <| .thmDecl {
           name, levelParams := ci.levelParams
           type := ← mkForallFVars xs (← mkEq lhs rhs)
           value := ← mkLambdaFVars xs (← mkEqRefl lhs) }

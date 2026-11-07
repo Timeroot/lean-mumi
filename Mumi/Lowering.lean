@@ -7,6 +7,7 @@ module
 
 public import Lean.Meta.Constructions
 public import Lean.Meta.SizeOf
+import all Lean.Meta.SizeOf
 import Lean.Meta.Constructions.CtorIdx
 import Lean.Meta.Constructions.CtorElim
 import Lean.Meta.IndPredBelow
@@ -577,6 +578,40 @@ def markElabAsElim (n : Name) (induction := true) : MetaM Unit := do
     let what := if induction then "induction" else "cases"
     trace[Mumi] "`{n}` does not take `@[{what}_eliminator]`: {e.toMessageData}"
 
+/-- `addDecl`, with what the kernel says thrown here: elsewhere it may check later, and log what
+it finds, which is no use to a proof tried in order to fall back from it. -/
+def addDeclNow (d : Declaration) : CoreM Unit :=
+  withOptions (Elab.async.set · false) (addDecl d)
+
+/-- `X.c.sizeOf_spec` by `rfl`, for a constructor of an inductive just declared where Lean's
+generator gave up: it stops at a field nested through a `Prop`, having made the rest. -/
+def addMissingSizeOfSpecs (names : Array Name) : MetaM Unit := do
+  let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
+  for n in names do
+    let .inductInfo ii ← getConstInfo n | continue
+    for c in ii.ctors do
+      let name := c ++ `sizeOf_spec
+      if (← getEnv).contains name then continue
+      let ci ← getConstInfo c
+      let env ← getEnv
+      try
+        forallTelescope ci.type fun xs _ => do
+          let ps := xs.extract 0 ii.numParams
+          let fields := xs.extract ii.numParams xs.size
+          mkLocalInstances ps fun insts => do
+            let lhs ← mkAppM ``SizeOf.sizeOf #[mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs]
+            let mut rhs ← mkNumeral (mkConst ``Nat) 1
+            for f in fields do
+              if (← whnf (← inferType f)).isForall then continue
+              rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+            let all := ps ++ insts ++ fields
+            addDeclNow <| .thmDecl {
+              name, levelParams := ci.levelParams
+              type := ← mkForallFVars all (← mkEq lhs rhs)
+              value := ← mkLambdaFVars all (← mkEqRefl lhs) }
+        simpAttr.add name default .global
+      catch _ => setEnv env
+
 /-- Add an inductive declaration and everything Lean normally builds alongside one. -/
 def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
     (isClass : Bool := false) (genSizeOf : Bool := true) (genBRecOn : Bool := true) :
@@ -615,7 +650,9 @@ def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array Inducti
     if hasUnit && hasProd && genBRecOn then mkBRecOn n
   unless isClass do
     -- these are generated for the whole block from its first member
-    if genSizeOf then mkSizeOfInstances names[0]!
+    if genSizeOf then
+      mkSizeOfInstances names[0]!
+      addMissingSizeOfSpecs names
     IndPredBelow.mkBelow names[0]!
     for n in names do
       mkInjectiveTheorems n
@@ -630,7 +667,7 @@ variables it binds have the types the writer reads; `X.rec` is left free for a
 recursion over more than this block. -/
 def addAliasedInds (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)
     (isClass : Bool := false) (aliasOf : Name → Bool := fun _ => true)
-    (holdCtor : Name → Bool := fun _ => false) : MetaM Unit := do
+    (holdCtor : Name → Bool := fun _ => false) (genSizeOf : Bool := true) : MetaM Unit := do
   -- a member not to alias keeps its name, and its constructors theirs
   let names := (indTypes.map (·.name)).filter aliasOf
   let us := levelParams.map Level.param
@@ -645,7 +682,7 @@ def addAliasedInds (levelParams : List Name) (numParams : Nat) (indTypes : Array
     { name := aliasIndName t.name, type := toKernel t.type
       ctors := t.ctors.map fun c =>
         { name := reroot t.name (aliasIndName t.name) c.name, type := toKernel c.type } })
-    isClass
+    isClass (genSizeOf := genSizeOf)
   let indTypes := indTypes.filter (names.contains ·.name)
   let matchPattern ← ofExcept <| getAttributeImpl (← getEnv) `match_pattern
   -- every type before any constructor, whose type may name a sibling

@@ -861,19 +861,23 @@ where
     else k insts
   termination_by params.size - i
 
-/-- `X.c.sizeOf_spec`: one and the sum of the fields, a function counting for nothing. -/
-private def sizeOfSpec (r : Run) (m : Member) (params : Array Expr) (c : Syntax) : TermElabM Unit := do
+/-- `X.c.sizeOf_spec`: one and the sum of the fields, a function counting for nothing.  A
+parameter from `uniform` on varies, so it is an index, which a constructor has as a field. -/
+private def sizeOfSpec (r : Run) (m : Member) (params : Array Expr) (uniform : Nat) (c : Syntax) :
+    TermElabM Unit := do
   let ctorName := m.name ++ c[3].getId
   try
-    let ty ← elabCtor m params c fun fields _ => withSizeOfInsts params fun insts => do
+    let fixed := params.extract 0 uniform
+    let varying := params.extract uniform params.size
+    let ty ← elabCtor m params c fun fields _ => withSizeOfInsts fixed fun insts => do
       let app := mkAppN (← mkConstWithLevelParams ctorName) (params ++ fields)
       let mut rhs ← mkNumeral (mkConst ``Nat) 1
-      for f in fields do
+      for f in varying ++ fields do
         if (← whnf (← inferType f)).isForall then continue
         rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
       let stmt ← mkEq (← mkAppM ``SizeOf.sizeOf #[app]) rhs
       withInfos params (fun bi => if bi == .default then .implicit else bi) do
-        mkForallFVars (params ++ insts ++ fields) stmt
+        mkForallFVars (fixed ++ insts ++ varying ++ fields) stmt
     discard <| checkConst r .sizeOf (ctorName ++ `sizeOf_spec) ty (innerNames := false)
   catch e =>
     problem r .sizeOf m!"`{ctorName}.sizeOf_spec` could not be stated: {e.toMessageData}"
@@ -1433,7 +1437,7 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
   -- the constructors, as Lean's behave
   for k in data do
     let m := members[k]!
-    for c in m.decl[4].getArgs do sizeOfSpec r m params c
+    for c in m.decl[4].getArgs do sizeOfSpec r m params uniform c
     ctorIdxRules r m params
     discrimination r m params
     matchingAtIndex r m params tys[k]!
