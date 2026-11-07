@@ -1709,6 +1709,74 @@ example (a b) : El (.pi a b) = El a := rfl
 
 end LowerCtorEqs
 
+/-! ## `deriving` on an induction-recursion
+
+No pre-term stands behind these members, so what is derived is written against them by
+`match`.  `DecidableEq` wants proofs that does not write, and says so rather than refusing the
+block. -/
+
+namespace DerivedIR
+
+mutual
+inductive U : Type where
+  | base : U
+  | pi (a : U) (b : El a → U) : U
+  deriving Repr, Inhabited, Nonempty
+inductive V : Type where
+  | nat (n : Nat) : V
+  | up (v : V) : V
+  deriving Repr, BEq, Hashable, Inhabited
+def El : U → Type
+  | .base => Nat
+  | .pi a b => (x : El a) → El (b x)
+end
+
+/-- info: MumiTests.Demo.DerivedIR.U.base -/
+#guard_msgs in
+#eval U.base
+/-- info: MumiTests.Demo.DerivedIR.U.pi (MumiTests.Demo.DerivedIR.U.base) _ -/
+#guard_msgs in
+#eval U.pi .base fun _ => .base
+/-- info: MumiTests.Demo.DerivedIR.V.up (MumiTests.Demo.DerivedIR.V.nat 1) -/
+#guard_msgs in
+#eval V.up (.nat 1)
+/-- info: true -/
+#guard_msgs in
+#eval V.nat 1 == .nat 1
+/-- info: false -/
+#guard_msgs in
+#eval V.nat 1 == .nat 2
+/-- info: false -/
+#guard_msgs in
+#eval V.nat 1 == .up (.nat 1)
+/-- info: true -/
+#guard_msgs in
+#eval hash (V.nat 1) != hash (V.nat 2)
+/-- info: MumiTests.Demo.DerivedIR.V.nat 0 -/
+#guard_msgs in
+#eval (default : V)
+example : Nonempty U := inferInstance
+
+-- a carrier with no decoder of its own beside one with: `V` above, which used to be refused
+
+/-- error: `deriving DecidableEq` is not available on an induction-recursion's members yet: `Repr`, `BEq`, `Hashable`, `Inhabited` and `Nonempty` are.  An instance may be written by `match`, which works on them. -/
+#guard_msgs in
+mutual
+inductive Code : Type where
+  | one : Code
+  | pair (a b : Code) : Code
+  deriving DecidableEq
+def size : Code → Nat
+  | .one => 1
+  | .pair a b => size a + size b
+end
+
+/-- info: 2 -/
+#guard_msgs in
+#eval size (Code.pair .one .one)
+
+end DerivedIR
+
 /-! ## An index that is only variables, and a case that concludes at a constructor
 
 `At (.id Γ)` has no constructor of `Ctx` in it, but `At.ext` concludes at `Ctx.snoc`, and that

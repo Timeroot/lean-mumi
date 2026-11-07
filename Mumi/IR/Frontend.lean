@@ -762,7 +762,7 @@ private def emitSemantics (b : Block) : CommandElabM Unit := do
       let d := b.decoders[j]!
       if d.target == i then
         fields := fields.push ("  " ++ outField j ++ " : " ++ (← semText b #[(d.major, "")] d.result))
-    if fields.isEmpty then fields := #["  _unit : PUnit"]
+    if fields.isEmpty then fields := #["  _unit : PUnit.{1}"]
     emit ("structure " ++ sem b.members[i]! ++ " " ++ ps ++ " : Type (" ++ b.level ++ "+1) where\n" ++ String.intercalate "\n" fields.toList)
 
 private def graphFields (b : Block) (c : Ctor) : CommandElabM String := do

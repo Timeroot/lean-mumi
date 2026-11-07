@@ -108,8 +108,14 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
         withExporting (isExporting := (← getScope).isPublic) do
         withoutCommandIncrementality true do
         withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
-          IndRec.elaborateAny elems
-          publishIRInjs elems
+          -- `deriving` comes after: it is written against what the block publishes
+          let isInd (e : Syntax) := e[1].isOfKind ``Lean.Parser.Command.«inductive»
+          let views ← IndInd.elemViews (elems.filter isInd)
+          let bare := elems.map fun e =>
+            if isInd e then e.setArg 1 (e[1].setArg 6 (e[1][6].setArg 0 (mkNullNode #[]))) else e
+          IndRec.elaborateAny bare
+          publishIRInjs bare
+          IndInd.deriveWrittenAgainstMembers views
       catch ex =>
         unless mumi.ir.debug.get (← getOptions) do set saved
         logException ex

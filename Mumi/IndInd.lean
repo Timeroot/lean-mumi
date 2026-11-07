@@ -7588,13 +7588,11 @@ def inhabitedFromCtor? (declName : Name) (ctors : Array Name) : MetaM (Option De
           hints := .abbrev, safety := .safe })
       return none
 
-/-- `Repr` for data members written against the members themselves: a `match` over each, which
-shows the constructors the writer named with every explicit field, where the pre-term's would
-show its own constructors and none of what it erased.  A field with nothing to show, a proof,
-a function or a type, is `_`, as Lean's own has it. -/
-private def deriveReprByMatch (views : Array InductiveView) : CommandElabM Unit := do
-  -- each member's binders, its type applied to them, and its function's name
-  let mut sigs : Array (String × String × String) := #[]
+/-- For each member, its binders with an instance of `cls` for each that is a type, the member
+at them, and the name of the function `name`. -/
+private def derivedSigs (views : Array InductiveView) (cls name : String) :
+    CommandElabM (Array (String × String × String)) := do
+  let mut sigs := #[]
   for v in views do
     let n := v.declName
     let (binds, argNames) ← liftTermElabM do
@@ -7604,42 +7602,32 @@ private def deriveReprByMatch (views : Array InductiveView) : CommandElabM Unit 
         for x in xs, i in Array.range xs.size do
           let nm := s!"x{i}"
           -- a type among them is shown by the instance it comes with
-          let inst := if (← whnf (← inferType x)).isSort then s!" [Repr {nm}]" else ""
+          let inst := if (← whnf (← inferType x)).isSort then s!" [{cls} {nm}]" else ""
           bs := bs.push (s!"\{{nm} : _}" ++ inst)
           ns := ns.push nm
         return (bs, ns)
     sigs := sigs.push (" ".intercalate binds.toList,
       "(" ++ " ".intercalate ([s!"_root_.{n}"] ++ argNames.toList) ++ ")",
       -- as the namespace has it: `_root_` does not reach a function from inside its own definition
-      s!"{n.replacePrefix (← getCurrNamespace) .anonymous}._reprAux")
-  -- every body sees an instance of every member, which is the recursion
-  let haves := "".intercalate (sigs.toList.zipIdx.map fun ((sig, self, aux), k) =>
-    let ty := if sig.isEmpty then s!"Repr {self}" else s!"∀ {sig}, Repr {self}"
-    s!"  have _spec_r{k} : {ty} := ⟨{aux}⟩\n")
-  let mut defs : Array String := #[]
-  let mut insts : Array String := #[]
-  for v in views, (sig, self, aux) in sigs do
-    let mut alts : Array String := #[]
-    for c in v.ctors do
-      let cn := c.declName
-      let parts ← liftTermElabM <| forallTelescope (← getConstInfo cn).type fun xs _ => do
-        let mut ps : Array (String × String) := #[]
-        for x in xs, k in Array.range xs.size do
-          unless (← x.fvarId!.getBinderInfo).isExplicit do continue
-          let ty ← inferType x
-          let silent := (← isProp ty) || (← whnf ty).isForall || (← whnf ty).isSort
-          ps := ps.push (s!"f{k}", if silent then "\"_\"" else s!"reprArg f{k}")
-        return ps
-      let pat := " ".intercalate (["." ++ cn.getString!] ++ parts.toList.map (·.1))
-      let body := " ++ Std.Format.line ++ ".intercalate ([s!"\"{cn}\""] ++ parts.toList.map (·.2))
-      alts := alts.push
-        s!"  | {pat}, prec => Repr.addAppParen (Std.Format.group (Std.Format.nest 2 ({body}))) prec"
-    defs := defs.push (s!"partial def {aux} {sig} (t : {self}) (p : Nat) : Std.Format :=\n{haves}" ++
-      s!"  match t, p with\n" ++ "\n".intercalate alts.toList)
-    insts := insts.push s!"instance {sig} : Repr {self} := ⟨{aux}⟩"
-  let text := "mutual\n" ++ "\n".intercalate defs.toList ++ "\nend\n" ++ "\n".intercalate insts.toList
-  trace[Mumi.indind] "`Repr` by `match`:\n{text}"
-  let ictx := Parser.mkInputContext text "<Repr>"
+      s!"{n.replacePrefix (← getCurrNamespace) .anonymous}.{name}")
+  return sigs
+
+/-- The explicit fields of `c`, each with whether it has anything to show: a proof, a function
+or a type has not. -/
+private def fieldsOf (c : Name) : CommandElabM (Array (Nat × Bool)) :=
+  liftTermElabM do
+  forallTelescope (← getConstInfo c).type fun xs _ => do
+    let mut ps := #[]
+    for x in xs, k in Array.range xs.size do
+      unless (← x.fvarId!.getBinderInfo).isExplicit do continue
+      let ty ← inferType x
+      ps := ps.push (k, !((← isProp ty) || (← whnf ty).isForall || (← whnf ty).isSort))
+    return ps
+
+/-- The commands of `text`, parsed and elaborated in turn. -/
+private def elabCommandsOf (what text : String) : CommandElabM Unit := do
+  trace[Mumi.indind] "{what} by `match`:\n{text}"
+  let ictx := Parser.mkInputContext text "<deriving>"
   let pmctx : Parser.ParserModuleContext :=
     { env := ← getEnv, options := ← getOptions, currNamespace := ← getCurrNamespace,
       openDecls := ← getOpenDecls }
@@ -7651,8 +7639,109 @@ private def deriveReprByMatch (views : Array InductiveView) : CommandElabM Unit 
     msgs := msgs'
     if Parser.isTerminalCommand cmd then break
     if msgs.hasErrors then
-      throwError "`Repr` could not be written: {← msgs.toList.mapM (·.toString)}\n{text}"
+      throwError "{what} could not be written: {← msgs.toList.mapM (·.toString)}\n{text}"
     elabCommand cmd
+
+/-- A class of one function for data members, written against the members: a `match` over each,
+each body seeing an instance for every member, which is the recursion. -/
+private def deriveByMatch (views : Array InductiveView) (cls name args result : String)
+    (method : String → String)
+    (alts : InductiveView → CommandElabM (Array String)) : CommandElabM Unit := do
+  let sigs ← derivedSigs views cls name
+  let haves := "".intercalate (sigs.toList.zipIdx.map fun ((sig, self, aux), k) =>
+    let ty := if sig.isEmpty then s!"{cls} {self}" else s!"∀ {sig}, {cls} {self}"
+    s!"  have _spec_r{k} : {ty} := {method aux}\n")
+  let mut defs : Array String := #[]
+  let mut insts : Array String := #[]
+  for v in views, (sig, self, aux) in sigs do
+    let rows ← alts v
+    defs := defs.push (s!"partial def {aux} {sig} {args.replace "SELF" self} : {result} :=\n{haves}" ++
+      "\n".intercalate rows.toList)
+    insts := insts.push s!"instance {sig} : {cls} {self} := {method aux}"
+  elabCommandsOf cls ("mutual\n" ++ "\n".intercalate defs.toList ++ "\nend\n" ++
+    "\n".intercalate insts.toList)
+
+/-- `Repr` for data members written against the members themselves: what is shown is the
+constructors the writer named with every explicit field, where the pre-term's would show its own
+constructors and none of what it erased.  A field with nothing to show, a proof, a function or a
+type, is `_`, as Lean's own has it. -/
+private def deriveReprByMatch (views : Array InductiveView) : CommandElabM Unit :=
+  deriveByMatch views "Repr" "_reprAux" "(t : SELF) (p : Nat)" "Std.Format" (fun aux => s!"⟨{aux}⟩")
+    fun v => do
+      let mut rows := #["  match t, p with"]
+      for c in v.ctors do
+        let cn := c.declName
+        let fs ← fieldsOf cn
+        let pat := " ".intercalate (["." ++ cn.getString!] ++ fs.toList.map fun (k, _) => s!"f{k}")
+        let body := " ++ Std.Format.line ++ ".intercalate ([s!"\"{cn}\""] ++
+          fs.toList.map fun (k, shows) => if shows then s!"reprArg f{k}" else "\"_\"")
+        rows := rows.push
+          s!"  | {pat}, prec => Repr.addAppParen (Std.Format.group (Std.Format.nest 2 ({body}))) prec"
+      return rows
+
+/-- `BEq` written against the members: the same constructor, and its fields equal. -/
+private def deriveBEqByMatch (views : Array InductiveView) : CommandElabM Unit :=
+  deriveByMatch views "BEq" "_beqAux" "(a b : SELF)" "Bool" (fun aux => s!"⟨{aux}⟩")
+    fun v => do
+      let mut rows := #["  match a, b with"]
+      for c in v.ctors do
+        let cn := c.declName
+        let fs ← fieldsOf cn
+        let pat (x : String) := " ".intercalate (["." ++ cn.getString!] ++ fs.toList.map fun (k, _) => s!"{x}{k}")
+        let tests := (fs.toList.filter (·.2)).map fun (k, _) => s!"f{k} == g{k}"
+        rows := rows.push s!"  | {pat "f"}, {pat "g"} => {" && ".intercalate tests |> fun s => if s.isEmpty then "true" else s}"
+      if v.ctors.size > 1 then rows := rows.push "  | _, _ => false"
+      return rows
+
+/-- `Hashable` written against the members: the constructor's position, mixed with its fields'. -/
+private def deriveHashableByMatch (views : Array InductiveView) : CommandElabM Unit :=
+  deriveByMatch views "Hashable" "_hashAux" "(t : SELF)" "UInt64" (fun aux => s!"⟨{aux}⟩")
+    fun v => do
+      let mut rows := #["  match t with"]
+      for c in v.ctors, i in Array.range v.ctors.size do
+        let cn := c.declName
+        let fs ← fieldsOf cn
+        let pat := " ".intercalate (["." ++ cn.getString!] ++ fs.toList.map fun (k, _) => s!"f{k}")
+        let body := (fs.toList.filter (·.2)).foldl (fun acc (k, _) => s!"mixHash ({acc}) (hash f{k})") s!"{i}"
+        rows := rows.push s!"  | {pat} => {body}"
+      return rows
+
+/-- `deriving` on a block no pre-terms stand behind, an induction-recursion's, once its views are
+there.  `DecidableEq` wants proofs a `match` does not write, and says so. -/
+def deriveWrittenAgainstMembers (views : Array InductiveView) : CommandElabM Unit := do
+  let mut processed : NameSet := {}
+  for view in views do
+    for classView in view.derivingClasses do
+      let className ← liftCoreM <| classView.getClassName
+      if processed.contains className then continue
+      processed := processed.insert className
+      let written := views.filter fun v => v.derivingClasses.any (·.cls == classView.cls)
+      let data ← written.filterM fun v => liftTermElabM do
+        forallTelescope (← getConstInfo v.declName).type fun _ s => pure !s.isProp
+      if data.isEmpty then continue
+      withRef classView.ref do
+        if className == ``Repr then deriveReprByMatch data
+        else if className == ``BEq then
+          -- what it asks of a field at another index is not a comparison at one type
+          if let some why ← tentatively? (deriveBEqByMatch data) then
+            logError m!"`deriving BEq` could not be written for these members: {why}
+
+Note: an               indexed member's fields are at two sides' indices, and `==` is at one.  An instance               may be written by `match`, which works on them."
+        else if className == ``Hashable then deriveHashableByMatch data
+        else if className == ``Inhabited || className == ``Nonempty then
+          for v in data do
+            if (← getEnv).contains (v.declName ++ `instInhabited) then continue
+            let ctors := v.ctors.map (·.declName)
+            let some decl ← runTermElabM fun _ => inhabitedFromCtor? v.declName ctors
+              | logError m!"no constructor of `{v.declName}` to derive `{className}` from"
+                continue
+            liftCoreM <| addAndCompile decl
+            runTermElabM fun _ =>
+              Lean.Meta.registerInstance (v.declName ++ `instInhabited) .global (eval_prio default)
+        else
+          logError m!"`deriving {className}` is not available on an induction-recursion's members yet: \
+            `Repr`, `BEq`, `Hashable`, `Inhabited` and `Nonempty` are.  An instance may be written by \
+            `match`, which works on them."
 
 /-- `instance {x…} [C xᵢ]… : C (X x…)`, with an instance of `C` for each binder that is a type,
 through what `X` unfolds to. -/
