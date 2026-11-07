@@ -305,7 +305,7 @@ end
 namespace Mixed
 set_option mumi.mahlo false
 
-mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, matching])
+mumi_spec (simp := [Code.casesOn_list, Code.rec_list])
 mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n
@@ -327,6 +327,67 @@ end
 example (s : Bool) : Den 2 (Code.checked (.base s) (.base s)) = Den 0 (Code.base (σ := Bool) s) := rfl
 
 end Mixed
+
+/-! The same in the mode that lowers. -/
+
+namespace MixedLower
+
+mumi_spec (simp := [Code.casesOn_list, Code.rec_list])
+mutual
+inductive Code {σ : Type} (n : Nat) : Type where
+  | base (s : σ) : Code n
+  | succ (c : Code (n + 1)) : Code n
+  | list (cs : List (Code 0)) : Code n
+  | checked (c : Code 0) (h : Good c) : Code n
+inductive Good {σ : Type} : Code (σ := σ) 0 → Prop where
+  | base (s : σ) : Good (.base s)
+def Den {σ : Type} (n : Nat) : Code (σ := σ) n → Type
+  | .base s => Fin (n + 1)
+  | .succ c => Den (n + 1) c
+  | .list cs => Dens cs
+  | .checked c h => Den 0 c
+def Dens {σ : Type} : List (Code (σ := σ) 0) → Type
+  | [] => Unit
+  | c :: cs => Den 0 c × Dens cs
+end
+
+end MixedLower
+
+/-! Two fields at a nesting, a `Prop` member that may eliminate into any sort, and what the
+recursion over all of it computes.  It computes by `rfl` wherever no field is at a nesting. -/
+
+namespace TwoNested
+set_option mumi.mahlo false
+
+mumi_spec (simp := [U.casesOn_tup, U.rec_tup])
+mutual
+inductive U : Type where
+  | nat : U
+  | tup (xs : List U) (ys : List U) : U
+  | chk (a : U) (h : Ok a) : U
+inductive Ok : U → Prop where
+  | nat : Ok .nat
+def El : U → Type
+  | .nat => Nat
+  | .tup xs ys => Els xs × Els ys
+  | .chk a _ => El a
+def Els : List U → Type
+  | [] => Unit
+  | a :: as => El a × Els as
+end
+
+noncomputable def depth : U → Nat :=
+  U.rec (motive_1 := fun _ => Nat) (motive_2 := fun _ _ _ => True) (motive_3 := fun _ => Nat)
+    0 (fun _ _ a b => a + b + 1) (fun _ _ a _ => a + 1) trivial 0 (fun _ _ a b => max a b)
+
+example : depth (.chk .nat .nat) = 1 := rfl
+example : depth (.tup [.nat] []) = 1 := by simp only [depth, U.rec_tup]; rfl
+
+/-- info: 'TwoNested.depth' does not depend on any axioms -/
+#guard_msgs in
+#print axioms depth
+
+end TwoNested
 
 -- a carrier indexed by a nested application would need its own API over the original
 /--

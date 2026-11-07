@@ -395,7 +395,7 @@ private partial def stmtFrom (c : Ctx) (m : Expr) (fields : Array Expr) (r : Exp
   match ks with
   | [] => mkEq r (mkAppN m (fields ++ acc))
   | kd :: ks =>
-    let .forallE n d body _ := ty | throwError "a minor premise ended early"
+    let .forallE n d body _ := ty | throwError m!"a minor premise ended early at {ty}"
     withLocalDeclD n d fun x => do
       let rest ← stmtFrom c m fields r (body.instantiate1 x) ks (acc.push x)
       let inner ← if kd.isData then pure (mkAnd (← factAt c kd.member d x) rest) else pure rest
@@ -424,7 +424,7 @@ private partial def introFrom (c : Ctx) (m : Expr) (fields : Array Expr) (r : Ex
     let rty ← inferType r
     return mkApp2 (mkConst ``Eq.refl [← getLevel rty]) rty r
   | kd :: ks' =>
-    let .forallE n d body _ := ty | throwError "a minor premise ended early"
+    let .forallE n d body _ := ty | throwError m!"a minor premise ended early at {ty}"
     let (w, wf?) ← supply kd d
     let rest ← introFrom c m fields r supply (body.instantiate1 w) ks' (acc.push w)
     let p ← predAt c m fields r kd n d body ks' acc
@@ -447,7 +447,7 @@ private partial def destructFrom (c : Ctx) (m : Expr) (fields : Array Expr) (r :
   match ks with
   | [] => k acc facts h
   | kd :: ks' =>
-    let .forallE n d body _ := ty | throwError "a minor premise ended early"
+    let .forallE n d body _ := ty | throwError m!"a minor premise ended early at {ty}"
     let p ← predAt c m fields r kd n d body ks' acc
     let cont ← withLocalDeclD n d fun x => do
       let px := (p.bindingBody!.instantiate1 x)
@@ -556,7 +556,7 @@ private def Ctx.addGraph (c : Ctx) (scope : Array Nat) : MetaM Unit := do
       match ks with
       | [] => mkEq r (mkAppN m (fs ++ acc))
       | kd :: ks =>
-        let .forallE n d body _ := ty | throwError "a minor premise ended early"
+        let .forallE n d body _ := ty | throwError m!"a minor premise ended early at {ty}"
         withLocalDeclD n d fun x => do
           let rest ← go (body.instantiate1 x) ks (acc.push x) r
           let inner ← if let .data f j := kd then do
@@ -869,7 +869,7 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
           let fsAt := fs.map fun x => ((standIn.find? (·.1 == x)).map (·.2)).getD x
           let mut ty ← instantiateForall (← inferType c.minorOf[j]![ci]!) fsAt
           for kd in kinds do
-            let .forallE _ d body _ := ty | throwError "a minor premise ended early"
+            let .forallE _ d body _ := ty | throwError m!"a minor premise ended early at {ty}"
             let v ← if kd.isData then
                 pure ((ks.find? (·.1 == fs[kd.field]!)).get!.2.1)
               else if !props.contains kd.member then
@@ -1001,7 +1001,7 @@ private def Ctx.addValue (c : Ctx) (scope : Array Nat) : MetaM Unit := do
     let mut supplied := #[]
     let mut ty := mty
     for kd in kinds do
-      let .forallE _ d body _ := ty | throwError "a minor premise ended early"
+      let .forallE _ d body _ := ty | throwError m!"a minor premise ended early at {ty}"
       let (v, fact?) ← if let .data f j := kd then do
           let pair ← forallTelescope d fun dom dbody => do
             let p := match ihAt.find? (·.1 == f) with
@@ -1133,7 +1133,7 @@ private def Ctx.addValueQ (c : Ctx) (scope : Array Nat) : MetaM Unit := do
     let mut ty := mty
     for n in [:kinds.size] do
       let kd := kinds[n]!
-      let .forallE _ d body _ := ty | throwError "a minor premise ended early"
+      let .forallE _ d body _ := ty | throwError m!"a minor premise ended early at {ty}"
       let part := conjAt parts q n
       let (v, fact?) ← if let .data f j := kd then do
           let pair ← forallTelescope d fun dom dbody => do
@@ -1306,6 +1306,170 @@ private def buildAll (inp : Input) : MetaM Unit := withSpec inp fun c => do
   for scope in scopes do c.addValueQ scope
   c.addAll
   c.addRecs
+
+/-! ## Over what a block nests
+
+A nested occurrence has no copy to be a member here: the recursions the construction is
+given are over the originals already, `List (Code 0)` among them.  What it reads off a name
+is read off an alias: a reducible name per member, per nesting, and per constructor of each.
+The statement built over those is put back as it was written. -/
+
+/-- A member or a nesting, as `statementsOverNesting` is given it. -/
+structure Target where
+  /-- A nesting's `fun ps => I args`; a member's constant. -/
+  app : Expr
+  prop : Bool
+  /-- The constructors. -/
+  ctors : Array Name
+  /-- What the joint recursion at it is called. -/
+  out : Name
+  deriving Inhabited
+
+private partial def spellWith (table : Array (Name × Array Expr × Expr)) (e : Expr) : Expr :=
+  let go := spellWith table
+  match e with
+  | .app .. =>
+    let f := e.getAppFn
+    let args := e.getAppArgs
+    match f with
+    | .const n _ =>
+      match table.find? fun (m, pre, _) =>
+          m == n && args.size ≥ pre.size && (args.extract 0 pre.size) == pre with
+      | some (_, pre, to) => mkAppN to ((args.extract pre.size args.size).map go)
+      | none => mkAppN f (args.map go)
+    | _ => mkAppN (go f) (args.map go)
+  | .const n _ =>
+    match table.find? fun (m, pre, _) => m == n && pre.isEmpty with
+    | some (_, _, to) => to
+    | none => e
+  | .forallE n d b bi => .forallE n (go d) (go b) bi
+  | .lam n d b bi => .lam n (go d) (go b) bi
+  | .letE n t v b nd => .letE n (go t) (go v) (go b) nd
+  | .mdata m b => .mdata m (go b)
+  | .proj s i b => .proj s i (go b)
+  | _ => e
+
+/-- What the joint recursion over `targets` says of each, as written. -/
+def statementsOverNesting (np : Nat) (targets : Array Target) (base : Name) : MetaM (Array Expr) := do
+  let first ← getConstInfo targets[0]!.app.getAppFn.constName!
+  forallBoundedTelescope first.type np fun ps _ => do
+    let mut lpsAcc : List Name := []
+    for t in targets do
+      let more ← if t.app.isConst then pure (← getConstInfo t.app.constName!).levelParams
+        else pure (collectLevelParams {} t.app).params.toList
+      for l in more do
+        unless lpsAcc.contains l do lpsAcc := lpsAcc ++ [l]
+    let lps := lpsAcc
+    let lvls := lps.map mkLevelParam
+    -- each name, and what stands for it: the alias at the parameters, or for a member the
+    -- alias itself, at the same arguments
+    let mut table : Array (Name × Array Expr × Expr) := #[]
+    let mut aliases : Array (Name × Array Name) := #[]
+    for k in [:targets.size] do
+      let t := targets[k]!
+      let alias := base ++ Name.mkSimple s!"_j{k}"
+      let ctorAliases := t.ctors.map fun c => alias ++ Name.mkSimple c.getString!
+      aliases := aliases.push (alias, ctorAliases)
+      if t.app.isConst then
+        table := table.push (t.app.constName!, #[], mkConst alias lvls)
+        for c in t.ctors, a in ctorAliases do
+          table := table.push (c, #[], mkConst a lvls)
+      else
+        let app := t.app.beta ps
+        let args := app.getAppArgs
+        table := table.push (app.getAppFn.constName!, args, mkAppN (mkConst alias lvls) ps)
+        for c in t.ctors, a in ctorAliases do
+          table := table.push (c, args, mkAppN (mkConst a lvls) ps)
+    let spell := spellWith table
+    let addAlias (name : Name) (type value : Expr) (prf : Bool) : MetaM Unit := do
+      if prf then addDecl (.thmDecl { name, levelParams := lps, type, value })
+      else
+        addDef name lps type value (hints := .abbrev)
+        setReducibleAttribute name
+    -- the aliases, each after those it names: one statement may need another's constructor
+    let mut pending : Array (Name × Expr × Expr × Bool) := #[]
+    for k in [:targets.size] do
+      let t := targets[k]!
+      let (alias, ctorAliases) := aliases[k]!
+      if t.app.isConst then
+        let n := t.app.constName!
+        let i ← getConstInfo n
+        let cst := mkConst n (i.levelParams.map mkLevelParam)
+        pending := pending.push (alias, spell i.type, cst, false)
+        for c in t.ctors, a in ctorAliases do
+          let ci ← getConstInfo c
+          let cc := mkConst c (ci.levelParams.map mkLevelParam)
+          let ty ← forallBoundedTelescope ci.type np fun qs body => do
+            mkForallFVars qs ((spell (body.replaceFVars qs ps)).replaceFVars ps qs)
+          pending := pending.push (a, ty, cc, t.prop)
+      else
+        let app := t.app.beta ps
+        let .const _ us := app.getAppFn | gap m!"a nesting with no inductive at its head"
+        let args := app.getAppArgs
+        pending := pending.push (alias, ← mkForallFVars ps (spell (← inferType app)), ← mkLambdaFVars ps app, false)
+        for c in t.ctors, a in ctorAliases do
+          let ci ← getConstInfo c
+          let cty ← instantiateForall (ci.type.instantiateLevelParams ci.levelParams us) args
+          pending := pending.push (a, ← mkForallFVars ps (spell cty),
+            ← mkLambdaFVars ps (mkAppN (mkConst c us) args), t.prop)
+    let names := pending.map (·.1)
+    while !pending.isEmpty do
+      let e ← getEnv
+      let ready := pending.filter fun (_, ty, _, _) =>
+        ty.getUsedConstants.all fun u => !names.contains u || e.contains u
+      if ready.isEmpty then gap m!"the block's statements name each other in a circle"
+      for (a, ty, v, prf) in ready do
+        addAlias a ty v prf
+      pending := pending.filter fun (a, _, _, _) => !ready.any (·.1 == a)
+    -- the statements
+    let members := targets.mapIdx fun k t =>
+      ({ name := aliases[k]!.1, prop := t.prop, ctors := aliases[k]!.2
+         minorNames := t.ctors.map fun c => Name.mkSimple c.getString! } : Member)
+    let inp : Input := { numParams := np, members, internal := "" }
+    let spelled ← withSpec inp fun c => do
+      let mut out := #[]
+      for k in [:targets.size] do
+        let ty ← forallTelescope (← c.arity k) fun idx _ =>
+          withInfos idx (fun bi => if bi == .instImplicit then bi else .implicit) do
+          withLocalDeclD `t (← c.memberAt k idx) fun t => do
+            let body ← if !members[k]!.prop then
+                pure (mkAppN (c.motiveOf k) (idx.push t))
+              else
+                -- as `addRecs` concludes: at the recursion's values
+                let mut vals := #[]
+                let lvls' := c.lps.map mkLevelParam
+                for a in [:idx.size] do
+                  match c.displayAt[k]![a]! with
+                  | none => vals := vals.push none
+                  | some j =>
+                    let ity ← instantiateMVars (← inferType idx[a]!)
+                    let iargs := ity.getAppArgs.extract np ity.getAppNumArgs
+                    vals := vals.push (some (mkAppN (mkConst (c.inp.out j) lvls') (c.pre ++ iargs.push idx[a]!)))
+                pure (c.motiveApp k idx vals t)
+            mkForallFVars (c.pre ++ idx.push t) body
+        out := out.push ty
+      return (out, c.lps)
+    let (types, stLps) := spelled
+    -- read back, the recursions by their names
+    let mut result := #[]
+    for ty0 in types do
+      let mut ty := ty0
+      for k' in [:targets.size] do
+        let (al, cs) := aliases[k']!
+        for nm in #[al] ++ cs do
+          let ai ← getConstInfo nm
+          let v := match ai with
+            | .thmInfo th => th.value
+            | _ => ai.value!
+          ty := ty.replace fun e => match e with
+            | .const m _ => if m == nm then some v else none
+            | _ => none
+        ty := ty.replace fun e => match e with
+          | .const m us => if m == al ++ `rec then some (.const targets[k']!.out us) else none
+          | _ => none
+      result := result.push (← Core.betaReduce ty)
+    let _ := stLps
+    return result
 
 /-- Tag `n` `@[elab_as_elim]`, without registering it with the tactics. -/
 private def tagElim (n : Name) : MetaM Unit := do
