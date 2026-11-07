@@ -42,7 +42,7 @@ namespace InstLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive U (α : Type) [BEq α] : Type where
   | base : U α
@@ -107,7 +107,7 @@ namespace FieldsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

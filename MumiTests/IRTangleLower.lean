@@ -17,7 +17,7 @@ set_option mumi.mahlo true
 
 namespace TangleL
 
-mumi_spec (xfail := [discr, sizeOf, matching])
+mumi_spec (xfail := [sizeOf, matching])
 mutual
 inductive A : Type where
   | nil : A
@@ -83,7 +83,7 @@ end TangleL
 
 namespace DependentL
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

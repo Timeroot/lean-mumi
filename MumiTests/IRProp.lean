@@ -64,7 +64,7 @@ end PropUpper
 namespace PropLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive U : Type where
   | base : U

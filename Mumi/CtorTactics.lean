@@ -472,6 +472,32 @@ def evalInjectionsEncoded : Tactic := fun stx => withMainContext do
       throwTacticEx `injections g m!"too many identifiers provided, unused: {ids}"
     if ← g.assumptionCore then replaceMainGoal [] else replaceMainGoal [g]
 
+/-- `X.noConfusion h`, where `h` equates two different constructors of an encoded member and
+what is wanted of it is known.  What it should be is `X.noConfusionType P a b`, which is `P`
+when `X.ctorIdx` is reduced; where that is a case split through an encoding Meta's unifier is
+kept out of, this says so rather than leaving it stuck.  An indexed member's takes equations
+at the indices first, which say nothing the last does not. -/
+@[term_elab Lean.Parser.Term.app]
+def elabNoConfusionAtCtors : Term.TermElab := fun stx expectedType? => do
+  let f := stx[0]
+  unless f.isIdent do throwUnsupportedSyntax
+  let .str _ "noConfusion" := f.getId.eraseMacroScopes | throwUnsupportedSyntax
+  let some expected := expectedType? | throwUnsupportedSyntax
+  let some h := stx[1].getArgs.back? | throwUnsupportedSyntax
+  let some (.const (Name.str mem _) _) ← Term.resolveId? f | throwUnsupportedSyntax
+  unless (← getEnv).contains mem do throwUnsupportedSyntax
+  let saved ← saveState
+  let some (hE, a, b, ca, cb) ← (do
+      let hE ← Term.elabTerm h none
+      Term.synthesizeSyntheticMVarsNoPostponing
+      let hE ← instantiateMVars hE
+      let some (a, b, ca, cb) ← encodedSides? hE | return none
+      unless ca.name != cb.name && ca.name.getPrefix == mem do return none
+      return some (hE, a, b, ca, cb))
+    | saved.restore; throwUnsupportedSyntax
+  let some eq ← asEq? hE | saved.restore; throwUnsupportedSyntax
+  mkFalseElim expected (← refute eq a b ca cb)
+
 /-! ## `match` where an index is such a constructor
 
 Lean's match compiler solves that index by its own `cases`, which nothing here reaches.  So

@@ -63,7 +63,7 @@ namespace SimpleLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -140,7 +140,7 @@ namespace TiedLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

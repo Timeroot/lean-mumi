@@ -57,7 +57,7 @@ end UnivUpper
 namespace UnivLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | a0 : A

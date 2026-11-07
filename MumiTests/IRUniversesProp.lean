@@ -96,7 +96,7 @@ namespace UnivPropLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive A : Type 1 where
   | a0 : A
@@ -217,7 +217,7 @@ namespace MixIdxLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -321,7 +321,7 @@ namespace PolyMixLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive A : Type u where
   | a0 : A
@@ -400,7 +400,7 @@ set_option mumi.mahlo true
 set_option maxRecDepth 6000
 set_option linter.unusedVariables false
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive A : Type u where
   | a0 : A

@@ -58,7 +58,7 @@ end IRMutualUpper
 namespace IRMutualLower
 set_option mumi.mahlo true
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
   inductive Ty : Type where
     | base : Ty

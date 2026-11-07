@@ -75,7 +75,7 @@ namespace CodesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (simp := [U.rec_tuple, U.rec_opt, U.casesOn_tuple, U.casesOn_opt]) (xfail := [discr])
+mumi_spec (simp := [U.rec_tuple, U.rec_opt, U.casesOn_tuple, U.casesOn_opt])
 mutual
 inductive U : Type where
   | nat : U
@@ -158,7 +158,7 @@ namespace ShapesLower
 set_option mumi.mahlo true
 set_option maxRecDepth 8000
 
-mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple]) (xfail := [discr])
+mumi_spec (simp := [U.rec_tuple, U.casesOn_tuple])
 mutual
 inductive U (α : Type) : Type where
   | atom (a : α) : U α

@@ -879,6 +879,8 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
                 k := k + 1
             full
           else xs
+        -- `_` is a field the clause does not use, under a name of its own
+        let xs := xs.mapIdx fun k x => if x.isOfKind ``Parser.Term.hole then (mkIdent (Name.mkSimple s!"_ir_hole_{k}")).raw else x
         unless xs.size == c.fields.size && xs.all (·.isIdent) do throwErrorAt alt "IR equations require one variable for each constructor field (no nested patterns)"
         let idxNames := idxPats.filterMap id
         checkDistinct (xs.map (·.getId) ++ idxNames) (globalNames ++ params.map (·.name))

@@ -1603,4 +1603,48 @@ end Ways
 
 end CtorEqs
 
+/-! ## At the universe written
+
+`X.ctorIdx` is a case split here, kept from Meta's unifier, which can spend for ever in what
+it reaches; so `T.noConfusion h` does not reduce its way to its answer, and is told it.  And a
+clause of a decoder may leave a field `_`, as any match may. -/
+
+namespace LowerCtorEqs
+
+set_option mumi.mahlo true in
+mutual
+inductive LCtx : Type where
+  | nil : LCtx
+  | ext (Γ : LCtx) (A : LTy Γ) : LCtx
+inductive LTy : LCtx → Type where
+  | base {Γ : LCtx} : LTy Γ
+  | pi {Γ : LCtx} (A : LTy Γ) (B : LTy (.ext Γ A)) : LTy Γ
+def LEl : LCtx → Type
+  | .nil => Unit
+  | .ext Γ _ => LEl Γ
+def LVal {Γ : LCtx} : LTy Γ → Type
+  | .base => Nat
+  | .pi _ _ => Nat
+end
+
+example (Γ A) : LEl (.ext Γ A) = LEl Γ := rfl
+example (Γ A) : LCtx.nil ≠ LCtx.ext Γ A := fun h => LCtx.noConfusion h
+example {Γ} (A B) : LTy.base (Γ := Γ) ≠ LTy.pi A B := fun h => LTy.noConfusion h
+example {Γ} (A B) : LTy.base (Γ := Γ) ≠ LTy.pi A B := fun h => LTy.noConfusion rfl (heq_of_eq h)
+example (Γ A) (P : Sort _) (h : LCtx.nil = LCtx.ext Γ A) : P := LCtx.noConfusion h
+
+-- and one written at the type a higher up
+mutual
+inductive U : Type where
+  | base : U
+  | pi (a : U) (b : El a → U) : U
+def El : U → Type
+  | .base => Nat
+  | .pi a _ => El a
+end
+
+example (a b) : El (.pi a b) = El a := rfl
+
+end LowerCtorEqs
+
 end MumiTests.Demo

@@ -685,6 +685,8 @@ private def readBlock (elems : Array Syntax) : CommandElabM Block := do
         let some ci := members[i]!.ctors.findIdx? (fun c => n == c.name || n == members[i]!.name ++ c.name)
           | throwErrorAt h "Unknown constructor in IR equation"
         let c := members[i]!.ctors[ci]!
+        -- `_` is a field the clause does not use, under a name of its own
+        let xs := xs.mapIdx fun k x => if x.isOfKind ``Parser.Term.hole then (mkIdent (Name.mkSimple s!"_ir_hole_{k}")).raw else x
         unless xs.size == c.fields.size && xs.all (·.isIdent) do throwErrorAt alt "IR equations require one variable for each constructor field (no nested patterns)"
         checkDistinct (xs.map (·.getId)) (globalNames ++ params.map (·.name))
         checkTermBinders (globalNames ++ params.map (·.name) ++ c.fields.map (·.name) ++ xs.map (·.getId)) alt[3]

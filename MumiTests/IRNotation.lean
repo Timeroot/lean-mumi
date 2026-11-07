@@ -59,7 +59,7 @@ namespace NotationsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive U : Type where
   | base : U
@@ -126,7 +126,7 @@ namespace ImplicitLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -192,7 +192,7 @@ namespace ParamsLower
 set_option mumi.mahlo true
 set_option maxRecDepth 6000
 
-mumi_spec (xfail := [discr])
+mumi_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X
