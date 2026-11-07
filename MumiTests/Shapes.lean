@@ -636,7 +636,7 @@ mumi_spec
 inductive NBox (α : Type) where
   | mk (b : Box α) (h : b.Never)
 
-mumi_spec (simp := [R.casesOn_mk]) (xfail := [rec, recOn])
+mumi_spec (simp := [R.casesOn_mk, R.rec_mk, R.rec_1_mk])
 inductive R where
   | tip
   | mk (x : NBox R)

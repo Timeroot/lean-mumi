@@ -633,6 +633,17 @@ private def splitRows (sp : Split) (others : Array Syntax) (at_ : Nat) (rows : A
       | .any => pure ()
   return some alts
 
+/-- Whether a constructor of the member `m` concludes at anything but variables. -/
+private def concludesAtTerm (m : Name) : MetaM Bool := do
+  let some casesOn := (← getEnv).find? (m ++ `casesOn) | return false
+  let names := casesOn.type.getForallBinderNames
+  let some tAt := (names.idxOf? `t).orElse fun _ => names.idxOf? `h | return false
+  (names.drop (tAt + 1)).anyM fun c => do
+    let some ci := (← getEnv).find? (m ++ c) | return false
+    forallTelescope ci.type fun xs r => do
+      let idxs := r.getAppArgs.filter (!xs.contains ·)
+      return !idxs.isEmpty
+
 /-- A `Prop` member that is a definition: its constructors, whose names its `casesOn` has for
 its cases.  Lean's `match` has nothing to elaborate its patterns against, `cases` does. -/
 private def propMember? (x : Expr) : MetaM (Option Split) := do
@@ -641,7 +652,16 @@ private def propMember? (x : Expr) : MetaM (Option Split) := do
   let .const m _ := ty.getAppFn | return none
   let env ← getEnv
   unless (env.find? m).any (·.isDefinition) do return none
-  unless ← isProp ty do return none
+  -- or a data member Meta's unifier is kept out of, whose `match` would have it compare what its
+  -- constructors conclude at: `X.ctorIdx` is irreducible for that reason (`addCtorIdxByCases`)
+  let splitHere ← if ← isProp ty then pure true else do
+    if !(env.contains (m ++ `ctorIdx)) then pure false
+    else if (← getReducibilityStatus (m ++ `ctorIdx)) != .irreducible then pure false
+    else
+      let some (.defnInfo ii) := env.find? (m ++ `casesOn) | pure false
+      let _ := ii
+      concludesAtTerm m
+  unless splitHere do return none
   let some casesOn := env.find? (m ++ `casesOn) | return none
   let names := casesOn.type.getForallBinderNames
   -- a `Prop` member's major may be `h`, where its recursion is the kernel's

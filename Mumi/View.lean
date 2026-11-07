@@ -1070,11 +1070,11 @@ def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) (first :
         let cps := xs.extract 0 numParams
         let fields := xs.extract numParams xs.size
         mkLocalInstances cps fun insts => do
-          let lhs ← mkAppM ``SizeOf.sizeOf #[mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs]
+          let lhs ← sizeOfTerm (mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs)
           let mut rhs ← mkNumeral (mkConst ``Nat) 1
           for f in fields do
             if (← whnf (← inferType f)).isForall then continue
-            rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+            rhs ← mkAdd rhs (← sizeOfTerm f)
           let all := cps ++ insts ++ fields
           let type ← mkForallFVars all (mkApp3 (mkConst ``Eq [1]) (mkConst ``Nat) lhs rhs)
           let byRfl ← mkLambdaFVars all (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs)

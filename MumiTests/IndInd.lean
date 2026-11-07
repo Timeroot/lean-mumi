@@ -1249,7 +1249,7 @@ def Tag : Type := Nat
 
 namespace Inner
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Tag : Type where
   | mk : Tag

@@ -2546,6 +2546,9 @@ private structure AuxSpec where
   The fields those holes stand for: their names, for the copy's binders, and
   their types, each of which may mention the holes of the ones before it. -/
   localTys  : List (Name × Expr)
+  /-- What the occurrence has at a parameter of the inductive's that stays an index of the copy:
+  the name of the field it is, if it is one, which is what the writer calls that index. -/
+  promotedNames : List (Option Name) := []
   indName   : Name
   /-- The levels `I` was applied at. -/
   levels    : List Level
@@ -2613,6 +2616,8 @@ copy's own arity and constructors for further nesting. -/
 private partial def internNested (names : Array Name) (root : Name) (bound : Array FVarId)
     (e : Expr) : DenestM Unit := do
   let some (_, info, lvls, params, idxArgs) ← nestedApp? names e | return
+  let promotedNames ← (idxArgs.extract 0 (info.numParams - params.size)).toList.mapM fun a => do
+    if a.isFVar then return some (← a.fvarId!.getUserName) else return none
   -- `Mumi.Denest` turns a nesting parameter that mentions a field of the
   -- constructor it sits in into an extra index of the copy, and so does this
   let mut want : Array FVarId := #[]
@@ -2652,7 +2657,7 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
   for fi in fam do
     let name := root ++ Name.mkSimple s!"nested_{shortName fi.name}_{(← get).size + 1}"
     modify (·.push { key := stripLevels names (mkAppN (.const fi.name lvls) params)
-                     name, params, localTys, indName := fi.name, levels := lvls,
+                     name, params, localTys, promotedNames, indName := fi.name, levels := lvls,
                      numParams := params.size, ctors := fi.ctors.toArray })
   -- the copies' own constructors are scanned once everything before them has
   -- been, by `scanCopies`: the kernel numbers what it denests in that order
@@ -2813,6 +2818,14 @@ def denestRaw (r : Raw) : TermElabM Raw := do
           (← instantiateForall (ci.instantiateTypeLevelParams s.levels) params)
         let arity := copyLeadingBinders r.numParams r.arities[0]!
           (← mkForallFVars (ps ++ ls) (← rw resType))
+        -- an index that was a parameter of the original is named as the writer has it
+        let rec named (skip : Nat) (ns : List (Option Name)) (e : Expr) : Expr :=
+          match skip, ns, e with
+          | skip + 1, ns, .forallE n d b bi => .forallE n d (named skip ns b) bi
+          | 0, some m :: ns, .forallE _ d b bi => .forallE m d (named 0 ns b) bi
+          | 0, none :: ns, .forallE n d b bi => .forallE n d (named 0 ns b) bi
+          | _, _, e => e
+        let arity := named (ps.size + ls.size) s.promotedNames arity
         let mut cts : Array Expr := #[]
         for c in s.ctors do
           let cty ← Core.betaReduce (← ctorTypeAt c s.levels params)

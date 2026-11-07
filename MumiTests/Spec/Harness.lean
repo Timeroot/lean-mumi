@@ -874,8 +874,8 @@ private def sizeOfSpec (r : Run) (m : Member) (params : Array Expr) (uniform : N
       let mut rhs ← mkNumeral (mkConst ``Nat) 1
       for f in varying ++ fields do
         if (← whnf (← inferType f)).isForall then continue
-        rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
-      let stmt ← mkEq (← mkAppM ``SizeOf.sizeOf #[app]) rhs
+        rhs ← mkAdd rhs (← Lean.Elab.MultiuniverseInductive.sizeOfTerm f)
+      let stmt ← mkEq (← Lean.Elab.MultiuniverseInductive.sizeOfTerm app) rhs
       withInfos params (fun bi => if bi == .default then .implicit else bi) do
         mkForallFVars (fixed ++ insts ++ varying ++ fields) stmt
     discard <| checkConst r .sizeOf (ctorName ++ `sizeOf_spec) ty (innerNames := false)
@@ -1053,6 +1053,23 @@ private def matching (r : Run) (m : Member) (params : Array Expr) (ty : Expr) : 
         check (mkConst ``Nat) "as a term" s!"exact match _spec_t with {alts "0"}"
         check (← mkArrow major (mkConst ``Nat)) "by `fun`" s!"exact fun {alts "0"}"
 
+/-- Whether `a`, where a constructor concludes, is something Lean's `cases` cannot solve against
+another's: neither a variable nor a constructor applied, nor a numeral or `n + 1`. -/
+private partial def isComputedIndex (fields : Array Expr) (a : Expr) : MetaM Bool := do
+  let a := a.consumeMData
+  if a.isFVar || a.isLit then return false
+  if (← isOffset? a).isSome then return false
+  let .const c _ := a.getAppFn | return true
+  if a.isAppOf ``OfNat.ofNat then return false
+  let env ← getEnv
+  -- a constructor, or one of an encoded member's, which is a definition with a rule for it
+  let ctorLike := (env.find? c).any (·.isCtor) ||
+    (match c with
+      | .str mem s => env.contains (Name.mkStr mem s!"ctorIdx_{s}")
+      | _ => false)
+  unless ctorLike do return true
+  a.getAppArgs.anyM (isComputedIndex fields)
+
 /-- `match` and `cases` on a term whose index is a constructor of a data member, at
 `At : (x : X …) → Prop` with a constructor for each of `X`'s, which is declared here and goes
 when the check does. -/
@@ -1075,9 +1092,10 @@ private def matchingAtIndex (r : Run) (m : Member) (params : Array Expr) (ty : E
       withInfos params (fun bi => if bi == .default then .implicit else bi) do
         let type ← instantiateMVars (← mkForallFVars (params ++ fields) (atApp (ctorIdxOf res) app))
         return ({ name := at_ ++ c[3].getId, type } : Constructor)
-    addDecl (.inductDecl lps params.size [{ name := at_, type := atTy, ctors := ctors.toList }] false)
-    mkCasesOn at_
-    for c in cs do
+    -- Lean solves an index against a case's by its variables and constructors.  Where a
+    -- constructor of the member concludes at anything else, `n + m` or a decoder's value, Lean's
+    -- own `cases` stops there too (`SelfTest`), so each constructor is asked about alone
+    let askAt (c : Syntax) : TermElabM Unit := do
       elabCtor m params c fun fields res => do
         let app := mkAppN (mkConst (m.name ++ c[3].getId) us) (params ++ fields)
         withLocalDeclD `_spec_h (atApp (ctorIdxOf res) app) fun _ => do
@@ -1089,6 +1107,22 @@ private def matchingAtIndex (r : Run) (m : Member) (params : Array Expr) (ty : E
           check "`cases`" "cases _spec_h <;> trivial"
           check "`match` as tactics" s!"match _spec_h with {alt}"
           check "`match` as a term" s!"exact match _spec_h with {alt}"
+    let computed ← cs.anyM fun c => elabCtor m params c fun fields res =>
+      (ctorIdxOf res).anyM fun a => isComputedIndex fields a
+    if computed then
+      for c in cs do
+        let env := (← getEnv)
+        setEnv saved
+        let one := ctors.filter fun k => k.name == at_ ++ c[3].getId
+        addDecl (.inductDecl lps params.size [{ name := at_, type := atTy, ctors := one.toList }] false)
+        mkCasesOn at_
+        askAt c
+        setEnv env
+    else
+    addDecl (.inductDecl lps params.size [{ name := at_, type := atTy, ctors := ctors.toList }] false)
+    mkCasesOn at_
+    for c in cs do
+      askAt c
   catch e =>
     problem r .matching m!"a type indexed by `{m.name}` could not be asked about: {e.toMessageData}"
   finally
@@ -1437,7 +1471,12 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
   -- the constructors, as Lean's behave
   for k in data do
     let m := members[k]!
-    for c in m.decl[4].getArgs do sizeOfSpec r m params uniform c
+    for c in m.decl[4].getArgs do
+      -- a block Lean takes on its own has Lean's lemma, which is what the claim is
+      if native then
+        unless (← getEnv).contains (m.name ++ c[3].getId ++ `sizeOf_spec) do
+          problem r .sizeOf m!"`{m.name ++ c[3].getId}.sizeOf_spec` is not declared"
+      else sizeOfSpec r m params uniform c
     ctorIdxRules r m params
     discrimination r m params
     matchingAtIndex r m params tys[k]!

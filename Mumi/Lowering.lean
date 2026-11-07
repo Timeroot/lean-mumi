@@ -583,6 +583,32 @@ it finds, which is no use to a proof tried in order to fall back from it. -/
 def addDeclNow (d : Declaration) : CoreM Unit :=
   withOptions (Elab.async.set · false) (addDecl d)
 
+/-- `sizeOf x`, at the instance of the member `x` is of where instance search does not find it.
+A member may be at an index no search can see through: `E (A.cons x c b d) (c, d) …` has `(c, d)`
+where `E` wants an `F (A.cons x c b d)`, which only a decoder's reduction says it is.  Search then
+falls to `instSizeOfDefault`, and measures it `0`.  What a recursion over the member measures is
+the member's, and that is what is meant. -/
+def sizeOfTerm (x : Expr) : MetaM Expr := do
+  let ty ← instantiateMVars (← inferType x)
+  let inst ← synthInstance (← mkAppM ``SizeOf #[ty])
+  let inst ← do
+    let found := inst.getAppFn.isConstOf ``instSizeOfDefault
+    let .const m us := ty.getAppFn | pure inst
+    let own := m ++ `_sizeOf_inst
+    unless found && (← getEnv).contains own do return ← mkAppOptM ``SizeOf.sizeOf #[ty, inst, x]
+    let mut f := mkConst own us
+    let mut args := ty.getAppArgs.toList
+    repeat
+      let .forallE _ d _ bi ← whnfCore (← inferType f) | break
+      if bi.isInstImplicit then
+        f := mkApp f (← synthInstance d)
+      else
+        let a :: rest := args | break
+        f := mkApp f a
+        args := rest
+    pure f
+  mkAppOptM ``SizeOf.sizeOf #[ty, inst, x]
+
 /-- `c.sizeOf_spec` by `rfl`, if it holds by that; `numParams` of `c`'s binders are parameters. -/
 def addSizeOfSpecByRfl (numParams : Nat) (c : Name) : MetaM Unit := do
   let name := c ++ `sizeOf_spec
@@ -594,11 +620,11 @@ def addSizeOfSpecByRfl (numParams : Nat) (c : Name) : MetaM Unit := do
       let ps := xs.extract 0 numParams
       let fields := xs.extract numParams xs.size
       mkLocalInstances ps fun insts => do
-        let lhs ← mkAppM ``SizeOf.sizeOf #[mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs]
+        let lhs ← sizeOfTerm (mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs)
         let mut rhs ← mkNumeral (mkConst ``Nat) 1
         for f in fields do
           if (← whnf (← inferType f)).isForall then continue
-          rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+          rhs ← mkAdd rhs (← sizeOfTerm f)
         let all := ps ++ insts ++ fields
         addDeclNow <| .thmDecl {
           name, levelParams := ci.levelParams
