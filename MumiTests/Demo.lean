@@ -797,7 +797,7 @@ them and a delaborator shows the original.
 
 namespace NestProp
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 inductive T : Type where
   | mk1 : T
   | mkT (h : Nonempty T) : T

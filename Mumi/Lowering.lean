@@ -583,34 +583,39 @@ it finds, which is no use to a proof tried in order to fall back from it. -/
 def addDeclNow (d : Declaration) : CoreM Unit :=
   withOptions (Elab.async.set · false) (addDecl d)
 
-/-- `X.c.sizeOf_spec` by `rfl`, for a constructor of an inductive just declared where Lean's
-generator gave up: it stops at a field nested through a `Prop`, having made the rest. -/
+/-- `c.sizeOf_spec` by `rfl`, if it holds by that; `numParams` of `c`'s binders are parameters. -/
+def addSizeOfSpecByRfl (numParams : Nat) (c : Name) : MetaM Unit := do
+  let name := c ++ `sizeOf_spec
+  if (← getEnv).contains name then return
+  let ci ← getConstInfo c
+  let env ← getEnv
+  try
+    forallTelescope ci.type fun xs _ => do
+      let ps := xs.extract 0 numParams
+      let fields := xs.extract numParams xs.size
+      mkLocalInstances ps fun insts => do
+        let lhs ← mkAppM ``SizeOf.sizeOf #[mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs]
+        let mut rhs ← mkNumeral (mkConst ``Nat) 1
+        for f in fields do
+          if (← whnf (← inferType f)).isForall then continue
+          rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
+        let all := ps ++ insts ++ fields
+        addDeclNow <| .thmDecl {
+          name, levelParams := ci.levelParams
+          type := ← mkForallFVars all (← mkEq lhs rhs)
+          value := ← mkLambdaFVars all (← mkEqRefl lhs) }
+    let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
+    simpAttr.add name default .global
+  catch e =>
+    trace[Mumi] "no `sizeOf` lemma for `{c}`: {e.toMessageData}"
+    setEnv env
+
+/-- `X.c.sizeOf_spec` for a constructor of an inductive just declared where Lean's generator
+gave up: it stops at a field nested through a `Prop`, having made the rest. -/
 def addMissingSizeOfSpecs (names : Array Name) : MetaM Unit := do
-  let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
   for n in names do
     let .inductInfo ii ← getConstInfo n | continue
-    for c in ii.ctors do
-      let name := c ++ `sizeOf_spec
-      if (← getEnv).contains name then continue
-      let ci ← getConstInfo c
-      let env ← getEnv
-      try
-        forallTelescope ci.type fun xs _ => do
-          let ps := xs.extract 0 ii.numParams
-          let fields := xs.extract ii.numParams xs.size
-          mkLocalInstances ps fun insts => do
-            let lhs ← mkAppM ``SizeOf.sizeOf #[mkAppN (mkConst c (ci.levelParams.map mkLevelParam)) xs]
-            let mut rhs ← mkNumeral (mkConst ``Nat) 1
-            for f in fields do
-              if (← whnf (← inferType f)).isForall then continue
-              rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
-            let all := ps ++ insts ++ fields
-            addDeclNow <| .thmDecl {
-              name, levelParams := ci.levelParams
-              type := ← mkForallFVars all (← mkEq lhs rhs)
-              value := ← mkLambdaFVars all (← mkEqRefl lhs) }
-        simpAttr.add name default .global
-      catch _ => setEnv env
+    for c in ii.ctors do addSizeOfSpecByRfl ii.numParams c
 
 /-- Add an inductive declaration and everything Lean normally builds alongside one. -/
 def addInd (levelParams : List Name) (numParams : Nat) (indTypes : Array InductiveType)

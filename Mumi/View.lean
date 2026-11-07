@@ -826,24 +826,42 @@ def addCtorIdxByCases (mem : Name) (ctors : Array Name) : MetaM Unit := do
       setIrreducibleAttribute dst
       modifyEnv fun env => addProtected env dst
 
-/-- For each minor premise of a recursor at its motives, where it is a case of one of Lean's
-own constructors, the positions of that constructor's fields among what the minor binds: a
-nested target's also binds the locals it is at, which are no field. -/
-private def countedFields (recTy : Expr) : MetaM (Array (Option (Array Nat))) := do
+/-- For each minor premise of a recursor, what its measure sums: the position of each field
+among what the minor binds, and of the hypothesis at that field if there is one.  A hypothesis
+says which field it is at, at the end of what it concludes, whatever the fields are called.
+A case of one of Lean's own constructors counts that constructor's fields: a nested target's
+minor also binds the locals it is at, which are no field. -/
+private def measurePlan (recTy : Expr) : MetaM (Array (Array (Nat × Option Nat))) := do
   let names := recTy.getForallBinderNames
   let numMotives := (names.filter (·.toString.startsWith "motive")).length
-  forallBoundedTelescope recTy numMotives fun _ rest => do
-    let rec go (ty : Expr) (acc : Array (Option (Array Nat))) (fuel : Nat) :
-        MetaM (Array (Option (Array Nat))) := do
+  forallBoundedTelescope recTy numMotives fun motives rest => do
+    let rec go (ty : Expr) (acc : Array (Array (Nat × Option Nat))) (fuel : Nat) :
+        MetaM (Array (Array (Nat × Option Nat))) := do
       match fuel, ty with
       | fuel + 1, .forallE n d b bi =>
         unless bi.isExplicit && n != `t do return acc
         let here ← forallTelescope d fun ys c => do
-          let some major := c.getAppArgs.back? | return none
-          let .const k _ := major.getAppFn | return none
-          let some (.ctorInfo cv) := (← getEnv).find? k | return none
-          let fields := major.getAppArgs.extract cv.numParams major.getAppNumArgs
-          return some (fields.filterMap ys.idxOf?)
+          -- the hypotheses, each with the field it is at
+          let mut ihs : Array (Nat × Expr) := #[]
+          for y in ys, at_ in Array.range ys.size do
+            let isIh ← forallTelescope (← inferType y) fun _ r => do
+              let r := r.headBeta
+              unless motives.contains r.getAppFn do return none
+              return r.getAppArgs.back?.map (·.getAppFn)
+            if let some f := isIh then ihs := ihs.push (at_, f)
+          let ihAts := ihs.map (·.1)
+          let own ← do
+            let some major := c.headBeta.getAppArgs.back? | pure none
+            let .const k _ := major.getAppFn | pure none
+            let some (.ctorInfo cv) := (← getEnv).find? k | pure none
+            pure (some (major.getAppArgs.extract cv.numParams major.getAppNumArgs))
+          let mut out := #[]
+          for y in ys, at_ in Array.range ys.size do
+            if ihAts.contains at_ then continue
+            if let some fs := own then
+              unless fs.contains y do continue
+            out := out.push (at_, (ihs.find? (·.2 == y)).map (·.1))
+          return out
         go (b.instantiate1 (mkConst ``True)) (acc.push here) fuel
       | _, _ => return acc
     go rest #[] 1000
@@ -867,7 +885,7 @@ def addMeasureByRec (numParams : Nat) (mem : Name) : MetaM Unit := do
     mkLocalInstances ps fun insts => do
       let selfTy := mkAppN (mkConst mem us) bs
       let mut app := mkAppN (mkConst (mem ++ `rec) (Level.succ .zero :: us)) ps
-      let counted ← countedFields (← inferType app)
+      let plan ← measurePlan (← inferType app)
       let mut minorAt := 0
       repeat
         let .forallE n d _ bi ← whnfCore (← inferType app) | break
@@ -875,24 +893,18 @@ def addMeasureByRec (numParams : Nat) (mem : Name) : MetaM Unit := do
           app := mkApp app <| ← forallTelescope d fun ys s =>
             mkLambdaFVars ys (if s.isProp then mkConst ``True else mkConst ``Nat)
         else if bi.isExplicit && n != `t then
-          let keep? := (counted[minorAt]?).bind id
+          let here := plan[minorAt]?.getD #[]
           minorAt := minorAt + 1
           app := mkApp app <| ← forallTelescope d fun ys concl => do
             if concl.headBeta.isConstOf ``True then
               return ← mkLambdaFVars ys (mkConst ``True.intro)
-            let named ← ys.mapM fun y => do return (← y.fvarId!.getUserName).eraseMacroScopes
             let mut rhs ← mkNumeral (mkConst ``Nat) 1
-            for y in ys, nm in named, at_ in Array.range ys.size do
-              if let some keep := keep? then
-                unless keep.contains at_ do continue
-              if nm.isStr && nm.getString!.endsWith "_ih" then
-                let base := (nm.getString!.dropEnd 3).toString
-                if named.any (· == nm.getPrefix.str base) then continue
+            for (at_, ih?) in here do
+              let y := ys[at_]!
+              -- as Lean's measure does, a function counts for nothing
               if (← whnf (← inferType y)).isForall then continue
-              let ihName := nm.appendAfter "_ih"
-              let ih? ← (named.idxOf? ihName).bindM fun j => do
-                let ih := ys[j]!
-                return if (← inferType ih).isConstOf ``Nat then some ih else none
+              let ih? ← ih?.bindM fun j => do
+                return if (← inferType ys[j]!).isConstOf ``Nat then some ys[j]! else none
               rhs ← mkAdd rhs (← match ih? with
                 | some ih => pure ih
                 | none => mkAppM ``SizeOf.sizeOf #[y])
@@ -1065,7 +1077,8 @@ def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) (first :
           let env ← getEnv
           try
             addDeclNow <| .thmDecl { name, levelParams := ci.levelParams, type, value := byRfl }
-          catch _ =>
+          catch e =>
+            trace[Mumi.view] "`{c}` is not measured by `rfl`: {e.toMessageData}"
             setEnv env
             let us := ci.levelParams.map mkLevelParam
             let rule := Name.mkStr mem s!"rec_{c.getString!}"

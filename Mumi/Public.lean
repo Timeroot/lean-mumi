@@ -1154,6 +1154,8 @@ def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := 
         unless heldCtor c do
           discard <| attempt? `Mumi m!"no `sizeOf` lemma for `{pub}`" <|
             restate (c ++ `sizeOf_spec) (pub ++ `sizeOf_spec) (simp := true)
+        -- one held at the original of a copy is its own statement, which Lean made none of
+        addSizeOfSpecByRfl numParams pub
     | _ =>
       -- a `Prop` member, whose name is its shadow's: its case split is the
       -- block's recursion with every hypothesis and every other motive dropped

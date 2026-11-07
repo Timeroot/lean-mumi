@@ -1375,7 +1375,7 @@ it in the block.
 
 namespace DataOnDataTm
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -1594,7 +1594,7 @@ constructor's own conclusion gives them.
 
 namespace DataOnDataLengthTm
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -1635,7 +1635,7 @@ namespace DataOnDataLengthUniv
 
 universe u
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Nat → Type u where
   | nil  : Ctx α 0
@@ -1858,7 +1858,7 @@ namespace DataOnDataUniv
 
 universe u
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2314,7 +2314,7 @@ namespace DataOnDataPropOnPropUniv
 
 universe u
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2419,7 +2419,7 @@ namespace DataOnDataPropUniv
 
 universe u
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx (α : Type u) : Type u where
   | nil  : Ctx α
@@ -2513,7 +2513,7 @@ miss.
 
 namespace DataOnDataBuilt
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2750,7 +2750,7 @@ def Vec4.len : Vec4 → Nat :=
 example : Vec4.len Vec4.nil = 0 := rfl
 example (v : Vec4) (n : Len v) : Vec4.len (Vec4.cons v n) = Vec4.len v + 1 := rfl
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx7 : Type where
   | nil  : Ctx7
@@ -2786,7 +2786,7 @@ namespace BuiltTwo
 -- on it
 set_option mumi.separate false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2807,7 +2807,7 @@ example (Γ : Ctx) : psize (Pair.mk Γ) = 7 := rfl
 -- both built out of fields rather than out of the one index that was kept, and
 -- both at the same member, so the two transports are along equations about the
 -- same pre-type
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Cx : Type where
   | nil  : Cx
@@ -2887,7 +2887,7 @@ and the block is refused only when two of them are.
 namespace RepeatedIdx
 set_option mumi.separate false
 
-mumi_spec (xfail := [sizeOf, matching])
+mumi_spec (xfail := [matching])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2915,7 +2915,7 @@ example (Γ Δ : Ctx) (A : Ty Γ) (B : Ty Δ) (s : Sub Γ Δ) :
 
 -- three readings of the one field, so two of them are carried
 namespace Three
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2930,7 +2930,7 @@ end Three
 
 -- a repeat and a genuinely built index in the same constructor
 namespace Mixed
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -2945,7 +2945,7 @@ end Mixed
 
 -- and the case where only the second reading can be the field
 namespace Choice
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3014,7 +3014,7 @@ with, and terms compute.
 
 namespace Tower
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3051,7 +3051,7 @@ example (Γ : Ctx) (A : Ty Γ) (B : Ty (Ctx.snoc Γ A))
 
 -- two built indices reading a third, rather than one reading one
 namespace Chain
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3069,7 +3069,7 @@ end Chain
 -- transport substitutes is a term the earlier transport built and not a binder
 -- the constructor was handed
 namespace FromField
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3146,7 +3146,7 @@ turned away any more.
 namespace Promoted
 
 namespace AtBuilt
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3173,7 +3173,7 @@ end AtBuilt
 -- a field given as two indices, with a type at each of them.  Whichever reading
 -- stays the field, the other's type is promoted rather than stranded
 namespace BothRead
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3188,7 +3188,7 @@ end BothRead
 
 -- two fields promoted at once, at a member with three indices
 namespace Three
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3566,7 +3566,7 @@ family of variables, whose constructors give their deleted index as a value of a
 
 namespace CwF
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Con : Type where
   | nil  : Con
@@ -3606,7 +3606,7 @@ end CwF
 
 namespace Vars
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -3654,7 +3654,7 @@ rather than the inductive one name over.
 
 namespace TwoLeave
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4326,7 +4326,7 @@ inductive RoseB (α : Type) : Type where
   | cons : RoseA α → RoseB α → RoseB α
 end
 
-mumi_spec (simp := [Ty.rec_rose, Ctx.rec_1_node, Ctx.rec_2_cons, Ty.casesOn_rose]) (xfail := [sizeOf])
+mumi_spec (simp := [Ty.rec_rose, Ctx.rec_1_node, Ctx.rec_2_cons, Ty.casesOn_rose])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -6432,7 +6432,7 @@ indices too. -/
 
 namespace DisjointIndexed
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0

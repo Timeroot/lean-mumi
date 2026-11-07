@@ -33,7 +33,7 @@ container of a member rather than a member is what this pins.
 
 namespace ListIdx
 
-mumi_spec (xfail := [rec, recOn, sizeOf])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Ctx : Type where
   | nil
@@ -226,7 +226,7 @@ treated as one the constructor built.
 
 namespace TwoIdx
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil
