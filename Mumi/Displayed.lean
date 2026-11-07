@@ -52,12 +52,17 @@ exactly where the data recursion's own do.
 A datum a `Prop` constructor takes without its conclusion naming it (`Ok.yes (t :
 T)` beside `T.pi … (h : Ok)`), whose value needs the proofs inside it, takes an
 induction over the data and the proofs at once, which a frontend may supply
-(below).
+(below); or, if nothing else in the constructor mentions it, any element at all,
+one the minor premises give the value of, since the proof is the same proof.  A
+function into the data at an index (`Ok : (Nat → T) → Prop`) has its values taken by
+`LEM`, though the motive does not display them.  A field an index pins at a term
+(`GOk (.mk .nil)`) is read at the minor premises' value there, through `UNIQ`.
 
 What this does not reach, the caller publishing its own eliminators instead
-(`publish`): such a datum with no such induction; a field named twice whose
-member's recursion is higher order, where `G` is functional only up to `funext`;
-and a field named in a constructor nested inside another index.
+(`publish`): such a datum with no such induction and no such element, or mentioned by
+another field; a field named twice whose member's recursion is higher order, where
+`G` is functional only up to `funext`; and a field named in a constructor nested
+inside another index.
 
 Everything is assembled as terms and checked by the kernel alone: the
 statements unfold (`G` at a constructor) only definitionally, and for a block

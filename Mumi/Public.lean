@@ -64,8 +64,13 @@ def publicName? (env : Environment) (n : Name) : Option Name :=
   | .str p@(.str q "_shadow") c =>
     -- and its constructor, under the member's name where that is the shadow's
     let pub := Name.str q c
+    -- only where it takes what the shadow's does: one that squashes a field takes the field's data
     match env.find? pub, env.find? (Name.str p c) with
-    | some _, some _ => if (env.find? q).any (·.isDefinition) then some pub else none
+    | some (.defnInfo d), some _ =>
+      let squashes := d.value.getUsedConstants.any fun u => match u with
+        | .str _ "_squash" => true
+        | _ => false
+      if !squashes && (env.find? q).any (·.isDefinition) then some pub else none
     | _, _ => none
   | _ => none
 
@@ -1037,7 +1042,10 @@ partial def restateOverOriginals (held : Array (Name × Name)) (blockLps : List 
       let value := mkAppN (mkConst src lvls) images
       return (← mkForallFVars news body, ← mkLambdaFVars news value)
   let (type, value) ← go ty #[] #[]
-  addDef dst (u :: blockLps) type value (compile := false)
+  -- as the writer reads it; and a block of propositions eliminates into `Prop`, with no universe
+  let type ← publicize type
+  let lps := if type.hasLevelParam && (collectLevelParams {} type).params.contains u then u :: blockLps else blockLps
+  addDef dst lps type value (compile := false)
   markElabAsElim dst
 
 /--
@@ -1156,7 +1164,8 @@ def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := 
         discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" do
           addSoloElim numParams elim.toArray false (mem ++ `rec) (mem ++ `casesD)
             (forCases := true) (evenIfWeaker := true)
-          addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `casesOn)
+          addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `_casesOn_major)
+          restate (mem ++ `_casesOn_major) (mem ++ `casesOn) (motive?.map (numParams, ·))
       -- the equation compiler would take such a constructor apart as the
       -- kernel's, so a `match` goes through a view, which presents it as the
       -- writer's (`Mumi.MatchView`)

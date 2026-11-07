@@ -290,6 +290,9 @@ structure Block where
   under the writer's names: everywhere but a homogeneous block, whose kernel
   recursors are already the block's. -/
   aliased     : Bool := false
+  /-- Whether the `Prop` members are aliased too: a block the kernel takes with a copy in a
+  constructor, where the writer named the original. -/
+  propsAliased : Bool := false
   /-- How many of the members, from the first, the writer wrote; `0` for all. -/
   numWritten  : Nat := 0
   deriving Inhabited
@@ -307,7 +310,7 @@ def Block.isWritten (b : Block) (i : Nat) : Bool := b.numWritten == 0 || i < b.n
 /-- Whether member `i` is declared as `X._ind`: a data member the writer wrote,
 in a block whose recursion is more than the kernel's. -/
 def Block.isAliased (b : Block) (i : Nat) : Bool :=
-  b.aliased && !b.members[i]!.isProp && b.isWritten i
+  b.aliased && (!b.members[i]!.isProp || b.propsAliased) && b.isWritten i
 
 /--
 Whether constructor `c` of an aliased member has a field at a `Prop` copy
@@ -1158,7 +1161,7 @@ private def sccCtorIndices (b : Block) (s : Nat) : Array Nat := Id.run do
 over every member.  Keeps the generated API the same on both paths. -/
 private def aliasNativeRecs (b : Block) : MetaM Unit := do
   for i in *...b.size do
-    let rn := b.members[i]!.name ++ `rec
+    let rn := b.kernelName i ++ `rec
     let info ← getConstInfoRec rn
     addDef (b.recName i) info.levelParams info.type
       (mkConst rn (info.levelParams.map Level.param)) (compile := false)
@@ -2195,6 +2198,12 @@ their own names. -/
 def lower (inp : Input) (alias := true) : TermElabM Unit := do
   let b ← analyze inp
   if b.isHomogeneous then
+    -- a block of propositions the kernel takes with a copy in a constructor, where the writer
+    -- named the original: aliased as a data member is, so that the bridge can give it back
+    let held := alias && b.members.all (·.isProp) && (Array.range b.numWritten).any fun i =>
+      b.members[i]!.ctors.any fun c => (Array.range b.size).any fun j =>
+        !b.isWritten j && c.type.containsFVar b.memberFVars[j]!.fvarId!
+    let b := if held then { b with aliased := true, propsAliased := true } else b
     emitNative b
     emitNativeImpls b
     return

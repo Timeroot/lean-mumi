@@ -1324,6 +1324,35 @@ end
 example (h : Sp St1) : St1 := St1.mk h
 example : St1 := St1.mk (Sp.nil : Sp St1)
 
+/-! A nesting at a field of its own constructor, in a block of propositions: Lean's kernel takes
+the block once the copy is made, but what the writer named is the original, so the block is
+aliased as a data member is and the bridge gives it back. -/
+
+namespace PropAtLocal
+
+mumi_spec
+inductive PWrap (p : Prop) : Prop where
+  | mk : p → PWrap p
+
+mumi_spec
+inductive PT : Type where
+  | leaf : PT
+  | n : PT → PT
+
+mumi_spec
+inductive Deep : PT → Prop where
+  | mk : (t : PT) → (u : PT) → PWrap (Deep u) → Deep t
+
+/-- info: Deep.mk : ∀ (t u : PT), PWrap (Deep u) → Deep t -/
+#guard_msgs in
+#check @Deep.mk
+
+theorem Deep.false {t : PT} (h : Deep t) : False :=
+  Deep.rec (motive_1 := fun _ _ => False) (motive_2 := fun _ _ => False)
+    (fun _ _ _ ih => ih) (fun _ _ ih => ih) h
+
+end PropAtLocal
+
 /-! A data member of a lowered block is only isomorphic to its copy, as any data
 type is, but it is the member's own name the copy is isomorphic *to*, and what the
 writer reads is that name: `Wrap St3`, its constructor, and a motive for it and
