@@ -16,7 +16,7 @@ set_option autoImplicit false
 namespace Simple
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -108,7 +108,7 @@ extending a context takes a type at it. -/
 namespace Tied
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

@@ -7450,6 +7450,10 @@ def emit (p : Plan) : TermElabM Unit := do
     for c in m.ctors do
       discard <| attempt? `Mumi.indind m!"no injectivity for `{c.name}`" <|
         addInjViaCases b.numParams m.name c.name (m.ctors.map (·.name))
+  -- 15. the measure, which the rules above are what proves where the recursor does not compute
+  addMeasures b.numParams <| b.dataIdxs.filterMap fun i =>
+    let m := b.members[i]!
+    if copyNames.contains m.name then none else some (m.name, m.ctors.map (·.name))
 
 /-! ## The entry point -/
 

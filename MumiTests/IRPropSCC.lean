@@ -77,7 +77,7 @@ the well-formedness sits on top of them. -/
 namespace PropIdx
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -327,7 +327,7 @@ clauses: given their full names when the block is read. -/
 namespace NestedProp
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X

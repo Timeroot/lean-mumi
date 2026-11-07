@@ -1704,7 +1704,7 @@ length-indexed index.
 
 namespace DataOnDataLengthNest
 
-mumi_spec (simp := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc]) (xfail := [sizeOf])
+mumi_spec (simp := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc])
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -4168,7 +4168,7 @@ wrote.
 
 namespace NestAtMember
 
-mumi_spec (simp := [Ty.rec_tup, Ctx.rec_1_cons, Ty.casesOn_tup]) (xfail := [sizeOf])
+mumi_spec (simp := [Ty.rec_tup, Ctx.rec_1_cons, Ty.casesOn_tup])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4276,7 +4276,7 @@ index in the copy's constructors exactly as it does in the block's own.
 
 namespace BuiltUnderNesting
 
-mumi_spec (simp := [Ty.rec_pi, Ctx.rec_1_cons, Ty.casesOn_pi]) (xfail := [sizeOf])
+mumi_spec (simp := [Ty.rec_pi, Ctx.rec_1_cons, Ty.casesOn_pi])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4347,7 +4347,7 @@ the block, a universe parameter, and a container nested inside a container.
 
 namespace NestVariations
 
-mumi_spec (simp := [PTy.rec_tup, PCtx.rec_1_cons, PTy.casesOn_tup]) (xfail := [sizeOf])
+mumi_spec (simp := [PTy.rec_tup, PCtx.rec_1_cons, PTy.casesOn_tup])
 mutual
 inductive PCtx (α : Type) : Type where
   | nil  : PCtx α
@@ -4357,7 +4357,7 @@ inductive PTy (α : Type) : PCtx α → Type where
   | tup  : (Γ : PCtx α) → List (PTy α Γ) → PTy α Γ
 end
 
-mumi_spec (simp := [UTy.rec_tup, UCtx.rec_1_cons, UTy.casesOn_tup]) (xfail := [sizeOf])
+mumi_spec (simp := [UTy.rec_tup, UCtx.rec_1_cons, UTy.casesOn_tup])
 mutual
 inductive UCtx : Type u where
   | nil  : UCtx
@@ -4372,7 +4372,7 @@ end
 #guard_msgs in
 #check UCtx.{5}
 
-mumi_spec (simp := [DTy.rec_tup, DCtx.rec_1_cons, DCtx.rec_2_cons, DTy.casesOn_tup]) (xfail := [sizeOf])
+mumi_spec (simp := [DTy.rec_tup, DCtx.rec_1_cons, DCtx.rec_2_cons, DTy.casesOn_tup])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -4660,7 +4660,7 @@ mumi_spec
 inductive DepPair (α : Type) (β : α → Type) where
   | mk (a : α) (b : β a) : DepPair α β
 
-mumi_spec (simp := [DPCtx.rec_ext, DPCtx.rec_1_cons, DPCtx.casesOn_ext]) (xfail := [sizeOf])
+mumi_spec (simp := [DPCtx.rec_ext, DPCtx.rec_1_cons, DPCtx.casesOn_ext])
 mutual
 inductive DPCtx : Type where
   | nil
@@ -4768,7 +4768,7 @@ end
 -- and they compose with a nesting at a member
 section
 variable (α : Type)
-mumi_spec (simp := [T4.rec_tup, C4.rec_1_cons, T4.casesOn_tup]) (xfail := [sizeOf])
+mumi_spec (simp := [T4.rec_tup, C4.rec_1_cons, T4.casesOn_tup])
 mutual
 inductive C4 : Type where
   | nil  : C4
@@ -5082,7 +5082,7 @@ put beside it.  `DTy` is indexed by `DCtx`, which is the rule the erasure lifts;
 is the case worth having, and the two data members each get the recursion over
 the whole block. -/
 
-mumi_spec (simp := [DTy.casesOn_pack, DTy.rec_pack, DCtx.rec_1_cons]) (xfail := [sizeOf])
+mumi_spec (simp := [DTy.casesOn_pack, DTy.rec_pack, DCtx.rec_1_cons])
 mutual
 inductive DCtx : Type where
   | nil  : DCtx
@@ -5553,7 +5553,7 @@ the whole block read at a different conclusion, so the proposition's minors
 appear in `Ctx.rec` and `Tm.rec` alike -- and `Ok.rec`, which is over the
 nesting rather than over a member, stays the split one the writer can state. -/
 
-mumi_spec (simp := [Tm.casesOn_pack, Tm.rec_pack, Ctx.rec_1_cons]) (xfail := [sizeOf])
+mumi_spec (simp := [Tm.casesOn_pack, Tm.rec_pack, Ctx.rec_1_cons])
 mutual
 inductive Ctx : Type where
   | nil  : Ctx

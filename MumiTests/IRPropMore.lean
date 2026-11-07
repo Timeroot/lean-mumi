@@ -108,7 +108,7 @@ it, which ties it into the block. -/
 namespace Rel
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ty : Type where
   | base : Ty
@@ -305,7 +305,7 @@ end
 namespace Mixed
 set_option mumi.mahlo false
 
-mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, sizeOf, matching])
+mumi_spec (simp := [Code.casesOn_list]) (xfail := [rec, recOn, casesOn, matching])
 mutual
 inductive Code {σ : Type} (n : Nat) : Type where
   | base (s : σ) : Code n

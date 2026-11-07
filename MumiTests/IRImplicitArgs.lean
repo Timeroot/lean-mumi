@@ -67,7 +67,7 @@ index of type `Ty (.snoc Γ A)` stands for `.base (.snoc Γ A)`. -/
 namespace Fields
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx

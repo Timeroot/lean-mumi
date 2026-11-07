@@ -1413,9 +1413,9 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       if m.prop then
         emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Prop := " ++ withAnonParams b (wfName m) ppi)
       else if b.wf then
-        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi ++ " // " ++ withAnonParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
+        emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi ++ " // " ++ withAnonParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
       else
-        emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi)
+        emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi)
     | .inr j =>
       let d := b.decoders[j]!
       let idx ← d.idx.mapM fieldDecl

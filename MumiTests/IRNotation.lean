@@ -94,7 +94,7 @@ end NotationsLower
 namespace Implicit
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
@@ -160,7 +160,7 @@ a decoder call writes the ones its declaration binds explicitly. -/
 namespace Params
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx (X : Type) : Type where
   | nil : Ctx X

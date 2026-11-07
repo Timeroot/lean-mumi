@@ -272,8 +272,9 @@ example (t : WT) (h : WOk (.mk t)) : wsize (.node (.mk t) h) = wsize t + 1 := by
 
 /-! A copy of a *recursive* container is only provably the same size as what it
 copies: the two agree on a constructor by computation apart from the recursive
-positions.  The block closes that gap with a `sizeOf_ofOrig` lemma per copy, and
-proves the constructor's `sizeOf_spec` by rewriting with it. -/
+positions.  The block is measured by its recursor, whose `rec_k` at the container is the
+container's `sizeOf` by an induction on the container, and the constructor's `sizeOf_spec` is
+the recursor's rule rewritten with that. -/
 
 mumi_spec (simp := [LstT.casesOn_node, LstT.rec_node, LstT.rec_1_cons])
 mutual
@@ -282,10 +283,6 @@ inductive LstT : Type where
 inductive LOk : List LstT → Prop where
   | mk (cs : List LstT) : LOk cs
 end
-
-/-- info: LstT.nested_List_1.sizeOf_ofOrig : ∀ (x : List LstT), sizeOf (LstT.nested_List_1.ofOrig x).val = sizeOf x -/
-#guard_msgs in
-#check @LstT.nested_List_1.sizeOf_ofOrig
 
 /-- info: LstT.node.sizeOf_spec : ∀ (cs : List LstT) (h : LOk cs), sizeOf (LstT.node cs h) = 1 + sizeOf cs + sizeOf h -/
 #guard_msgs in
@@ -363,10 +360,10 @@ something the encoding adds. -/
 
 /-! ## Termination through a container that is itself nested or mutual
 
-A copy of `Rose RT` measures the same as `Rose RT`, but neither `Rose.rec`'s case nor
-the copy's says so on its own: `Rose`'s field `cs : List (Rose α)` needs the same fact
+The recursor's measure at `Rose RT` is `Rose RT`'s `sizeOf`, but neither `Rose.rec`'s case nor
+the recursor's says so on its own: `Rose`'s field `cs : List (Rose α)` needs the same fact
 of `List (Rose RT)`, and that one of `Rose RT` again.  The proof is `Rose.rec`, with the
-motive for each type of `Rose`'s block speaking of the copy that takes it.  Without it
+motive for each type of `Rose`'s block speaking of the target that takes it.  Without it
 the block had no `sizeOf_spec`, and a definition as plain as `RT.count` failed its
 termination check. -/
 
@@ -398,10 +395,6 @@ end
 /-- info: RT.mk.sizeOf_spec : ∀ (r : Rose RT) (t : RT) (h : RP t), sizeOf (RT.mk r t h) = 1 + sizeOf r + sizeOf t + sizeOf h -/
 #guard_msgs in
 #check @RT.mk.sizeOf_spec
-
-/-- info: RT.nested_Rose_1.sizeOf_ofOrig : ∀ (x : Rose RT), sizeOf (RT.nested_Rose_1.ofOrig x).val = sizeOf x -/
-#guard_msgs in
-#check @RT.nested_Rose_1.sizeOf_ofOrig
 
 mutual
 def RT.count : RT → Nat
@@ -471,9 +464,8 @@ end
 #check @VT.mk.sizeOf_spec
 
 /-! A copy taken at a local stores that local at every node, since its pre-type is
-indexed by it: as a copy `[]` at `n` is `_pre.nil n`.  Lean's measure of the pre-term
-would count `n` there, where the list `[]` has size `1`, so such a block is measured by
-what was written instead (`addPreMeasure`), and the copy measures what the list does. -/
+indexed by it: as a copy `[]` at `n` is `_pre.nil n`.  A measure of pre-terms would count `n`
+there, where the list `[]` has size `1`.  The recursor's counts what was written. -/
 
 inductive RV (α : Type) : Nat → Type where
   | mk {n} (a : α) (cs : List (RV α n)) : RV α (n + 1)
@@ -484,10 +476,6 @@ info: @RV.mk.sizeOf_spec : ∀ {α : Type} [inst : SizeOf α] {n : Nat} (a : α)
 -/
 #guard_msgs in
 #check @RV.mk.sizeOf_spec
-
--- the measure at a list is the list's, whatever the local
-example {α : Type} [SizeOf α] {n : Nat} :
-    sizeOf (RV.nested_List_1.ofOrig (α := α) (n := n) []).val = 1 := rfl
 
 /-! Typed syntax, the shape this is for: `lam` varies the context, so it is a real index,
 and `app` nests at it.  (With no `lam` the context is fixed, Lean promotes it to a
@@ -556,6 +544,88 @@ end
 /-- info: 3 -/
 #guard_msgs in
 #eval (ICtx.snoc (.snoc .nil (.base .nil)) (.base _)).count
+
+/-! A recursion into an index, past a nesting: the case a measure of pre-terms had neither
+part of.  `Γ` is not in the pre-term of `NTy.base Γ`, and `As` is at a copy. -/
+
+mutual
+inductive NCtx : Type where
+  | nil
+  | many (Γ : NCtx) (As : List (NTy Γ))
+inductive NTy : NCtx → Type where
+  | base (Γ : NCtx) : NTy Γ
+  | list (Γ : NCtx) (As : List (NTy Γ)) : NTy Γ
+end
+
+/-- info: NTy.base.sizeOf_spec : ∀ (Γ : NCtx), sizeOf (NTy.base Γ) = 1 + sizeOf Γ -/
+#guard_msgs in
+#check @NTy.base.sizeOf_spec
+
+/-- info: NTy.list.sizeOf_spec : ∀ (Γ : NCtx) (As : List (NTy Γ)), sizeOf (NTy.list Γ As) = 1 + sizeOf Γ + sizeOf As -/
+#guard_msgs in
+#check @NTy.list.sizeOf_spec
+
+/-- info: 'MumiTests.Compute.SizeThrough.NTy.list.sizeOf_spec' does not depend on any axioms -/
+#guard_msgs in
+#print axioms NTy.list.sizeOf_spec
+
+mutual
+def NCtx.count : NCtx → Nat
+  | .nil => 0
+  | .many Γ As => Γ.count + ncounts As + 1
+def NTy.count {Γ : NCtx} : NTy Γ → Nat
+  | .base Γ => Γ.count
+  | .list _ As => ncounts As
+def ncounts {Γ : NCtx} : List (NTy Γ) → Nat
+  | [] => 0
+  | t :: ts => t.count + ncounts ts
+end
+
+/-- info: 1 -/
+#guard_msgs in
+#eval (NCtx.many .nil [.base .nil]).count
+
+-- through a container that is nested itself, at the index
+mutual
+inductive RCtx : Type where
+  | nil
+  | many (Γ : RCtx) (r : Rose (RTy Γ))
+inductive RTy : RCtx → Type where
+  | base (Γ : RCtx) : RTy Γ
+end
+
+/-- info: RCtx.many.sizeOf_spec : ∀ (Γ : RCtx) (r : Rose (RTy Γ)), sizeOf (Γ.many r) = 1 + sizeOf Γ + sizeOf r -/
+#guard_msgs in
+#check @RCtx.many.sizeOf_spec
+
+/-! An induction-recursion's carriers are not `@[reducible]`: instance search would unfold
+`DTy (Γ.ext A)`, reduce the projections of its index, and not see `DTy` in what is left, so a
+field at a constructor's index would be measured `0` by `instSizeOfDefault`. -/
+
+mutual
+inductive DCtx : Type where
+  | nil
+  | ext (Γ : DCtx) (A : DTy Γ)
+inductive DTy : DCtx → Type where
+  | U (Γ : DCtx) : DTy Γ
+  | Pi (Γ : DCtx) (A : DTy Γ) (B : DTy (.ext Γ A)) : DTy Γ
+def DEl : (Γ : DCtx) → DTy Γ → Type
+  | _, .U Γ => Nat
+  | _, .Pi Γ A B => Nat
+end
+
+/--
+info: DTy.Pi.sizeOf_spec : ∀ (Γ : DCtx) (A : DTy Γ) (B : DTy (Γ.ext A)),
+  sizeOf (DTy.Pi Γ A B) = 1 + sizeOf Γ + sizeOf A + sizeOf B
+-/
+#guard_msgs in
+#check @DTy.Pi.sizeOf_spec
+
+example (Γ A) (B : DTy (.ext Γ A)) : sizeOf B < sizeOf (DTy.Pi Γ A B) := by simp; omega
+
+def DTy.count {Γ : DCtx} : DTy Γ → Nat
+  | .U _ => 0
+  | .Pi _ _ B => B.count + 1
 
 end SizeThrough
 

@@ -16,7 +16,7 @@ set_option mumi.mahlo false
 
 namespace Tangle
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive A : Type where
   | nil : A

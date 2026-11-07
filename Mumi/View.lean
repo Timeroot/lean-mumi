@@ -826,6 +826,28 @@ def addCtorIdxByCases (mem : Name) (ctors : Array Name) : MetaM Unit := do
       setIrreducibleAttribute dst
       modifyEnv fun env => addProtected env dst
 
+/-- For each minor premise of a recursor at its motives, where it is a case of one of Lean's
+own constructors, the positions of that constructor's fields among what the minor binds: a
+nested target's also binds the locals it is at, which are no field. -/
+private def countedFields (recTy : Expr) : MetaM (Array (Option (Array Nat))) := do
+  let names := recTy.getForallBinderNames
+  let numMotives := (names.filter (·.toString.startsWith "motive")).length
+  forallBoundedTelescope recTy numMotives fun _ rest => do
+    let rec go (ty : Expr) (acc : Array (Option (Array Nat))) (fuel : Nat) :
+        MetaM (Array (Option (Array Nat))) := do
+      match fuel, ty with
+      | fuel + 1, .forallE n d b bi =>
+        unless bi.isExplicit && n != `t do return acc
+        let here ← forallTelescope d fun ys c => do
+          let some major := c.getAppArgs.back? | return none
+          let .const k _ := major.getAppFn | return none
+          let some (.ctorInfo cv) := (← getEnv).find? k | return none
+          let fields := major.getAppArgs.extract cv.numParams major.getAppNumArgs
+          return some (fields.filterMap ys.idxOf?)
+        go (b.instantiate1 (mkConst ``True)) (acc.push here) fuel
+      | _, _ => return acc
+    go rest #[] 1000
+
 /--
 A measure of data members with no pre-term, by the block's own recursor: at a constructor
 one and the sum of its fields, a recursive one by its hypothesis and a function counting
@@ -845,18 +867,24 @@ def addMeasureByRec (numParams : Nat) (mem : Name) : MetaM Unit := do
     mkLocalInstances ps fun insts => do
       let selfTy := mkAppN (mkConst mem us) bs
       let mut app := mkAppN (mkConst (mem ++ `rec) (Level.succ .zero :: us)) ps
+      let counted ← countedFields (← inferType app)
+      let mut minorAt := 0
       repeat
         let .forallE n d _ bi ← whnfCore (← inferType app) | break
         if n.toString.startsWith "motive" then
           app := mkApp app <| ← forallTelescope d fun ys s =>
             mkLambdaFVars ys (if s.isProp then mkConst ``True else mkConst ``Nat)
         else if bi.isExplicit && n != `t then
+          let keep? := (counted[minorAt]?).bind id
+          minorAt := minorAt + 1
           app := mkApp app <| ← forallTelescope d fun ys concl => do
             if concl.headBeta.isConstOf ``True then
               return ← mkLambdaFVars ys (mkConst ``True.intro)
             let named ← ys.mapM fun y => do return (← y.fvarId!.getUserName).eraseMacroScopes
             let mut rhs ← mkNumeral (mkConst ``Nat) 1
-            for y in ys, nm in named do
+            for y in ys, nm in named, at_ in Array.range ys.size do
+              if let some keep := keep? then
+                unless keep.contains at_ do continue
               if nm.isStr && nm.getString!.endsWith "_ih" then
                 let base := (nm.getString!.dropEnd 3).toString
                 if named.any (· == nm.getPrefix.str base) then continue
@@ -885,8 +913,137 @@ def addMeasureByRec (numParams : Nat) (mem : Name) : MetaM Unit := do
           hints := .abbrev, safety := .safe }
         registerInstance instName .global (eval_prio default)
 
-/-- `X.c.sizeOf_spec` for a member `addMeasureByRec` measured, once its siblings are too. -/
-def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM Unit := do
+/-- The motives and minors `mem._measure` gives its recursor, at `ps` and `insts`, and how many
+arguments come before them. -/
+private def measureArgs (mem : Name) (us : List Level) (ps insts : Array Expr) : MetaM (Array Expr) := do
+  let ci ← getConstInfo (mem ++ `_measure)
+  let v ← instantiateValueLevelParams ci us
+  let body := v.beta (ps ++ insts)
+  lambdaTelescope body fun _ b => do
+    let names := (← getConstInfo (mem ++ `rec)).type.getForallBinderNames
+    let some tAt := names.idxOf? `t | throwError "`{mem}.rec` has no major"
+    -- what comes before the indices that come before the major
+    let args := b.getAppArgs
+    let idx := names.length - 1 - tAt
+    let _ := idx
+    let numIdx := (← getConstInfo mem).type.getNumHeadForalls - ps.size
+    return args.extract ps.size (tAt - numIdx)
+
+mutual
+
+/--
+`first.rec_k … t = sizeOf t`, for the nested target that takes `t`, at the measure's motives.
+The two agree at a constructor of the container by the block's rule on one side and Lean's
+`sizeOf_spec` on the other, apart from the fields, which is what the induction supplies.  The
+induction is the container's recursor, each of whose motives speaks of the target taking that
+type. -/
+private partial def addNestedMeasure (first : Name) (numParams : Nat) (k : Nat) : MetaM Name := do
+  let thm := Name.mkStr first s!"_measure_eq_{k}"
+  if (← getEnv).contains thm then return thm
+  let target := Name.mkStr first s!"rec_{k}"
+  let ti ← getConstInfo target
+  let mi ← getConstInfo first
+  let us := mi.levelParams.map mkLevelParam
+  let recC := mkConst target (Level.succ .zero :: us)
+  forallBoundedTelescope mi.type numParams fun ps _ =>
+  mkLocalInstances ps fun insts => do
+    let front := ps ++ (← measureArgs first us ps insts)
+    let headTy ← instantiateForall (ti.instantiateTypeLevelParams (Level.succ .zero :: us)) front
+    forallTelescope headTy fun ls _ => do
+      let some t := ls.back? | throwError "`{target}` has no major"
+      let tTy ← whnfR (← inferType t)
+      let .const orig origLvls := tTy.getAppFn | throwError "`{target}` is not at an inductive"
+      let .inductInfo ii ← getConstInfo orig | throwError "`{orig}` is not an inductive"
+      let .recInfo rv ← getConstInfo (orig ++ `rec) | throwError "`{orig}` has no recursor"
+      let targs := tTy.getAppArgs
+      let oparams := targs.extract 0 rv.numParams
+      let oidx := targs.extract rv.numParams (rv.numParams + rv.numIndices)
+      let recFn := mkConst (orig ++ `rec)
+        (if rv.levelParams.length == ii.levelParams.length + 1 then Level.zero :: origLvls else origLvls)
+      let motiveTys ← forallBoundedTelescope (← instantiateForall (← inferType recFn) oparams)
+        rv.numMotives fun ms _ => ms.mapM inferType
+      -- each of the block's types with the target that takes it
+      let mut here : Array Nat := #[k]
+      let mut motives := #[]
+      for ty in motiveTys do
+        let (m, j?) ← forallTelescope ty fun ys _ => do
+          let some z := ys.back? | throwError "`{orig}.rec` has a motive of no major"
+          match ← nestedTaking? first front z with
+          | some (j, app) =>
+            return (← mkLambdaFVars ys (← mkEq app (← mkAppM ``SizeOf.sizeOf #[z])), some j)
+          | none => return (← mkLambdaFVars ys (mkConst ``True), none)
+        motives := motives.push m
+        if let some j := j? then
+          unless here.contains j do here := here.push j
+      let group := here
+      let mut app := mkAppN recFn (oparams ++ motives)
+      for _ in *...rv.numMinors do
+        let .forallE _ minorTy _ _ ← whnf (← inferType app)
+          | throwError "`{orig}.rec` takes fewer cases than it has constructors"
+        app := mkApp app <| ← forallTelescope minorTy fun ys concl => do
+          let concl := concl.headBeta
+          if concl.isConstOf ``True then return ← mkLambdaFVars ys (mkConst ``True.intro)
+          let some (_, lhs, rhs) := concl.eq? | throwError "`{orig}.rec` has a case of something else"
+          let ctorApp := rhs.appArg!
+          let .const cn _ := ctorApp.getAppFn | throwError "`{orig}.rec` has a case of no constructor"
+          let cv ← getConstInfoCtor cn
+          let fields := ys.extract 0 cv.numFields
+          let ihs := ys.extract cv.numFields ys.size
+          let .const (.str _ recName) _ := lhs.getAppFn | throwError "not a rule's left side"
+          let rule := Name.mkStr first s!"{recName}_{cn.getString!}"
+          -- the block's rule, where it is not `rfl`
+          let ruleStep? ← if (← getEnv).contains rule then
+              let lvls := lhs.getAppFn.constLevels!
+              pure (some (mkAppN (mkConst rule lvls) (lhs.getAppArgs.pop ++ fields)))
+            else pure none
+          let sum ← ctorSizeSum cn ctorApp fields
+          -- the fields a target of another container takes, by that target's own lemma
+          let mut eqs := ihs
+          for f in fields do
+            if let some (j, fapp) ← nestedTaking? first front f then
+              unless group.contains j do
+                let lemma ← addNestedMeasure first numParams j
+                eqs := eqs.push (mkAppN (mkConst lemma us) (ps ++ insts ++ fapp.getAppArgs.extract front.size fapp.getAppNumArgs))
+          let toSum ← rewriteBack sum eqs
+          let spec? ← ctorSizeSpec? cn ctorApp
+          let proof := toSum
+          let proof ← match spec? with
+            | some spec => mkEqTrans proof (← mkEqSymm spec)
+            | none => pure proof
+          let proof ← match ruleStep? with
+            | some r => mkEqTrans r proof
+            | none => pure proof
+          mkLambdaFVars ys (mkApp2 (mkConst ``id [0]) concl proof)
+      let all := ps ++ insts ++ ls
+      let stmt ← mkEq (mkAppN (mkAppN recC front) ls) (← mkAppM ``SizeOf.sizeOf #[t])
+      addDecl <| .thmDecl {
+        name := thm, levelParams := mi.levelParams
+        type := ← mkForallFVars all stmt
+        value := ← mkLambdaFVars all (mkAppN app (oidx.push t)) }
+      return thm
+
+/-- `first.rec_k …` at `z`, for the nested target whose major `z` can be. -/
+private partial def nestedTaking? (first : Name) (front : Array Expr) (z : Expr) :
+    MetaM (Option (Nat × Expr)) := do
+  let us := (← getConstInfo first).levelParams.map mkLevelParam
+  let lvl := Level.succ .zero :: us
+  let mut k := 1
+  while (← getEnv).contains (Name.mkStr first s!"rec_{k}") do
+    let f := mkAppN (mkConst (Name.mkStr first s!"rec_{k}") lvl) front
+    let (ms, _, _) ← forallMetaTelescope (← inferType f)
+    if let some m := ms.back? then
+      if ← isDefEq (← inferType m) (← inferType z) then
+        return some (k, ← instantiateMVars (mkApp (mkAppN f ms.pop) z))
+    k := k + 1
+  return none
+
+end
+
+/-- `X.c.sizeOf_spec` for a member `addMeasureByRec` measured, once its siblings are too: by
+`rfl`, and where the recursor does not compute at the constructor by its rule, with the
+nested fields' measure rewritten to their `sizeOf`. -/
+def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) (first : Name := mem) :
+    MetaM Unit := do
   unless (← getEnv).contains (mem ++ `_measure) do return
   let simpAttr ← ofExcept <| getAttributeImpl (← getEnv) `simp
   for c in ctors do
@@ -903,10 +1060,30 @@ def addMeasureSpecs (numParams : Nat) (mem : Name) (ctors : Array Name) : MetaM 
             if (← whnf (← inferType f)).isForall then continue
             rhs ← mkAdd rhs (← mkAppM ``SizeOf.sizeOf #[f])
           let all := cps ++ insts ++ fields
-          addDecl <| .thmDecl {
-            name, levelParams := ci.levelParams
-            type := ← mkForallFVars all (mkApp3 (mkConst ``Eq [1]) (mkConst ``Nat) lhs rhs)
-            value := ← mkLambdaFVars all (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs) }
+          let type ← mkForallFVars all (mkApp3 (mkConst ``Eq [1]) (mkConst ``Nat) lhs rhs)
+          let byRfl ← mkLambdaFVars all (mkApp2 (mkConst ``Eq.refl [1]) (mkConst ``Nat) lhs)
+          let env ← getEnv
+          try
+            addDecl <| .thmDecl { name, levelParams := ci.levelParams, type, value := byRfl }
+          catch _ =>
+            setEnv env
+            let us := ci.levelParams.map mkLevelParam
+            let rule := Name.mkStr mem s!"rec_{c.getString!}"
+            unless env.contains rule do throwError "`{c}` has no rule to measure it by"
+            let front := cps ++ (← measureArgs mem us cps insts)
+            let ruleApp := mkAppN (mkConst rule (Level.succ .zero :: us)) (front ++ fields)
+            let mut eqs := #[]
+            for f in fields do
+              if (← whnf (← inferType f)).isForall then continue
+              if let some (k, fapp) ← nestedTaking? first front f then
+                let lemma ← addNestedMeasure first numParams k
+                eqs := eqs.push (mkAppN (mkConst lemma us)
+                  (cps ++ insts ++ fapp.getAppArgs.extract front.size fapp.getAppNumArgs))
+            let toSum ← rewriteBack rhs eqs
+            let proof ← mkEqTrans ruleApp toSum
+            addDecl <| .thmDecl {
+              name, levelParams := ci.levelParams, type
+              value := ← mkLambdaFVars all proof }
       simpAttr.add name default .global
 
 /-- `Nat.beq (X.ctorIdx t) (X.ctorIdx t')`. -/
@@ -1127,14 +1304,11 @@ def addFactsOverRec (numParams : Nat) (members : Array (Name × Array Name)) : T
   for (mem, _) in members do
     discard <| attempt? `Mumi.view m!"no measure for `{mem}`" <| addMeasureByRec numParams mem
   for (mem, ctors) in members do
-    addMeasureSpecs numParams mem ctors
+    addMeasureSpecs numParams mem ctors (first := (members[0]?.map (·.1)).getD mem)
 
-/--
-Give every member encoded as a subtype a `SizeOf` instance, its specification
-lemmas, a view, and the declarations an `inductive` answers to, in passes so a
-constructor whose field is a sibling finds the sibling's instance already
-there. -/
-def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElabM Unit := do
+/-- A measure for each member encoded as a subtype, and `X.c.sizeOf_spec`.  After the block's
+rules are published: the recursor's measure is proved by them where it does not compute. -/
+def addMeasures (numParams : Nat) (members : Array (Name × Array Name)) : TermElabM Unit := do
   let members ← members.filterM fun (_, ctors) => do
     let some c := ctors[0]? | return false
     return !((← getEnv).find? c).any (·.isCtor)
@@ -1143,17 +1317,21 @@ def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElab
   -- recursor has a hypothesis at every field, so it measures what was written, where it
   -- computes at every constructor; a copy of a container has to measure what the container
   -- does, by its own lemma, and keeps the pre-term's
-  let byRec ← if members.any (fun (m, _) => m.getString!.startsWith "nested_") then pure false
-    else
+  let written := members.filter fun (m, _) => !m.getString!.startsWith "nested_"
+  let byRec ← do
       let env ← getEnv
       try
-        for (mem, _) in members do addMeasureByRec numParams mem
-        for (mem, ctors) in members do addMeasureSpecs numParams mem ctors
-        let all ← members.allM fun (_, ctors) => ctors.allM fun c =>
+        for (mem, _) in written do addMeasureByRec numParams mem
+        for (mem, ctors) in written do
+          addMeasureSpecs numParams mem ctors (first := (written[0]?.map (·.1)).getD mem)
+        let all ← written.allM fun (_, ctors) => ctors.allM fun c =>
           return (← getEnv).contains (c ++ `sizeOf_spec)
-        unless all do setEnv env
+        unless all do
+          trace[Mumi.view] "`{written.map (·.1)}` is not measured by its recursor: not every constructor has the rule"
+          setEnv env
         pure all
-      catch _ =>
+      catch e =>
+        trace[Mumi.view] "`{written.map (·.1)}` is not measured by its recursor: {e.toMessageData}"
         setEnv env
         pure false
   for (mem, _) in members do
@@ -1167,6 +1345,14 @@ def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElab
     for c in ctors do
       discard <| attempt? `Mumi.view m!"no `sizeOf` lemma for `{c}`" <|
         addSizeOfSpec numParams lps mem c
+
+/--
+Give every member encoded as a subtype a view, and the declarations an `inductive` answers
+to, in passes. -/
+def addViews (numParams : Nat) (members : Array (Name × Array Name)) : TermElabM Unit := do
+  let members ← members.filterM fun (_, ctors) => do
+    let some c := ctors[0]? | return false
+    return !((← getEnv).find? c).any (·.isCtor)
   for (mem, ctors) in members do
     discard <| attempt? `Mumi.view m!"no view for `{mem}`" <| addView numParams mem ctors
   for (mem, ctors) in members do

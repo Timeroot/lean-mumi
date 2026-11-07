@@ -164,7 +164,7 @@ and `Big` leaves that block; at the written universe `Big`'s engine reads
 namespace MixIdx
 set_option mumi.mahlo false
 
-mumi_spec (xfail := [sizeOf])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil : Ctx
