@@ -615,6 +615,8 @@ gave up: it stops at a field nested through a `Prop`, having made the rest. -/
 def addMissingSizeOfSpecs (names : Array Name) : MetaM Unit := do
   for n in names do
     let .inductInfo ii ← getConstInfo n | continue
+    -- a proposition has no size of its own to state, and Lean makes it none
+    if ← forallTelescope ii.type fun _ s => pure s.isProp then continue
     for c in ii.ctors do addSizeOfSpecByRfl ii.numParams c
 
 /-- Add an inductive declaration and everything Lean normally builds alongside one. -/

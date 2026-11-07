@@ -1006,7 +1006,11 @@ private partial def addNestedMeasure (first : Name) (numParams : Nat) (k : Nat) 
           -- the block's rule, where it is not `rfl`
           let ruleStep? ← if (← getEnv).contains rule then
               let lvls := lhs.getAppFn.constLevels!
-              pure (some (mkAppN (mkConst rule lvls) (lhs.getAppArgs.pop ++ fields)))
+              -- what the left side has at the major's indices the rule has from the fields
+              let numIdx := (← getConstInfoInduct cv.induct).numIndices
+              let before := lhs.getAppArgs.pop
+              pure (some (mkAppN (mkConst rule lvls)
+                (before.extract 0 (before.size - numIdx) ++ fields)))
             else pure none
           let sum ← ctorSizeSum cn ctorApp fields
           -- the fields a target of another container takes, by that target's own lemma

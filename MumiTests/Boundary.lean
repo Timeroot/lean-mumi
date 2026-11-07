@@ -113,7 +113,7 @@ inductive Vec (α : Type) : Nat → Type where
   | nil : Vec α 0
   | cons {n} (a : α) (v : Vec α n) : Vec α (n + 1)
 
-mumi_spec (simp := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc]) (xfail := [sizeOf])
+mumi_spec (simp := [Ctx.rec_snoc, Ctx.rec_1_cons, Ctx.casesOn_snoc])
 mutual
 inductive Ctx : Type where
   | nil
