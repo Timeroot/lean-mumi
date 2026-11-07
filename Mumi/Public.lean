@@ -898,6 +898,31 @@ private def bridgeAt? (e : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
   unless ty.isForall do return none
   return some (ty.bindingBody!, ofO, toO)
 
+/-- What a copy stands for, where that is the shadow of a nesting inside a lowered `Prop` member:
+`Sp.nested_SList_1._shadow St1`, with no name for the writer.  The data it is the shadow of, what the
+writer wrote, is the domain of its `_squash` at the same arguments. -/
+def dataBehindShadow? (ty : Expr) : MetaM (Option Expr) := do
+  let .const (.str y "_shadow") us := ty.getAppFn | return none
+  let env ← getEnv
+  if env.contains y then return none
+  unless env.contains (y ++ `_squash) do return none
+  let sq := mkConst (y ++ `_squash) us
+  let t ← whnfR (← instantiateForall (← inferType sq) ty.getAppArgs)
+  let .forallE _ d _ _ := t | return none
+  return some d
+
+/-- Where a recursion is restated with the shadow of a nesting left in, for
+`Mumi.Displayed.addRecsOverShadows`. -/
+def overShadowName (n : Name) : Name := n.appendAfter "_over_shadow"
+
+/-- The copies of a block `first` is the first member of, in the order of their recursions. -/
+def nestedCopiesOf (env : Environment) (first : Name) : Array Name :=
+  let copies := env.constants.map₂.toList.filterMap fun (n, _) =>
+    if n.getPrefix == first && n.isStr && (n.getString!.startsWith "nested_")
+        && env.contains (n ++ `mutualRec) && env.contains (n ++ `toOrig) then some n else none
+  copies.toArray.qsort fun a b =>
+    (a.getString!.splitOn "_").getLast!.toNat! < (b.getString!.splitOn "_").getLast!.toNat!
+
 /-- `e` read over the originals: a round trip through a bridge dropped, a copy's
 constructor read as the original's, a held constructor at a packed field as the
 writer's at the field. -/
@@ -1049,19 +1074,21 @@ partial def publishOverOriginals (written : Array Name) : MetaM Unit := do
   for m in written do
     for l in (← getConstInfo m).levelParams do
       unless lps.contains l do lps := lps ++ [l]
+  let some first := written[0]? | return
+  let copies := nestedCopiesOf env first
+  -- a copy of a shadow is no more than the writer's data: `addRecsOverShadows` goes around these
+  let overShadow ← copies.anyM fun c => do
+    let toO ← getConstInfo (c ++ `toOrig)
+    forallTelescope toO.type fun _ orig => do
+      return (← dataBehindShadow? (← instantiateMVars orig)).isSome
+  let dst (n : Name) : Name := if overShadow then overShadowName n else n
   for m in written do
     if env.contains (m ++ `mutualRec) && !env.contains (m ++ `rec) then
-      restateOverOriginals held lps (m ++ `mutualRec) (m ++ `rec)
+      restateOverOriginals held lps (m ++ `mutualRec) (dst (m ++ `rec))
   -- every copy's recursion, at the major it copies
-  let some first := written[0]? | return
   let mut k := 1
-  let copies := env.constants.map₂.toList.filterMap fun (n, _) =>
-    if n.getPrefix == first && n.isStr && (n.getString!.startsWith "nested_")
-        && env.contains (n ++ `mutualRec) && env.contains (n ++ `toOrig) then some n else none
-  let copies := copies.toArray.qsort fun a b =>
-    (a.getString!.splitOn "_").getLast!.toNat! < (b.getString!.splitOn "_").getLast!.toNat!
   for c in copies do
-    restateOverOriginals held lps (c ++ `mutualRec) (first ++ `rec |>.appendIndexAfter k)
+    restateOverOriginals held lps (c ++ `mutualRec) (dst (first ++ `rec |>.appendIndexAfter k))
     k := k + 1
 
 /-- How many parameters `mem.casesOn` takes before its motive: those of the block. -/

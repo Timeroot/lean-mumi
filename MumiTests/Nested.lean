@@ -1308,7 +1308,7 @@ inductive Sp (α : Type u) : Prop where
   | nil : Sp α
   | mk : α → SList (Sp α) → Sp α
 
-mumi_spec (xfail := [rec, recOn])
+mumi_spec
 mutual
 inductive St1 : Type 1 where
   | tip : St1

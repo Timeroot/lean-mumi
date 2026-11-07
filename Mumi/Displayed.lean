@@ -1478,6 +1478,225 @@ private def tagElim (n : Name) : MetaM Unit := do
     Lean.Elab.Term.elabAsElim.setTag n
   catch _ => pure ()
 
+/-! ## At what a lowered `Prop` member nests
+
+`Sp α : Prop` with a field at `SList (Sp α)` is lowered with a shadow standing for that data: a
+`Prop` the writer has no name for.  A block nesting `Sp St` has a recursion with a motive into
+`Prop` at the shadow, where it is owed one into any sort at `SList (Sp St)`, as `Sp`'s own has.  Over
+a shadow the motive is that there is such a datum with such a value.  A constructor of the member
+at a shadow takes the datum out of its hypothesis, since it is a proof it is making and any datum
+makes the same one; a constructor of the shadow builds the datum and its value.  At the datum itself
+the value is the kernel's recursion over it, each proof in it by the members' recursion. -/
+
+/-- `X.rec` and `X.rec_k` over the datum, from the same restated by `Public` with the shadow left in
+under `Mumi.overShadowName`. -/
+def addRecsOverShadows (np : Nat) (written : Array Name) : MetaM Unit := do
+  let first := written[0]!
+  let env ← getEnv
+  let copies := Mumi.nestedCopiesOf env first
+  let lps := (← getConstInfo (overShadowName (first ++ `rec))).levelParams
+  let us := lps.map mkLevelParam
+  let elimName := lps.head!
+  let blockLps := lps.tail!
+  -- the targets
+  let targetsW ← written.mapM fun w => do
+    let info ← getConstInfo w
+    let prop ← forallTelescope info.type fun _ s => pure s.isProp
+    let ind := aliasIndName w
+    let ctors := match env.find? ind with
+      | some (.inductInfo ii) => ii.ctors.toArray.map fun c => Name.str w c.getString!
+      | _ => #[]
+    return ({ app := mkConst w (info.levelParams.map mkLevelParam), prop, ctors, out := w ++ `rec } : Target)
+  let targetsC ← (Array.range copies.size).mapM fun k => do
+    let cp := copies[k]!
+    let toO ← getConstInfo (cp ++ `toOrig)
+    forallTelescope toO.type fun xs orig => do
+      let ps := xs.pop
+      let orig ← instantiateMVars orig
+      let shadowData ← dataBehindShadow? orig
+      let app := shadowData.getD orig
+      let h ← whnfR app
+      let .const i _ := h.getAppFn | throwError "a copy of no inductive"
+      let ii ← getConstInfoInduct i
+      let pubCtor (c : Name) : Name :=
+        match app.getAppFn with
+        | .const hd _ => Name.str hd c.getString!
+        | _ => c
+      let ctors := ii.ctors.toArray.map pubCtor
+      return ({ app := ← mkLambdaFVars ps app, prop := ← isProp app, ctors
+                out := Name.mkStr first s!"rec_{k + 1}" } : Target)
+  let targets := targetsW ++ targetsC
+  let statements ← statementsOverNesting np targets first
+  let nM := targets.size
+  let nMin := targets.foldl (fun a t => a + t.ctors.size) 0
+  let order ← forallBoundedTelescope statements[0]! (np + nM) fun xs _ => do
+    let ps := xs.extract 0 np
+    (xs.extract np xs.size).mapM fun mot => do
+      forallTelescope (← inferType mot) fun zs _ => do
+        let majorTy ← instantiateMVars (← inferType zs.back!)
+        let some q := (Array.range targets.size).find? fun q =>
+            if targets[q]!.app.isConst then majorTy.getAppFn.isConstOf targets[q]!.app.constName!
+            else targets[q]!.app.beta ps == majorTy
+          | throwError "a motive of no target"
+        return q
+  let firstMinor (t : Nat) : Nat :=
+    (order.foldl (init := ((0 : Nat), (none : Option Nat))) fun acc tgt =>
+      match acc with
+      | (a, some r) => (a, some r)
+      | (a, none) => if tgt == t then (a, some a) else (a + targets[tgt]!.ctors.size, none)).2.getD 0
+  let isDatum (t : Nat) : MetaM Bool := do
+    if t < written.size then return false
+    let toO ← getConstInfo (copies[t - written.size]! ++ `toOrig)
+    forallTelescope toO.type fun _ orig => do
+      return (← dataBehindShadow? (← instantiateMVars orig)).isSome
+  let data ← (Array.range targets.size).filterM isDatum
+  -- the old recursion's arguments, from the new one's
+  let rawAt (front : Array Expr) (old : Name) : MetaM (Array Expr × Array Expr) := do
+    let ps := front.extract 0 np
+    let mots := front.extract np (np + nM)
+    let mins := front.extract (np + nM) front.size
+    let oldType := (← getConstInfo old).type
+    let lvl ← forallTelescope (← inferType mots[0]!) fun _ s => match s with
+      | .sort u => pure u
+      | _ => throwError "a motive that does not end in a sort"
+    let rawMots ← order.mapIdxM fun q tgt => do
+      let m := mots[q]!
+      unless data.contains tgt do return m
+      let d := targets[tgt]!.app.beta ps
+      let .sort du ← whnf (← inferType d) | throwError "a datum that is not a type"
+      let sig := mkApp2 (mkConst ``PSigma [du, lvl]) d m
+      let packed := mkApp (mkConst ``Nonempty [mkLevelMax' (mkLevelSucc .zero) (mkLevelMax' du lvl)]) sig
+      -- over the shadow the motive is over
+      let oldMotTy ← do
+        let mut t ← instantiateForall oldType ps
+        for _ in [:q] do
+          let .forallE _ _ b _ := t | throwError "too few motives"
+          t := b.instantiate1 (mkConst ``True)
+        let .forallE _ d' _ _ := t | throwError "too few motives"
+        pure d'
+      forallTelescope oldMotTy fun zs _ => mkLambdaFVars zs packed
+    let mut remaining ← instantiateForall oldType (ps ++ rawMots)
+    let mut acc : Array Expr := #[]
+    for i in [:nMin] do
+      let .forallE _ d body _ := remaining | throwError "too few minor premises"
+      let mNew := mins[i]!
+      let v ← forallTelescope (← Core.betaReduce d) fun args concl => do
+        -- the fields at a shadow, and the hypotheses that are data with values
+        let mut shadows : Array Expr := #[]
+        let mut packs : Array Expr := #[]
+        for a in args do
+          let ty ← whnfCore (← inferType a)
+          if ty.isAppOf ``Nonempty then packs := packs.push a
+          else if (← dataBehindShadow? (← instantiateMVars ty)).isSome then shadows := shadows.push a
+        unless shadows.size == packs.size do throwError "a field at a shadow with no hypothesis"
+        let goal := concl.headBeta
+        -- under the data taken out of the hypotheses
+        let rec under (j : Nat) (qs : Array Expr) : MetaM Expr := do
+          if h : j < packs.size then
+            let pk := packs[j]
+            let pkTy ← whnfCore (← inferType pk)
+            let .app (.const _ nl) sig := pkTy | throwError "not a package"
+            withLocalDeclD `q sig fun q => do
+              let inner ← under (j + 1) (qs.push q)
+              let lam ← mkLambdaFVars #[q] inner
+              let isPr ← isProp goal
+              unless isPr do throwError "a recursion into data at a shadow"
+              return mkApp4 (mkConst ``Nonempty.elim nl) sig goal pk lam
+          else
+            mkFromQs args shadows packs qs goal mNew
+        mkLambdaFVars args (← under 0 #[])
+      remaining := body.instantiate1 v
+      acc := acc.push v
+    return (rawMots, acc)
+  -- the members' and the proofs'
+  let bare (t : Nat) := targets[t]!
+  let mut declared : Array Nat := #[]
+  for t in [:targets.size] do
+    if data.contains t then continue
+    let out := (bare t).out
+    let value ← forallBoundedTelescope statements[t]! (np + nM + nMin) fun front concl => do
+      let (rawMots, rawMins) ← rawAt front (overShadowName out)
+      forallTelescope concl fun majors _ => do
+        mkLambdaFVars (front ++ majors) (mkAppN (mkConst (overShadowName out) us)
+          (front.extract 0 np ++ rawMots ++ rawMins ++ majors))
+    if (bare t).prop && (← isProp statements[t]!) then
+      addDecl (.thmDecl { name := out, levelParams := lps, type := statements[t]!, value })
+    else
+      addDef out lps statements[t]! value
+    declared := declared.push t
+  -- a datum's, by the kernel's recursion over it
+  for t in data do
+    let value ← forallBoundedTelescope statements[t]! (np + nM + nMin) fun front concl => do
+      let ps := front.extract 0 np
+      let mots := front.extract np (np + nM)
+      let mins := front.extract (np + nM) front.size
+      let mot := mots[(order.idxOf? t).getD 0]!
+      let lvl ← forallTelescope (← inferType mot) fun _ s => match s with
+        | .sort u => pure u
+        | _ => throwError "a motive that does not end in a sort"
+      let app ← whnfR ((bare t).app.beta ps)
+      let .const ind vs := app.getAppFn | throwError "no inductive behind the data"
+      let ii ← getConstInfoInduct ind
+      unless ii.all.length == 1 do throwError "a datum of a mutual block"
+      let recI ← getConstInfoRec (mkRecName ind)
+      let recVs := if recI.levelParams.length == ii.levelParams.length then vs else lvl :: vs
+      let args := app.getAppArgs
+      let recTy ← instantiateForall (recI.type.instantiateLevelParams recI.levelParams recVs) args
+      let minorsTy ← instantiateForall recTy #[mot]
+      let start := firstMinor t
+      let kMin ← forallBoundedTelescope minorsTy recI.numMinors fun ms _ => do
+        ms.mapIdxM fun w mk => do
+          let nf := (← getConstInfoCtor ii.ctors[w]!).numFields
+          forallBoundedTelescope (← inferType mk) nf fun fs rest => do
+            forallTelescope rest fun ihs _ => do
+              let mut vals := #[]
+              let mut used := 0
+              for f in fs do
+                let fty ← instantiateMVars (← inferType f)
+                let at_ := (Array.range targets.size).find? fun q =>
+                  if q < written.size then fty.getAppFn.isConstOf targets[q]!.app.constName!
+                  else targets[q]!.app.beta ps == fty
+                let fty' ← whnfR fty
+                let isSelf := fty' == app
+                if isSelf then
+                  vals := vals.push ihs[used]!
+                  used := used + 1
+                else if let some q := at_ then
+                  let idx := if q < written.size then fty.getAppArgs.extract np fty.getAppNumArgs else #[]
+                  vals := vals.push (mkAppN (mkConst targets[q]!.out us) (front ++ idx.push f))
+              mkLambdaFVars (fs ++ ihs) (mkAppN mins[start + w]! (fs ++ vals))
+      forallTelescope concl fun majors _ => do
+        mkLambdaFVars (front ++ majors)
+          (mkAppN (mkConst (mkRecName ind) recVs) (args ++ #[mot] ++ kMin ++ majors))
+    addDef (bare t).out lps statements[t]! value
+  let _ := (elimName, blockLps)
+  for t in targets do
+    tagElim t.out
+where
+  /-- The new minor premise at the old one's arguments, data in place of shadows; a constructor of
+  the shadow concludes that there is the datum it built, and a proof, what it proved. -/
+  mkFromQs (args shadows packs qs : Array Expr) (goal mNew : Expr) : MetaM Expr := do
+    let mut vals := #[]
+    for a in args do
+      if let some j := packs.idxOf? a then
+        let pty ← whnfCore (← inferType qs[j]!)
+        vals := vals.push (mkApp3 (mkConst ``PSigma.snd pty.getAppFn.constLevels!) pty.getAppArgs[0]! pty.getAppArgs[1]! qs[j]!)
+      else if let some j := shadows.idxOf? a then
+        let pty ← whnfCore (← inferType qs[j]!)
+        vals := vals.push (mkApp3 (mkConst ``PSigma.fst pty.getAppFn.constLevels!) pty.getAppArgs[0]! pty.getAppArgs[1]! qs[j]!)
+      else vals := vals.push a
+    let v := mkAppN mNew vals
+    if goal.isAppOf ``Nonempty then
+      let sig := goal.appArg!
+      let conclTy ← whnfCore (← inferType v)
+      let datum := conclTy.appArg!
+      let .const _ sigUs := sig.getAppFn | throwError "not a package"
+      let d := sig.getAppArgs[0]!
+      let m := sig.getAppArgs[1]!
+      let pack := mkApp4 (mkConst ``PSigma.mk sigUs) d m datum v
+      return mkApp2 (mkConst ``Nonempty.intro goal.getAppFn.constLevels!) sig pack
+    return v
+
 /-- Give the frontend's own eliminators the public names, as they are. -/
 private def publishOwn (inp : Input) : MetaM Unit := do
   let props := inp.members.filter (·.prop)
