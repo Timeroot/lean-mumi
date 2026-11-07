@@ -847,7 +847,7 @@ inductive BoxP (α : Type u) : Prop where
   | p : BoxP α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf, matching])
+mumi_spec
 mutual
 inductive St : Type 1 where
   | tip : St
@@ -856,7 +856,12 @@ inductive Other : Type where
   | b : Other
 end
 
-/-! The field's type is the copy's name, not `Box St`. -/
+/-! The field's type is what was written.  There is a copy of `Box St` behind it, which
+is what the kernel was handed, and the recursor has motives for `Box St` and `BoxP St`. -/
+
+/-- info: St.mk : Box St → St -/
+#guard_msgs in
+#check @St.mk
 
 /-- info: St.nested_Box_1.toOrig : St.nested_Box_1 → Box St -/
 #guard_msgs in
@@ -866,15 +871,14 @@ end
 #guard_msgs in
 #check @St.nested_Box_1.ofOrig
 
-/-- A `match` on the field goes through the coercion, and the inner `match` is
-`Box`'s own. -/
+/-- The inner `match` is `Box`'s own. -/
 def count : St → Nat
   | .tip => 0
   | .mk w => match (w : Box St) with | .mk _ _ => 1
 
 /-- info: 1 -/
 #guard_msgs in
-#eval count (St.mk (St.nested_Box_1.ofOrig (.mk .tip .p)))
+#eval count (St.mk (.mk .tip .p))
 
 /-- info: 'MumiTests.Demo.NestData.count' does not depend on any axioms -/
 #guard_msgs in

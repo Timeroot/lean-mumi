@@ -1201,16 +1201,15 @@ end
 
 /-! A wrapper polymorphic in `Sort` can be nested at a data member and at a
 proposition about it in the one block, and the two are told apart by the whole
-application rather than by the head.  They part company after that: `Xbox Xs1`
-is at the member's own universe, so it goes to the kernel and the copy of it
-stands in the shadow alone, while `Xbox (Nonempty Xs1)` lands a universe lower
-and is the one case a copy is the only way through. -/
+application rather than by the head.  `Xbox (Nonempty Xs1)` lands a universe lower
+than `Xs1`, which the kernel will not take, so both are copies behind the bridge, and
+what the writer reads is the originals. -/
 
 mumi_spec
 inductive Xbox (α : Sort u) : Sort (max 1 u) where
   | mk : α → Xbox α
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf, matching])
+mumi_spec (xfail := [rec, recOn])
 mutual
 inductive Xs1 : Type 1 where
   | tip : Xs1
@@ -1220,9 +1219,9 @@ inductive Xs2 : Type where
   | b : Xs2
 end
 
-/-- error: Unknown constant `Xs1.nested_Xbox_1` -/
+/-- info: Xs1.p : Xbox (Nonempty Xs1) → Xs1 -/
 #guard_msgs in
-#check @Xs1.nested_Xbox_1
+#check @Xs1.p
 
 /-- info: Xs1.nested_Xbox_2.toOrig : Xs1.nested_Xbox_2 → Xbox (Nonempty Xs1) -/
 #guard_msgs in
@@ -1326,7 +1325,9 @@ example (h : Sp St1) : St1 := St1.mk h
 example : St1 := St1.mk (Sp.nil : Sp St1)
 
 /-! A data member of a lowered block is only isomorphic to its copy, as any data
-type is, but it is the member's own name the copy is isomorphic *to*. -/
+type is, but it is the member's own name the copy is isomorphic *to*, and what the
+writer reads is that name: `Wrap St3`, its constructor, and a motive for it and
+one for the `WrapP St3` inside it. -/
 
 mumi_spec
 mutual
@@ -1336,7 +1337,7 @@ inductive WrapP (α : Type u) : Prop where
   | p : WrapP α
 end
 
-mumi_spec (xfail := [ctors, rec, recOn, casesOn, injEq, ctorIdx, sizeOf, matching])
+mumi_spec
 mutual
 inductive St3 : Type 1 where
   | tip : St3
@@ -1349,13 +1350,45 @@ end
 #guard_msgs in
 #check @St3.nested_Wrap_1.toOrig
 
+/-- info: St3.mk : Wrap St3 → St3 -/
+#guard_msgs in
+#check @St3.mk
+
+/-! Whatever the universes around it: at a member's universe, alone or in a `mutual`.
+The siblings of a lowered block are copied where they are reached, and `WrapP` does not
+reach back to `Wrap`, which would otherwise be a proof carrying an `St5` with no index
+to say which. -/
+
+mumi_spec
+inductive St5 : Type where
+  | tip : St5
+  | mk (w : Wrap St5) : St5
+
+mumi_spec
+mutual
+inductive St6 : Type where
+  | tip : St6
+  | mk (w : Wrap St6) : St6
+inductive St7 : Type where
+  | b : St7
+end
+
+mumi_spec
+inductive St8 : Type 1 where
+  | tip : St8
+  | mk (w : Wrap St8) : St8
+
+/-- info: 1 -/
+#guard_msgs in
+#eval (match (St5.mk (.mk .tip .p)) with | .tip => 0 | .mk (.mk .tip _) => 1 | _ => 2 : Nat)
+
 def St3.count : St3 → Nat
   | .tip => 0
   | .mk w => match (w : Wrap St3) with | .mk _ _ => 1
 
 /-- info: 1 -/
 #guard_msgs in
-#eval St3.count (St3.mk (St3.nested_Wrap_1.ofOrig (.mk .tip .p)))
+#eval St3.count (St3.mk (.mk .tip .p))
 
 /-- info: 'St3.count' does not depend on any axioms -/
 #guard_msgs in
@@ -1489,8 +1522,8 @@ not. -/
 #guard_msgs in
 #check @Xs1.nested_Xbox_2.eq_orig
 
--- the coercion still carries a value of the copy where the original is wanted
-example (h : Nonempty Xs1) : Xbox (Nonempty Xs1) := Xs1.nested_Xbox_2.mk h
+-- the bridge carries a value of the copy to the original the writer has
+example (h : Nonempty Xs1) : Xbox (Nonempty Xs1) := Xs1.nested_Xbox_2.toOrig (Xs1.nested_Xbox_2.ofOrig (.mk h))
 
 /-! A nesting is copied by specialising it to the block, and what it is
 specialised at has to be fixed before the constructors are known.  A parameter

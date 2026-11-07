@@ -132,7 +132,10 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
     -- shadow globals of the same name, so its arities elaborated against those
     -- and `classifyBlock` saw nothing to route on
     rescuing (elabMutual stx)
-      #[("the induction-inductive retry", IndInd.elabNestedInductive elems),
+      #[("the induction-inductive retry, over the originals",
+          -- a route this block may have no use for, whose complaints are no diagnosis
+          disowning (IndInd.elabNestedInductive elems (requireBridge := true))),
+        ("the induction-inductive retry", IndInd.elabNestedInductive elems),
         ("lowering the denested block",
           elabHeterogeneousInductive elems (requireHeterogeneous := true)),
         ("the induction-inductive retry, with the members shadowing the globals",
@@ -150,8 +153,11 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
       withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
         discardingInfoOnError (IndInd.elabInductionInductive elems)
     | _ =>
-      rescuing (elabHeterogeneousInductive elems)
-        #[("the induction-inductive retry", IndInd.elabInductionInductive elems)]
+      -- over the originals if it can be, as a lowering of a data copy is not
+      withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
+      preferring (IndInd.elabNestedInductive elems (requireBridge := true) (onlyOverOriginals := true)) <|
+        rescuing (elabHeterogeneousInductive elems)
+          #[("the induction-inductive retry", IndInd.elabInductionInductive elems)]
 
 /-- `lhs = rhs` by `rfl`, checked by the kernel alone: the goal becomes an
 auxiliary theorem whose proof is `Eq.refl lhs`, which nothing but the kernel

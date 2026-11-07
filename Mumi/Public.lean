@@ -56,6 +56,17 @@ def publicName? (env : Environment) (n : Name) : Option Name :=
       | _ => false
     if alias && env.contains p then some pub else none
   | .str q "_ind" => if env.contains q then some q else none
+  | .str q "_shadow" =>
+    -- a lowered `Prop` member, whose name is a reducible one for its shadow
+    match env.find? q with
+    | some (.defnInfo d) => if d.value.isConstOf n then some q else none
+    | _ => none
+  | .str p@(.str q "_shadow") c =>
+    -- and its constructor, under the member's name where that is the shadow's
+    let pub := Name.str q c
+    match env.find? pub, env.find? (Name.str p c) with
+    | some _, some _ => if (env.find? q).any (·.isDefinition) then some pub else none
+    | _, _ => none
   | _ => none
 
 /-- `e` with every constant of an aliased inductive read back under the writer's name. -/

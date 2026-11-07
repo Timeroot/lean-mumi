@@ -57,6 +57,30 @@ meta def discardingInfoOnError (k : CommandElabM Unit) : CommandElabM Unit := do
     modify ({ · with infoState := saved })
     throw ex
 
+/-- `first` if it goes through, and otherwise `k` as if it had never been tried: what is reported
+when `k` fails too is `k`'s. -/
+meta def preferring (first k : CommandElabM Unit) : CommandElabM Unit := do
+  let saved ← get
+  let nmsgs := saved.messages.reportedPlusUnreported.size
+  let ok ←
+    try
+      first
+      pure !(← errorLoggedSince nmsgs)
+    catch _ => pure false
+  unless ok do
+    set saved
+    k
+
+/-- `k`, with nothing it complains of counted as a reason a retry has for the writer. -/
+meta def disowning (k : CommandElabM Unit) : CommandElabM Unit := do
+  let n := (← get).messages.reportedPlusUnreported.size
+  let bad ←
+    try
+      k
+      errorLoggedSince n
+    catch _ => pure true
+  if bad then throwError "this route is not for this block"
+
 /--
 Elaborate a command with `stock`; if that fails, try each of `retries` in turn
 from the state `stock` started in. -/

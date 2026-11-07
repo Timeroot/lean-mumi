@@ -1720,7 +1720,7 @@ end DataOnDataLengthNest
 
 namespace DataOnDataLengthSum
 
-mumi_spec (xfail := [matching])
+mumi_spec
 mutual
 inductive Ctx : Nat → Type where
   | nil  : Ctx 0
@@ -5525,7 +5525,7 @@ being one of them: `V.cons` at `n` lands in `V (n + n)`.  The nesting is indexed
 as well -- `List (V n)` is a copy carrying an `n` of its own -- so the copy, the
 proposition and the constructor all have to be standing at the same one. -/
 
-mumi_spec (simp := [V.casesOn_cons, V.rec_cons, V.rec_1_cons]) (xfail := [matching])
+mumi_spec (simp := [V.casesOn_cons, V.rec_cons, V.rec_1_cons])
 mutual
 inductive V : Nat → Type where
   | nil  : V 0

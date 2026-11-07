@@ -63,6 +63,11 @@ field.  A denested block that is homogeneous, not induction-inductive and
 indexed only at closed parameters is one the kernel would have accepted, so its
 failure was genuine.
 
+`requireBridge` takes one case more: a copy lowering could only leave showing, because the
+block nests itself through what the kernel cannot be handed as written.  That is a lowered
+block's member (`Box St`, which is `Box._ind St`), or a type landing in another universe than
+what it nests (`Xbox (Nonempty St)`).  Over the originals the writer reads `Box St` all the same.
+
 ## Why there are three retries
 
 The two gates overlap on the constructor-field case.  `Mumi.IndInd` states the
@@ -98,7 +103,8 @@ meta def elabDeclarationRescuingNested : CommandElab := fun stx => do
   -- takes, or heterogeneous, which `Mumi.Lowering` takes
   rescuing (elabDeclaration stx) #[
     ("the induction-inductive retry, over the originals",
-      IndInd.elabNestedInductive #[stx] (requireBridge := true)),
+      -- a route this block may have no use for, whose complaints are no diagnosis
+      disowning (IndInd.elabNestedInductive #[stx] (requireBridge := true))),
     ("lowering the denested block",
       elabHeterogeneousInductive #[stx] (requireHeterogeneous := true)),
     ("the induction-inductive retry",

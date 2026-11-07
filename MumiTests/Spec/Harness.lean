@@ -284,6 +284,35 @@ private def elabCtor {α} (m : Member) (params : Array Expr) (c : Syntax) (k : A
       pure e
   forallBoundedTelescope ty n k
 
+/-- The inductive `i` is, or is a reducible name for: a lowered block's data member is `X._ind`
+behind `X`, and its `Prop` member `X._shadow` behind `X`. -/
+private def inductiveBehind? (i : Name) : MetaM (Option InductiveVal) := do
+  let env ← getEnv
+  if let some (.inductInfo info) := env.find? i then return some info
+  unless (← getReducibilityStatus i) == .reducible do return none
+  for sfx in [`_ind, `_shadow] do
+    if let some (.inductInfo info) := env.find? (i ++ sfx) then return some info
+  return none
+
+/-- The constructors of `i`, by the names the writer has for them. -/
+private def writtenCtors? (i : Name) : MetaM (Option (Array Name)) := do
+  let some info ← inductiveBehind? i | return none
+  let env ← getEnv
+  return some <| info.ctors.toArray.map fun
+    | .str p s => if env.contains (.str i s) then Name.str i s else Name.str p s
+    | c => c
+
+/-- The block `i` was written in, by the names it was written with.  A lowered block's members
+stand together in its shadow, whatever `i` is built from. -/
+private def writtenSiblings? (i : Name) : MetaM (Option (Array Name)) := do
+  let env ← getEnv
+  if let some (.inductInfo info) := env.find? (i ++ `_shadow) then
+    -- what lowering made of a nesting inside it has no name for the writer: that is met as the
+    -- nesting it is, among these members' fields
+    return some ((info.all.toArray.map (·.getPrefix)).filter env.contains)
+  let some info ← inductiveBehind? i | return none
+  return some info.all.toArray
+
 /-- Where a nested application of the block is, as Lean's kernel takes it --
 the inductive at its parameters, which name a member (`List U`, `Vector U` of
 `Vector U 3`) -- and abstracted over the fields and indices those name (`fun Γ =>
@@ -293,7 +322,8 @@ private def nestedHead? (members : Array Name) (params : Array Expr) (t : Expr) 
   let t ← instantiateMVars t
   let .const i _ := t.getAppFn | return none
   if members.contains i then return none
-  let some (.inductInfo info) := (← getEnv).find? i | return none
+  -- a lowered block's member is a reducible name for what it is built from
+  let some info ← inductiveBehind? i | return none
   let n := mkAppN t.getAppFn (t.getAppArgs.extract 0 info.numParams)
   unless members.any (fun m => (n.find? (·.isConstOf m)).isSome) do return none
   if n.hasLooseBVars then return none
@@ -557,8 +587,8 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
     | .nested a =>
       let n := nestedBody a
       let .const ind _ := n.getAppFn | return #[]
-      let some (.inductInfo info) := (← getEnv).find? ind | return #[]
-      return info.ctors.toArray.map fun c => (Name.mkSimple c.getString!, c, n.getAppNumArgs)
+      let some ctors ← writtenCtors? ind | return #[]
+      return ctors.map fun c => (Name.mkSimple c.getString!, c, n.getAppNumArgs)
   -- constructor `ci` of target `t`, its arguments bound: `k before ctor fields indices`,
   -- where `before` are the parameters that vary, which a minor premise binds
   -- implicitly before the fields
@@ -572,8 +602,8 @@ private def recursion (r : Run) (b : Block) (targets : Array Target) (large : Bo
     | .nested a =>
       lambdaTelescope a fun locals n => do
       let .const ind lvls := n.getAppFn | throwError "not a nested application"
-      let some (.inductInfo info) := (← getEnv).find? ind | throwError "not an inductive"
-      let ctor := info.ctors[ci]!
+      let some ctors ← writtenCtors? ind | throwError "not an inductive"
+      let ctor := ctors[ci]!
       let cty ← instantiateForall ((← getConstInfo ctor).instantiateTypeLevelParams lvls) n.getAppArgs
       -- the locals are the copy's fields before the container's own, as a field
       -- an index is read off is: explicit, with its hypothesis
@@ -1111,6 +1141,9 @@ private def matchingAtIndex (r : Run) (m : Member) (params : Array Expr) (ty : E
       (ctorIdxOf res).anyM fun a => isComputedIndex fields a
     if computed then
       for c in cs do
+        -- and one that concludes there is asked nothing: `n + m = n' + m'` stops Lean's too
+        if ← elabCtor m params c fun fields res =>
+            (ctorIdxOf res).anyM fun a => isComputedIndex fields a then continue
         let env := (← getEnv)
         setEnv saved
         let one := ctors.filter fun k => k.name == at_ ++ c[3].getId
@@ -1447,8 +1480,8 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
   -- that block has it, as the kernel takes it: `FamForest X` brings `FamRose X` first
   let withSiblings (a : Expr) : TermElabM (Array Expr) := lambdaTelescope a fun ls n => do
     let .const ind lvls := n.getAppFn | return #[a]
-    let some (.inductInfo info) := (← getEnv).find? ind | return #[a]
-    info.all.toArray.mapM fun j => mkLambdaFVars ls (mkAppN (.const j lvls) n.getAppArgs)
+    let some all ← writtenSiblings? ind | return #[a]
+    all.mapM fun j => mkLambdaFVars ls (mkAppN (.const j lvls) n.getAppArgs)
   -- the targets: data members, nested applications in the order met, `Prop` members
   let mut nested : Array Expr := #[]
   for k in data ++ props do
@@ -1461,8 +1494,9 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
     i := i + 1
     let found ← lambdaTelescope a fun _ n => do
       let .const ind lvls := n.getAppFn | return #[]
-      let some (.inductInfo info) := (← getEnv).find? ind | return #[]
-      info.ctors.toArray.flatMapM fun ctor => do
+      -- as the writer has them: a lowered `Prop` member's shadow has shadows for its fields
+      let some ctors ← writtenCtors? ind | return #[]
+      ctors.flatMapM fun ctor => do
         let cty ← instantiateForall ((← getConstInfo ctor).instantiateTypeLevelParams lvls) n.getAppArgs
         forallTelescope cty fun fields _ => nestedIn params fields
     for m in found do

@@ -2653,7 +2653,25 @@ private partial def internNested (names : Array Name) (root : Name) (bound : Arr
   -- nesting into one member of a mutual family specialises the whole family:
   -- the members mention each other, so a copy of one is useless without copies
   -- of the rest
-  let fam ← info.all.toArray.mapM getConstInfoInduct
+  -- ... where they do: a lowered block's shadows stand together for the kernel's sake and may
+  -- have nothing to do with each other, and the copy of one of those is a member the block never
+  -- reaches, with a recursion it would be asked for all the same
+  let fam ← do
+    let all ← info.all.toArray.mapM getConstInfoInduct
+    match info.name with
+    | .str _ "_shadow" =>
+      let mut reached := #[info.name]
+      let mut i := 0
+      while h : i < reached.size do
+        let ci ← getConstInfoInduct reached[i]
+        i := i + 1
+        for c in ci.ctors do
+          let cty := (← getConstInfoCtor c).type
+          for sib in info.all do
+            if !reached.contains sib && (cty.find? (·.isConstOf sib)).isSome then
+              reached := reached.push sib
+      pure (all.filter (reached.contains ·.name))
+    | _ => pure all
   for fi in fam do
     let name := root ++ Name.mkSimple s!"nested_{shortName fi.name}_{(← get).size + 1}"
     modify (·.push { key := stripLevels names (mkAppN (.const fi.name lvls) params)
@@ -2942,6 +2960,8 @@ structure Copy where
   app     : Expr
   /-- How many constructor fields `app` is abstracted over.  Usually none. -/
   numLocals : Nat := 0
+  /-- The writer's name for a constant of the original, where `indName` is what stands behind it. -/
+  publicOf : Name → Name := id
   deriving Inhabited
 
 /-- The original this copy stands for, at the locals `ls`. -/
@@ -2964,7 +2984,9 @@ def Copy.argsOf? (cp : Copy) (e : Expr) : MetaM (Option (Array Expr)) := do
   -- beta-normal form
   let e := e.headBeta
   let some hd := e.getAppFn.constName? | return none
-  unless hd == cp.indName do return none
+  -- the original may be written by a reducible name, as a lowered block's `Prop` member is
+  let e ← if hd == cp.indName then pure e else whnfR e
+  unless e.getAppFn.constName? == some cp.indName do return none
   let args := e.getAppArgs
   let s ← saveState
   let (ls, _, _) ← forallMetaBoundedTelescope (← inferType cp.app) cp.numLocals
@@ -3036,17 +3058,23 @@ def unCopyHead? (c : BridgeCtx) (hd : Name) (args : Array Expr) : MetaM (Option 
         return some (mkAppN (mkConst oc orig.getAppFn.constLevels!) (orig.getAppArgs ++ rest))
   return none
 
-/-- `e` with every copy, and every copy's constructor, put back as the original. -/
-partial def unCopy (c : BridgeCtx) (e : Expr) : MetaM Expr :=
+/-- `e` with every copy, and every copy's constructor, put back as the original, under the names
+the writer has for it. -/
+partial def unCopy (c : BridgeCtx) (e : Expr) : MetaM Expr := do
+  let out ← unCopyRaw c e
+  publicize out
+where
+  /-- The rewriting, without the names. -/
+  unCopyRaw (c : BridgeCtx) (e : Expr) : MetaM Expr :=
   Lean.Core.transform e (pre := fun e => do
     match e with
     | .app .. =>
       -- the head is read before it is rewritten: a copy's constructor is found
       -- under the copy's name, and `unCopyHead?` is what puts the original back
-      let args ← e.getAppArgs.mapM c.unCopy
+      let args ← e.getAppArgs.mapM (unCopyRaw c)
       if let some hd := e.getAppFn.constName? then
         if let some r ← c.unCopyHead? hd args then return .done r
-      return .done (mkAppN (← c.unCopy e.getAppFn) args)
+      return .done (mkAppN (← unCopyRaw c e.getAppFn) args)
     | .const n _ => return .done ((← c.unCopyHead? n #[]).getD e)
     | _ => return .continue)
 
@@ -3427,7 +3455,7 @@ The original's constructor that `n`, a constructor of the copy, is a copy of,
 applied to `vals`, the copy's constructor's own arguments. -/
 def Copy.origCtor (c : Copy) (n : Name) (vals : Array Expr) : Expr :=
   let orig := c.orig vals
-  mkAppN (mkConst (reroot c.name c.indName n) orig.getAppFn.constLevels!)
+  mkAppN (mkConst (c.publicOf (reroot c.name c.indName n)) orig.getAppFn.constLevels!)
     (orig.getAppArgs ++ vals.extract c.numLocals vals.size)
 
 namespace BridgeCtx
@@ -7066,6 +7094,8 @@ def emit (p : Plan) : TermElabM Unit := do
   -- 8. the bridge back to the originals
   unless p.copies.isEmpty do
     let built ← forallBoundedTelescope b.members[dIdxs[0]!]!.type b.numParams fun ps _ => do
+      let env ← getEnv
+      let publicOf (n : Name) : Name := (publicName? env n).getD n
       let copies : Array Copy := p.copies.filterMap fun (n, e) => do
         let idx ← b.memberIdx? n
         -- what is left of the lambda after the block's parameters are supplied is
@@ -7073,7 +7103,12 @@ def emit (p : Plan) : TermElabM Unit := do
         let app := e.beta ps
         let numLocals := numHeadLams app
         let indName ← (peelLams numLocals app).getAppFn.constName?
-        some { idx, name := n, indName, app, numLocals }
+        -- what is stated of it is stated as the writer has it: a lowered block's member by its
+        -- own name, which is reducible and so the same to everything below
+        let app := app.replace fun
+          | .const k us => if k == indName then some (.const (publicOf k) us) else none
+          | _ => none
+        some { idx, name := n, indName, app, numLocals, publicOf }
       let c : BridgeCtx := { b, ps, copies, copyRecs := copies.map (recName ·.idx) }
       -- the round trip is wanted exactly where a constructor of the writer's own
       -- has a copy-typed field, which is where the recursor has to transport
@@ -7978,7 +8013,7 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       go false
 
 /-- Elaborate a *nested* inductive whose denesting is one the kernel refuses. -/
-def elabNestedInductive (elems : Array Syntax) (requireBridge := false)
+def elabNestedInductive (elems : Array Syntax) (requireBridge := false) (onlyOverOriginals := false)
     (requireDeriving := true) : CommandElabM Unit := do
   let views ← elemViews elems
   -- one `runTermElabM`, as in `elabInductionInductive`: the plan is built with
@@ -7997,7 +8032,40 @@ def elabNestedInductive (elems : Array Syntax) (requireBridge := false)
       -- a copy whose lambda goes past the block's parameters stands for a
       -- family, one member per value of a field of the constructor it sat in
       let atLocal := r.copies.any fun (_, e) => numHeadLams e > r.numParams
-      unless r.arities.any (mentionsNames r.names ·) || atLocal do
+      -- a copy lowering cannot hand the kernel as it was written, as it can `List X`, is one the
+      -- writer would read where the bridge states it over the original: a lowered block's member
+      -- (`Box X`), or a type landing in another universe than what it nests (`Xbox (Nonempty X)`)
+      -- And only where the block comes back round to it: `WFTree B` beside a `B` that names no
+      -- other member is the real `WFTree` at a type that exists by then
+      let (copyProp, copyLvl) ← memberLevels r.names r.arities
+      let names (i j : Nat) : Bool :=
+        mentionsNames #[r.names[j]!] r.arities[i]! ||
+          (r.ctorTypes[i]!.any (mentionsNames #[r.names[j]!] ·))
+      let reachFrom (i : Nat) : Array Nat := Id.run do
+        let mut seen := #[i]
+        let mut todo := #[i]
+        while !todo.isEmpty do
+          let x := todo.back!
+          todo := todo.pop
+          for y in *...r.names.size do
+            if !seen.contains y && names x y then
+              seen := seen.push y
+              todo := todo.push y
+        return seen
+      let dataCopy := requireBridge && (r.copies.any fun (n, e) =>
+        let throughLowered := (e.find? fun x => match x with
+          | .const (.str _ "_ind") _ => true
+          | _ => false).isSome
+        match r.names.idxOf? n with
+        | some k =>
+          let over := (Array.range r.names.size).filter fun j =>
+            j != k && !(r.copies.any (·.1 == r.names[j]!)) && mentionsNames #[r.names[j]!] e
+          let circular := over.any fun j => (reachFrom j).contains k
+          let lands := over.any fun j =>
+            !copyProp[j]! && copyLvl[j]!.normalize != copyLvl[k]!.normalize
+          circular && (throughLowered || lands) && !(copyProp[k]?.getD true)
+        | none => false)
+      unless (!onlyOverOriginals && (r.arities.any (mentionsNames r.names ·) || atLocal)) || dataCopy do
         throwError "Denesting this inductive neither makes it induction-inductive \
           nor needs a constructor's field as an index"
       prepareCore r
