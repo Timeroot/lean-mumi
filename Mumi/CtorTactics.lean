@@ -230,7 +230,19 @@ private def indexedAtEncoded? (x : Expr) : MetaM (Option InductiveVal) := do
   let some (.inductInfo ii) := (← getEnv).find? i | return none
   let env ← getEnv
   let idxs := ty.getAppArgs.extract ii.numParams ty.getAppNumArgs
-  return if idxs.any (mentionsEncodedCtor env) then some ii else none
+  if idxs.any (mentionsEncodedCtor env) then return some ii
+  -- at variables alone there is nothing to solve but substitutions.  At anything else, what a
+  -- constructor concludes is compared with it, and that may be where such a constructor is
+  let plain := idxs.all (·.isFVar) && (idxs.toList.eraseDups.length == idxs.size)
+  if plain then return none
+  -- a member's own name is another matter, however it unfolds: it has its own case split
+  let .const written _ := (← instantiateMVars (← inferType x)).getAppFn | return none
+  unless written == i || written ++ `_ind == i do return none
+  let concludes ← ii.ctors.anyM fun c => do
+    let ci ← getConstInfo c
+    forallTelescope ci.type fun _ r =>
+      return (r.getAppArgs.extract ii.numParams r.getAppNumArgs).any (mentionsEncodedCtor env)
+  return if concludes then some ii else none
 
 /-- `cases` on `major`, whose index is a constructor of an encoded member: each of its
 inductive's constructors with the name it has, and what is left once its indices are
@@ -632,7 +644,8 @@ private def propMember? (x : Expr) : MetaM (Option Split) := do
   unless ← isProp ty do return none
   let some casesOn := env.find? (m ++ `casesOn) | return none
   let names := casesOn.type.getForallBinderNames
-  let some tAt := names.idxOf? `t | return none
+  -- a `Prop` member's major may be `h`, where its recursion is the kernel's
+  let some tAt := (names.idxOf? `t).orElse fun _ => names.idxOf? `h | return none
   let ctors := (names.drop (tAt + 1)).map (m ++ ·)
   unless ctors.all env.contains do return none
   -- a constructor that is a pattern already is Lean's to compile

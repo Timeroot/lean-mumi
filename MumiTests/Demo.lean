@@ -1647,4 +1647,33 @@ example (a b) : El (.pi a b) = El a := rfl
 
 end LowerCtorEqs
 
+/-! ## An index that is only variables, and a case that concludes at a constructor
+
+`At (.id Γ)` has no constructor of `Ctx` in it, but `At.ext` concludes at `Ctx.snoc`, and that
+is what `cases` has to compare with `Γ`. -/
+
+namespace RepeatedAt
+
+set_option mumi.separate false in
+mutual
+inductive Ctx : Type where
+  | nil : Ctx
+  | snoc : (Γ : Ctx) → Ty Γ → Ctx
+inductive Ty : Ctx → Type where
+  | base : (Γ : Ctx) → Ty Γ
+inductive Sb : Ctx → Ctx → Type where
+  | id : (Γ : Ctx) → Sb Γ Γ
+  | ext : (Γ Δ : Ctx) → (A : Ty Γ) → (B : Ty Δ) → Sb Γ Δ → Sb (Ctx.snoc Γ A) (Ctx.snoc Δ B)
+end
+
+inductive At : {a b : Ctx} → Sb a b → Prop where
+  | id (Γ) : At (.id Γ)
+  | ext (Γ Δ A B s) : At (.ext Γ Δ A B s)
+
+example (Γ) (h : At (.id Γ)) : True := by cases h; trivial
+example (Γ Δ A B s) (h : At (.ext Γ Δ A B s)) : True := by cases h; trivial
+example (Γ) (h : At (.id Γ)) : True := match h with | .id _ => trivial
+
+end RepeatedAt
+
 end MumiTests.Demo

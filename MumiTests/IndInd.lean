@@ -2887,7 +2887,7 @@ and the block is refused only when two of them are.
 namespace RepeatedIdx
 set_option mumi.separate false
 
-mumi_spec (xfail := [matching])
+mumi_spec
 mutual
 inductive Ctx : Type where
   | nil  : Ctx
@@ -4911,7 +4911,7 @@ mumi_spec
 inductive GWrap (α : Type) : Type where
   | mk : α → GWrap α
 
-mumi_spec (xfail := [rec, recOn, casesOn, matching])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive GVec : Type where
   | nil : GVec
@@ -5264,7 +5264,7 @@ copy, and the recursion filling in the `List` copy's step has a call at its own
 fields and none at what is inside them.  So `XTree.rec` recurses over the data
 and `XOk.rec` is the split one. -/
 
-mumi_spec (xfail := [gap, matching])
+mumi_spec (xfail := [gap])
 mutual
 inductive XTree : Type where
   | node : (cs : List (XTree × Nat)) → XOk cs → XTree
@@ -5483,7 +5483,7 @@ kernel refuses either -- so the proposition keeps `Nat → T` as its index and
 nothing is added to the block.  What the data recursion gains is the hypothesis
 at every argument the function could be applied to. -/
 
-mumi_spec (xfail := [rec, recOn, casesOn, matching])
+mumi_spec (xfail := [rec, recOn, casesOn])
 mutual
 inductive T : Type where
   | node : (f : Nat → T) → Ok f → T
