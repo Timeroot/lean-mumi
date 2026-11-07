@@ -5744,22 +5744,17 @@ end PeelNotForProofs
 
 namespace PeelDeclined
 
-/-! And what the peel offers to do and cannot.  `Deep` nests *itself*, under a
-proposition-valued container, and a peeled member is declared straight at the
-kernel, which does not denest.  The block is read a second time with no peel in
-it, and comes out with every member present under the name it was written with.
-`set_option trace.Mumi.indind true` is where the second reading says so.
-
-`Deep` still has no recursor -- `u` is the field that started all this, and a
-`Prop` constructor carries no well-formedness for a data field its conclusion
-does not reach -- but that is `Deep`'s own loss.  `Ok` does not recurse into it,
-so `Ok` is asked again on its own and keeps the recursor it can have. -/
+/-! What the peel cannot do as it stands.  `Deep` nests *itself*, under a
+proposition-valued container, at a field of its constructor, and the kernel refuses
+that of a member declared straight at it.  `Deep` is a declaration of its own instead,
+right after what stays, over the real `T`, as the writer could have written it; the
+block's recursion runs its recursion at motives displaying what `T`'s computes. -/
 
 mumi_spec
 inductive Wrap (p : Prop) : Prop where
   | mk : p → Wrap p
 
-mumi_spec (simp := [T.casesOn_node]) (xfail := [rec, recOn, casesOn, matching])
+mumi_spec (simp := [T.casesOn_node, T.rec_node, T.rec_1_cons])
 mutual
 inductive T : Type where
   | node : (cs : List T) → Ok cs → T

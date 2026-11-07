@@ -6928,8 +6928,14 @@ def emitBRecOn (p : Plan) (preRecUnivs : Nat) (b : Block) (i : Nat) : MetaM Unit
           (← mkForallFVars args (eqOf t))
           (← mkLambdaFVars args (mkApp eqVal t))
 
+/-- What of the block being elaborated is to be declared after it, as a command of its own (see
+`Mumi.Displayed.joinOverLate`): the command, and its members' places in the block as written. -/
+initialize deferredMembers : IO.Ref (Option (Syntax × Array Name × Array Name × Scope)) ← IO.mkRef none
+
 /-- Emit the whole encoding for a prepared block. -/
 def emit (p : Plan) : TermElabM Unit := do
+  let deferred ← deferredMembers.get
+  deferredMembers.set none
   let docCtx := (← getLCtx, ← getLocalInstances)
   let dIdxs := p.block.dataIdxs
   let copyNames := p.copies.map (·.1)
@@ -7061,7 +7067,7 @@ def emit (p : Plan) : TermElabM Unit := do
   -- a proposition that left is a real inductive nothing here mentions, so what
   -- stays is built as it would be and put under its name afterwards, with the motive
   -- of what left among its own (`addWidenedRecs`)
-  let widenProps := !p.peeled.isEmpty && !widen
+  let widenProps := (!p.peeled.isEmpty || deferred.isSome) && !widen
   let recName (i : Nat) : Name :=
     if widen || widenProps then Name.mkStr b.members[i]!.name "_core_rec" else pubRecName i
   -- the recursor over the whole block states a `Prop` member's motive at the
@@ -7474,6 +7480,34 @@ def emit (p : Plan) : TermElabM Unit := do
   -- 9. the members that left the block rather than being erased with it, as the
   -- ordinary inductive types they already were.  After the bridge, because what
   -- they are stated over is the block the writer reads
+  if let some (cmd, written, lateNames, scope) := deferred then
+    lateProposition.set true
+    try Lean.liftCommandElabM do
+      -- the scope it was written in, which a term elaboration keeps only part of
+      modify fun s => { s with scopes := scope :: s.scopes.drop 1 }
+      elabCommand cmd
+    finally lateProposition.set false
+    let mut cores : Array (Name × Name) := #[]
+    for i in *...b.size do
+      if copyNames.contains b.members[i]!.name then continue
+      if (← getEnv).contains (recName i) then cores := cores.push (recName i, pubRecName i)
+    let first := b.members[0]!.name
+    let mut k := 1
+    while (← getEnv).contains (Name.mkStr first s!"_core_rec_{k}") do
+      cores := cores.push (Name.mkStr first s!"_core_rec_{k}", Name.mkStr written[0]! s!"rec_{k}")
+      k := k + 1
+    let env ← getEnv
+    let ctorsOf (n : Name) : Array Name :=
+      match b.members.find? (·.name == n) with
+      | some m => m.ctors.map (·.name)
+      | none =>
+        match env.find? (MultiuniverseInductive.aliasIndName n) with
+        | some (.inductInfo ii) => ii.ctors.toArray.map fun c => Name.str n c.getString!
+        | _ => #[]
+    Mumi.Displayed.joinOverLate b.numParams written cores lateNames ctorsOf copyNames
+    lateProposition.set true
+    try publishAliased b.numParams lateNames
+    finally lateProposition.set false
   unless p.peeled.isEmpty do
     if widenProps then
       let names := p.peeled.map (·.name)
@@ -8186,7 +8220,7 @@ def elemViews (elems : Array Syntax) : CommandElabM (Array InductiveView) := do
   return elabs.map (·.view)
 
 /-- Elaborate an induction-inductive block by erasing its proof fields. -/
-def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
+partial def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
     (requireDeriving := true) : CommandElabM Unit := do
   let views ← elemViews elems
   if requireIndInd && !viewsAreInductionInductive views then
@@ -8198,6 +8232,8 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
   -- and, when there is no reason left to be here, the groups to hand back to
   -- Lean instead, in the order it has to read them
   let split ← IO.mkRef (none : Option (Array (Array Nat)))
+  -- and the propositions to declare after the block
+  let later ← IO.mkRef (#[] : Array Nat)
   let go (peel : Bool) : CommandElabM Unit := do
     runTermElabM fun vars => do
       emit (← withRaw views vars fun r => do
@@ -8210,6 +8246,21 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
             throwError "this block is Lean's to read"
         let r ← if peel then markPeeled r (free := true) else pure r
         peeled.set (!r.peeled.isEmpty)
+        -- a proposition that wants out and nests itself at a field of its constructor: the kernel
+        -- will not take it as it is, so it goes as a declaration of its own
+        let late ← r.peeled.filterM fun i => do
+          unless (← forallTelescope r.arities[i]! fun _ s => pure s.isProp) do return false
+          r.ctorTypes[i]!.anyM fun c => forallTelescope c fun xs _ => do
+            xs.anyM fun x => do
+              forallTelescope (← inferType x) fun _ t => do
+                let .const n _ := t.getAppFn | return false
+                if r.names.contains n then return false
+                unless (← getEnv).find? n |>.any (·.isInductive) do return false
+                return t.getAppArgs.any fun a =>
+                  mentionsNames r.names a && (a.find? fun e => xs.contains e).isSome
+        if !late.isEmpty && late.size < views.size then
+          later.set late
+          throwError "part of this block is declared after it"
         let env0 ← getEnv
         let denested ← try pure (some (← denestRaw r)) catch ex => do
           -- the scan throws before anything is stubbed, but a later step might not
@@ -8239,6 +8290,24 @@ def elabInductionInductive (elems : Array Syntax) (requireIndInd := false)
       set s
       go false
   catch ex =>
+    let late ← later.get
+    if !late.isEmpty then
+      set s
+      let names := views.map (·.declName)
+      let keep := (Array.range elems.size).filter (!late.contains ·)
+      let cmd := if h : late.size = 1 then elems[late[0]]! else
+        mkNode ``Lean.Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode (late.map (elems[·]!)), mkAtom "end", mkNullNode]
+      deferredMembers.set (some (cmd, names, late.map (names[·]!), ← getScope))
+      -- with `Prop` members that stay, the block is one still
+      try
+        elabInductionInductive (keep.map (elems[·]!)) (requireDeriving := requireDeriving)
+        return
+      catch why =>
+        deferredMembers.set none
+        set s
+        trace[Mumi.indind] "declaring part of the block after it: {why.toMessageData}"
+        go false
+        return
     -- a split has to leave every group smaller than the block.  What is not gets
     -- elaborated as the block it already is, under `X._ind`, which would peel the same
     -- way and split again, with nothing to stop it

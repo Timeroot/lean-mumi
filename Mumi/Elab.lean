@@ -299,9 +299,10 @@ private def elabHeterogeneousInductiveViews (requireHeterogeneous : Bool) (vars 
           let env ← getEnv
           if written.any (env.contains <| MultiuniverseInductive.aliasIndName ·) then
             Mumi.publishOverOriginals written
-            if (← getEnv).contains (Mumi.overShadowName (written[0]! ++ `rec)) then
+            if !(← Mumi.lateProposition.get) && (← getEnv).contains (Mumi.overShadowName (written[0]! ++ `rec)) then
               Mumi.Displayed.addRecsOverShadows context.numParams written
-            Mumi.publishAliased context.numParams written
+            unless ← Mumi.lateProposition.get do
+              Mumi.publishAliased context.numParams written
           -- a block of nothing but propositions has no aliases, and is owed the same
           -- eliminators: its members are their shadows
           else if written.any fun w => env.contains (MultiuniverseInductive.shadowName w)

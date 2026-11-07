@@ -916,6 +916,10 @@ def dataBehindShadow? (ty : Expr) : MetaM (Option Expr) := do
   let .forallE _ d _ _ := t | return none
   return some d
 
+/-- While a proposition is declared after the block it is stated over: its recursion is not yet the
+public one, which `Mumi.Displayed.joinOverLate` builds. -/
+initialize lateProposition : IO.Ref Bool ← IO.mkRef false
+
 /-- Where a recursion is restated with the shadow of a nesting left in, for
 `Mumi.Displayed.addRecsOverShadows`. -/
 def overShadowName (n : Name) : Name := n.appendAfter "_over_shadow"
@@ -1089,7 +1093,8 @@ partial def publishOverOriginals (written : Array Name) : MetaM Unit := do
     let toO ← getConstInfo (c ++ `toOrig)
     forallTelescope toO.type fun _ orig => do
       return (← dataBehindShadow? (← instantiateMVars orig)).isSome
-  let dst (n : Name) : Name := if overShadow then overShadowName n else n
+  let late ← lateProposition.get
+  let dst (n : Name) : Name := if overShadow || late then overShadowName n else n
   for m in written do
     if env.contains (m ++ `mutualRec) && !env.contains (m ++ `rec) then
       restateOverOriginals held lps (m ++ `mutualRec) (dst (m ++ `rec))
@@ -1159,10 +1164,12 @@ def publishAliased (numParams : Nat) (members : Array Name) : TermElabM Unit := 
           restate (ind ++ `casesOn) (mem ++ `casesOn) (motive?.map (numParams, ·)) (pinElim := largeCases)
       -- a constructor at the originals rather than the kernel's is not the
       -- kernel's `casesOn`'s to state, and the case split is cut out of `X.rec`
-      if !(← getEnv).contains (mem ++ `casesOn) && (← getEnv).contains (mem ++ `rec) then
-        let elim := (← getConstInfo (mem ++ `rec)).levelParams.take 1
+      -- (or what stands for it while a declaration waits to join its block)
+      let recNow := if ← lateProposition.get then overShadowName (mem ++ `rec) else mem ++ `rec
+      if !(← getEnv).contains (mem ++ `casesOn) && (← getEnv).contains recNow then
+        let elim := (← getConstInfo recNow).levelParams.take 1
         discard <| attempt? `Mumi m!"no `casesOn` for `{mem}`" do
-          addSoloElim numParams elim.toArray false (mem ++ `rec) (mem ++ `casesD)
+          addSoloElim numParams elim.toArray false recNow (mem ++ `casesD)
             (forCases := true) (evenIfWeaker := true)
           addMajorFirst numParams mem (mem ++ `casesD) (mem ++ `_casesOn_major)
           restate (mem ++ `_casesOn_major) (mem ++ `casesOn) (motive?.map (numParams, ·))
