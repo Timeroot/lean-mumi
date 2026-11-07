@@ -210,11 +210,22 @@ structure Block where
   public ones being the joint recursion over the data and the proofs that
   `Mumi.Displayed` builds out of them. -/
   internal : Bool := false
+  /-- Whether a graph stays at the universe its carrier was written at: with no decoder, there is
+  no semantics that wants one above it. -/
+  atWritten : Bool := false
   deriving Inhabited
+
+/-- The universe a member's graph lands in. -/
+def Block.graphLevel (b : Block) (m : Member) : String :=
+  if b.atWritten then m.level else m.level ++ "+1"
 
 /-- The eliminator prefix the block being elaborated is given: `_nested_` while
 a denesting is. -/
 initialize nestedPrefix : IO.Ref String ← IO.mkRef ""
+
+/-- Whether a block of inductives alone is this encoding's too: one whose well-formedness has to be
+one `mutual` with its proofs, which only this encoding has it as (`Mumi.IndInd`'s routing says when). -/
+initialize carriersHere : IO.Ref Bool ← IO.mkRef false
 
 /-- While a written block is elaborated a component at a time: the members of
 the components so far and the number of parameters, whose one recursion is
@@ -1258,8 +1269,8 @@ private def emitSemantics (b : Block) (order : Array (Sum Nat Nat)) : CommandEla
         let pairs := (d.idx.zip m.indices).map fun (x, y) => (x.name, mkIdent y.name)
         let result := subst d.result pairs
         fields := fields.push ("  " ++ outField j ++ " : " ++ (← semText b (src.push { name := d.major, sem := "", graph := "" }) result))
-    if fields.isEmpty then fields := #["  _unit : PUnit.{" ++ m.level ++ "+1}"]
-    emit ("structure " ++ semName m ++ " " ++ ps ++ " " ++ join arity ++ " : Type (" ++ m.level ++ "+1) where\n" ++ String.intercalate "\n" fields.toList)
+    if fields.isEmpty then fields := #["  _unit : PUnit.{" ++ b.graphLevel m ++ "+1}"]
+    emit ("structure " ++ semName m ++ " " ++ ps ++ " " ++ join arity ++ " : Type (" ++ b.graphLevel m ++ ") where\n" ++ String.intercalate "\n" fields.toList)
 
 /-- The fields of a constructor as the graph constructor takes them, and what
 the well-formedness constructor adds. -/
@@ -1312,7 +1323,7 @@ private def emitGraph (b : Block) : CommandElabM Unit := do
       let (sem, _, _) ← ctorPair b g.src #[] #[] #[] #[] #[] i ci
       cs := cs.push ("  | " ++ c.name.toString ++ " " ++ join g.fields ++ " : " ++ withParams b (graphName m) (idx ++ #[sem]))
     let arity := if arity.isEmpty then "" else String.intercalate " → " arity.toList ++ " → "
-    ds := ds.push ("inductive " ++ graphName m ++ " " ++ ps ++ " : " ++ arity ++ withParams b (semName m) (semIdxNames b i) ++ " → Type (" ++ m.level ++ "+1) where\n" ++ String.intercalate "\n" cs.toList)
+    ds := ds.push ("inductive " ++ graphName m ++ " " ++ ps ++ " : " ++ arity ++ withParams b (semName m) (semIdxNames b i) ++ " → Type (" ++ b.graphLevel m ++ ") where\n" ++ String.intercalate "\n" cs.toList)
   -- the block is induction-inductive whenever the written one was; keep the joint recursor
   emit ("set_option mumi.separate false in\nmutual\n" ++ String.intercalate "\n" ds.toList ++ "\nend")
 
@@ -1416,9 +1427,9 @@ private def emitPublic (b : Block) (order : Array (Sum Nat Nat)) : CommandElabM 
       if m.prop then
         emit (m.doc ++ "@[reducible] def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Prop := " ++ withAnonParams b (wfName m) ppi)
       else if b.wf then
-        emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := { _ir_a : Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi ++ " // " ++ withAnonParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
+        emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ b.graphLevel m ++ ") := { _ir_a : Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi ++ " // " ++ withAnonParams b (wfName m) (ppi ++ #["_ir_a.1", "_ir_a.2"]) ++ " }")
       else
-        emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ m.level ++ "+1) := Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi)
+        emit (m.doc ++ "def " ++ m.name.toString ++ " " ++ (← carrierParamsDecl b) ++ " " ++ (← pubArity b i) ++ " : Type (" ++ b.graphLevel m ++ ") := Mumi.IR.Graph.Carrier " ++ withAnonParams b (graphName m) ppi)
     | .inr j =>
       let d := b.decoders[j]!
       let idx ← d.idx.mapM fieldDecl
@@ -3421,14 +3432,16 @@ private def internalFor (b : Block) (deferred : Bool) : Bool :=
   b.elimPrefix.isEmpty &&
     (deferred || b.members.any (·.prop) || levels.any (· != levels[0]!))
 
+/-- A datum of a `Prop` constructor that its conclusion does not name, which is reached only by the
+induction over everything. -/
+private def unnamedDatum (b : Block) : Bool :=
+  b.members.any fun m => m.prop && m.ctors.any fun c => c.fields.any fun f =>
+    (dataTarget b f).isSome && !c.result.any (mentions · #[f.name])
+
 /-- The block's public eliminators, out of the encoding's own. -/
 private def publishJoint (b : Block) : CommandElabM Unit := do
   let ns ← getCurrNamespace
-  -- a datum of a `Prop` constructor that its conclusion does not name is reached
-  -- only by the induction over everything
-  let unnamed := b.members.any fun m => m.prop && m.ctors.any fun c => c.fields.any fun f =>
-    (dataTarget b f).isSome && !c.result.any (mentions · #[f.name])
-  if unnamed then
+  if unnamedDatum b then
     let saved ← get
     try
       if b.lower then emitLowerAllRec b else emitAllRec b
@@ -3511,7 +3524,9 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   elimUniverse.set {}
   let order ← declarationOrder b
   let b := if internalFor b (← jointMembers.get).isSome then { b with internal := true, elimPrefix := "_ir_elim_" } else b
-  if mumi.mahlo.get (← getOptions) then
+  -- with nothing to decode, the written universe is where the graph is, and no reflection is asked for
+  let b := { b with atWritten := (← carriersHere.get) && b.decoders.isEmpty }
+  if mumi.mahlo.get (← getOptions) && !b.atWritten then
     elaborateLower { b with lower := true } order
     return
   emit "universe _ir_elim"
@@ -3530,6 +3545,10 @@ def elaborate (elems : Array Syntax) : CommandElabM Unit := do
   emitEquations b
   emitSolo b
   if b.internal then publishJoint b
+  -- a denesting's is built over the originals afterwards, and wants the same induction
+  else if b.elimPrefix == "_nested_" && b.wf && unnamedDatum b then
+    try emitAllRec b
+    catch e => trace[Mumi] "no induction over everything: {e.toMessageData}"
 
 
 /-! ## Universes written as `Sort` -/
@@ -4033,7 +4052,7 @@ private def publishNestedJoint (b : Block) (dn : Denested) (ns : Name) : Command
           source := if m.prop && envNow.contains small then small else ns ++ m.name ++ `_nested_rec
           out := ns ++ m.name ++ `_nested_joint
           minorNames := m.ctors.map fun c => Name.mkSimple (publicCtor m c).getString! }
-      unless ← Mumi.Displayed.buildJoint { numParams := np, members := raw, internal := "" } do
+      unless ← Mumi.Displayed.buildJoint { numParams := np, members := raw, internal := "_nested_" } do
         throwError "no recursion over the copies"
       -- its statements over the originals
       let copies ← dn.nestings.mapM fun nest => do
@@ -4851,7 +4870,8 @@ where
     let isInductive (e : Syntax) := e[1].isOfKind ``Parser.Command.«inductive»
     let inductives := comp.filter isInductive
     let props ← inductives.filterM isPropInductive
-    if inductives.isEmpty || inductives.size == comp.size || props.size == inductives.size then
+    let here := (← Family.carriersHere.get) && props.size != inductives.size && !inductives.isEmpty
+    if !here && (inductives.isEmpty || inductives.size == comp.size || props.size == inductives.size) then
       -- Lean's own: a block of definitions, or of inductives, with `mutual` taking several
       if h : comp.size = 1 then elabCommand comp[0]
       else elabCommand (mkNode ``Parser.Command.«mutual» #[mkAtom "mutual", mkNullNode comp, mkAtom "end", mkNullNode])
@@ -4861,7 +4881,7 @@ where
       let datas ← inductives.filterM fun e => return !(← isPropInductive e)
       let levels ← datas.mapM levelOf
       let several := levels.any (· != levels.getD 0 "")
-      if (← Family.isIndexed comp) || several || joint || !(← Family.nestedPrefix.get).isEmpty then
+      if here || (← Family.isIndexed comp) || several || joint || !(← Family.nestedPrefix.get).isEmpty then
         Family.elaborate comp
       else elaborate comp
 

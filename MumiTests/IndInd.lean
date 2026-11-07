@@ -5256,14 +5256,11 @@ namespace PairNest
 nests through `Prod` and then through `List`, and the copy of `Prod` is a
 one-constructor type carrying a `Nat` that has nothing to do with the block.
 
-This is the one block in the section whose recursion over the whole of it leaves
-the proposition out, and the reason is the two layers: `XOk.cons` is indexed at
-`(t, n) :: ts`, a constructor of the `List` copy at a constructor of the `Prod`
-copy, and the recursion filling in the `List` copy's step has a call at its own
-fields and none at what is inside them.  So `XTree.rec` recurses over the data
-and `XOk.rec` is the split one. -/
+`XOk.cons` is indexed at `(t, n) :: ts`, a constructor of the `List` copy at a constructor
+of the `Prod` copy, so the value its motive displays is a minor premise of each: `XOk` comes
+after both among the motives, and `t`'s value is read two levels into the index. -/
 
-mumi_spec (xfail := [gap])
+mumi_spec (simp := [XTree.rec_node, XTree.rec_1_cons, XTree.casesOn_node])
 mutual
 inductive XTree : Type where
   | node : (cs : List (XTree × Nat)) → XOk cs → XTree
@@ -5767,6 +5764,93 @@ inductive Deep : T → Prop where
 end
 
 end PeelDeclined
+
+namespace EmptyByProofs
+
+/-! A proof that carries a datum nothing vouches for, and nothing to stand in for it.  `P.yes` takes
+a `T`, and a `T` is only ever had from a `P`, so there is none.  The erasure cannot say so: its
+well-formedness is a function of the data, so a `P` there holds of any pre-term at all, and `T` would
+have an element it should not.  This block goes through the encoding that has the well-formedness and
+the proofs in one `mutual`, at the universe it was written at, there being nothing to decode. -/
+
+mumi_spec
+mutual
+inductive T : Type where
+  | mk (p : P) : T
+  | nd (t : T) (r : R t) : T
+inductive P : Prop where
+  | yes (t : T) : P
+inductive R : T → Prop where
+  | r (t : T) : R t
+end
+
+theorem T.empty (t : T) : False :=
+  T.rec (motive_1 := fun _ => False) (motive_2 := fun _ => False) (motive_3 := fun _ _ _ => False)
+    (fun _ ih => ih) (fun _ _ ih _ => ih) (fun _ ih => ih) (fun _ ih => ih) t
+
+/-- info: 'EmptyByProofs.T.empty' does not depend on any axioms -/
+#guard_msgs in
+#print axioms T.empty
+
+/-- info: EmptyByProofs.T : Type -/
+#guard_msgs in
+#check T
+
+end EmptyByProofs
+
+namespace EmptyNested
+
+/-! And with a nesting beside it. -/
+
+mumi_spec (simp := [T.rec_ls, T.casesOn_ls])
+mutual
+inductive T : Type where
+  | mk (p : P) : T
+  | ls (xs : List T) (t : T) (r : R t) : T
+inductive P : Prop where
+  | yes (t : T) : P
+inductive R : T → Prop where
+  | r (t : T) : R t
+end
+
+end EmptyNested
+
+namespace EmptyIndexedByNesting
+
+/-! What is still out of reach.  `R` is indexed by a nesting, which the encoding with the proofs in
+one `mutual` does not take, so this block stays with the erasure: `P` has no recursor, and a `T` could
+be had through the encoding that should not be there.  The writer's constructors cannot build one. -/
+
+mumi_spec (simp := [T.casesOn_ls]) (xfail := [rec, recOn, casesOn, matching])
+mutual
+inductive T : Type where
+  | mk (p : P) : T
+  | ls (xs : List T) (r : R xs) : T
+inductive P : Prop where
+  | yes (t : T) : P
+inductive R : List T → Prop where
+  | r (xs : List T) (p : P) : R xs
+end
+
+end EmptyIndexedByNesting
+
+namespace EmptyLowered
+
+/-! The same with no proposition indexed by the data, which is lowered, and there it was never a
+question. -/
+
+mumi_spec
+mutual
+inductive T : Type where
+  | mk (p : P) : T
+inductive P : Prop where
+  | yes (t : T) : P
+end
+
+theorem T.empty (t : T) : False :=
+  T.rec (motive_1 := fun _ => False) (motive_2 := fun _ => False) (fun _ ih => ih) (fun _ ih => ih) t
+
+end EmptyLowered
 
 namespace PeelLeavesLean
 

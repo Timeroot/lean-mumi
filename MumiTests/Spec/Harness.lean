@@ -252,7 +252,8 @@ initialize ctorTypes : IO.Ref (Std.HashMap (Name × Name) (Expr × Nat)) ← IO.
 /-- A constructor's fields and conclusion, elaborated once where the parameters
 (or some of them) are bound: the member's own further parameters, implicit,
 then its fields as written. -/
-private def elabCtor {α} (m : Member) (params : Array Expr) (c : Syntax) (k : Array Expr → Expr → TermElabM α) : TermElabM α := do
+private def elabCtor {α} (m : Member) (params : Array Expr) (c : Syntax) (k : Array Expr → Expr → TermElabM α)
+    (readThroughDefs := true) : TermElabM α := do
   let key := (m.name, c[3].getId)
   let (ty, n) ← match (← ctorTypes.get)[key]? with
     | some e => pure e
@@ -282,7 +283,24 @@ private def elabCtor {α} (m : Member) (params : Array Expr) (c : Syntax) (k : A
             return (← mkForallFVars fields res, fields.size)
       ctorTypes.modify (·.insert key e)
       pure e
-  forallBoundedTelescope ty n k
+  forallBoundedTelescope ty n fun fields res => do
+    unless readThroughDefs do return ← k fields res
+    -- a field at a `def` that unfolds to a nesting of the block, as `WFTree R` to
+    -- `{ t : Tree R // t.WF }`: Lean refuses these, so there is no native reading, and what there is
+    -- to recurse through is the inductive it unfolds to.  The constructor is stated as written
+    let mut lctx ← getLCtx
+    for f in fields do
+      let fty ← instantiateMVars (← inferType f)
+      let .const h _ := fty.getAppFn | continue
+      if m.block.contains h then continue
+      unless ((← getEnv).find? h).any (·.isDefinition) do continue
+      if (← getReducibilityStatus h) == .reducible then continue
+      let u ← whnfD fty
+      let .const i _ := u.getAppFn | continue
+      unless ((← getEnv).find? i).any (·.isInductive) do continue
+      unless (u.find? fun e => e.isConst && m.block.contains e.constName!).isSome do continue
+      lctx := lctx.modifyLocalDecl f.fvarId! (·.setType u)
+    withLCtx lctx (← getLocalInstances) (k fields res)
 
 /-- The inductive `i` is, or is a reducible name for: a lowered block's data member is `X._ind`
 behind `X`, and its `Prop` member `X._shadow` behind `X`. -/
@@ -1288,6 +1306,35 @@ that a `Prop` member follows the data targets its motive takes values of. -/
 private def targetOrder (members : Array Member) (tys params : Array Expr) (uniform : Nat) (nested : Array Expr) :
     TermElabM (Array Target) := do
   let written : Array Target := (Array.range members.size).map .member ++ nested.map .nested
+  -- a proposition follows the data whose constructors its own name as well: a value displayed at
+  -- `(t, n) :: ts` is a minor premise of each
+  -- `e` applies a constructor of `w`: of a nesting, at that nesting's own arguments
+  let namesCtorOf (e : Expr) (w : Target) : TermElabM Bool := do
+    match w with
+    | .member j =>
+      if members[j]!.prop then return false
+      let cs := members[j]!.decl[4].getArgs.map fun c => members[j]!.name ++ c[3].getId
+      return cs.any e.getUsedConstants.contains
+    | .nested a =>
+      lambdaTelescope a fun ls n => do
+        let .const ind _ := n.getAppFn | return false
+        let cs := (← writtenCtors? ind).getD #[]
+        let args := n.getAppArgs
+        return (e.find? fun s =>
+          match s.getAppFn with
+          | .const c _ =>
+            cs.contains c && s.getAppNumArgs ≥ args.size &&
+              (!ls.isEmpty || s.getAppArgs.extract 0 args.size == args)
+          | _ => false).isSome
+  let namedBy (k : Nat) : TermElabM (Array Nat) := do
+    let mut out := #[]
+    for c in members[k]!.decl[4].getArgs do
+      let e ← elabCtor members[k]! params c fun fs res => do
+        instantiateMVars (← mkForallFVars fs res)
+      for q in [:written.size] do
+        if ← namesCtorOf e written[q]! then
+          unless out.contains q do out := out.push q
+    return out
   let depsOf (t : Target) : TermElabM (Array Nat) := do
     let atIdxs (idx : Array Expr) : TermElabM (Array Nat) := do
       let mut out := #[]
@@ -1313,7 +1360,7 @@ private def targetOrder (members : Array Member) (tys params : Array Expr) (unif
           | .member j => !members[j]!.prop && ty.getAppFn.isConstOf members[j]!.name
           | .nested a => (nestedArgs? a ty).isSome
         if let some q := q? then out := out.push q
-      return out
+      return out ++ (← namedBy k)
   let deps ← written.mapM depsOf
   let mut order : Array Nat := #[]
   while order.size < written.size do
@@ -1425,7 +1472,7 @@ def specify (r : Run) (elems : Array Syntax) (sectionVars : Array Expr) (native 
   -- the constructors, as written
   for m in members do
     for c in m.decl[4].getArgs do
-      elabCtor m params c fun fields res => do
+      elabCtor m params c (readThroughDefs := false) fun fields res => do
         withInfos params (fun bi => if bi == .default then .implicit else bi) do
           discard <| checkConst r .ctors (m.name ++ c[3].getId) (← mkForallFVars params (← mkForallFVars fields res)) (innerNames := false)
             (levels := (← getConstInfo m.name).levelParams)

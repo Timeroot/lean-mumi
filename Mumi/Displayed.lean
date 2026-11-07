@@ -288,11 +288,21 @@ private def withSpec {α} (inp : Input) (k : Ctx → MetaM α) : MetaM α := do
       let ty ← instantiateMVars (← inferType i)
       let .const n _ := ty.getAppFn | return none
       return (inp.members.findIdx? (·.name == n)).filter (!inp.members[·]!.prop)
-  -- the members as written, a `Prop` one after the data its motive displays
+  -- the members as written, a `Prop` one after the data its motive displays, and after the data
+  -- whose constructors its own name: a value displayed at `(t, n) :: ts` is a minor premise of each
+  let namedData ← (Array.range inp.members.size).mapM fun k => do
+    if !inp.members[k]!.prop then return #[]
+    let mut out : Array Nat := #[]
+    for ctor in inp.members[k]!.ctors do
+      for u in (← getConstInfo ctor).type.getUsedConstants do
+        if let some (s, _) := ctorOf? inp u then
+          if !inp.members[s]!.prop && !out.contains s then out := out.push s
+    return out
   let mut targets : Array Nat := #[]
   while targets.size < inp.members.size do
     let some q := (Array.range inp.members.size).find? fun q =>
-        !targets.contains q && displayAt[q]!.all fun j? => j?.all targets.contains
+        !targets.contains q && (displayAt[q]!.all fun j? => j?.all targets.contains) &&
+          namedData[q]!.all targets.contains
       | break
     targets := targets.push q
   let arrowAt ← (Array.range inp.members.size).mapM fun k => do
@@ -448,7 +458,9 @@ proofs, the facts of the data, and the closing equation. -/
 private partial def destructFrom (c : Ctx) (m : Expr) (fields : Array Expr) (r : Expr) (goal : Expr)
     (hook : Kind → Expr → Expr → Expr → MetaM (Option (Expr × Expr × Expr)))
     (h : Expr) (ty : Expr) (ks : List Kind) (acc facts : Array Expr)
-    (k : Array Expr → Array Expr → Expr → MetaM Expr) : MetaM Expr := do
+    (k : Array Expr → Array Expr → Expr → MetaM Expr)
+    (deeper : Kind → Expr → Expr → Expr → ((Expr × Expr × Expr) → MetaM Expr) → MetaM (Option Expr) :=
+      fun _ _ _ _ _ => pure none) : MetaM Expr := do
   match ks with
   | [] => k acc facts h
   | kd :: ks' =>
@@ -462,15 +474,19 @@ private partial def destructFrom (c : Ctx) (m : Expr) (fields : Array Expr) (r :
             let restX ← stmtFrom c m fields r (body.instantiate1 x) ks' (acc.push x)
             let fact := mkApp3 (mkConst ``And.left) fx restX hx
             let rest := mkApp3 (mkConst ``And.right) fx restX hx
-            match ← hook kd d x fact with
-            | none => destructFrom c m fields r goal hook rest (body.instantiate1 x) ks' (acc.push x) (facts.push fact) k
-            | some (y, e, fy) =>
-              -- the rest, read at the value already at hand
+            -- the rest, read at a value already at hand
+            let atValue : (Expr × Expr × Expr) → MetaM Expr := fun (y, e, fy) => do
               let mot ← withLocalDeclD n d fun z => do
                 mkLambdaFVars #[z] (← stmtFrom c m fields r (body.instantiate1 z) ks' (acc.push z))
               let rest' ← ndrec d x mot rest y e
-              destructFrom c m fields r goal hook rest' (body.instantiate1 y) ks' (acc.push y) (facts.push fy) k
-          else destructFrom c m fields r goal hook hx (body.instantiate1 x) ks' (acc.push x) facts k
+              destructFrom c m fields r goal hook rest' (body.instantiate1 y) ks' (acc.push y) (facts.push fy) k deeper
+            match ← hook kd d x fact with
+            | some triple => atValue triple
+            | none =>
+              match ← deeper kd d x fact atValue with
+              | some done => pure done
+              | none => destructFrom c m fields r goal hook rest (body.instantiate1 x) ks' (acc.push x) (facts.push fact) k deeper
+          else destructFrom c m fields r goal hook hx (body.instantiate1 x) ks' (acc.push x) facts k deeper
         mkLambdaFVars #[x, hx] inner
     return mkAppN (mkConst ``Exists.elim [← getLevel d]) #[d, p, goal, h, cont]
 
@@ -797,7 +813,7 @@ private partial def Ctx.closedElem (c : Ctx) (ty : Expr) (fuel : Nat) : MetaM (O
 /-- `LEM`'s minor premise at constructor `ci` of `Prop` member `j`, of type `mty`,
 at `fs` and the hypotheses `pihs` there: at the proofs of `props`, or, under
 `all`, at every field of the block, which reaches a datum no index names. -/
-private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr) (fs pihs : Array Expr)
+private partial def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr) (fs pihs : Array Expr)
     (all : Bool := false) : MetaM Expr := do
   let kinds ← kindsOf c.inp fs
   let (cidx, self) ← c.ctorAt j ci fs
@@ -842,7 +858,7 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
           let m := c.minorOf[s]![ci']!
           let mty ← instantiateForall (← inferType m) targs
           let tkinds ← kindsOf c.inp targs
-          let hook (kd : Kind) (d x fact : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
+          let hookAt (targs : Array Expr) (kd : Kind) (d x fact : Expr) : MetaM (Option (Expr × Expr × Expr)) := do
             let a' := targs[kd.field]!
             unless a'.isFVar && fs.contains a' do
               -- a term the conclusion pins the field at: what is read off `G` there is what the
@@ -861,9 +877,26 @@ private def Ctx.lemMinor (c : Ctx) (props : Array Nat) (j ci : Nat) (mty : Expr)
             | none =>
               known.modify (·.push (a', x, fact))
               return none
-          destructFrom c m targs v goal hook hv mty tkinds.toList #[] #[] fun acc _ e => do
+          -- a field in a constructor in the index: read off `G` there, a level down
+          let rec deeperAt (targs : Array Expr) (kd : Kind) (_d x fact : Expr)
+              (kont : (Expr × Expr × Expr) → MetaM Expr) : MetaM (Option Expr) := do
+            let a' := targs[kd.field]!
+            let .const cn' _ := a'.getAppFn | return none
+            let some (s', ci'') := ctorOf? c.inp cn' | return none
+            let targs' := a'.getAppArgs.extract c.np a'.getAppNumArgs
+            let m' := c.minorOf[s']![ci'']!
+            let mty' ← instantiateForall (← inferType m') targs'
+            let kinds' ← kindsOf c.inp targs'
+            return some (← destructFrom c m' targs' x goal (hookAt targs') fact mty' kinds'.toList #[] #[]
+              (fun acc' _ e' => do
+                let y := mkAppN m' (targs' ++ acc')
+                let ks ← known.get
+                let fy ← proveG c (ks.map fun (_, y', fy') => (y', fy')) y
+                kont (y, e', fy))
+              (deeperAt targs'))
+          destructFrom c m targs v goal (hookAt targs) hv mty tkinds.toList #[] #[] (fun acc _ e => do
             disp.modify (·.push (mkAppN m (targs ++ acc), some (← mkEqSymm e)))
-            atIndex (n + 1)
+            atIndex (n + 1)) (deeperAt targs)
       else
         -- every datum of the constructor has its value: read off `G` at the
         -- indices that name them, or, of one none names, computed from the
@@ -1977,7 +2010,14 @@ def buildJoint (inp : Input) : MetaM Bool := do
   catch e =>
     setEnv env
     trace[Mumi] "{e.toMessageData}"
-    return false
+    unless env.contains (inp.elim 0 "recAll") do return false
+    try
+      buildAll inp
+      return true
+    catch e' =>
+      setEnv env
+      trace[Mumi] "by the induction over everything: {e'.toMessageData}"
+      return false
 
 /-- Publish the block's eliminators: the joint recursor where it can be built,
 the frontend's own otherwise. -/

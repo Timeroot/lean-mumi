@@ -171,7 +171,7 @@ inductive Tree.WF {α : Type} : Tree α → Prop where
 
 def WFTree (α : Type) : Type := { t : Tree α // t.WF }
 
-mumi_spec (xfail := [rec, recOn, casesOn, sizeOf])
+mumi_spec (simp := [R.rec_mk, R.rec_1_mk, R.rec_2_node, R.casesOn_mk])
 inductive R : Type where
   | tip
   | mk (x : WFTree R)

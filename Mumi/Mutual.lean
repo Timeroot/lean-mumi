@@ -82,6 +82,47 @@ meta def publishIRInjs (elems : Array Syntax) : CommandElabM Unit := do
           addInjViaCases np mem c ctors
   liftTermElabM <| addFactsOverRec params data
 
+/-- Whether a block elaborated by another route left a `Prop` member with no recursor.  A proof there
+carries a datum nothing vouches for, the erasure's well-formedness being a function of the data alone,
+so the type declared is not the least one either: only one encoding has the well-formedness and the
+proofs in one `mutual`. -/
+meta def leftWithoutRecursor (elems : Array Syntax) : CommandElabM Bool := do
+  let ns ← getCurrNamespace
+  let env ← getEnv
+  for e in elems do
+    unless e[1].isOfKind ``Lean.Parser.Command.«inductive» do continue
+    let mem := ns ++ e[1][1][0].getId
+    let some info := env.find? mem | continue
+    let isProp ← liftTermElabM <| Meta.forallTelescope info.type fun _ s => pure s.isProp
+    if isProp && !env.contains (mem ++ `rec) then return true
+  return false
+
+/-- What a block that `leftWithoutRecursor` is read as instead, from the state `before` it was read;
+what it was read as stands if that does not go through. -/
+meta def retryIfWithoutRecursor (before : Command.State) (elems : Array Syntax) : CommandElabM Unit := do
+  unless ← leftWithoutRecursor elems do return
+  let after ← get
+  set before
+  let nmsgs := before.messages.reportedPlusUnreported.size
+  let isInd (e : Syntax) := e[1].isOfKind ``Lean.Parser.Command.«inductive»
+  let ok ← try
+      withScope (fun sc => { sc with opts := Elab.async.set sc.opts false }) do
+        let views ← IndInd.elemViews (elems.filter isInd)
+        let bare := elems.map fun e =>
+          if isInd e then e.setArg 1 (e[1].setArg 6 (e[1][6].setArg 0 (mkNullNode #[]))) else e
+        IndRec.Family.carriersHere.set true
+        try
+          IndRec.elaborateAny bare
+        finally
+          IndRec.Family.carriersHere.set false
+        publishIRInjs bare
+        IndInd.deriveWrittenAgainstMembers views
+      pure !(← errorLoggedSince nmsgs)
+    catch ex =>
+      trace[Mumi.rescue] "the encoding with its proofs in one `mutual` did not take: {ex.toMessageData}"
+      pure false
+  unless ok do set after
+
 /-- Shared interception point for every Mumi `mutual` translation.  A mixed
 `inductive`/`def` block tries stock Lean first and falls to the IR frontend; an
 all-`inductive` block goes to the heterogeneous and induction-inductive routes;
@@ -131,6 +172,7 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
     -- index; or an induction-induction that reached here only because its members
     -- shadow globals of the same name, so its arities elaborated against those
     -- and `classifyBlock` saw nothing to route on
+    let before ← get
     rescuing (elabMutual stx)
       #[("the induction-inductive retry, over the originals",
           -- a route this block may have no use for, whose complaints are no diagnosis
@@ -141,7 +183,9 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
         ("the induction-inductive retry, with the members shadowing the globals",
           IndInd.elabInductionInductive elems (requireIndInd := true)
             (requireDeriving := false))]
+    retryIfWithoutRecursor before elems
     return
+  let before ← get
   withExporting (isExporting := (← getScope).isPublic) do
   withoutCommandIncrementality true do
     match route with
@@ -158,6 +202,7 @@ meta def elabMutualHeterogeneous : CommandElab := fun stx => do
       preferring (IndInd.elabNestedInductive elems (requireBridge := true) (onlyOverOriginals := true)) <|
         rescuing (elabHeterogeneousInductive elems)
           #[("the induction-inductive retry", IndInd.elabInductionInductive elems)]
+    retryIfWithoutRecursor before elems
 
 /-- `lhs = rhs` by `rfl`, checked by the kernel alone: the goal becomes an
 auxiliary theorem whose proof is `Eq.refl lhs`, which nothing but the kernel
